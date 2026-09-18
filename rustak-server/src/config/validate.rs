@@ -348,18 +348,7 @@ fn pki(config: &Config) -> Result<(), Error> {
         ));
     }
 
-    if let Some(entry) = pki.malformed_name_entry() {
-        return Err(human_errors::user(
-            format!(
-                "`[pki] name_entries` contains {entry}, which is not a subject component rustak can issue."
-            ),
-            &[
-                "Write each entry as a [\"type\", \"value\"] pair, for example [\"OU\", \"EUD\"].",
-                "Neither half may be blank: an EUD builds its signing request from these entries, and OpenSSL refuses a zero-length subject component.",
-                "\"CN\" cannot be set here: the common name of an issued certificate is the username it identifies.",
-            ],
-        ));
-    }
+    pki.validate_name_entries()?;
 
     Ok(())
 }
@@ -782,5 +771,28 @@ mod tests {
         )
         .validate()
         .unwrap();
+    }
+
+    #[test]
+    fn a_subject_type_the_issuer_cannot_render_is_refused_at_load() {
+        // R-02 M7. commoncommo resolves every advertised `nameEntry` with
+        // `OBJ_txt2nid` and **aborts CSR generation** on one it does not know,
+        // so a typo here fails every ATAK enrolment at `status 14` with nothing
+        // said at start-up. A type OpenSSL knows but `pki::issue::dn_type` does
+        // not (`DC`, `E`, `STREET`, `SN`) is worse: it reaches the request and
+        // is then dropped from the issued subject.
+        for entry in [r#"["DC", "example"]"#, r#"["STREET", "1 High Road"]"#] {
+            let message = refusal(&format!("[pki]\nname_entries = [{entry}]\n"));
+
+            assert!(
+                message.contains("rustak cannot issue"),
+                "a nameEntry type we cannot render has to be caught when the file is \
+                 read, not when a device tries to enrol: {message}",
+            );
+        }
+
+        parse("[pki]\nname_entries = [[\"O\", \"Sierra\"], [\"st\", \"Western Cape\"]]\n")
+            .validate()
+            .expect("the types the issuer renders are accepted, and case does not matter");
     }
 }

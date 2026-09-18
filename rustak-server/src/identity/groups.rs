@@ -213,12 +213,20 @@ fn interpret(oidc: &OidcConfig, claim: &str) -> Option<(GroupName, Direction)> {
     // Checked longest-first only in the sense that the two suffixes are
     // disjoint; a group ending in neither grants both directions, which is what
     // a directory that does not model read and write separately means.
+    //
+    // The *suffix* decides which rule applies and the **first** occurrence
+    // decides where the name ends — TAK Server's `LdapAuthenticator` is
+    // `endsWith(suffix)` followed by `substring(0, indexOf(suffix))` (research
+    // `06` line 580), so `A_READ_B_READ` is channel `A`, not `A_READ_B`. R-02
+    // M2: this used to use `strip_suffix`, which cuts at the last one, and a
+    // directory group like that landed in a differently named channel here than
+    // it does against TAK Server.
     let (name, direction) = match (
-        claim.strip_suffix(&oidc.read_suffix),
-        claim.strip_suffix(&oidc.write_suffix),
+        truncate_at_first(claim, &oidc.read_suffix),
+        truncate_at_first(claim, &oidc.write_suffix),
     ) {
-        (Some(name), _) if !oidc.read_suffix.is_empty() => (name, Direction::Out),
-        (_, Some(name)) if !oidc.write_suffix.is_empty() => (name, Direction::In),
+        (Some(name), _) => (name, Direction::Out),
+        (_, Some(name)) => (name, Direction::In),
         _ => (claim, Direction::Both),
     };
 
@@ -228,6 +236,19 @@ fn interpret(oidc: &OidcConfig, claim: &str) -> Option<(GroupName, Direction)> {
         )
         .ok()
         .map(|name| (name, direction))
+}
+
+/// The claim up to its **first** `suffix`, when it ends with one.
+///
+/// [`None`] for an empty suffix (the installation does not model that
+/// direction) and for a claim that does not end with it — the `endsWith` gate
+/// and the `indexOf` cut are two different questions, and TAK Server asks both.
+fn truncate_at_first<'a>(claim: &'a str, suffix: &str) -> Option<&'a str> {
+    if suffix.is_empty() || !claim.ends_with(suffix) {
+        return None;
+    }
+
+    claim.find(suffix).map(|at| &claim[..at])
 }
 
 /// Finds a channel, creating it when the installation lets the provider define
@@ -312,6 +333,38 @@ mod tests {
         assert_eq!(
             interpret(&oidc, "tak-ops"),
             Some((GroupName::parse("ops").unwrap(), Direction::Both))
+        );
+    }
+
+    #[test]
+    fn a_repeated_suffix_truncates_at_the_first_one() {
+        // TAK Server is `endsWith(suffix)` then `substring(0, indexOf(suffix))`
+        // (research 06 line 580), so `A_READ_B_READ` is channel `A`. `_READ`
+        // used to be stripped from the *end*, which put the same directory group
+        // in a differently named channel here than it lands in against TAK
+        // Server — wrong CoT visibility rather than a parse failure. R-02 M2.
+        let oidc = oidc();
+
+        assert_eq!(
+            interpret(&oidc, "tak-ops_READ_night_READ"),
+            Some((GroupName::parse("ops").unwrap(), Direction::Out)),
+        );
+        assert_eq!(
+            interpret(&oidc, "tak-ops_WRITE_night_WRITE"),
+            Some((GroupName::parse("ops").unwrap(), Direction::In)),
+        );
+        // A claim *containing* a suffix but not ending in one is a bare name:
+        // the `endsWith` gate and the `indexOf` cut are two different questions.
+        assert_eq!(
+            interpret(&oidc, "tak-ops_READ_night"),
+            Some((GroupName::parse("ops_READ_night").unwrap(), Direction::Both)),
+        );
+        // Only `_WRITE` is a suffix here, so the write rule applies and the cut
+        // is at the first `_WRITE` — the `_READ` in the middle is just part of
+        // the name.
+        assert_eq!(
+            interpret(&oidc, "tak-ops_READ_WRITE"),
+            Some((GroupName::parse("ops_READ").unwrap(), Direction::In)),
         );
     }
 

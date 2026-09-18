@@ -535,11 +535,16 @@ mod tests {
         );
         let role = detail.child("role").expect("a <role> child");
         assert_eq!(role.get("type"), Some("MISSION_READONLY_SUBSCRIBER"));
-        assert_eq!(
-            role.child("permissions").unwrap().elements().count(),
-            1,
-            "a read-only subscriber holds exactly MISSION_READ",
-        );
+
+        // Repeated `<permissions>` text elements, which is what JAXB renders
+        // from `@XmlElement(name="permissions")` on a `Set<String>` — research
+        // 05 §7.5, and R-02 M11 for why the nested shape was wrong.
+        let permissions: Vec<String> = role
+            .elements()
+            .filter(|child| child.name == "permissions")
+            .map(rustak_cot::detail::Element::text)
+            .collect();
+        assert_eq!(permissions, vec!["MISSION_READ".to_string()]);
     }
 
     #[test]
@@ -556,17 +561,19 @@ mod tests {
         assert_eq!(event.r#type, "t-x-m-i");
         assert_eq!(detail.get("type"), Some("INVITE"));
         assert_eq!(detail.get("token"), Some("eyJ0.invite"));
+        let permissions: Vec<String> = detail
+            .child("role")
+            .unwrap()
+            .elements()
+            .filter(|child| child.name == "permissions")
+            .map(rustak_cot::detail::Element::text)
+            .collect();
         assert_eq!(
-            detail
-                .child("role")
-                .unwrap()
-                .child("permissions")
-                .unwrap()
-                .elements()
-                .count(),
+            permissions.len(),
             8,
-            "an owner holds all eight permissions",
+            "an owner holds all eight permissions, one <permissions> element each",
         );
+        assert_eq!(permissions[0], "MISSION_READ");
     }
 
     #[test]

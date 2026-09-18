@@ -187,12 +187,23 @@ pub async fn rows(context: &AppContext) -> Result<Vec<GroupRow>, MartiError> {
     Ok(context.db().groups().list().await?)
 }
 
-/// Records a caller's new selection.
+/// Records a caller's new selection, reporting whether anything moved.
 ///
 /// `client_uid` names the device that asked, and is the only case where one
 /// device's state changes on its own. Without it the change is the account's:
 /// the stored default is replaced *and* applied to every device the account
 /// has, so that a selection made from a browser reaches the phones as well.
+///
+/// # Why the answer is a boolean
+///
+/// `t-x-g-c` makes every ATAK on the account **discard its map items and
+/// re-fetch** (`compat/groups.md` §3), and design 04 D9 has rustak send one even
+/// when no `clientUid` was given so that a channel toggled from a browser
+/// reaches the phone. CloudTAK's `DataMission.sync` PUTs the whole group list
+/// with `active` forced true before it creates a Data Sync (research `03` §3.4),
+/// which under D9 blanked and reloaded every map on the account for a request
+/// that changed nothing at all (R-02 M3). D9 stands; the notice is now sent only
+/// when the effective selection actually moved.
 ///
 /// # Errors
 ///
@@ -202,20 +213,51 @@ pub async fn apply(
     user_id: UserId,
     states: &[ActiveGroup],
     client_uid: Option<&str>,
-) -> Result<(), MartiError> {
+) -> Result<bool, MartiError> {
+    let before = effective(context, user_id).await?;
+
     if let Some(row) = named_device(context, user_id, client_uid).await? {
         members::set_active(context.db(), row.id, states).await?;
+    } else {
+        members::set_active_for_user(context.db(), user_id, states).await?;
 
-        return Ok(());
+        for row in devices::list_for_user(context.db(), user_id).await? {
+            members::set_active(context.db(), row.id, states).await?;
+        }
     }
 
-    members::set_active_for_user(context.db(), user_id, states).await?;
+    Ok(effective(context, user_id).await? != before)
+}
 
-    for row in devices::list_for_user(context.db(), user_id).await? {
-        members::set_active(context.db(), row.id, states).await?;
+/// What every one of an account's connections may reach, as one comparable
+/// value.
+///
+/// The account's own selection and each device's, because a `PUT` with no
+/// `clientUid` writes all of them and a change to any one of them is a change
+/// somebody has to hear about.
+async fn effective(
+    context: &AppContext,
+    user_id: UserId,
+) -> Result<Vec<(Option<DeviceId>, Vec<u8>)>, MartiError> {
+    let db = context.db();
+    let anon = context.config().auth.anon_group_default;
+    let mut snapshot = vec![(
+        None,
+        members::effective_for_account(db, user_id, anon)
+            .await?
+            .to_bytes(),
+    )];
+
+    for row in devices::list_for_user(db, user_id).await? {
+        snapshot.push((
+            Some(row.id),
+            members::effective_for_device(db, user_id, row.id, anon)
+                .await?
+                .to_bytes(),
+        ));
     }
 
-    Ok(())
+    Ok(snapshot)
 }
 
 /// The device a `clientUid` names, when it names one of this account's.

@@ -78,9 +78,19 @@ pub async fn content(
         return Err(MartiError::Html404);
     }
 
-    let (offset, length) = range(&request, &query)?;
+    let (offset, length, ranged) = range(&request, &query)?;
     let content = context.content()?;
     let opened = store::open_range(&content, &resource.hash, offset, length).await?;
+    // TAK Server's condition is `length > 0 && offset + length < totalSize`
+    // (research `06` line 1479), so an `?offset=` with no `length` — which is
+    // exactly how ATAK's `GetFileTransferOperation` resumes a failed download —
+    // reaches the end of the file and answers `200`. `Opened::is_partial` also
+    // counts `offset > 0`, which is right for a real `Range:` header and wrong
+    // here. R-02 M5.
+    let partial = match ranged {
+        true => opened.is_partial(),
+        false => opened.length > 0 && opened.offset + opened.length < opened.total,
+    };
     let disposition = format!(
         "inline; filename=\"{}\"",
         urlencode(
@@ -91,7 +101,7 @@ pub async fn content(
         )
     );
 
-    let mut builder = HttpResponse::build(if opened.is_partial() {
+    let mut builder = HttpResponse::build(if partial {
         StatusCode::PARTIAL_CONTENT
     } else {
         StatusCode::OK
@@ -103,7 +113,7 @@ pub async fn content(
         .insert_header((CONTENT_DISPOSITION, disposition))
         .insert_header((CONTENT_LENGTH, opened.length.to_string()));
 
-    if opened.is_partial() {
+    if partial {
         builder.insert_header(("content-range", opened.content_range()));
     }
 
@@ -249,9 +259,18 @@ async fn addressed(context: &AppContext, query: &CiQuery) -> Result<ResourceRow,
 }
 
 /// The `offset`/`length` parameters, or the `Range` header they stand in for.
-fn range(request: &HttpRequest, query: &CiQuery) -> Result<(u64, Option<u64>), MartiError> {
+///
+/// The third value says which of the two it was, because the two answer
+/// different statuses for the same bytes: a real `Range:` request that did not
+/// ask for the whole file is a `206`, while `?offset=` is TAK's own resume
+/// parameter and is a `200` whenever the range runs to the end of the file.
+fn range(request: &HttpRequest, query: &CiQuery) -> Result<(u64, Option<u64>, bool), MartiError> {
     if let Some(offset) = query.parsed::<u64>("offset")? {
-        return Ok((offset, query.parsed::<u64>("length")?.filter(|n| *n > 0)));
+        return Ok((
+            offset,
+            query.parsed::<u64>("length")?.filter(|n| *n > 0),
+            false,
+        ));
     }
 
     let Some(header) = request
@@ -260,7 +279,7 @@ fn range(request: &HttpRequest, query: &CiQuery) -> Result<(u64, Option<u64>), M
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.trim().strip_prefix("bytes="))
     else {
-        return Ok((0, query.parsed::<u64>("length")?.filter(|n| *n > 0)));
+        return Ok((0, query.parsed::<u64>("length")?.filter(|n| *n > 0), false));
     };
 
     // Only the first range of a possibly multi-range header, and only the
@@ -274,7 +293,7 @@ fn range(request: &HttpRequest, query: &CiQuery) -> Result<(u64, Option<u64>), M
         .ok()
         .map(|end| end.saturating_sub(start) + 1);
 
-    Ok((start, length))
+    Ok((start, length, true))
 }
 
 /// Percent-encodes a filename for a `Content-Disposition` header.
@@ -324,7 +343,11 @@ mod tests {
         let parameters = actix_web::test::TestRequest::default().to_http_request();
         let query = CiQuery::parse("offset=3&length=4");
 
-        assert_eq!(range(&parameters, &query).unwrap(), (3, Some(4)));
+        assert_eq!(
+            range(&parameters, &query).unwrap(),
+            (3, Some(4), false),
+            "`?offset=` is TAK's own resume parameter, not a `Range:` request",
+        );
 
         let header = actix_web::test::TestRequest::default()
             .insert_header((actix_web::http::header::RANGE, "bytes=10-19"))
@@ -332,12 +355,12 @@ mod tests {
 
         assert_eq!(
             range(&header, &CiQuery::default()).unwrap(),
-            (10, Some(10)),
+            (10, Some(10), true),
             "an inclusive end becomes a length",
         );
         assert_eq!(
             range(&parameters, &CiQuery::default()).unwrap(),
-            (0, None),
+            (0, None, false),
             "no range at all is the whole file",
         );
     }

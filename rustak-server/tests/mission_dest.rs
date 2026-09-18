@@ -531,3 +531,85 @@ async fn a_read_only_subscriber_may_not_write_into_the_mission() {
             .is_empty(),
     );
 }
+
+#[tokio::test]
+async fn a_subscriber_in_another_channel_gets_the_notice_and_not_the_message() {
+    // R-02 H3. `compat/missions.md` §11 item 2: the raw relay to a mission's
+    // subscribers is "still subject to the normal `IN`/`OUT` reachability
+    // check". It used to be a bare uid-index lookup with no channel filter, so a
+    // subscriber with no channel overlap with the sender received the position
+    // and chat traffic the channel model says it must not see.
+    //
+    // §12 is the other half and is deliberately different: the `t-x-m-*`
+    // notification **does** bypass the broker, so the subscriber still learns
+    // that the mission changed. It just does not get the content.
+    //
+    // Every other case in this file puts all three parties in `blue`, which is
+    // why the divergent case never ran.
+    let harness = stream_support::Harness::start_with_missions().await;
+    let writer = harness
+        .enroll(
+            "writer",
+            WRITER_UID,
+            &[("blue", rustak_api::identity::Direction::Both)],
+        )
+        .await;
+    let reader = harness
+        .enroll(
+            "reader",
+            READER_UID,
+            &[("red", rustak_api::identity::Direction::Both)],
+        )
+        .await;
+
+    data_sync(
+        &harness,
+        &[
+            (WRITER_UID, "MISSION_SUBSCRIBER"),
+            (READER_UID, "MISSION_SUBSCRIBER"),
+        ],
+    )
+    .await;
+
+    let mut writing = harness.eud(&writer, "WRITER").await;
+    let mut reading = harness.eud(&reader, "READER").await;
+    harness.await_connected(2).await;
+
+    // Not `announce`: its barrier is an ordinary broadcast and these two cannot
+    // reach each other, which is the whole point of the case. Each client still
+    // has to say what it calls itself, because a mission notice is addressed by
+    // uid and the hub only indexes a connection once it has.
+    writing.send_sa(51.5, -0.12).await.expect("an SA message");
+    reading.send_sa(51.5, -0.12).await.expect("an SA message");
+    harness.await_callsign("WRITER").await;
+    harness.await_callsign("READER").await;
+
+    // Two writes, so that the second notice is the barrier for the first
+    // message: one connection is written in order, so if the raw CoT for marker
+    // one were relayed it would arrive before the notice for marker two.
+    writing.send(addressed("UID-MARKER-1")).await.unwrap();
+    writing.send(addressed("UID-MARKER-2")).await.unwrap();
+
+    for expected in 1..=2 {
+        let event = reading
+            .expect(
+                |event| event.r#type.starts_with("t-x-m-c") || event.uid.starts_with("UID-MARKER"),
+                stream_support::EXPECT,
+            )
+            .await
+            .expect("a subscriber in another channel is still told the mission changed");
+
+        assert!(
+            event.r#type.starts_with("t-x-m-c"),
+            "the raw CoT reached a subscriber the sender cannot reach: {event:?}",
+        );
+        assert_eq!(
+            event
+                .detail
+                .find("mission")
+                .and_then(|mission| mission.get("name")),
+            Some("Kettle"),
+            "notice {expected}",
+        );
+    }
+}

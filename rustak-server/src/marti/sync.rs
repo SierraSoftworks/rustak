@@ -153,6 +153,22 @@ pub async fn mission_upload(
     upload.mime_type = upload
         .mime_type
         .or_else(|| Some(upload::PACKAGE_MIME.to_string()));
+    // `Upload::parse` reads the plural `keywords`; this route's documented
+    // parameter is the **singular** `keyword`, repeated — which is the shape
+    // node-tak's `Files.uploadPackage` sends (`compat/files.md` §5, research
+    // `03` §3.12). Reading only the plural meant every keyword CloudTAK passed
+    // was dropped and a package could not be found by the keyword it was
+    // uploaded with. R-02 M4.
+    for keyword in query.strings("keyword") {
+        if !upload
+            .keywords
+            .iter()
+            .any(|held| held.eq_ignore_ascii_case(&keyword))
+        {
+            upload.keywords.push(keyword);
+        }
+    }
+
     if !upload
         .keywords
         .iter()

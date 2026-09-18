@@ -257,6 +257,20 @@ fn connected(peer: &ClientEndpoint) -> ClientEndpointJson {
     }
 }
 
+/// One account, as the disconnected listing remembers it.
+///
+/// `visible` is part of the memo rather than recomputed per device: it is the
+/// answer to "may this caller see this account at all", and an answer that is
+/// cached without it is a cache that disagrees with itself.
+#[derive(Clone, Debug)]
+struct Owner {
+    username: String,
+    /// The channels the account publishes into, for the `group=` filter.
+    channels: Vec<GroupName>,
+    /// Whether this caller may see the account at all.
+    visible: bool,
+}
+
 /// The devices that have enrolled and are not connected now.
 ///
 /// Visibility is judged from the *account's* channels rather than the device's
@@ -273,7 +287,7 @@ async fn disconnected(
     let db = context.db();
     let index = db.groups().index().await?;
     let viewer = who.principal().map(|principal| &principal.groups);
-    let mut owners: HashMap<UserId, (String, Vec<GroupName>)> = HashMap::new();
+    let mut owners: HashMap<UserId, Owner> = HashMap::new();
     let mut rows = Vec::new();
 
     for device in devices::list(db, Page::first(DEVICE_PAGE)).await? {
@@ -283,6 +297,12 @@ async fn disconnected(
             continue;
         }
 
+        // The memo holds the **answer**, visibility included, so that a cache
+        // hit asks the same question a miss did. It used to hold only the name
+        // and the channels and decide visibility on the miss path, so an
+        // unreachable account's first device was skipped and every one after it
+        // was emitted — R-02 H2, and invisible to a test whose invisible
+        // account had a single device.
         let owner = match owners.get(&device.user_id) {
             Some(owner) => owner.clone(),
             None => {
@@ -290,27 +310,23 @@ async fn disconnected(
                     continue;
                 };
                 let groups = db.members().group_set(device.user_id).await?;
-                let owner = (
-                    user.username.to_string(),
-                    groups.names(&index, Direction::Out),
-                );
 
                 // Read once per account rather than once per device: a fleet is
                 // a handful of accounts and a great many phones.
-                let visible =
-                    who.is_admin() || viewer.is_some_and(|viewer| can_reach(&groups, viewer));
+                let owner = Owner {
+                    username: user.username.to_string(),
+                    channels: groups.names(&index, Direction::Out),
+                    visible: who.is_admin()
+                        || viewer.is_some_and(|viewer| can_reach(&groups, viewer)),
+                };
 
                 owners.insert(device.user_id, owner.clone());
-
-                if !visible {
-                    continue;
-                }
 
                 owner
             }
         };
 
-        if !matches(&owner.1, wanted) {
+        if !owner.visible || !matches(&owner.channels, wanted) {
             continue;
         }
 
@@ -320,7 +336,7 @@ async fn disconnected(
                 .clone()
                 .unwrap_or_else(|| device.uid.to_string()),
             uid: device.uid.to_string(),
-            username: owner.0,
+            username: owner.username,
             team: UNKNOWN.to_string(),
             role: UNKNOWN.to_string(),
             last_status: DISCONNECTED,

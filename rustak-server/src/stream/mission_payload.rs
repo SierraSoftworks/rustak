@@ -190,7 +190,16 @@ impl MissionLayerXml {
     }
 }
 
-/// `<role type=…><permissions><permission type=…/>…</permissions></role>`.
+/// `<role type=…><permissions>MISSION_READ</permissions>…</role>`.
+///
+/// **Repeated text elements**, not a wrapper with typed children. TAK Server's
+/// `MissionRole` is `@XmlElement(name="permissions")` on a `Set<String>`
+/// (research `05` §7.5), which JAXB renders as one `<permissions>` per
+/// permission with the name as its character data. M4-02 deviation 5 chose
+/// design 04 §4.8's nested `<permission type=…/>` shape instead; per
+/// `compat/README.md` the research is authoritative over the design, and a
+/// client reading `role/permissions` text got nothing at all from the nested
+/// form (R-02 M11). The deviation is withdrawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MissionRoleXml(pub MissionRoleKind);
 
@@ -218,13 +227,14 @@ impl MissionRoleXml {
     }
 
     pub(super) fn to_element(self) -> Element {
-        let mut permissions = Element::new("permissions");
+        let mut role = Element::new("role").attr("type", self.0.as_str());
+
         for permission in self.permissions() {
-            permissions.push(Element::new("permission").attr("type", *permission));
+            role.push(
+                Element::new("permissions").with(rustak_cot::Node::Text((*permission).to_string())),
+            );
         }
 
-        Element::new("role")
-            .attr("type", self.0.as_str())
-            .with(permissions)
+        role
     }
 }

@@ -274,15 +274,24 @@ async fn apply(
     let resolved = who.require()?;
     let client_uid = query.get("clientUid").map(str::to_string);
 
-    channels::apply(context, resolved.user.id, states, client_uid.as_deref()).await?;
+    let changed = channels::apply(context, resolved.user.id, states, client_uid.as_deref()).await?;
 
-    members::channels_changed(
-        context,
-        resolved.user.id,
-        &resolved.user.username,
-        client_uid.as_deref(),
-    )
-    .await;
+    if changed {
+        members::channels_changed(
+            context,
+            resolved.user.id,
+            &resolved.user.username,
+            client_uid.as_deref(),
+        )
+        .await;
+    } else {
+        // D9 sends `t-x-g-c` even without a `clientUid`, so that a channel
+        // toggled from a browser reaches the phone. A notice makes every ATAK on
+        // the account blank its map and re-fetch, and CloudTAK re-PUTs the whole
+        // group list before every Data Sync it creates — so a request that
+        // applied nothing must not cost every device a reload (R-02 M3).
+        debug!("A channel selection changed nothing; no t-x-g-c was sent.");
+    }
 
     // After the re-authentication above, so that what a client is replayed is
     // what its new selection can see rather than what its old one could.

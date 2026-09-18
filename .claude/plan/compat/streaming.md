@@ -94,7 +94,10 @@ Whatever doesn't match is concatenated as raw child XML (no `<detail>` wrapper, 
 `xmlDetail`. Decoding back to XML: emit the typed elements for whichever submessages are set, then
 if `xmlDetail` is non-empty, parse it and merge its children in — **on a name collision, the
 `xmlDetail` element wins** and the typed element is dropped (verified 05 §12.2, corroborated 07
-§4.4). `<detail>` is always present on the wire, even if empty. Sub-second time precision is lost on
+§4.4). **On the proto→XML path** TAK Server always emits a `<detail>` element, even an empty one
+(05 §12.2) — that is a fact about that conversion, not a universal rule: §6's own pong template has
+no `<detail>` at all, and rustak is right to omit one where the message has nothing to put in it
+(R-02 contract defect 7). Sub-second time precision is lost on
 any proto round-trip (times are millisecond `uint64`, but TAK Server's own second-resolution
 `DateUtil.toCotTime` is *not* something rustak needs to replicate — emit full millisecond CoT time
 strings; see `conventions.md` date-format rule).
@@ -242,12 +245,18 @@ pair. Implicit (group) broadcast additionally **excludes the sending connection 
 addressing (uid/callsign) does not self-exclude and still applies the reachability check.
 
 Every relayed message gets a flow tag added as an XML attribute under a `_flow-tags_` element,
-keyed by rustak's own server id:
+keyed by `"TAK-Server-" + serverId`:
 ```xml
-<detail>…<_flow-tags_ rustak-{server-id}="{iso8601-ms-time}"/></detail>
+<detail>…<_flow-tags_ TAK-Server-{server-id}="{iso8601-ms-time}"/></detail>
 ```
 If the inbound message already carries `_flow-tags_` with **this server's** key, drop it (loop
-suppression) rather than re-tagging. Verified 05 §5.8.
+suppression) rather than re-tagging. Verified 05 §5.8 line 409 (`FlowTagFilter`), corroborated by a
+packet capture in 07 §875.
+
+> **Corrected 2026-09-18 (R-02 contract defect 1).** This section used to give the attribute name as
+> `rustak-{server-id}`. It is `TAK-Server-{server-id}`: the prefix is a literal in TAK Server's own
+> source and is what a peer server matches on to suppress a loop, so it is not ours to rebrand. The
+> code (`rustak-cot/src/detail/flow_tags.rs`) was always right and this digest was wrong.
 
 ### Undeliverable GeoChat bounces back (`b-t-f` ⇒ `b-t-f-s`)
 

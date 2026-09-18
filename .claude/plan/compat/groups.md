@@ -23,7 +23,10 @@ GET /Marti/api/groups/all?useCache=<bool default false>&sendLatestSA=<bool defau
 |---|---|
 
 - `useCache=false` (the default): return the caller's **`OUT`**-direction groups only. This is what
-  a fresh, uncached client sees.
+  a fresh, uncached client sees. **rustak does not implement this branch** — design 04 D8, recorded
+  here 2026-09-18 (R-02 contract defect 4): every verified client hardcodes `useCache=true` (ATAK at
+  07 §5 line 469, CloudTAK at 03 §3.4), so both get exactly TAK Server's behaviour and the branch
+  would be dead code nothing exercises. A caller that passes `useCache=false` gets the cached answer.
 - `useCache=true`: return the caller's full **active-group selection** (both directions, as the
   client last set them via `PUT …/active`). CloudTAK always calls with `useCache=true` — it
   deliberately defers channel-selection caching to the server so its horizontally-scaled replicas

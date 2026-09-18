@@ -147,7 +147,7 @@ pub async fn select_recipients(
     for mission in &addresses.missions {
         extend(
             &mut handles,
-            mission_recipients(hub, missions, sender, *mission, encoded).await,
+            mission_recipients(hub, missions, from, sender, *mission, encoded).await,
         );
     }
 
@@ -262,9 +262,24 @@ async fn group_recipients(
 ///
 /// A failure is logged and treated as "nobody", not as a reason to drop the
 /// connection: a mission the sender may not write to is a routing decision.
+///
+/// # A subscription is not a way around the channels
+///
+/// Resolved through [`Hub::resolve_uids`], which applies `sender.IN ∩
+/// receiver.OUT` per pair exactly as `<dest uid>` and `<dest callsign>` do.
+/// This used to be a bare `handles_for_uid` index lookup, so a subscriber with
+/// no channel overlap with the sender received the raw position and chat
+/// traffic anyway — `compat/missions.md` §11 item 2 says the relay is "still
+/// subject to the normal `IN`/`OUT` reachability check", and R-02 H3 found it
+/// was not.
+///
+/// The `t-x-m-c` **notification** is a different delivery and is contractually
+/// allowed to bypass the broker (§12); it goes out through `stream::notify`, not
+/// through here, and is unaffected.
 async fn mission_recipients(
     hub: &Hub,
     missions: &dyn MissionIngest,
+    from: ConnId,
     sender: &Principal,
     dest: MissionRef<'_>,
     encoded: &Arc<EncodedEvent>,
@@ -277,9 +292,7 @@ async fn mission_recipients(
         }
     };
 
-    uids.iter()
-        .flat_map(|uid| hub.handles_for_uid(uid))
-        .collect()
+    hub.resolve_uids(from, &uids)
 }
 
 /// Appends handles that are not already in the list.

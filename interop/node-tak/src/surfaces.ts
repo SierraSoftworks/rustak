@@ -64,6 +64,11 @@ export const SURFACES = {
     path: "/Marti/api/missions",
     todo: "TODO(M4): the mission API is not served yet — Data Sync lands in M4 (plan.md milestone table).",
   },
+  cotQuery: {
+    on: "webtak",
+    path: "/Marti/api/cot/xml/probe",
+    todo: "TODO(M4-04): GET /Marti/api/cot/xml/{uid} is not served yet — node-tak's query.single()/history() read it, and the oversize stream substitution points ATAK at it (marti/cot.rs).",
+  },
   files: {
     on: "webtak",
     path: "/Marti/api/sync/search",

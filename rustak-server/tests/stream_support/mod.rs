@@ -240,7 +240,16 @@ impl Harness {
         key: &rcgen::KeyPair,
         name: Username,
     ) -> Identity {
-        let dir = self.data_dir.path().join("clients").join(username);
+        // Keyed by **uid** as well as by account: one person with two phones is
+        // an ordinary fixture, and a directory named only for the account meant
+        // the second enrolment silently overwrote the first's certificate, so
+        // both `Identity` handles connected as the same device.
+        let dir = self
+            .data_dir
+            .path()
+            .join("clients")
+            .join(username)
+            .join(uid);
         std::fs::create_dir_all(&dir).expect("a directory for the client's material");
 
         let truststore = dir.join("ca.pem");

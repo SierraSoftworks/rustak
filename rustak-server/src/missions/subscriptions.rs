@@ -205,37 +205,29 @@ impl MissionService {
             .await?)
     }
 
-    /// One device's subscription, with a freshly minted token attached.
+    /// One device's subscription, exactly as it is stored.
+    ///
+    /// **Never mints a token.** This used to, and `GET {n}/subscription?uid=`
+    /// used to call it with no permission check, so an anonymous caller naming a
+    /// mission and a subscriber uid was handed that subscription's credential
+    /// (R-02 C1). A token is minted by a *subscribe*, which is the call that
+    /// proves a password, a standing invitation or an existing token first; a
+    /// read of somebody's subscription reports the role, not the key to it.
     ///
     /// # Errors
     ///
     /// A [`human_errors::Kind::System`] error if the read fails.
-    pub async fn subscription(
+    pub async fn stored_subscription(
         &self,
         mission: &Mission,
         client_uid: &str,
     ) -> Result<Option<MissionSubscription>, MartiError> {
-        let Some(row) = self
+        Ok(self
             .db()
             .mission_subscriptions()
             .by_client(mission.id, client_uid.to_string())
             .await?
-        else {
-            return Ok(None);
-        };
-
-        let token = self.tokens().await?.issue(
-            &row.subscription_uid,
-            TokenType::Subscription,
-            &mission.name,
-            mission.guid,
-            None,
-        )?;
-
-        Ok(Some(MissionSubscription {
-            token: Some(token),
-            ..MissionSubscription::from_row(row)
-        }))
+            .map(MissionSubscription::from_row))
     }
 
     /// Every subscription to a mission, without tokens.

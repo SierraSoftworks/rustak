@@ -42,6 +42,7 @@
 
 pub mod channels;
 pub mod contacts;
+pub mod cot;
 pub mod enroll;
 pub mod error;
 pub mod extract;
@@ -157,6 +158,10 @@ fn api_routes(config: &mut web::ServiceConfig) {
             // and the file manager its `metadata` literals before `{hash}`.
             .configure(sync_metadata::routes)
             .configure(files::routes)
+            // The CoT query surface (R-02 H1), before the stubs so that the
+            // literal `/cot/**` paths are settled ahead of anything that would
+            // match them.
+            .configure(cot::routes)
             .configure(stub_routes)
             // Data Sync (M4-01), after the `/missions/{name}/kml` stub above
             // so that the literal keeps winning, and with its own registration
@@ -302,6 +307,9 @@ const PATHS: &[&str] = &[
     "/Marti/api/contacts/all",
     "/Marti/api/clientEndPoints",
     "/Marti/api/subscriptions/all",
+    "/Marti/api/cot",
+    "/Marti/api/cot/sa",
+    "/Marti/api/cot/matchUid",
     "/Marti/api/missions",
     "/Marti/api/pagedmissions",
     "/Marti/api/missioncount",
@@ -338,6 +346,7 @@ const PATHS: &[&str] = &[
 /// `a/b`.
 const PARAMETERISED: &[&str] = &[
     "/Marti/api/video/",
+    "/Marti/api/cot/xml/",
     "/Marti/api/injectors/cot/uid/",
     "/Marti/api/repeater/remove/",
     "/Marti/api/subscription/",
@@ -349,6 +358,7 @@ const PARAMETERISED: &[&str] = &[
 /// The paths that are a prefix, one path parameter, then a literal tail.
 const PARAMETERISED_TAIL: &[(&str, &str)] = &[
     ("/Marti/api/missions/", "/kml"),
+    ("/Marti/api/cot/xml/", "/all"),
     ("/Marti/api/subscriptions/", "/filter"),
     ("/Marti/api/files/", "/metadata"),
 ];
@@ -640,6 +650,11 @@ mod tests {
             "/Marti/api/clientEndPoints",
             "/Marti/api/subscription/UID-A",
             "/Marti/api/subscriptions/all",
+            "/Marti/api/cot",
+            "/Marti/api/cot/sa",
+            "/Marti/api/cot/matchUid",
+            "/Marti/api/cot/xml/UID-A",
+            "/Marti/api/cot/xml/UID-A/all",
             "/Marti/api/subscriptions/incognito/UID-A",
             "/Marti/api/subscriptions/delete/UID-A",
             "/Marti/api/subscriptions/UID-A/filter",

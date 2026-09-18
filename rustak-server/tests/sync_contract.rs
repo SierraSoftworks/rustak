@@ -257,6 +257,52 @@ async fn a_download_carries_the_api_version_header_and_the_stored_bytes() {
         "bytes 3-6/10",
     );
     assert_eq!(test::read_body(partial).await, Bytes::from_static(b"3456"));
+
+    // But `?offset=` with **no** `length` is a `200` with the partial body.
+    // TAK Server's condition is `length > 0 && offset + length < totalSize`
+    // (06 line 1479), and an offset-only request runs to the end of the file —
+    // which is exactly how ATAK's `GetFileTransferOperation` resumes a download
+    // that failed part way (07 §6.3(b)). R-02 M5.
+    let resumed = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!("/Marti/sync/content?hash={hash}&offset=3"))
+            .insert_header(("authorization", token.clone()))
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(
+        resumed.status().as_u16(),
+        200,
+        "an offset-only resume reaches the end of the file, so it is not partial",
+    );
+    assert!(
+        resumed.headers().get("content-range").is_none(),
+        "and it carries no Content-Range",
+    );
+    assert_eq!(
+        test::read_body(resumed).await,
+        Bytes::from_static(b"3456789"),
+        "the body is still only the bytes that were asked for",
+    );
+
+    // A real `Range:` header is still a `206`: that is what the header means.
+    let ranged = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!("/Marti/sync/content?hash={hash}"))
+            .insert_header(("authorization", token.clone()))
+            .insert_header((actix_web::http::header::RANGE, "bytes=3-"))
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(ranged.status().as_u16(), 206);
+    assert_eq!(
+        ranged.headers().get("content-range").unwrap(),
+        "bytes 3-9/10",
+    );
 }
 
 #[actix_web::test]
@@ -956,4 +1002,57 @@ async fn a_package_uploaded_over_http_2_is_advertised_at_the_authority_it_was_se
     );
 
     handle.stop(false).await;
+}
+
+#[actix_web::test]
+async fn a_package_upload_keeps_the_singular_keywords_it_was_given() {
+    // R-02 M4. `Upload::parse` reads only the plural `keywords`, but this
+    // route's documented parameter is the **singular** `keyword`, repeated —
+    // which is what node-tak's `Files.uploadPackage` sends (`compat/files.md`
+    // §5, 03 §3.12). Every one of them was dropped, so a package uploaded with
+    // keywords could not be found by the keyword it was uploaded with. The read
+    // side already accepted both spellings, which is what made it easy to miss.
+    let server = TestServer::start().await;
+    let (_, admin) = server.signed_in("grace", true).await;
+    let app = app!(server);
+    let token = format!("Bearer {}", admin.token);
+
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(
+                "/Marti/sync/missionupload?filename=trip.zip&creatorUid=ANDROID-1\
+                 &keyword=exercise-kettle&keyword=north",
+            )
+            .insert_header(("authorization", token.clone()))
+            .insert_header(multipart_type())
+            .set_payload(multipart("assetfile", "trip.zip", b"PK-not-really-a-zip"))
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(response.status().as_u16(), 200);
+
+    for keyword in ["exercise-kettle", "north", "missionpackage"] {
+        let found: serde_json::Value = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!("/Marti/sync/search?keywords={keyword}"))
+                .insert_header(("authorization", token.clone()))
+                .to_request(),
+        )
+        .await;
+
+        let names: Vec<&str> = found["results"]
+            .as_array()
+            .expect("a results array")
+            .iter()
+            .filter_map(|entry| entry["Name"].as_str())
+            .collect();
+
+        assert!(
+            names.contains(&"trip.zip"),
+            "the package is not findable by '{keyword}': {found}",
+        );
+    }
 }

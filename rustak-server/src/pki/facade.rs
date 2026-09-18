@@ -202,7 +202,10 @@ impl Pki {
 
     /// The name entries every subject we issue carries after its common name.
     pub fn name_entries(&self) -> Vec<(&str, &str)> {
-        self.config.subject_entries()
+        // The padded set, which is also exactly what `GET /Marti/api/tls/config`
+        // advertises — one function answers both so the document can never
+        // name a `nameEntry` the issued certificate then drops (R-02 M6).
+        self.config.enrollment_entries()
     }
 
     /// How a PKCS#12 bundle for `friendly_name` is written.

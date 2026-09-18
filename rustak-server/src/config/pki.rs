@@ -35,6 +35,23 @@ const REDACTED: &str = "<redacted>";
 /// common name is the username the certificate identifies.
 const RESERVED_ENTRY: &str = "CN";
 
+/// What a padded enrolment entry is filled with when nothing else is non-empty.
+///
+/// Matches `[pki] organization`'s own default, so the stock server advertises
+/// and issues `O=rustak, OU=rustak` to a device — TAK Server's own
+/// `O=TAK, OU=TAK` shape.
+const FALLBACK_ENTRY: &str = "rustak";
+
+/// The subject component types `pki::issue::dn_type` can actually issue.
+///
+/// Kept beside the configuration rather than beside the issuer because this is
+/// where the value is read from an operator, and a key outside this set has to
+/// be refused before a device ever builds a signing request from it. A type
+/// added to `dn_type` is added here in the same change; the enrolment contract
+/// test asserts that every advertised entry appears in the issued subject,
+/// which is what catches the two drifting apart.
+const ISSUABLE_ENTRY_TYPES: &[&str] = &["O", "OU", "C", "L", "ST", "S"];
+
 fn default_ca_common_name() -> String {
     "rustak CA".to_string()
 }
@@ -239,6 +256,13 @@ impl PkiConfig {
     /// `name_entries` when it is set, otherwise the single `O=<organization>`
     /// entry — and nothing at all when that is blank, because `O=` is not a
     /// subject component, it is an empty one.
+    ///
+    /// This is the certificate authority's own subject and the server
+    /// certificate's. A **client** certificate uses [`enrollment_entries`],
+    /// which is this list padded to the shape the enrolment document has to
+    /// advertise.
+    ///
+    /// [`enrollment_entries`]: Self::enrollment_entries
     pub fn subject_entries(&self) -> Vec<(&str, &str)> {
         if !self.name_entries.is_empty() {
             return self
@@ -255,12 +279,123 @@ impl PkiConfig {
         vec![("O", self.organization.as_str())]
     }
 
+    /// The subject a **client** certificate is issued with, and the exact set
+    /// `GET /Marti/api/tls/config` advertises.
+    ///
+    /// [`subject_entries`](Self::subject_entries) padded to at least two
+    /// entries, none of them empty. Both guarantees are forced by the clients:
+    /// CloudTAK's `xml-js` collapses a single-element array to a bare object and
+    /// then iterates a non-iterable, and commoncommo hands each value to
+    /// `X509_NAME_ENTRY_create_by_NID`, which refuses a zero-length one and
+    /// fails the enrolment at `status 14` (`compat/enrollment.md` §1).
+    ///
+    /// # Why the padding is here rather than in the response
+    ///
+    /// It used to be done in `marti::tls`, over the *advertised* list only — so
+    /// with stock configuration the server told a client to build
+    /// `CN + O + OU` and then issued `CN + O`, and `warn_on_subject_mismatch`
+    /// fired on every ATAK enrolment (R-02 M6). One function now answers both
+    /// questions, so the advertised and issued subjects cannot disagree. The
+    /// CA's and the server certificate's subjects are deliberately *not* padded:
+    /// nothing advertises them and nothing has to match them.
+    pub fn enrollment_entries(&self) -> Vec<(&str, &str)> {
+        let mut entries = self.subject_entries();
+        let filler = match self.organization.trim() {
+            "" => entries.first().map_or(FALLBACK_ENTRY, |(_, value)| *value),
+            organization => organization,
+        };
+
+        if entries.is_empty() {
+            entries.push(("O", filler));
+        }
+
+        if entries.len() < 2 {
+            // Never a second entry of the same type: `OU=EUD, OU=rustak` is a
+            // subject nobody asked for.
+            let pad = match entries[0].0.eq_ignore_ascii_case("O") {
+                true => "OU",
+                false => "O",
+            };
+
+            entries.push((pad, filler));
+        }
+
+        entries
+    }
+
+    /// Refuses a `name_entries` list a device could not enrol against.
+    ///
+    /// Called by [`Config::validate`](super::Config::validate). Both rules are
+    /// here rather than in `validate.rs` because both are facts about how these
+    /// values are *used*, and the advice is most of the code.
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::User`] error naming the entry and why it cannot
+    /// be issued.
+    pub(super) fn validate_name_entries(&self) -> Result<(), human_errors::Error> {
+        if let Some(key) = self.unrecognised_name_entry() {
+            return Err(human_errors::user(
+                format!(
+                    "`[pki] name_entries` contains the subject type '{key}', which rustak cannot issue."
+                ),
+                &[
+                    "Use one of O, OU, C, L or ST.",
+                    "An EUD builds its signing request from these entries and resolves each name with OpenSSL, so a type it does not know aborts certificate generation and every enrolment fails.",
+                    "A type OpenSSL knows but rustak does not issue would reach the request and then be dropped from the issued subject, leaving the advertised and issued subjects disagreeing.",
+                ],
+            ));
+        }
+
+        if let Some(entry) = self.malformed_name_entry() {
+            return Err(human_errors::user(
+                format!(
+                    "`[pki] name_entries` contains {entry}, which is not a subject component rustak can issue."
+                ),
+                &[
+                    "Write each entry as a [\"type\", \"value\"] pair, for example [\"OU\", \"EUD\"].",
+                    "Neither half may be blank: an EUD builds its signing request from these entries, and OpenSSL refuses a zero-length subject component.",
+                    "\"CN\" cannot be set here: the common name of an issued certificate is the username it identifies.",
+                ],
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// A `name_entries` key the issuer would not recognise, if there is one.
+    ///
+    /// Called by [`Config::validate`](super::Config::validate). Two failure
+    /// modes, both silent today and both catastrophic (R-02 M7):
+    ///
+    /// * a key **OpenSSL** does not know is advertised verbatim, and
+    ///   commoncommo resolves every `nameEntry` with `OBJ_txt2nid` and **aborts
+    ///   CSR generation** on an unknown one — so every ATAK enrolment fails at
+    ///   `status 14` with nothing said at start-up;
+    /// * a key OpenSSL knows but `pki::issue::dn_type` does not (`DC`, `E`,
+    ///   `STREET`, `SN`) reaches the client's CSR and is then dropped from the
+    ///   issued subject, so the two disagree exactly as M6 describes.
+    ///
+    /// Failing at load is the only place this can be said usefully.
+    pub(super) fn unrecognised_name_entry(&self) -> Option<String> {
+        self.name_entries
+            .iter()
+            .map(|(key, _)| key.trim())
+            .find(|key| {
+                !key.is_empty()
+                    && !ISSUABLE_ENTRY_TYPES
+                        .iter()
+                        .any(|known| key.eq_ignore_ascii_case(known))
+            })
+            .map(str::to_string)
+    }
+
     /// Reports a `name_entries` value we could not issue a certificate from.
     ///
     /// Called by [`Config::validate`](super::Config::validate); separate from
     /// the accessor so that the failure is reported when the file is loaded
     /// rather than when the first device tries to enrol.
-    pub(super) fn malformed_name_entry(&self) -> Option<String> {
+    fn malformed_name_entry(&self) -> Option<String> {
         self.name_entries.iter().find_map(|(key, value)| {
             let key = key.trim();
             let blank = key.is_empty() || value.trim().is_empty();
@@ -401,5 +536,76 @@ mod tests {
         };
 
         assert!(err.to_string().contains("ca_name"), "{err}");
+    }
+
+    #[test]
+    fn an_enrolment_subject_is_padded_to_two_entries_and_never_to_an_empty_value() {
+        // The empty `OU` an earlier version padded with failed every commoncommo
+        // enrolment at "CSR generation failed using provided parameters"
+        // (status 14): OpenSSL refuses a zero-length subject component. Both
+        // invariants — two entries, no empty value — hold for every shape the
+        // configuration can produce, and because the issuer reads this same
+        // function the advertised and issued subjects cannot disagree (R-02 M6).
+        for (entries, organization, expected) in [
+            (vec![], "Sierra", vec![("O", "Sierra"), ("OU", "Sierra")]),
+            (
+                vec![("O", "Sierra")],
+                "Sierra",
+                vec![("O", "Sierra"), ("OU", "Sierra")],
+            ),
+            // `organization` blanked: the entry that is there is the filler, and
+            // the pad is the *other* type rather than a second `OU`.
+            (vec![("OU", "EUD")], "", vec![("OU", "EUD"), ("O", "EUD")]),
+            // Nothing at all to work with.
+            (vec![], "", vec![("O", "rustak"), ("OU", "rustak")]),
+            // Two or more already: left exactly as configured.
+            (
+                vec![("O", "S"), ("OU", "E"), ("L", "Cape Town")],
+                "S",
+                vec![("O", "S"), ("OU", "E"), ("L", "Cape Town")],
+            ),
+        ] {
+            let config = PkiConfig {
+                organization: organization.to_string(),
+                name_entries: entries
+                    .iter()
+                    .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+                    .collect(),
+                ..PkiConfig::default()
+            };
+            let subject = config.enrollment_entries();
+
+            assert_eq!(subject, expected);
+            assert!(subject.len() >= 2, "CloudTAK iterates this: {subject:?}");
+            assert!(
+                subject.iter().all(|(_, value)| !value.is_empty()),
+                "OpenSSL refuses a zero-length value: {subject:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn a_subject_type_the_issuer_cannot_render_is_reported() {
+        // commoncommo resolves each advertised `nameEntry` with `OBJ_txt2nid`
+        // and aborts CSR generation on one it does not know, so this has to be
+        // caught when the file is read rather than when a device enrols. R-02 M7.
+        let bad = PkiConfig {
+            name_entries: vec![("DC".to_string(), "example".to_string())],
+            ..PkiConfig::default()
+        };
+        assert_eq!(bad.unrecognised_name_entry().as_deref(), Some("DC"));
+
+        let good = PkiConfig {
+            name_entries: vec![
+                ("o".to_string(), "Sierra".to_string()),
+                ("ST".to_string(), "Western Cape".to_string()),
+            ],
+            ..PkiConfig::default()
+        };
+        assert_eq!(
+            good.unrecognised_name_entry(),
+            None,
+            "the comparison ignores case, as `dn_type` does",
+        );
     }
 }

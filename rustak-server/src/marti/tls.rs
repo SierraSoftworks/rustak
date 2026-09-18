@@ -16,7 +16,10 @@
 //!    `for (… of nameEntries.nameEntry)` then throws on a non-iterable (§1).
 //!    And commoncommo builds its signing request through OpenSSL, which refuses
 //!    a zero-length subject component — so the padding carries the organisation
-//!    rather than an empty string (§1, `padded_entries`).
+//!    rather than an empty string. Both guarantees come from
+//!    [`PkiConfig::subject_entries`](crate::config::PkiConfig::subject_entries),
+//!    which is also what the issuer builds the subject from, so the document
+//!    can never advertise an entry the certificate then drops (§1).
 //! 3. **Bare base64, no PEM armour**, in both representations. Each client adds
 //!    the banner itself, and they disagree about which end does it (§3).
 //!
@@ -47,10 +50,6 @@ use super::enroll::{SignQuery, internal_error, issue};
 use super::error::{MartiError, MartiResult};
 use super::extract::ListenerRole;
 use super::response;
-
-/// What a name entry is padded with when the configuration leaves us nothing
-/// non-empty to pad with. Matches `[pki] organization`'s own default.
-const FALLBACK_NAME_ENTRY: &str = "rustak";
 
 /// Which representation the client asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -279,7 +278,12 @@ fn refusal(context: &AppContext, failure: AuthFailure) -> HttpResponse {
 /// than a URI — that is what TAK Server emits and what CloudTAK's client indexes
 /// by, so it is reproduced verbatim.
 fn certificate_config(pki: &Pki) -> String {
-    let entries = padded_entries(pki.name_entries(), pki.config().organization.trim());
+    // Exactly what the issuer will put in the subject — `PkiConfig::subject_entries`
+    // is the one function that decides both, and it guarantees the two entries
+    // with non-empty values that CloudTAK's `xml-js` and commoncommo need. This
+    // used to pad here instead, so the advertised and issued subjects disagreed
+    // on stock configuration (R-02 M6).
+    let entries = pki.name_entries();
 
     let rendered: String = entries
         .iter()
@@ -328,46 +332,6 @@ fn xml_body(pki: &Pki, issued: &IssuedCert) -> String {
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?><enrollment><signedCert>{}</signedCert>{chain}</enrollment>",
         bare_base64_64col(&issued.der),
     )
-}
-
-/// The name entries as both clients need to see them: at least two of them, and
-/// never one with an empty value.
-///
-/// Two rules, and one padding has to satisfy both.
-///
-/// CloudTAK's compact-mode parser collapses a one-element array to an object and
-/// then iterates it, so there must be two. commoncommo — ATAK's own networking
-/// core — builds its signing request by handing each value to OpenSSL's
-/// `X509_NAME_ENTRY_create_by_NID`, which refuses a zero-length directory
-/// string, so an `OU=""` pad failed *every* enrolment with "CSR generation
-/// failed using provided parameters" (status 14) on the first real EUD interop
-/// run. The organisation is therefore the filler, which is also TAK Server's own
-/// default shape: `O=TAK` beside `OU=TAK`.
-///
-/// The fallbacks below are unreachable in practice — configuration validation
-/// refuses a blank `name_entries` value, and `organization` is only empty if
-/// somebody blanked it — but the invariant is worth holding unconditionally
-/// rather than on the strength of a check in another module.
-fn padded_entries<'a>(
-    mut entries: Vec<(&'a str, &'a str)>,
-    organization: &'a str,
-) -> Vec<(&'a str, &'a str)> {
-    let filler = match organization {
-        "" => entries
-            .first()
-            .map_or(FALLBACK_NAME_ENTRY, |(_, value)| *value),
-        organization => organization,
-    };
-
-    if entries.is_empty() {
-        entries.push(("O", filler));
-    }
-
-    if entries.len() < 2 {
-        entries.push(("OU", filler));
-    }
-
-    entries
 }
 
 /// XML-escapes an attribute value.
@@ -432,42 +396,6 @@ mod tests {
     fn the_audit_trail_records_which_representation_was_served() {
         assert_eq!(Representation::Json.issued_via(), IssuedVia::EnrollV2Json);
         assert_eq!(Representation::Xml.issued_via(), IssuedVia::EnrollV2Xml);
-    }
-
-    #[test]
-    fn the_name_entries_are_padded_to_two_and_never_to_an_empty_value() {
-        // The empty `OU` this used to pad with failed every commoncommo
-        // enrolment at "CSR generation failed using provided parameters"
-        // (status 14): OpenSSL refuses a zero-length subject component. Both
-        // invariants — two entries, no empty value — hold for every shape the
-        // configuration can produce.
-        for (configured, organization, expected) in [
-            (vec![], "Sierra", vec![("O", "Sierra"), ("OU", "Sierra")]),
-            (
-                vec![("O", "Sierra")],
-                "Sierra",
-                vec![("O", "Sierra"), ("OU", "Sierra")],
-            ),
-            // `organization` blanked: the entry that is there is the filler.
-            (vec![("OU", "EUD")], "", vec![("OU", "EUD"), ("OU", "EUD")]),
-            // Nothing at all to work with.
-            (vec![], "", vec![("O", "rustak"), ("OU", "rustak")]),
-            // Two or more already: left exactly as configured.
-            (
-                vec![("O", "S"), ("OU", "E"), ("L", "Cape Town")],
-                "S",
-                vec![("O", "S"), ("OU", "E"), ("L", "Cape Town")],
-            ),
-        ] {
-            let padded = padded_entries(configured, organization);
-
-            assert_eq!(padded, expected);
-            assert!(padded.len() >= 2, "CloudTAK iterates this: {padded:?}");
-            assert!(
-                padded.iter().all(|(_, value)| !value.is_empty()),
-                "OpenSSL refuses a zero-length value: {padded:?}"
-            );
-        }
     }
 
     #[test]

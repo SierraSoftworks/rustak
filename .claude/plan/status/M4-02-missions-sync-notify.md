@@ -130,11 +130,13 @@ Admin (`/api/v1`, `Administrative` throughout): `GET /missions`, `GET /missions/
    answered `501`; `GET /missions/logs/entries/abc` now answers a perfectly ordinary `404` for a
    log entry that is not there. The assertion is now "not a `404` that names a *mission*", which
    is what falling through to `{name}` actually looks like.
-5. **`<role>` renders `<permissions>` as a wrapper** with `<permission type=…/>` children, per
-   design 04 §4.8. Research 05 §7.5 reads TAK Server's `@XmlElement(name="permissions")` on a
-   list, which would produce repeated `<permissions>` elements instead. The design document is
-   followed; if a client turns out to want the repeated form it is a one-line change in
-   `stream/mission_payload.rs`.
+5. ~~**`<role>` renders `<permissions>` as a wrapper** with `<permission type=…/>` children, per
+   design 04 §4.8.~~ **Withdrawn 2026-09-18 by M4-04 (R-02 M11).** The deviation cited design 04
+   §4.8 over research 05 §7.5, and `compat/README.md` makes the research authoritative — so it did
+   not hold on its own terms. `stream/mission_payload.rs` now renders repeated `<permissions>` text
+   elements, which is what JAXB produces from `@XmlElement(name="permissions")` on a `Set<String>`
+   (`MissionRole.java:104-105`), and the `t-x-m-i` / `t-x-m-r` goldens are re-pinned to that shape.
+   A client reading `role/permissions` text got nothing at all from the nested form.
 6. **`MissionChange` child order** is `rustak-cot`'s (type, isFederatedChange, missionName,
    missionGuid, timestamp, creatorUid, contentUid, details, contentResource) — research 05 §7.5's
    getter order, already pinned by `rustak-cot`'s own tests. Design 04 §4.8 illustrates an

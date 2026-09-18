@@ -560,3 +560,128 @@ async fn a_subscription_listing_describes_what_is_connected() {
 
     harness.stop().await;
 }
+
+#[tokio::test]
+async fn every_device_of_an_unreachable_account_is_invisible_not_just_the_first() {
+    // R-02 H2. The disconnected half of `/clientEndPoints` reads each account's
+    // channels once and memoises the answer, because a fleet is a handful of
+    // accounts and a great many phones. The memo was written **before** the
+    // visibility check and the cache-hit arm had no check at all, so an
+    // unreachable account's *first* disconnected device was skipped and every
+    // one after it was emitted — leaking that account's username, the device
+    // uid, its callsign and its last-seen time to anyone who asked.
+    //
+    // It takes two devices to see: with one, the miss path runs and the
+    // assertion passes. Both of eve's have to connect once, because that is what
+    // puts a row in `devices` for the disconnected listing to find.
+    let harness = Harness::start().await;
+    let ada = harness.enroll("ada", "UID-PHONE", &[("Blue", BOTH)]).await;
+    let eve_one = harness.enroll("eve", "UID-EVE", &[("Red", BOTH)]).await;
+    let eve_two = harness.enroll("eve", "UID-EVE-2", &[("Red", BOTH)]).await;
+    let token = sign_in(&harness, "ada").await;
+
+    for (identity, callsign) in [(&eve_one, "EVE"), (&eve_two, "EVE-2")] {
+        let device = harness.eud(identity, callsign).await;
+        harness.await_connected(1).await;
+        drop(device);
+        await_only(&harness, 0).await;
+    }
+
+    let mut phone = harness.eud(&ada, "PHONE").await;
+    phone.send_sa(51.5, -0.12).await.unwrap();
+    harness.await_callsign("PHONE").await;
+    drain(&mut phone).await;
+
+    let app = test::init_service(App::new().configure(routes(&harness))).await;
+    let body: serde_json::Value = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::get()
+            .uri("/Marti/api/clientEndPoints")
+            .insert_header(("authorization", token))
+            .to_request(),
+    )
+    .await;
+
+    let rows = body["data"].as_array().expect("an array of endpoints");
+
+    assert!(
+        rows.iter().any(|row| row["uid"] == "UID-PHONE"),
+        "the caller's own device is there, so the listing did run: {rows:?}",
+    );
+    assert!(
+        rows.iter()
+            .all(|row| row["uid"] != "UID-EVE" && row["uid"] != "UID-EVE-2"),
+        "**every** device of an account in another channel is invisible, not just \
+         the first one the listing happens to reach: {rows:?}",
+    );
+    assert!(
+        rows.iter().all(|row| row["username"] != "eve"),
+        "and the account's name never appears at all: {rows:?}",
+    );
+}
+
+#[tokio::test]
+async fn a_selection_that_changes_nothing_sends_no_notice() {
+    // R-02 M3. Design 04 D9 sends `t-x-g-c` even when the request named no
+    // `clientUid`, so that a channel toggled from a browser reaches the phone.
+    // The unintended consequence: a `t-x-g-c` makes every ATAK on the account
+    // **discard its map items and re-fetch** (`compat/groups.md` §3), and
+    // CloudTAK's `DataMission.sync` PUTs the whole group list with `active`
+    // forced true before it creates a Data Sync (03 §3.4) — so ordinary
+    // housekeeping blanked and reloaded every map on the account for a request
+    // that applied nothing. D9 stands; the notice is now conditional on the
+    // effective selection actually moving.
+    let harness = Harness::start().await;
+    let phone_id = harness.enroll("ada", "UID-PHONE", &[("Blue", BOTH)]).await;
+    let token = sign_in(&harness, "ada").await;
+
+    let mut phone = harness.eud(&phone_id, "PHONE").await;
+    phone.send_sa(51.5, -0.12).await.unwrap();
+    harness.await_callsign("PHONE").await;
+    drain(&mut phone).await;
+
+    let app = test::init_service(App::new().configure(routes(&harness))).await;
+    let active_already = r#"[{"name":"Blue","direction":"OUT","active":true}]"#;
+
+    let response = test::call_service(
+        &app,
+        test::TestRequest::put()
+            .uri("/Marti/api/groups/active")
+            .insert_header(("authorization", token.clone()))
+            .set_payload(active_already)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(
+        response.status().as_u16(),
+        200,
+        "the request is applied as usual; only the notice is suppressed",
+    );
+
+    // Event-driven rather than timed: a real change afterwards proves the
+    // connection was listening all along, and seeing *that* notice first proves
+    // the no-op one never came.
+    test::call_service(
+        &app,
+        test::TestRequest::put()
+            .uri("/Marti/api/groups/active")
+            .insert_header(("authorization", token))
+            .set_payload(r#"[{"name":"Blue","direction":"OUT","active":false}]"#)
+            .to_request(),
+    )
+    .await;
+
+    phone
+        .expect(|event| event.r#type == cot_type::GROUP_CHANGE, EXPECT)
+        .await
+        .expect("the change that changed something is announced");
+
+    // And there is no second one: the no-op PUT went first, so a notice for it
+    // would already have been read above.
+    phone
+        .expect_none(SETTLE)
+        .await
+        .expect("a selection that applied nothing announced nothing");
+
+    harness.stop().await;
+}

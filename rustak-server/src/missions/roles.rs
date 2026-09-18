@@ -214,9 +214,14 @@ impl MissionService {
             return Ok(None);
         };
 
-        // Either spelling identifies the mission, so that renaming one does not
-        // invalidate the tokens already issued for it.
-        if claims.mission_name != mission.name && claims.mission_guid != mission.guid {
+        // The **guid** is what identifies the mission, and a mismatch is always a
+        // refusal. The name is carried too and a rename is therefore harmless —
+        // that is the whole reason the guid rather than the name is the test —
+        // but accepting *either* (as this used to, recorded in
+        // `compat/missions.md` §16) meant a never-expiring `ACCESS` token minted
+        // for a deleted mission opened a brand new password-protected mission
+        // that happened to reuse the name. A guid is not reused; a name is.
+        if claims.mission_guid != mission.guid {
             return Ok(None);
         }
 

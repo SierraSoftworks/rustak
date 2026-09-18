@@ -72,6 +72,13 @@ PUT|POST /Marti/api/missions/{name}?creatorUid=&group=<repeatable-or-comma-joine
 - `group` accepts **both** `?group=a&group=b` and a single `?group=a,b` — CloudTAK's `create()`
   comma-joins, its `update()` repeats the param. Accept both forms on every multi-value query param
   in this API (`group`, `boundingPolygon`, `keyword`).
+- **This applies to `boundingPolygon` too, and it is not a mistake** (settled 2026-09-18, R-02 M8 /
+  contract defect 3). `boundingPolygon` is a `List<String>` bound by Spring, which splits a
+  comma-containing value for a collection target exactly as it does for `group` (06 §7.2 line 941),
+  so `?boundingPolygon=51.5,-0.12` really does arrive upstream as `["51.5", "-0.12"]` — the `lat,lon`
+  pairing survives only on the **JSON body** path, where each array element is taken whole. §3 wins
+  over §4 for the query string; §4 describes the model and the body. A client that wants real polygon
+  vertices sends them in the body.
 - A JSON body (`Content-Type` contains `application/json`) **overrides** matching query params where
   present; a non-JSON body is imported as a mission-package zip instead (06 §7.2).
 - **Status**: `201` on create (new mission row) with `token` + `ownerRole` in the response; `200` on
@@ -99,7 +106,7 @@ primitive boolean — **always present**.
 |---|---|---|
 | `name`, `description`, `tool`, `guid` | string | `tool` defaults to `"public"` |
 | `chatRoom`, `baseLayer`, `bbox`, `path`, `classification` | string, optional | omit when unset |
-| `boundingPolygon` | array of `"lat,lon"` strings | |
+| `boundingPolygon` | array of `"lat,lon"` strings | in the **body** and in the response; a query-string value is comma-split first — see §3 |
 | `keywords` | array of string | |
 | `creatorUid` | string, optional | |
 | `createTime`, `lastEdited` | **padded-millis** `yyyy-MM-dd'T'HH:mm:ss.SSS'Z'` | |
@@ -281,6 +288,13 @@ island 0/0 with 9999999 ce/le):
 | Invitation sent | `t-x-m-i` | `INVITE` | the invited `uids[]` only, plus a `<role>` child and `token=` |
 | Role changed | `t-x-m-r` | **`INVITE`** (yes — not `ROLE`; reproduce this exactly) | the single affected `clientUid`, plus a `<role>` child |
 
+The `<role>` child is `<role type="…"><permissions>MISSION_READ</permissions><permissions>…</permissions></role>`
+— **repeated text elements**, one per permission, not a `<permissions>` wrapper holding
+`<permission type=…/>` children. `MissionRole` is `@XmlElement(name="permissions")` on a
+`Set<String>` (05 §7.5), which is what JAXB renders from that. Design 04 §4.8 illustrates the nested
+form and M4-02 followed it; per `README.md` the research wins, and a client reading
+`role/permissions` text got nothing from the nested shape (R-02 M11). Corrected 2026-09-18.
+
 These are delivered directly to the target subscription(s), **bypassing the normal group-
 reachability broker** (except the broadcast-announcement path, which still applies the group-vector
 check described above) — no flow tag is added to these. CloudTAK's live-update path listens for
@@ -344,6 +358,12 @@ unchanged unless the row says otherwise.
 | `DELETE …/subscription?disconnectOnly=true` | keeps the row and stops delivery | deletes the row either way | There is no "subscribed but receiving nothing" state here, and a row that lies about itself is worse than one that is gone. Documented in §9's terms: the client re-subscribes on its next reconnect regardless. |
 | `mission_contents` key | `(mission_id, resource_hash)` | `(mission_id, resource_id)`, joined to `resources` | A hash is not unique — the same photograph attached to two items is two resource rows over one blob — so detaching by hash detaches every row holding it, which is what "remove that file" means. |
 | Invitation tokens | matched against the whole stored JWT | matched against the stored `token_jti` | The `jti` is unique per token and is already indexed; the whole JWT is stored alongside it (`mission_invitations.token`, migration `0010`) for clients that replay it verbatim. |
+
+**Withdrawn 2026-09-18 (R-01).** "Mission identity in a token: `MISSION_NAME` **or** `MISSION_GUID`
+matches." A token now has to match the **guid**. The rename-safety that deviation was for is what
+the guid check already gives — a rename changes the name and not the guid — while accepting the name
+meant a never-expiring `ACCESS` token minted for a deleted mission opened a brand new
+password-protected mission that reused the name. A guid is not reused; a name is.
 
 ## Gotchas
 

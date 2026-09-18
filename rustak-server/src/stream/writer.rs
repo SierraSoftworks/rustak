@@ -23,8 +23,10 @@ use std::sync::Arc;
 
 use futures::SinkExt;
 use rustak_cot::codec::{EncodedEvent, MAX_PROTO_PAYLOAD, Mode, TakCodec};
-use rustak_cot::detail::fileshare::{FileShare, fileshare_pointer};
+use rustak_cot::detail::fileshare::FileShare;
 use rustak_cot::error::CodecError;
+use rustak_cot::event::Point;
+use rustak_cot::types::{cot_type, how};
 use rustak_cot::{CotTime, Event};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWrite;
@@ -38,6 +40,23 @@ use super::subscription::Outbound;
 
 /// How many queued messages one flush may carry.
 const DRAIN_BURST: usize = 64;
+
+/// How long the **server-generated** `b-f-t-r` substitute stays valid.
+///
+/// A hundred seconds, not the ten that `rustak_cot::detail::fileshare` uses.
+/// Research `05` §9 pins two different templates: ATAK's own client-emitted
+/// offer (`+10s`, with an `<ackrequest>`) and `CommonUtil.getFileTransferCotMessage`
+/// (`+100s`, no `<ackrequest>`, `hae='9999999.0'`), and it is the **second**
+/// that stands in for an oversize outbound message. Ten seconds is the whole
+/// window ATAK has to notice the pointer and start the fetch; at a hundred it
+/// has ten times as long. R-02 M1.
+const SUBSTITUTE_VALIDITY: std::time::Duration = std::time::Duration::from_secs(100);
+
+/// The callsign a substitute carries when the original event had none.
+///
+/// TAK Server uses the authenticated user's name or this literal; an empty
+/// `senderCallsign` is what the receiving client would otherwise display.
+const SERVER_CALLSIGN: &str = "takserver";
 
 /// What the writer needs beyond its queue and its socket.
 #[derive(Clone, Debug)]
@@ -184,6 +203,9 @@ fn substitute(encoded: &EncodedEvent, context: &WriterContext) -> Option<Encoded
     let xml = encoded.xml();
     let share = FileShare {
         filename: format!("{}.xml", event.uid),
+        // Served by `marti::cot::single`. Until R-02 H1 this pointed at a route
+        // that did not exist, so the substitution lost the message and showed
+        // the user a failed transfer.
         sender_url: format!(
             "{}/Marti/api/cot/xml/{}",
             base.trim_end_matches('/'),
@@ -192,12 +214,14 @@ fn substitute(encoded: &EncodedEvent, context: &WriterContext) -> Option<Encoded
         size_in_bytes: xml.len() as u64,
         sha256: hex::encode(Sha256::digest(xml)),
         sender_uid: event.uid.clone(),
-        sender_callsign: event.callsign().unwrap_or_default().to_owned(),
+        sender_callsign: event
+            .callsign()
+            .filter(|callsign| !callsign.is_empty())
+            .unwrap_or(SERVER_CALLSIGN)
+            .to_owned(),
         name: event.uid.clone(),
         ..FileShare::default()
     };
-
-    let pointer: Event = fileshare_pointer(&event.uid, &share, CotTime::now());
 
     debug!(
         uid = %event.uid,
@@ -205,7 +229,34 @@ fn substitute(encoded: &EncodedEvent, context: &WriterContext) -> Option<Encoded
         "Substituted a pointer for a message too large to frame."
     );
 
-    Some(EncodedEvent::new(pointer))
+    Some(EncodedEvent::new(pointer(&event.uid, &share)))
+}
+
+/// The server-generated `b-f-t-r`, per research `05` §9.
+///
+/// Built here rather than with `rustak_cot::detail::fileshare::fileshare_pointer`
+/// because that helper renders **ATAK's** template — `stale=+10s`, an
+/// unconditional `<ackrequest>` and `hae="0.0"` — and this is the server's, which
+/// differs in all three. The two are genuinely different messages that happen to
+/// share a type, and `compat/files.md` §9 conflating them is what R-02 M1 found.
+fn pointer(uid: &str, share: &FileShare) -> Event {
+    Event::builder(cot_type::FILESHARE, uid)
+        .how(how::H_E)
+        // `hae` is the unknown sentinel, not sea level: a receiver plotting
+        // `hae="0.0"` puts the pointer on the surface of the ellipsoid.
+        .point_full(Point {
+            lat: 0.0,
+            lon: 0.0,
+            hae: Point::UNKNOWN_HAE,
+            ce: Point::UNKNOWN_CE,
+            le: Point::UNKNOWN_LE,
+        })
+        .time(CotTime::now())
+        .stale_after(SUBSTITUTE_VALIDITY)
+        // No `<ackrequest>`: the server is not waiting for a receipt, and ATAK
+        // would answer a `b-f-t-a` that nothing here consumes.
+        .typed(share)
+        .build()
 }
 
 #[cfg(test)]
@@ -324,6 +375,28 @@ mod tests {
         );
         assert_eq!(share.sha256.len(), 64);
         assert_eq!(StreamMetrics::get(&context.metrics.oversize_substituted), 1);
+
+        // The server-generated template, not ATAK's own offer — research 05 §9,
+        // R-02 M1.
+        assert_eq!(
+            pointer.stale,
+            pointer.time.stale_after(SUBSTITUTE_VALIDITY),
+            "the substitute is valid for 100s, which is how long ATAK has to fetch it",
+        );
+        assert!(
+            pointer.detail.find("ackrequest").is_none(),
+            "the server-generated template has no <ackrequest>; ATAK would answer \
+             a b-f-t-a nothing consumes",
+        );
+        assert_eq!(
+            pointer.point.hae,
+            Point::UNKNOWN_HAE,
+            "hae=0.0 would plot the pointer at sea level rather than at unknown altitude",
+        );
+        assert_eq!(
+            share.sender_callsign, "takserver",
+            "an event with no callsign still names a sender",
+        );
     }
 
     #[tokio::test]

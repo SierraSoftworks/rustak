@@ -35,6 +35,15 @@ use super::service::MissionService;
 /// The XML declaration a mission's CoT view opens with.
 pub const EVENTS_PROLOGUE: &str = "<?xml version='1.0' encoding='UTF-8' standalone='yes'?><events>";
 
+/// The declaration `rustak-cot` writes at the head of every event it renders.
+///
+/// Stored `cot_latest` rows are whole documents, declaration and all, because
+/// that is what the recipients were sent. An `<events>` wrapper holds
+/// *elements*, so the declaration has to come off each one on the way in —
+/// otherwise the document carries a processing instruction in the middle of it
+/// and no parser accepts it.
+const EVENT_DECLARATION: &str = rustak_cot::xml::DECLARATION;
+
 /// What is filed under a mission right now.
 ///
 /// Passed to [`squash`] rather than read inside it, so that the fold is a pure
@@ -245,7 +254,7 @@ impl MissionService {
             }
 
             if let Some(xml) = crate::cot_store::latest_xml(self.db(), &item.uid).await? {
-                document.push_str(&without_marti(&xml));
+                document.push_str(&event_element(&xml));
                 document.push('\n');
             }
         }
@@ -262,6 +271,9 @@ impl MissionService {
 /// one delivery rather than about the object — replaying it to a client reading
 /// a mission would tell them about recipients they have nothing to do with.
 /// An event we cannot re-parse is passed through unchanged rather than dropped.
+///
+/// The result is a whole document, declaration included. Use [`event_element`]
+/// for a copy that goes inside an `<events>` wrapper.
 pub fn without_marti(xml: &str) -> String {
     let Ok(mut event) = rustak_cot::xml::parse_str(xml) else {
         return xml.to_string();
@@ -270,6 +282,19 @@ pub fn without_marti(xml: &str) -> String {
     event.detail.remove_all("marti");
 
     String::from_utf8_lossy(&rustak_cot::xml::write(&event)).into_owned()
+}
+
+/// The same, as an element rather than a document.
+///
+/// Every `<events>` document — `{n}/cot`, `/Marti/api/cot/xml/{uid}/all`,
+/// `/Marti/api/cot` and `/Marti/api/cot/sa` — is built from this, because a
+/// stored row is a document and a wrapper holds elements.
+pub fn event_element(xml: &str) -> String {
+    let stripped = without_marti(xml);
+
+    stripped
+        .strip_prefix(EVENT_DECLARATION)
+        .map_or(stripped.clone(), |rest| rest.trim_start().to_string())
 }
 
 /// The rendering fields of an event, for callers outside this module.

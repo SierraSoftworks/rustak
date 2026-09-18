@@ -2,8 +2,12 @@
 
 **Purpose.** The read-only "who else is on this server" surfaces ATAK's contact list and CloudTAK's
 contacts page use. Served on the mTLS Marti listener (`:8443`), client cert auth. Contract for
-`rustak-server::marti::contacts` (backed by `stream::hub`'s live subscription registry, plus a
-last-known cache for disconnected users).
+`rustak-server::marti::contacts`, backed by `stream::hub`'s live subscription registry.
+
+> **Corrected 2026-09-18 (R-02 contract defect 5).** This used to say `/contacts/all` was also backed
+> by "a last-known cache for disconnected users". It is not: upstream's `getAllContactsLite` reads
+> **live subscriptions only** (06 §6.1), which is what the code does. `/clientEndPoints` (§2) is the
+> endpoint that reports disconnected devices, and it says so itself.
 
 Baseline: `plan.md` Appendix A.4 "Contacts". This file expands it.
 
@@ -33,8 +37,9 @@ Every element, **all keys always present** (null when unset, never omitted):
 | `notes` | free text; emit `""` rather than `null` — CloudTAK's CLI formatter calls `.trim()` on it unguarded |
 | `filterGroups` | rustak has no per-contact geospatial filter feature yet — always `[]` |
 
-List every connected-or-recently-seen client the caller has group visibility into (`OUT` on at least
+List every **connected** client the caller has group visibility into (`OUT` on at least
 one group the contact holds `IN`, mirroring the streaming reachability rule in `streaming.md` §8).
+A device that has gone is simply absent — there is no recency window on this route.
 `sortBy`/`direction` query params are accepted by TAK Server on this route but never actually applied
 — safe to accept and ignore rather than implement real sorting (06 §6.1).
 

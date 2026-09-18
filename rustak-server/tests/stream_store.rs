@@ -240,12 +240,112 @@ async fn an_oversize_message_reaches_a_protobuf_peer_as_a_pointer() {
         "https://localhost:8446/Marti/api/cot/xml/UID-HUGE",
     );
     assert_eq!(share.sha256.len(), 64);
+    assert_eq!(
+        share.sender_callsign, "ALPHA",
+        "an empty senderCallsign is what the receiver would display",
+    );
 
-    // And the message itself is still readable at the address it points to.
+    // The **server-generated** template, not ATAK's own offer. Research 05 §9
+    // pins two different `b-f-t-r` shapes and `compat/files.md` §9 used to give
+    // only the client's; ten seconds is the whole window ATAK has to notice the
+    // pointer and fetch, and an `<ackrequest>` the server will not consume only
+    // makes it send a `b-f-t-a` into the void. R-02 M1.
+    assert_eq!(
+        pointer.stale,
+        pointer.time.stale_after(Duration::from_secs(100)),
+        "the substitute is valid for 100s",
+    );
+    assert!(
+        pointer.detail.find("ackrequest").is_none(),
+        "the server-generated template carries no <ackrequest>: {:?}",
+        pointer.detail,
+    );
+    assert_eq!(
+        pointer.point.hae, 9_999_999.0,
+        "hae=0.0 would plot the pointer at sea level rather than at unknown altitude",
+    );
+
+    // And the message itself is readable at the address it points to. Until
+    // R-02 H1 that URL matched no route at all, so the substitution lost the
+    // message and showed the user a failed transfer.
     let stored = await_stored(&harness, "UID-HUGE").await;
     assert!(stored.len() > 70_000);
 
+    let fetched = fetch(&harness, &alice, &share.sender_url).await;
+
+    assert_eq!(
+        fetched.0, 200,
+        "the pointer's own URL: {}",
+        share.sender_url
+    );
+    assert!(
+        fetched.1.contains("uid=\"UID-HUGE\""),
+        "and it answers the original event: {}",
+        &fetched.1[..fetched.1.len().min(200)],
+    );
+
     harness.stop().await;
+}
+
+/// `GET`s a `senderUrl` against this harness's own Marti routes.
+///
+/// The pointer names an absolute URL built from `[marti] public_host`; what is
+/// asserted here is that its **path** is one the server serves, which is the
+/// half the substitution got wrong.
+async fn fetch(
+    harness: &Harness,
+    identity: &stream_support::Identity,
+    sender_url: &str,
+) -> (u16, String) {
+    use actix_web::{App, test, web};
+
+    let path = sender_url
+        .split_once("/Marti/")
+        .map(|(_, tail)| format!("/Marti/{tail}"))
+        .expect("a senderUrl under /Marti");
+
+    let issuer = rustak_server::auth::JwtIssuer::load_or_adopt(
+        harness.context.db(),
+        harness.context.secrets(),
+        &harness.context.config().auth,
+        "https://localhost:8446",
+        &rustak_server::testing::keys::JWT_SIGNING_KEY,
+    )
+    .await
+    .expect("the issuer");
+    let user = harness
+        .context
+        .db()
+        .users()
+        .get_by_username(&identity.username)
+        .await
+        .unwrap()
+        .expect("the account under test");
+    let session = rustak_server::testing::session_for(&harness.context, &user, false).await;
+
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(harness.context.clone()))
+            .app_data(web::Data::new(std::sync::Arc::new(issuer)))
+            .configure(rustak_server::marti::services(
+                rustak_server::marti::ListenerRole::Public,
+            )),
+    )
+    .await;
+
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&path)
+            .insert_header(("authorization", format!("Bearer {}", session.token)))
+            .to_request(),
+    )
+    .await;
+
+    let status = response.status().as_u16();
+    let body = String::from_utf8_lossy(&test::read_body(response).await).into_owned();
+
+    (status, body)
 }
 
 #[tokio::test]

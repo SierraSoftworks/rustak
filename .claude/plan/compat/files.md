@@ -80,8 +80,12 @@ endpoint that sets this), `Content-Type` = the stored MIME type, `Content-Dispos
 filename="<urlencoded>"`. **rustak never sets `Content-Encoding: gzip` here (M3-01, design 04 §5.2):**
 the payloads are overwhelmingly zips and JPEGs, which do not compress, and both verified clients
 accept identity. A `Content-Length` is always set instead, which is what makes a resumed download
-work. Status `200`, or `206` when `length > 0` and it's a partial range, or `404` when
-no metadata matches. ATAK's browse-and-download path appends `&receiver=<callsign>` to this URL when
+work. Status `200`, or `206` **exactly when `length > 0 && offset + length < totalSize`** (06 line
+1479), or `404` when no metadata matches. Note what that condition does *not* say: an `?offset=N`
+with no `length` runs to the end of the file, so `offset + length == totalSize` and the answer is a
+`200` even though bytes were skipped. That is the shape ATAK's `GetFileTransferOperation` uses to
+resume a failed download (07 §6.3(b)), and answering it `206` is a divergence (R-02 M5). A real
+`Range:` header that asks for less than the whole file is a `206` with a `Content-Range` as usual. ATAK's browse-and-download path appends `&receiver=<callsign>` to this URL when
 following a `senderUrl` — accept and ignore that extra query param. Verified 06 §9.4.
 
 ## 5. `POST /Marti/sync/missionupload` + `GET /Marti/sync/missionquery` — the mission-package flow
@@ -96,9 +100,12 @@ POST /Marti/sync/missionupload?filename=&creatorUid=&mimetype=application/x-zip-
 Content-Type: multipart/form-data, part "assetfile" (ATAK) or "resource" (browser)
 ```
 - `filename` is **required**. A client-supplied `hash` query param is accepted but **ignored** — the
-  server always computes its own hash. `keyword` defaults to `missionpackage`; always ensure that
-  keyword is present in the stored `Keywords` so the package shows up in `/Marti/sync/search?
-  keywords=missionpackage`.
+  server always computes its own hash. The parameter on **this** route is the singular `keyword`,
+  repeatable — node-tak sends `?…&keyword=missionpackage&keyword=…` — while §2's `/Marti/sync/upload`
+  spells it `keywords`. Read both spellings on both routes; reading only the plural here silently
+  dropped every keyword CloudTAK passed (R-02 M4). `keyword` defaults to `missionpackage`; always
+  ensure that keyword is present in the stored `Keywords` so the package shows up in
+  `/Marti/sync/search?keywords=missionpackage`.
 - **Accept both `Groups` and `groups`** as the param name — node-tak deliberately sends the
   capitalised form "due to an apparent bug in TAK server" (03 §8.6); reproduce the tolerance, not
   the bug.
@@ -194,7 +201,13 @@ These are ordinary CoT messages carried over the stream (see `streaming.md` for 
 not HTTP — documented here because they're part of the file-transfer flow. Own-words rendering of
 the verified shapes (05 §9, 07 §6.4):
 
-**Offer**, `type="b-f-t-r"`, `how="h-e"`, `stale = +10s`:
+**There are two `b-f-t-r` templates and they are not the same message.** One is what ATAK emits when
+a user offers a file; the other is what a *server* generates. They differ in `stale`, in
+`<ackrequest>` and in `hae`, so pick by who is sending (R-02 contract defect 2 — this section used to
+give only the first and call it the shape for both, which is how the substitution in
+`streaming.md` §3 ended up with a ten-second window).
+
+**Client offer** (ATAK, 07 §6.3), `type="b-f-t-r"`, `how="h-e"`, `stale = +10s`:
 ```xml
 <event version="2.0" uid="{fresh-uuid}" type="b-f-t-r" time="{t}" start="{t}" stale="{t+10s}" how="h-e">
   <point lat="0.0" lon="0.0" hae="9999999.0" ce="9999999" le="9999999"/>
@@ -205,13 +218,32 @@ the verified shapes (05 §9, 07 §6.4):
   </detail>
 </event>
 ```
+
+**Server-generated** (`CommonUtil.getFileTransferCotMessage`, 05 §9), `stale = +100s`, **no
+`<ackrequest>`**, `hae="9999999.0"`:
+```xml
+<event version="2.0" uid="{uid}" type="b-f-t-r" time="{t}" start="{t}" stale="{t+100s}" how="h-e">
+  <point lat="0.0" lon="0.0" hae="9999999.0" ce="9999999" le="9999999"/>
+  <detail>
+    <fileshare sha256="{hash}" senderUid="{uid}" name="{filename}" filename="{filename}"
+               senderUrl="{url}" sizeInBytes="{n}" senderCallsign="{callsign}"/>
+  </detail>
+</event>
+```
+This second one is what rustak emits in place of an outbound protobuf frame over 64 KiB
+(`streaming.md` §3), with `senderUrl = https://{host}:{port}/Marti/api/cot/xml/{uid}`. A hundred
+seconds is the window the receiver has to notice the pointer and start the fetch; ten is not enough,
+and an `<ackrequest>` the server will not consume only makes ATAK send a `b-f-t-a` into the void.
+`senderCallsign` is the authenticated user's name, or the literal `takserver` when the event carries
+none — never empty.
+
 - `senderUrl`: when the file was uploaded to rustak first (the normal server-hosted case, §5), this
   is the exact `…/Marti/sync/content?hash=…` URL that upload returned — **rustak never rewrites a
   client's `senderUrl`**, it's just relayed like any other CoT. It only *originates* this shape
   itself in two cases: substituting an oversized (>64 KiB) protobuf frame (`streaming.md` §3), and
   device-profile/mission-archive delivery notifications, where `senderUrl` should point at
   `/Marti/api/cot/xml/{uid}` or the equivalent content URL.
-- `<ackrequest>` is only present when the sender wants a receipt.
+- `<ackrequest>` is only present when the sender wants a receipt — so, on the client template only.
 
 **Ack**, `type="b-f-t-a"`, `how="m-g"`, `stale = +10s`, `uid` = the **receiver's own** contact uid
 (not derived from the request):
