@@ -3,7 +3,16 @@ on:
   schedule:
     # 04:00 UTC daily — after the rest of the world's business-hours CI load.
     - cron: "0 4 * * *"
+    # 03:00 UTC Mondays — rebuilds the commoncommo interop image. A separate
+    # cron (rather than a day-of-week test) so `interop-eud-image` can select
+    # itself on github.event.schedule.
+    - cron: "0 3 * * 1"
   workflow_dispatch: {}
+
+env:
+  REGISTRY: ghcr.io
+  ORG: sierrasoftworks
+  EUD_IMAGE: rustak-interop-commoncommo
 
 jobs:
   # Placeholder: drives CloudTAK's own docker-compose stack (Postgres + CloudTAK
@@ -19,15 +28,104 @@ jobs:
     steps:
       - run: echo "Placeholder until M4 — see plan.md 'Interop in CI' (interop/cloudtak)."
 
-  # Placeholder: an ATAK-side harness (commoncommo build, Android emulator, or
-  # a pytak/takproto client — the M1 exploration brief settles which) driving
-  # enrollment, TLS 1.3 `!ECDH` handshake, protobuf negotiation and SA/chat
-  # routing against a live rustak. Lands once that M1 brief lands its
-  # recommendation in `.claude/plan/status/`; see plan.md's "Interop in CI"
-  # table and design 01 §7.3.
+  # Builds the EUD harness image: ATAK's own networking core (commoncommo) and
+  # its stock `commotest` console client, compiled from a pinned atak-civ
+  # commit. Nothing GPL is vendored — interop/eud/Dockerfile clones upstream at
+  # build time. See interop/eud/README.md and
+  # .claude/plan/status/M1-00-eud-interop-harness-exploration.md.
+  #
+  # Weekly plus on demand, not nightly: a cold build is ~25-45 min and the
+  # result only changes when the pin or the recipe does. The scenario job below
+  # consumes the published tag; it never rebuilds the image.
+  interop-eud-image:
+    name: "Interop: EUD image (commoncommo)"
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 3 * * 1'
+    timeout-minutes: 150
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # interop/eud/Dockerfile's `ARG ATAK_CIV_SHA=` line is the single source
+      # of truth for the pin; the image tags are derived from it so a bump can
+      # never leave the tag pointing at the wrong upstream revision.
+      - name: Resolve the atak-civ pin
+        id: pin
+        run: |
+          sha="$(sed -n 's/^ARG ATAK_CIV_SHA=\([0-9a-f]\{40\}\)[[:space:]]*$/\1/p' interop/eud/Dockerfile | head -n 1)"
+          if [ -z "$sha" ]; then
+            echo "interop/eud/Dockerfile has no 'ARG ATAK_CIV_SHA=<40 hex chars>' line" >&2
+            exit 1
+          fi
+          image="${REGISTRY}/${ORG}/${EUD_IMAGE}"
+          {
+            echo "sha=${sha}"
+            echo "short=${sha:0:7}"
+            echo "image=${image}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Building ${image} from atak-civ ${sha}"
+
+      - name: Setup Docker buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # linux/amd64 only: takthirdparty's TARGET is linux-amd64 and the runner
+      # is amd64, so there is no emulation cost to pay and no arm64 consumer.
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: interop/eud
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          build-args: |
+            ATAK_CIV_SHA=${{ steps.pin.outputs.sha }}
+          tags: |
+            ${{ steps.pin.outputs.image }}:atak-civ-${{ steps.pin.outputs.sha }}
+            ${{ steps.pin.outputs.image }}:atak-civ-${{ steps.pin.outputs.short }}
+            ${{ steps.pin.outputs.image }}:latest
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=registry,ref=${{ steps.pin.outputs.image }}:buildcache
+          cache-to: type=registry,ref=${{ steps.pin.outputs.image }}:buildcache,mode=max
+
+      # commotest has no exit-code contract — every path returns 0 — so assert
+      # on the help listing, which is also the only invocation with a bounded
+      # runtime and no network.
+      - name: Smoke-test the published image
+        run: |
+          image="${{ steps.pin.outputs.image }}:atak-civ-${{ steps.pin.outputs.short }}"
+          docker run --rm "$image" -h > help.txt 2>&1 || true
+          for marker in 'estream:' 'sstream:' 'chatsend:' 'smpsend:' 'proto:'; do
+            grep -qF "$marker" help.txt || {
+              echo "commotest -h did not list '${marker}'" >&2
+              cat help.txt >&2
+              exit 1
+            }
+          done
+          echo "commotest CLI surface intact"
+
+  # Placeholder: the scenario suite that drives the image above against a live
+  # rustak — enrollment (`estream:`), TLS, TAK Protocol v1 negotiation,
+  # ping/pong, SA/chat routing and mission-package transfer — asserting on
+  # commotest's commo-log.txt / commo-xml.txt. Lands in M2, once rustak can
+  # enrol devices and expose the 8446 enrollment listener the harness needs;
+  # see interop/eud/README.md and plan.md's "Interop in CI" table.
+  # `if: false` keeps it visible in the job graph without pretending it runs.
   interop-eud:
     name: "Interop: EUD harness"
     runs-on: ubuntu-latest
     if: false
     steps:
-      - run: echo "Placeholder until the M1 EUD-harness exploration brief lands — see plan.md 'Interop in CI' (interop/eud)."
+      - run: echo "Placeholder until M2 — see interop/eud/README.md (interop/eud scenarios)."
