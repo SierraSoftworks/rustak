@@ -13,6 +13,17 @@ description = "Sidecar SDK: TAK stream client, typed Marti API client, control-A
 [lints]
 workspace = true
 
+[features]
+default = []
+# The `stream::testing` fake EUD, used by `rustak-server`'s integration tests
+# and the interop suites. Implies `insecure-tcp`, because a test harness that
+# has no certificate authority still has to be able to reach a listener.
+testing = ["insecure-tcp"]
+# Allows plain-TCP connect strings (`tcp://host:port`, `host:port:tcp`).
+# Off by default: rustak has no plaintext stream input, and a client that can
+# be pointed at one is a client that can be downgraded.
+insecure-tcp = []
+
 [dependencies]
 rustak-core = { workspace = true }
 rustak-cot = { workspace = true }
@@ -35,4 +46,11 @@ tracing = { workspace = true }
 human-errors = { workspace = true }
 
 [dev-dependencies]
+# `test-util` is what `tokio::time::pause` needs; the keepalive timings are 15
+# and 25 seconds and are not worth waiting for in a test suite.
+tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
+# A throwaway certificate authority for the TLS handshake test; the client's
+# default build speaks nothing else, so the handshake has to be exercised.
+rcgen = { workspace = true }
+rustls = { workspace = true }
