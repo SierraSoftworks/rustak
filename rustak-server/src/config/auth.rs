@@ -176,6 +176,10 @@ pub struct AuthConfig {
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
 
+    /// The clients our own `/oauth/authorize` will issue codes to.
+    #[serde(default)]
+    pub oauth: OAuthServerConfig,
+
     /// The identity provider to federate with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oidc: Option<OidcConfig>,
@@ -198,6 +202,7 @@ impl Default for AuthConfig {
             client_passwords_enabled: true,
             client_password_ttl: default_client_password_ttl(),
             allow_access_token_retrieval: true,
+            oauth: OAuthServerConfig::default(),
             setup_token_file: None,
             secret_key: None,
             previous_secret_keys: Vec::new(),
@@ -232,6 +237,7 @@ impl fmt::Debug for AuthConfig {
             .field("secret_key", &self.secret_key.as_ref().map(|_| REDACTED))
             .field("previous_secret_keys", &self.previous_secret_keys.len())
             .field("rate_limit", &self.rate_limit)
+            .field("oauth", &self.oauth)
             .field("oidc", &self.oidc)
             .finish()
     }
@@ -257,6 +263,66 @@ impl AuthConfig {
             Some(path) => data_dir.join(path),
             None => data_dir.join(SETUP_TOKEN_NAME),
         }
+    }
+}
+
+/// `[auth.oauth]` — the clients `GET /oauth/authorize` will issue codes to.
+///
+/// Empty by default, which means the authorization-code flow is switched off:
+/// an authorization server with no registered client has nowhere legitimate to
+/// send a code, and defaulting to a wildcard would turn this server into an
+/// open redirector the moment somebody guessed a client identifier.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OAuthServerConfig {
+    /// The registered clients, by identifier.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clients: Vec<OAuthClient>,
+}
+
+impl OAuthServerConfig {
+    /// The registered client with this identifier, when there is one.
+    ///
+    /// The comparison is exact: client identifiers are chosen by the operator
+    /// and written into a client's own configuration, so a case-insensitive
+    /// match would only widen what counts as registered.
+    pub fn client(&self, id: &str) -> Option<&OAuthClient> {
+        self.clients.iter().find(|client| client.id == id)
+    }
+}
+
+/// One registered client of our authorization server.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OAuthClient {
+    /// The `client_id` the client sends.
+    pub id: String,
+
+    /// Every URI a code may be sent to, in full.
+    ///
+    /// Compared byte for byte, never as a prefix: a prefix match on
+    /// `https://app.example.com/` also matches
+    /// `https://app.example.com/../../evil`, and an authorization server that
+    /// hands a code to the wrong URI has handed away the session.
+    pub redirect_uris: Vec<String>,
+
+    /// Whether the client keeps no secret, which is every browser and mobile
+    /// client.
+    ///
+    /// Recorded but not yet acted on: this server accepts no client secret, so
+    /// proof key for code exchange is mandatory for **every** client. Setting
+    /// it to `false` today changes nothing — it exists so that adding client
+    /// authentication later is not a change to the shape of this file.
+    #[serde(default = "default_true")]
+    pub public: bool,
+}
+
+impl OAuthClient {
+    /// Whether a code may be sent to this URI.
+    pub fn allows(&self, redirect_uri: &str) -> bool {
+        self.redirect_uris
+            .iter()
+            .any(|registered| registered == redirect_uri)
     }
 }
 
@@ -437,5 +503,67 @@ mod tests {
         };
 
         assert!(err.to_string().contains("access_token_lifetime"), "{err}");
+    }
+
+    #[test]
+    fn no_client_is_registered_until_an_operator_registers_one() {
+        // An authorization server with no registered client has nowhere
+        // legitimate to send a code, so the flow is simply off.
+        let parsed: AuthConfig = toml::from_str("").unwrap();
+
+        assert!(parsed.oauth.clients.is_empty());
+        assert_eq!(parsed.oauth.client("anything"), None);
+    }
+
+    #[test]
+    fn a_client_reads_back_as_the_example_file_writes_it() {
+        let parsed: AuthConfig = toml::from_str(
+            r#"
+            oauth = { clients = [
+              { id = "cloudtak", redirect_uris = ["https://map.example.com/callback"] },
+            ] }
+            "#,
+        )
+        .unwrap();
+
+        let client = parsed.oauth.client("cloudtak").expect("the one registered");
+
+        assert!(client.public, "a client is public unless it says otherwise");
+        assert!(client.allows("https://map.example.com/callback"));
+    }
+
+    #[test]
+    fn a_redirect_uri_is_matched_whole_rather_than_as_a_prefix() {
+        // A prefix match on `https://app.example.com/` also matches
+        // `https://app.example.com/../../evil`, and a code sent to the wrong
+        // URI is the session given away.
+        let client = OAuthClient {
+            id: "app".to_string(),
+            redirect_uris: vec!["https://app.example.com/callback".to_string()],
+            public: true,
+        };
+
+        assert!(client.allows("https://app.example.com/callback"));
+
+        for uri in [
+            "https://app.example.com/callback/evil",
+            "https://app.example.com/callback?next=1",
+            "https://app.example.com/CALLBACK",
+            "https://evil.example.com/callback",
+            "",
+        ] {
+            assert!(!client.allows(uri), "{uri}");
+        }
+    }
+
+    #[test]
+    fn a_misspelled_client_key_is_refused_rather_than_ignored() {
+        let Err(err) = toml::from_str::<AuthConfig>(
+            r#"oauth = { clients = [{ id = "a", redirect_uri = ["https://a/cb"] }] }"#,
+        ) else {
+            panic!("an unknown key should be refused");
+        };
+
+        assert!(!err.to_string().is_empty(), "{err}");
     }
 }

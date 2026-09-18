@@ -16,7 +16,8 @@
 //! nothing notices when they drift. Nothing in `src/` outside this module knows
 //! a test is running.
 
-use std::sync::LazyLock;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
@@ -103,6 +104,10 @@ pub fn unadvertised_key() -> &'static str {
     &UNADVERTISED_KEY.pem
 }
 
+/// What the authorization endpoint recorded for each code it issued: the nonce
+/// and the proof-key challenge, either of which a caller may omit.
+type Issued = Arc<Mutex<HashMap<String, (Option<String>, Option<String>)>>>;
+
 /// An identity provider, served over HTTP.
 ///
 /// Holds the server, so it must outlive every request made through it.
@@ -144,13 +149,20 @@ impl TestIdentityProvider {
             .mount(&server)
             .await;
 
+        // What the authorization endpoint recorded about each code it issued:
+        // the nonce it was asked to echo and the proof-key challenge it has to
+        // check at redemption. A real provider keeps exactly this.
+        let issued: Issued = Arc::new(Mutex::new(HashMap::new()));
+
         // The authorization endpoint, so a browser-driven flow has somewhere
-        // to be sent. It hands back the code the token endpoint will redeem,
-        // and carries the caller's `state` back untouched.
+        // to be sent. It hands back a code the token endpoint will redeem, and
+        // carries the caller's `state` back untouched.
+        let recording = Arc::clone(&issued);
+
         Mock::given(method("GET"))
             .and(path("/authorize"))
-            .respond_with(|request: &Request| {
-                let query: std::collections::HashMap<_, _> = request.url.query_pairs().collect();
+            .respond_with(move |request: &Request| {
+                let query: HashMap<_, _> = request.url.query_pairs().collect();
 
                 let Some(redirect_uri) = query.get("redirect_uri") else {
                     return ResponseTemplate::new(400);
@@ -158,36 +170,77 @@ impl TestIdentityProvider {
 
                 let separator = if redirect_uri.contains('?') { '&' } else { '?' };
                 let state = query.get("state").map(AsRef::as_ref).unwrap_or("");
+                let nonce = query.get("nonce").map(|value| value.to_string());
+                let challenge = query.get("code_challenge").map(|value| value.to_string());
+
+                // A distinct code per request, so two flows in one test cannot
+                // redeem each other's — and prefixed with `CODE` so that a test
+                // driving the exchange directly still finds one it can use.
+                let code = if nonce.is_some() || challenge.is_some() {
+                    let serial = recording.lock().map(|held| held.len()).unwrap_or(0);
+
+                    format!("{CODE}-{serial}")
+                } else {
+                    CODE.to_string()
+                };
+
+                if let Ok(mut held) = recording.lock() {
+                    held.insert(code.clone(), (nonce, challenge));
+                }
 
                 ResponseTemplate::new(302).insert_header(
                     "location",
-                    format!("{redirect_uri}{separator}code={CODE}&state={state}").as_str(),
+                    format!("{redirect_uri}{separator}code={code}&state={state}").as_str(),
                 )
             })
             .mount(&server)
             .await;
 
         let claims = claims_for(&issuer, username);
+        let redeeming = Arc::clone(&issued);
 
         // The code flow, with the checks a provider actually makes: the code
-        // has to be the one it issued, and the verifier has to be present.
+        // has to be the one it issued, the verifier has to be present, and —
+        // when the authorization request registered a challenge — it has to
+        // hash to it. The nonce it was asked for goes into the ID token.
         Mock::given(method("POST"))
             .and(path(TOKEN_PATH))
             .respond_with(move |request: &Request| {
-                let form = String::from_utf8_lossy(&request.body).to_string();
+                let form = form_fields(&request.body);
+                let code = form.get("code").cloned().unwrap_or_default();
 
-                if !form.contains(&format!("code={CODE}")) {
+                if !code.starts_with(CODE) {
                     return ResponseTemplate::new(400)
                         .set_body_json(serde_json::json!({ "error": "invalid_grant" }));
                 }
 
-                if !form.contains("code_verifier=") {
+                let Some(verifier) = form.get("code_verifier").filter(|value| !value.is_empty())
+                else {
                     return ResponseTemplate::new(400)
                         .set_body_json(serde_json::json!({ "error": "invalid_request" }));
+                };
+
+                let recorded = redeeming
+                    .lock()
+                    .ok()
+                    .and_then(|held| held.get(&code).cloned());
+                let mut claims = claims.clone();
+
+                if let Some((nonce, challenge)) = recorded {
+                    if let Some(challenge) = challenge
+                        && challenge != s256(verifier)
+                    {
+                        return ResponseTemplate::new(400)
+                            .set_body_json(serde_json::json!({ "error": "invalid_grant" }));
+                    }
+
+                    if let Some(nonce) = nonce {
+                        claims["nonce"] = serde_json::Value::String(nonce);
+                    }
                 }
 
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "id_token": sign(&PROVIDER_KEY.pem, Some(KEY_ID), claims.clone()),
+                    "id_token": sign(&PROVIDER_KEY.pem, Some(KEY_ID), claims),
                     "refresh_token": "a-refresh-token",
                     "token_type": "Bearer",
                 }))
@@ -296,6 +349,25 @@ fn claims_for(issuer: &str, username: &str) -> serde_json::Value {
         "iat": now,
         "exp": now + LIFETIME_SECONDS,
     })
+}
+
+/// The fields of an `application/x-www-form-urlencoded` body.
+fn form_fields(body: &[u8]) -> HashMap<String, String> {
+    url::form_urlencoded::parse(body)
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect()
+}
+
+/// The `S256` challenge for a verifier, as RFC 7636 defines it.
+///
+/// Written out here rather than called from `web::helpers::oidc::pkce` on
+/// purpose: a provider that derived the challenge with the same code under test
+/// would agree with it however wrong both were.
+fn s256(verifier: &str) -> String {
+    use base64::Engine as _;
+    use sha2::{Digest as _, Sha256};
+
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
 /// Signs a claim set as an RS256 ID token.

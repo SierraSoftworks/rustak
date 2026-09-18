@@ -20,10 +20,17 @@ Content-Type: application/x-www-form-urlencoded
 
 grant_type=password&username=<user>&password=<client-password-or-enrollment-token>
 ```
-- **Only `grant_type=password` is supported at this endpoint.** No `client_id`/`client_secret`/
-  `scope` are required or meaningfully consulted by either verified client (CloudTAK never sends
-  them; TAK Server itself ignores them if present) — accept them as no-ops if a client sends them,
-  never require them.
+- **`grant_type=password` is the only grant TAK Server serves here**, and the only one either
+  verified client uses. No `client_id`/`client_secret`/`scope` are required or meaningfully
+  consulted by either of them (CloudTAK never sends them; TAK Server itself ignores them if
+  present) — accept them as no-ops if a client sends them, never require them.
+  - **Correction (M5-01).** rustak also serves `grant_type=refresh_token` and
+    `grant_type=authorization_code` at this same path, because it is a real authorization server
+    rather than a proxy in front of an LDAP bind. Both are **additive**: the password grant's
+    request and response are byte-for-byte what is described below, and neither of the other two is
+    reachable without a credential a password-grant client does not have. `client_id` **is**
+    required for `authorization_code` — it is one of the three bindings a code carries — and stays
+    a no-op for the other two.
 - `password` here is rustak's opt-in, expiring **client password** credential (`conventions.md`
   security defaults) — the only reusable secret rustak issues, scoped to exactly this endpoint and
   `POST /Marti/api/tls/signClient/v2` (`enrollment.md`).
@@ -111,6 +118,35 @@ verified traces exercise. Treat this half of the surface as **ATAK/admin-UI scop
 CloudTAK interop gate; see `research/06-takserver-http-api-verified.md` §4.6 for the full endpoint
 shapes if implementing byte-for-byte TAK Server parity here.
 
+### What M5-01 built, and where it deliberately differs from TAK Server
+
+Implemented in `auth/oauth_server/{authorize,login,session,state,codes,cookies}.rs`, mounted by
+`marti/login.rs`, and exercised by `rustak-server/tests/oauth_flows.rs`. The shapes a client reads
+are TAK Server's; the security properties are stricter, and every difference below is deliberate.
+
+| | TAK Server | rustak |
+|---|---|---|
+| `state` | cookie, `sha256(cookie) == state` at the callback | same rule, **plus** a one-shot server-side record (ten minutes) keyed by that digest |
+| Provider's code | redeemed with `client_id` + `client_secret` | the same, **plus** our own PKCE `S256` verifier |
+| ID token | verified against `<key>` elements or an `issuer` read as a **file path** | verified against the provider's published JWKS, RS256 only, with a **`nonce`** we issued |
+| `access_token_N` cookies | `HttpOnly`, `Path=/`, `Secure` when the request was, `SameSite=Strict` | `HttpOnly`, `Path=/`, **always `Secure`**, `SameSite=Lax` |
+| `state` cookie | `Max-Age=-1`, not secure-forced, unscoped | `HttpOnly`, `Secure`, `SameSite=Lax`, **`Path=/login`** |
+| Refresh token | kept in the servlet **HTTP session** | not stored in a cookie at all; renewal is `POST /oauth/token` `grant_type=refresh_token` |
+| `/logout` | `301` to `/webtak/index.html`, expires `access_token*` | `204`, expires `access_token*` **and** revokes the `jti` and the refresh family |
+| `/login/redirect` failure | forwards to `/Marti/login/*.html` | one generic `400` for every cause, with the `state` cookie cleared |
+| Bearer/cookie scope | port-gated (`:8446`/`:8447` only, per `AccessTokenResolver`) | **path**-gated: `/login/*`, `/logout`, `/token/access`, `/oauth/authorize`, `/Marti/**`, `/files/api/**` — never `/api/v1` |
+
+Two TAK endpoints are **not** implemented: `GET /login/refresh` (the servlet-session refresh
+rustak has no equivalent state for — clients renew through `/oauth/token` instead), and the
+`webtakScope` / `webtak-role-error.html` branch of `/login/redirect`, which gates access on a
+scope claim rustak expresses with `[auth] user_acl` instead.
+
+`GET /oauth/authorize` is rustak's own and has no TAK Server counterpart: registered clients come
+from `[auth.oauth] clients`, PKCE `S256` is mandatory for public clients, `redirect_uri` is matched
+byte for byte, an unregistered client or redirect URI is refused **without** redirecting (so the
+endpoint can never be used as an open redirector), and there is no consent screen because every
+registered client is first-party by construction.
+
 ## 5. Group-claim mapping (OIDC groups → rustak groups)
 
 When mapping OIDC `groups` claim values onto rustak groups (`identity::provisioning`,
@@ -133,6 +169,12 @@ Verified 06 §4.7 step 5.
   fail confusingly downstream.
 - `/oauth/token`'s response has **no `refresh_token`** — don't leak rustak's internal refresh-token
   model into this specific response shape even though rustak supports refresh tokens elsewhere.
+  The `refresh_token` and `authorization_code` grants at the same path *do* return one; only the
+  password grant's body is pinned.
+- The `access_token_N` cookies are the same names TAK Server writes, so a page that reassembles
+  them works unchanged — but they are `SameSite=Lax` here rather than `Strict`, because `Strict`
+  would drop the cookie on the top-level navigation `/login/redirect` and `/oauth/authorize` are.
+  `Lax` still withholds it from every cross-site `POST` and `fetch`.
 - Bearer tokens are meaningful only where the listener policy allows non-cert auth — never accept a
   bearer token as authentication on a route that's supposed to be mTLS-only, mirroring TAK Server's
   own port-gating rationale (§3).
