@@ -24,7 +24,9 @@ workspace = true
 [features]
 # Exposes test-only mocks (AppContext::new_mock, TestIdentityProvider, …) to
 # the in-process integration tests under `tests/`.
-testing = []
+# `tempfile` and `wiremock` are dev-dependencies too, so the same modules
+# compile under `cargo test` without the feature being asked for.
+testing = ["dep:tempfile", "dep:wiremock"]
 
 [dependencies]
 rustak-api = { workspace = true }
@@ -68,6 +70,7 @@ hex = { workspace = true }
 rand = { workspace = true }
 zeroize = { workspace = true }
 filt-rs = { workspace = true }
+webauthn-rs = { workspace = true }
 bitvec = { workspace = true }
 tracing = { workspace = true }
 tracing-batteries = { workspace = true }
@@ -77,6 +80,8 @@ clap = { workspace = true }
 dotenvy = { workspace = true }
 inventory = { workspace = true }
 url = { workspace = true }
+tempfile = { workspace = true, optional = true }
+wiremock = { workspace = true, optional = true }
 
 [dev-dependencies]
 rustak-client = { workspace = true }

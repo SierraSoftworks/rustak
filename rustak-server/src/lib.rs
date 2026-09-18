@@ -17,4 +17,6 @@ pub mod pki;
 pub mod prelude;
 pub mod services;
 pub mod store;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 pub mod web;

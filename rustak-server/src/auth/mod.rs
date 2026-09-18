@@ -9,11 +9,29 @@
 //!
 //! # What is here in M0
 //!
-//! Only [`jwt`]: the access tokens rustak issues and the RSA keys behind them.
-//! The principal, the Basic and bearer extractors, the rate limiter, the
-//! filt-rs access control lists, the OAuth2 endpoints and the OIDC client
-//! follow in M0-11 and M2, all of them resting on the token format pinned here.
+//! The token format ([`jwt`]) and the sessions built on it ([`tokens`]); the
+//! passkey ceremonies that are the only way in without an identity provider
+//! ([`passkeys`]); the one-time tokens the first run depends on ([`setup`]);
+//! the access-control expressions ([`acl`]); the rate limiter every credential
+//! endpoint goes through ([`ratelimit`]); and the bearer resolution the admin
+//! API sits behind ([`resolve`]).
+//!
+//! The client-certificate and Basic paths, the OAuth2 endpoints and the
+//! `/login/*` federation arrive with enrolment in M2, all of them beside
+//! [`resolve`] and all resting on the token format pinned here.
 
+pub mod acl;
 pub mod jwt;
+pub mod passkey_store;
+pub mod passkeys;
+pub mod ratelimit;
+pub mod resolve;
+pub mod setup;
+pub mod tokens;
 
+pub use acl::{AclOutcome, AuthRequestFilter};
 pub use jwt::{AccessClaims, JWT_HEADER_JSON, JwtIssuer};
+pub use passkeys::Passkeys;
+pub use ratelimit::RateLimiter;
+pub use resolve::{AuthFailure, Resolved};
+pub use setup::SetupToken;

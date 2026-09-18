@@ -64,19 +64,16 @@ pub use late::{Late, Pending};
 
 /// The content-addressed blob store.
 ///
-/// A placeholder until M0-10 lands `crate::store::ContentStore`; repointing
-/// this alias at it is the whole of the change that requires here, because the
-/// slot, its accessor and its documentation are already in place.
-pub type ContentStore = Pending;
+/// Named here rather than reached for directly so that every caller sees one
+/// type for "the blob store", whatever the module tree does with it later.
+pub type ContentStore = crate::store::ContentStore;
 
 /// The RS256 signing keys our own tokens are issued and verified with.
 ///
-/// A placeholder until M0-10 lands `crate::auth::JwtKeys`; repointing this
-/// alias at it is the whole of the change that requires. The keys are loaded
-/// from the `oauth_keys` table during start-up — after the context exists,
-/// because loading them needs the database and the secret store it carries —
-/// and installed with [`AppContext::install_jwt`].
-pub type JwtKeys = Pending;
+/// The keys are loaded from the `oauth_keys` table during start-up — after the
+/// context exists, because loading them needs the database and the secret store
+/// it carries — and installed with [`AppContext::install_jwt`].
+pub type JwtKeys = crate::auth::jwt::JwtIssuer;
 
 /// The `User-Agent` every outbound request carries.
 ///

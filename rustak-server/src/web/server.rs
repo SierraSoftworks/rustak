@@ -1,0 +1,182 @@
+//! Binding the public listener.
+//!
+//! One `HttpServer` with one binding per configured address, rather than a
+//! server per socket: they serve the same routes from the same state, and a
+//! second server would be a second worker pool and a second thing to shut down
+//! for no benefit.
+//!
+//! Signals are disabled because the process owns them — the runtime cancels one
+//! [`Shutdown`] and everything winds down together, rather than actix taking
+//! `SIGINT` for itself and the stream listeners finding out later.
+
+use std::sync::Arc;
+
+use actix_web::{App, HttpServer, dev::Server, web};
+
+use crate::auth::RateLimiter;
+use crate::prelude::*;
+use crate::web::{api, telemetry::TracingLogger, tls::PublicTls, ui};
+
+/// How long actix waits for in-flight requests before dropping them.
+const SHUTDOWN_TIMEOUT_SECONDS: u64 = 10;
+
+/// Everything the public listener serves, for one `App`.
+///
+/// Exposed so that a test can build the same routes over
+/// `actix_web::test::init_service` without a socket: what is tested is then the
+/// application this function describes rather than a copy of it that has since
+/// drifted.
+///
+/// The rate limiter is passed in rather than built here because actix builds
+/// one `App` per worker thread: a limiter created inside this closure would be
+/// one bucket per worker, and an attacker would get that many times as many
+/// attempts.
+pub fn services(
+    context: AppContext,
+    limiter: Arc<RateLimiter>,
+) -> impl FnOnce(&mut web::ServiceConfig) + Clone {
+    move |config| {
+        config
+            .app_data(web::Data::new(context.clone()))
+            .app_data(web::Data::new(limiter.clone()))
+            .service(api::configure())
+            // Ahead of the catch-all, which would otherwise answer it with the
+            // SPA shell — and a crawler handed HTML where it asked for
+            // `robots.txt` reads that as "no rules".
+            .route("/robots.txt", web::get().to(ui::robots))
+            .default_service(web::get().to(ui::serve));
+    }
+}
+
+/// Binds every configured public address and returns the server, unstarted.
+///
+/// # Errors
+///
+/// A [`human_errors::Kind::User`] error when an address cannot be bound —
+/// something else is on the port, or the port needs privileges this process
+/// does not have — or when no address was configured at all.
+#[instrument("web.server.build", skip_all, err(Display))]
+pub fn build_public(context: AppContext, tls: PublicTls) -> Result<Server, Error> {
+    let config = context.config();
+    let addresses = &config.web.public.listen;
+
+    if addresses.is_empty() {
+        return Err(human_errors::user(
+            "The public listener has no addresses to bind.",
+            &["Set [web.public] listen to at least one address, such as \"0.0.0.0:8446\"."],
+        ));
+    }
+
+    let limiter = Arc::new(RateLimiter::new(&config.auth.rate_limit));
+
+    let mut server = HttpServer::new(move || {
+        App::new()
+            .wrap(TracingLogger::<AppContext>::new())
+            .configure(services(context.clone(), limiter.clone()))
+    })
+    .disable_signals()
+    .shutdown_timeout(SHUTDOWN_TIMEOUT_SECONDS);
+
+    for address in addresses {
+        for socket in address.to_socket_addrs()? {
+            server = match tls.clone() {
+                Some(tls) => server
+                    .bind_rustls_0_23(socket, (*tls).clone())
+                    .map_err(|err| cannot_bind(socket, &err))?,
+                None => server
+                    .bind(socket)
+                    .map_err(|err| cannot_bind(socket, &err))?,
+            };
+
+            info!(
+                address = %socket,
+                tls = tls.is_some(),
+                "The public listener is bound."
+            );
+        }
+    }
+
+    Ok(server.run())
+}
+
+/// What to say when a socket will not open.
+fn cannot_bind(socket: std::net::SocketAddr, err: &std::io::Error) -> Error {
+    human_errors::user(
+        format!("We could not bind the public listener to {socket}: {err}"),
+        &[
+            "Check that nothing else is already listening on that address.",
+            "Ports below 1024 need CAP_NET_BIND_SERVICE, or a proxy in front.",
+        ],
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use actix_web::http::StatusCode;
+    use actix_web::test;
+
+    use super::*;
+
+    #[actix_web::test]
+    async fn the_routes_a_test_builds_are_the_routes_the_listener_serves() {
+        let server = crate::testing::TestServer::start().await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let response = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/robots.txt").to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/api/v1/health").to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[actix_web::test]
+    async fn an_unknown_path_reaches_the_single_page_shell() {
+        let server = crate::testing::TestServer::start().await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let response = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/admin/settings").to_request(),
+        )
+        .await;
+
+        assert_ne!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[actix_web::test]
+    async fn a_listener_with_nowhere_to_bind_says_so() {
+        let context = AppContext::new_mock(|config| {
+            config.web.public.listen = Vec::new();
+        })
+        .await
+        .unwrap();
+
+        let refused = match build_public(context, None) {
+            Ok(_) => panic!("a listener with nowhere to bind must not come up"),
+            Err(err) => err,
+        };
+
+        assert!(refused.is(human_errors::Kind::User));
+    }
+
+    #[actix_web::test]
+    async fn a_plaintext_listener_binds_the_address_it_was_given() {
+        let directory = tempfile::tempdir().unwrap();
+        let context = AppContext::new_mock(|config| {
+            *config = crate::config::Config::testing(directory.path());
+        })
+        .await
+        .unwrap();
+
+        // Port zero, so concurrent suites do not race for a fixed number.
+        assert!(build_public(context, None).is_ok());
+    }
+}

@@ -27,6 +27,13 @@ domains = ["tak.example.com"]
 
 # The externally visible base URL. Default: "https://<first domain>". Set it
 # when a proxy publishes rustak on a different port than the one it binds.
+#
+# This is also the WebAuthn relying party: a passkey is bound to the host the
+# console is served from and will not work at any other, so this has to be the
+# host browsers actually use. It must be a name rather than an address — a
+# console reached at https://192.0.2.10 cannot register a passkey at all. In
+# development, where `trunk serve` proxies to this server from its own port,
+# use a `localhost` host name: the port may differ there, and nowhere else.
 # base_url = "https://tak.example.com:8446"
 
 # Whether X-Forwarded-* headers are believed. Only turn this on behind a proxy

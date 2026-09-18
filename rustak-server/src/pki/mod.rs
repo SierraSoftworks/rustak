@@ -27,7 +27,9 @@
 pub mod ca;
 pub mod keys;
 pub mod pem;
+pub mod server_cert;
 
 pub use ca::{CaMaterial, ca_certificate_path, load_or_create_root_ca};
 pub use keys::{KeyType, generate_key, key_pair_from_pkcs8, signature_algorithm};
 pub use pem::{bare_base64_64col, parse_pem_chain, pem_certificate, sha256_fingerprint};
+pub use server_cert::{ServerCertificate, load_or_issue as load_or_issue_server_cert};
