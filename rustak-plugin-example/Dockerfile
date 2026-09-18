@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
-ADD ./rustak-plugin-example /usr/local/bin/rustak-plugin-example
+ADD ./dist/rustak-plugin-example /usr/local/bin/rustak-plugin-example
 
 VOLUME /data
 EXPOSE 443 8446 8443 8089 8087

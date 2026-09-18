@@ -575,13 +575,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
 
+      # Download into dist/ rather than the checkout root: the binary shares its
+      # name with the crate directory (e.g. rustak-plugin-example/), and
+      # extracting a file over an existing directory fails.
       - name: Pull in platform artifact
         uses: actions/download-artifact@v8
         with:
           name: ${{ matrix.crate.bin }}-linux-${{ env.ARCH }}
+          path: dist
 
       - name: mark artifact as executable
-        run: chmod +x ${{ matrix.crate.bin }}
+        run: chmod +x dist/${{ matrix.crate.bin }}
 
       - name: Build and push by digest
         id: build

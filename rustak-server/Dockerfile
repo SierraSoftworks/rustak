@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
-ADD ./rustak /usr/local/bin/rustak
+ADD ./dist/rustak /usr/local/bin/rustak
 
 VOLUME /data
 EXPOSE 443 8446 8443 8089 8087
