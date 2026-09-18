@@ -1,7 +1,7 @@
 //! The people and services that hold an identity on this server.
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::identity::{UserId, Username};
 
@@ -195,10 +195,27 @@ impl CreateUserRequest {
 /// [`UserPatch::display_name`], send an empty string rather than `null`, so
 /// that the difference between "unchanged" and "cleared" does not depend on
 /// telling an absent field from a null one.
+///
+/// # Why the email is the one exception
+///
+/// An empty string is a perfectly good display name to refuse and fall back
+/// from, but it is not a plausible email address, and a form that posts
+/// `""` for a field somebody emptied would store one. So the email is a
+/// three-way value — absent, `null` or an address — and the absent/null
+/// distinction is made by [`UserPatch::email`]'s own deserializer rather than
+/// by serde's default, which collapses the two.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct UserPatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+
+    /// The new email address. Absent leaves it alone, `null` clears it.
+    #[serde(
+        default,
+        deserialize_with = "tri_state",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub email: Option<Option<String>>,
 
     /// Sets [`User::admin_override`], granting or refusing administrative
     /// access regardless of what the access-control rules say.
@@ -212,8 +229,25 @@ pub struct UserPatch {
 impl UserPatch {
     /// Whether this patch would change anything.
     pub fn is_empty(&self) -> bool {
-        self.display_name.is_none() && self.is_admin.is_none() && self.disabled.is_none()
+        self.display_name.is_none()
+            && self.email.is_none()
+            && self.is_admin.is_none()
+            && self.disabled.is_none()
     }
+}
+
+/// Reads a field that may be absent, `null` or a value, keeping the three
+/// apart.
+///
+/// `#[serde(default)]` supplies the outer [`None`] when the key is missing;
+/// this is only ever called when the key is present, so wrapping in [`Some`]
+/// is what separates "cleared" from "unchanged".
+fn tri_state<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::deserialize(deserializer).map(Some)
 }
 
 #[cfg(test)]
@@ -377,5 +411,36 @@ mod tests {
         let json = serde_json::to_string(&patch).unwrap();
         assert_eq!(json, r#"{"disabled":true}"#);
         assert_eq!(serde_json::from_str::<UserPatch>(&json).unwrap(), patch);
+    }
+
+    #[test]
+    fn an_absent_email_and_a_null_one_mean_different_things() {
+        // This is the whole reason the field is doubly wrapped: a UI that can
+        // only ever leave an address alone can never take one away.
+        let unchanged: UserPatch =
+            serde_json::from_value(serde_json::json!({ "disabled": false })).unwrap();
+        let cleared: UserPatch =
+            serde_json::from_value(serde_json::json!({ "email": null })).unwrap();
+        let set: UserPatch =
+            serde_json::from_value(serde_json::json!({ "email": "grace@example.com" })).unwrap();
+
+        assert_eq!(unchanged.email, None);
+        assert!(!unchanged.is_empty());
+        assert_eq!(cleared.email, Some(None));
+        assert!(!cleared.is_empty());
+        assert_eq!(set.email, Some(Some("grace@example.com".into())));
+
+        assert_eq!(
+            serde_json::to_string(&cleared).unwrap(),
+            r#"{"email":null}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&set).unwrap(),
+            r#"{"email":"grace@example.com"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<UserPatch>(&serde_json::to_string(&cleared).unwrap()).unwrap(),
+            cleared,
+        );
     }
 }

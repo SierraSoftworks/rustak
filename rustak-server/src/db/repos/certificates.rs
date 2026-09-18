@@ -5,6 +5,12 @@
 //! the certificate a client presents, and so what revocation and the
 //! `require_known_cert` check are both answered by. The serial is unique only
 //! within an issuer, which is why the index pairs the two.
+//!
+//! The narrowed listings the admin API reads are in [`list`], because this file
+//! is at `conventions.md`'s length limit and the split falls naturally between
+//! recording certificates and answering questions about them.
+
+pub mod list;
 
 use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension as _;

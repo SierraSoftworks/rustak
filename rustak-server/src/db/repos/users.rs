@@ -3,6 +3,11 @@
 //! There is no password column. Local sign-in is by passkey and every other
 //! credential is a row in `credentials`, so there is nowhere here for a password
 //! to be stored even by accident.
+//!
+//! The display name and email an administrator types are written by [`profile`],
+//! a child module, because this file is at `conventions.md`'s length limit.
+
+pub mod profile;
 
 use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension as _;

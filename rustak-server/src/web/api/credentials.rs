@@ -14,6 +14,15 @@
 //! response it is still holding, rather than composing a working link server
 //! side. An endpoint that could re-emit the URL would be an endpoint proving
 //! the server had kept the secret.
+//!
+//! # `all=true` is a different question from an absent name
+//!
+//! An absent `username` means "mine", because that is what a person's own page
+//! asks and defaulting an administrator to the installation's would make the
+//! same request mean different things depending on who sent it. So the
+//! installation-wide listing — what an operator auditing outstanding client
+//! passwords wants — is asked for explicitly, is administrative, and is paged,
+//! because it is the one listing here with no natural bound.
 
 use actix_web::{HttpResponse, web};
 use rustak_api::{
@@ -22,12 +31,19 @@ use rustak_api::{
 };
 
 use crate::db::AuditEntry;
-use crate::identity::{credentials, secret_cache::VerifiedSecretCache, settings};
+use crate::db::repos::Page;
+use crate::identity::{credentials, devices, secret_cache::VerifiedSecretCache, settings};
 use crate::prelude::*;
 
 use super::error::{ApiError, ApiResult, json_ok};
 use super::extract::Authenticated;
 use super::subject::{self, Subject, failed};
+
+/// How many credentials one page of the installation-wide listing carries.
+const PAGE_SIZE: u32 = 100;
+
+/// The most one page may carry however loudly the caller asks.
+const MAX_PAGE_SIZE: u32 = 200;
 
 /// What a listing may be narrowed by.
 #[derive(Debug, Default, Deserialize)]
@@ -40,19 +56,48 @@ pub struct ListQuery {
     /// Whether to include the ones already revoked or spent.
     #[serde(default)]
     pub include_revoked: bool,
+
+    /// Every credential this installation holds. Administrative, and not
+    /// combinable with a name.
+    #[serde(default)]
+    pub all: bool,
+
+    /// Which page of the installation-wide listing, counted from zero.
+    #[serde(default)]
+    pub page: Option<u32>,
+
+    /// How many rows. Capped at the module's own ceiling, so a caller
+    /// asking for a million is answered with a page rather than refused.
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+impl ListQuery {
+    /// The window this query asks for.
+    fn page(&self) -> Page {
+        let limit = self.limit.unwrap_or(PAGE_SIZE).clamp(1, MAX_PAGE_SIZE);
+
+        Page::at(self.page.unwrap_or(0).saturating_mul(limit), limit)
+    }
 }
 
 /// `GET /api/v1/credentials`.
 ///
 /// # Errors
 ///
-/// A `403` when somebody names an account that is not theirs, a `404` when an
-/// administrator names one that is not here, and a `500` when the read fails.
+/// A `400` when `all=true` is combined with a name, a `403` when somebody
+/// names an account that is not theirs or asks for the installation's without
+/// administering it, a `404` when an administrator names one that is not here,
+/// and a `500` when the read fails.
 pub async fn list(
     context: web::Data<AppContext>,
     query: web::Query<ListQuery>,
     caller: Authenticated,
 ) -> ApiResult {
+    if query.all {
+        return everybodys(&context, &query, &caller).await;
+    }
+
     let subject = subject::resolve(&context, &caller, query.username.as_ref()).await?;
 
     let rows = context
@@ -65,6 +110,48 @@ pub async fn list(
     let held: Vec<Credential> = rows
         .iter()
         .map(|row| credentials::to_dto(row, owner(&subject)))
+        .collect();
+
+    Ok(json_ok(&held))
+}
+
+/// Every credential this installation holds, for an administrator.
+///
+/// Metadata only, exactly as the per-account listing is: no secret, no hash,
+/// no hint and no length, because the row does not carry one to return.
+async fn everybodys(context: &AppContext, query: &ListQuery, caller: &Authenticated) -> ApiResult {
+    if !caller.principal.is_admin {
+        return Err(ApiError::forbidden(
+            "Only an administrator may list this installation's credentials.",
+        ));
+    }
+
+    if query.username.is_some() {
+        return Err(ApiError::bad_request(
+            "Ask for one account's credentials or for every one of them, not both.",
+        ));
+    }
+
+    let rows = context
+        .db()
+        .credentials()
+        .list_all(query.include_revoked, query.page())
+        .await
+        .map_err(|err| failed(context, &err))?;
+
+    let owners = devices::usernames(context.db())
+        .await
+        .map_err(|err| failed(context, &err))?;
+
+    // A credential whose account has gone is left out rather than rendered
+    // without an owner, for the reason the device listing gives.
+    let held: Vec<Credential> = rows
+        .iter()
+        .filter_map(|row| {
+            owners
+                .get(&row.user_id)
+                .map(|username| credentials::to_dto(row, Some(username.clone())))
+        })
         .collect();
 
     Ok(json_ok(&held))
@@ -605,6 +692,124 @@ mod tests {
             .await
             .status(),
             StatusCode::NOT_FOUND,
+        );
+    }
+
+    #[actix_web::test]
+    async fn an_administrator_can_list_the_whole_installations_credentials() {
+        let server = TestServer::start().await;
+        let (_, ada) = server.signed_in("ada", true).await;
+        server.user("grace", false).await;
+        server.user("bhavna", false).await;
+        mint_for(&server, "ada").await;
+        mint_for(&server, "grace").await;
+        mint_for(&server, "bhavna").await;
+
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let everybodys: Vec<Credential> = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/v1/credentials?all=true")
+                .insert_header(("authorization", bearer(&ada)))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(everybodys.len(), 3);
+        assert!(
+            everybodys.iter().all(|held| held.username.is_some()),
+            "an installation-wide listing has to say whose each one is",
+        );
+
+        // An absent name still means the caller's own, so the two questions
+        // never collapse into one.
+        let own: Vec<Credential> = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/v1/credentials")
+                .insert_header(("authorization", bearer(&ada)))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(own.len(), 1);
+
+        let serialised = serde_json::to_string(&everybodys).unwrap();
+        assert!(
+            !serialised.contains("secret") && !serialised.contains("hash"),
+            "the listing carries no secret and no hash",
+        );
+    }
+
+    #[actix_web::test]
+    async fn the_whole_installations_listing_is_paged() {
+        let server = TestServer::start().await;
+        let (_, ada) = server.signed_in("ada", true).await;
+        for _ in 0..3 {
+            mint_for(&server, "ada").await;
+        }
+
+        let app = test::init_service(App::new().configure(server.app())).await;
+        let page = |page: u32, limit: u32| {
+            test::TestRequest::get()
+                .uri(&format!(
+                    "/api/v1/credentials?all=true&page={page}&limit={limit}"
+                ))
+                .insert_header(("authorization", bearer(&ada)))
+                .to_request()
+        };
+
+        let first: Vec<Credential> = test::call_and_read_body_json(&app, page(0, 2)).await;
+        let second: Vec<Credential> = test::call_and_read_body_json(&app, page(1, 2)).await;
+
+        assert_eq!(first.len(), 2);
+        assert_eq!(second.len(), 1);
+        assert!(first.iter().all(|held| held.id != second[0].id));
+
+        let query = ListQuery {
+            all: true,
+            limit: Some(100_000),
+            page: Some(1),
+            ..ListQuery::default()
+        };
+
+        assert_eq!(query.page().limit, MAX_PAGE_SIZE);
+        assert_eq!(query.page().offset, MAX_PAGE_SIZE);
+    }
+
+    #[actix_web::test]
+    async fn the_whole_installations_listing_is_administrative_and_not_a_narrowed_one() {
+        let server = TestServer::start().await;
+        let (_, grace) = server.signed_in("grace", false).await;
+        let (_, ada) = server.signed_in("ada", true).await;
+
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        assert_eq!(
+            test::call_service(
+                &app,
+                test::TestRequest::get()
+                    .uri("/api/v1/credentials?all=true")
+                    .insert_header(("authorization", bearer(&grace)))
+                    .to_request(),
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN,
+        );
+
+        assert_eq!(
+            test::call_service(
+                &app,
+                test::TestRequest::get()
+                    .uri("/api/v1/credentials?all=true&username=grace")
+                    .insert_header(("authorization", bearer(&ada)))
+                    .to_request(),
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST,
         );
     }
 }

@@ -1,6 +1,10 @@
-//! `GET`/`POST /api/v1/users` and `PATCH /api/v1/users/{username}`.
+//! `GET`/`POST /api/v1/users`, `GET` and `PATCH /api/v1/users/{username}`.
 //!
-//! All three administrative. The patch is the one lever an administrator has
+//! Administrative, except that reading one account is also "your own": a page
+//! that opens on somebody would otherwise have to read the whole listing and
+//! filter it, and could not tell "no such account" from "not yours to see".
+//!
+//! The patch is the one lever an administrator has
 //! that does not need the configuration file editing: it can grant or refuse
 //! administrative access regardless of what the access-control expression says,
 //! and it can switch an account off.
@@ -22,18 +26,27 @@
 //! access token expires. The bearer middleware reads the account on every
 //! request, which covers the access token; the refresh tokens are revoked here
 //! so that a client holding one cannot mint a fresh access token from it.
+//!
+//! # Clearing a field, and why the email is the odd one out
+//!
+//! An empty display name is not a name, so `""` clears it and the difference
+//! between "unchanged" and "cleared" never rests on telling an absent JSON
+//! field from a null one. An empty *email* is a form posting a box somebody
+//! emptied, and storing `""` as an address would be storing a wrong answer —
+//! so `email` is a three-way value and `null` is what clears it.
 
 use actix_web::http::StatusCode;
 use actix_web::web;
 use rustak_api::{AuditCategory, AuditOutcome, CreateUserRequest, User, UserKind, UserPatch};
 
-use crate::db::repos::NewUser;
+use crate::db::repos::{NewUser, ProfileChange};
 use crate::db::{AuditEntry, repos::Page};
 use crate::identity::{groups, users};
 use crate::prelude::*;
 
 use super::error::{ApiError, ApiResult, json_ok, json_with};
-use super::extract::Administrative;
+use super::extract::{Administrative, Authenticated};
+use super::subject;
 
 /// How many accounts one page carries.
 const PAGE_SIZE: u32 = 500;
@@ -54,6 +67,29 @@ pub async fn list(context: web::Data<AppContext>, _: Administrative) -> ApiResul
     let users: Vec<User> = rows.iter().map(users::to_dto).collect();
 
     Ok(json_ok(&users))
+}
+
+/// `GET /api/v1/users/{username}`, for an administrator or the account itself.
+///
+/// The same [`User`] the listing carries, so a page that opens on one account
+/// and a page that lists them all render from one shape.
+///
+/// # Errors
+///
+/// A `400` for a name no account could have, a `403` when it is somebody
+/// else's and the caller does not administer the installation, a `404` when
+/// there is no such account, and a `500` when the read fails.
+pub async fn get(
+    context: web::Data<AppContext>,
+    username: web::Path<String>,
+    caller: Authenticated,
+) -> ApiResult {
+    let username = Username::parse(&username)
+        .map_err(|err| ApiError::bad_request(format!("That is not a username: {err}")))?;
+
+    let subject = subject::resolve(&context, &caller, Some(&username)).await?;
+
+    Ok(json_ok(&users::to_dto(&subject.user)))
 }
 
 /// Creates an account.
@@ -195,6 +231,15 @@ pub async fn patch(
             .map_err(|err| failed(&context, &err))?;
     }
 
+    let profile = profile(&patch);
+
+    if !profile.is_empty() {
+        db.users()
+            .set_profile(user.id, profile)
+            .await
+            .map_err(|err| failed(&context, &err))?;
+    }
+
     let updated = db
         .users()
         .get(user.id)
@@ -205,6 +250,30 @@ pub async fn patch(
     record(&context, &caller, &updated, &patch).await;
 
     Ok(json_ok(&users::to_dto(&updated)))
+}
+
+/// What the patch says about who the account belongs to.
+///
+/// An empty or whitespace-only value clears the field either way: a display
+/// name of spaces is not a name, and an address of spaces is not an address.
+/// The email's outer [`Option`] is what separates "unchanged" from "cleared";
+/// the display name has no such layer, and `""` is its way of saying the same
+/// thing.
+fn profile(patch: &UserPatch) -> ProfileChange {
+    ProfileChange {
+        display_name: patch.display_name.as_deref().map(blank_is_nothing),
+        email: patch
+            .email
+            .as_ref()
+            .map(|email| email.as_deref().and_then(blank_is_nothing)),
+    }
+}
+
+/// A trimmed value, or nothing when there was nothing but space.
+fn blank_is_nothing(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
 /// Refuses the change that would leave nobody able to undo it.
@@ -253,6 +322,10 @@ async fn record(
     .detail(serde_json::json!({
         "disabled": patch.disabled,
         "is_admin": patch.is_admin,
+        // Named rather than quoted: the log says an address was set or taken
+        // away without becoming a second copy of everybody's address.
+        "display_name_changed": patch.display_name.is_some(),
+        "email_changed": patch.email.is_some(),
     }));
 
     if let Err(err) = context.db().record(entry).await {
@@ -579,5 +652,174 @@ mod tests {
         .await;
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[actix_web::test]
+    async fn one_account_is_readable_by_itself_and_by_an_administrator_and_by_nobody_else() {
+        let server = TestServer::start().await;
+        let (_, ada) = server.signed_in("ada", true).await;
+        let (_, grace) = server.signed_in("grace", false).await;
+        server.user("bhavna", false).await;
+
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let own: User = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/v1/users/grace")
+                .insert_header(("authorization", bearer(&grace)))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(own.username.as_str(), "grace");
+
+        let theirs: User = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/v1/users/grace")
+                .insert_header(("authorization", bearer(&ada)))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(theirs, own, "one account has one shape whoever reads it");
+
+        assert_eq!(
+            test::call_service(
+                &app,
+                test::TestRequest::get()
+                    .uri("/api/v1/users/bhavna")
+                    .insert_header(("authorization", bearer(&grace)))
+                    .to_request(),
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN,
+        );
+    }
+
+    #[actix_web::test]
+    async fn an_account_that_is_not_here_is_a_not_found_and_a_name_that_could_not_be_is_refused() {
+        // The two are different answers to different questions, and only an
+        // administrator ever sees the first.
+        let server = TestServer::start().await;
+        let (_, ada) = server.signed_in("ada", true).await;
+
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        assert_eq!(
+            test::call_service(
+                &app,
+                test::TestRequest::get()
+                    .uri("/api/v1/users/nobody")
+                    .insert_header(("authorization", bearer(&ada)))
+                    .to_request(),
+            )
+            .await
+            .status(),
+            StatusCode::NOT_FOUND,
+        );
+
+        assert_eq!(
+            test::call_service(
+                &app,
+                test::TestRequest::get()
+                    .uri("/api/v1/users/%20")
+                    .insert_header(("authorization", bearer(&ada)))
+                    .to_request(),
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST,
+        );
+    }
+
+    #[actix_web::test]
+    async fn the_display_name_and_the_email_are_written_and_can_each_be_cleared() {
+        let server = TestServer::start().await;
+        let (_, ada) = server.signed_in("ada", true).await;
+        server.user("grace", false).await;
+
+        let app = test::init_service(App::new().configure(server.app())).await;
+        let patch = |body: serde_json::Value| {
+            test::TestRequest::patch()
+                .uri("/api/v1/users/grace")
+                .insert_header(("authorization", bearer(&ada)))
+                .set_json(body)
+                .to_request()
+        };
+
+        let set: User = test::call_and_read_body_json(
+            &app,
+            patch(serde_json::json!({
+                "display_name": "Grace Hopper",
+                "email": "grace@example.com",
+            })),
+        )
+        .await;
+
+        assert_eq!(set.display_name.as_deref(), Some("Grace Hopper"));
+        assert_eq!(set.email.as_deref(), Some("grace@example.com"));
+
+        // An absent field leaves the other alone; this is the case a UI that
+        // patches one switch at a time relies on.
+        let narrowed: User =
+            test::call_and_read_body_json(&app, patch(serde_json::json!({ "disabled": false })))
+                .await;
+
+        assert_eq!(narrowed.email.as_deref(), Some("grace@example.com"));
+
+        let cleared: User =
+            test::call_and_read_body_json(&app, patch(serde_json::json!({ "email": null }))).await;
+
+        assert_eq!(cleared.email, None);
+        assert_eq!(cleared.display_name.as_deref(), Some("Grace Hopper"));
+
+        let anonymous: User =
+            test::call_and_read_body_json(&app, patch(serde_json::json!({ "display_name": "  " })))
+                .await;
+
+        assert_eq!(anonymous.display_name, None);
+        assert_eq!(anonymous.display(), "grace");
+
+        assert!(
+            server
+                .db()
+                .audit(crate::db::AuditQuery::about("grace", 10))
+                .await
+                .unwrap()
+                .iter()
+                .any(|record| record
+                    .detail
+                    .as_ref()
+                    .is_some_and(|detail| detail.get("email_changed")
+                        == Some(&serde_json::Value::Bool(true)))),
+            "the log says an address was changed without becoming a copy of it",
+        );
+    }
+
+    #[actix_web::test]
+    async fn an_email_alone_is_a_change_worth_making() {
+        // `is_empty` decides whether a patch is refused as doing nothing, so a
+        // patch carrying only the new field has to count.
+        let server = TestServer::start().await;
+        let (_, ada) = server.signed_in("ada", true).await;
+
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        assert_eq!(
+            test::call_service(
+                &app,
+                test::TestRequest::patch()
+                    .uri("/api/v1/users/ada")
+                    .insert_header(("authorization", bearer(&ada)))
+                    .set_json(serde_json::json!({ "email": "ada@example.com" }))
+                    .to_request(),
+            )
+            .await
+            .status(),
+            StatusCode::OK,
+        );
     }
 }

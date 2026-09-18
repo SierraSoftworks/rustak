@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::identity::{Direction, GroupId, GroupName};
+use crate::identity::{Direction, GroupId, GroupName, Username};
 
 /// Where a channel came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -160,6 +160,38 @@ impl GroupMembership {
             source: self.source,
         })
     }
+}
+
+/// One member of one channel, as the channel's own listing describes them.
+///
+/// The mirror image of [`GroupMembership`]: that answers "which channels does
+/// this person hold", this answers "who holds this channel". Both are one row
+/// per single direction, because that is what storage holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupMember {
+    pub username: Username,
+
+    /// `In` or `Out`; never [`Direction::Both`].
+    pub direction: Direction,
+
+    /// Whether the member currently has this channel switched **on**.
+    ///
+    /// A membership is a right and this is a preference — the one a client
+    /// sets through `PUT /Marti/api/groups/active`. A member who has never
+    /// said anything counts as on, so this is `true` far more often than it is
+    /// stored.
+    #[serde(default = "crate::group::on")]
+    pub active: bool,
+
+    /// Why the membership exists, so the UI can grey out the ones the identity
+    /// provider will overwrite at the member's next sign-in.
+    #[serde(default)]
+    pub source: MembershipSource,
+}
+
+/// The default for [`GroupMember::active`]: a channel nobody has switched off.
+fn on() -> bool {
+    true
 }
 
 /// A request to create a channel.
@@ -371,5 +403,29 @@ mod tests {
             r#"{"group":"Blue","direction":"BOTH","active":false}"#
         );
         assert_eq!(serde_json::from_str::<ActiveGroup>(&json).unwrap(), both);
+    }
+
+    #[test]
+    fn a_member_of_a_channel_is_on_unless_they_have_said_otherwise() {
+        let member: GroupMember = serde_json::from_value(serde_json::json!({
+            "username": "grace",
+            "direction": "OUT",
+        }))
+        .unwrap();
+
+        assert!(member.active);
+        assert_eq!(member.source, MembershipSource::Manual);
+
+        let switched_off = GroupMember {
+            active: false,
+            source: MembershipSource::Oidc,
+            ..member
+        };
+        let json = serde_json::to_string(&switched_off).unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<GroupMember>(&json).unwrap(),
+            switched_off
+        );
     }
 }

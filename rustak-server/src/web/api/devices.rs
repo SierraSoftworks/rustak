@@ -11,7 +11,8 @@
 //! writes the same rows. This endpoint exists so an administrator can correct a
 //! device that has switched a channel off and cannot be reached to switch it
 //! back on — and so the admin UI can show the state without speaking the Marti
-//! dialect.
+//! dialect. The matching `GET` is here for the same reason: without it a page
+//! would have to write in order to learn what the state had been.
 
 use actix_web::{HttpResponse, web};
 use rustak_api::{ActiveGroup, AuditCategory, AuditOutcome, Device};
@@ -78,6 +79,33 @@ pub async fn get(
     let (row, owner) = load(&context, &uid, &caller).await?;
 
     Ok(json_ok(&devices::to_dto(&row, owner)))
+}
+
+/// `GET /api/v1/devices/{uid}/active-groups`.
+///
+/// The same shape [`set_active_groups`] answers with, so a page can read the
+/// state it is about to change rather than having to write in order to find
+/// out what it was.
+///
+/// Only the channels this device has an opinion about are listed: a channel it
+/// has said nothing about counts as on, which is what a client that has never
+/// called the channels endpoint expects.
+///
+/// # Errors
+///
+/// As [`get`].
+pub async fn active_groups(
+    context: web::Data<AppContext>,
+    uid: web::Path<String>,
+    caller: Authenticated,
+) -> ApiResult {
+    let (row, _) = load(&context, &uid, &caller).await?;
+
+    let state = members::active_for_device(context.db(), row.id)
+        .await
+        .map_err(|err| failed(&context, &err))?;
+
+    Ok(json_ok(&state))
 }
 
 /// `DELETE /api/v1/devices/{uid}`.
@@ -463,6 +491,76 @@ mod tests {
             .await
             .status(),
             StatusCode::BAD_REQUEST,
+        );
+    }
+
+    #[actix_web::test]
+    async fn a_devices_channel_state_can_be_read_without_writing_it_first() {
+        let server = TestServer::start().await;
+        let (_, session) = server.signed_in("grace", false).await;
+        device_for(&server, "grace", "ANDROID-1").await;
+
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        // A device that has said nothing has nothing to report: every channel
+        // it holds counts as on until it says otherwise.
+        let before: Vec<ActiveGroup> = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/v1/devices/ANDROID-1/active-groups")
+                .insert_header(("authorization", bearer(&session)))
+                .to_request(),
+        )
+        .await;
+
+        assert!(before.is_empty());
+
+        let written: Vec<ActiveGroup> = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::put()
+                .uri("/api/v1/devices/ANDROID-1/active-groups")
+                .insert_header(("authorization", bearer(&session)))
+                .set_json(serde_json::json!([
+                    { "group": "__ANON__", "direction": "OUT", "active": false },
+                ]))
+                .to_request(),
+        )
+        .await;
+
+        let read: Vec<ActiveGroup> = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/v1/devices/ANDROID-1/active-groups")
+                .insert_header(("authorization", bearer(&session)))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(read, written, "the read and the write answer one shape");
+        assert_eq!(read.len(), 1);
+        assert!(!read[0].active);
+    }
+
+    #[actix_web::test]
+    async fn a_strangers_channel_state_is_not_readable() {
+        let server = TestServer::start().await;
+        let (_, grace) = server.signed_in("grace", false).await;
+        server.user("ada", true).await;
+        device_for(&server, "ada", "ANDROID-2").await;
+
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        assert_eq!(
+            test::call_service(
+                &app,
+                test::TestRequest::get()
+                    .uri("/api/v1/devices/ANDROID-2/active-groups")
+                    .insert_header(("authorization", bearer(&grace)))
+                    .to_request(),
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN,
         );
     }
 }

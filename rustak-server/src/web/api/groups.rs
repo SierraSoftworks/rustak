@@ -13,12 +13,29 @@
 //! stays reserved, because a live subscription holds bit positions rather than
 //! names and reusing one would hand this channel's traffic to the next channel
 //! created.
+//!
+//! # Members are listed here as well as under each account
+//!
+//! `GET /api/v1/users/{username}/groups` answers "which channels does this
+//! person hold"; [`members`] answers the same relation read the other way, so
+//! a page about one channel is one request rather than one per account.
+//!
+//! Each row carries whether that member currently has the channel *switched
+//! on*, which is a different question from whether they may use it: the
+//! membership is the right and the selection is the preference, and an
+//! administrator looking at a channel nobody seems to be talking on wants to
+//! see the difference.
+
+use std::collections::HashMap;
 
 use actix_web::{HttpResponse, web};
-use rustak_api::{AuditCategory, AuditOutcome, CreateGroupRequest, Group, GroupName, GroupPatch};
+use rustak_api::{
+    AuditCategory, AuditOutcome, CreateGroupRequest, Group, GroupMember, GroupName, GroupPatch,
+};
 
 use crate::db::AuditEntry;
-use crate::identity::groups;
+use crate::identity::{devices, groups};
+use crate::marti::channels::{self, Selection};
 use crate::prelude::*;
 
 use super::error::{ApiError, ApiResult, json_ok};
@@ -138,6 +155,89 @@ pub async fn remove(
     .await;
 
     Ok(HttpResponse::NoContent().finish())
+}
+
+/// `GET /api/v1/groups/{name}/members`.
+///
+/// One row per member per direction, which is what storage holds and what the
+/// matching per-account endpoint answers with.
+///
+/// # Errors
+///
+/// A `400` for a name no channel could have, a `404` when the channel is not
+/// here, and a `500` when a read fails.
+pub async fn members(
+    context: web::Data<AppContext>,
+    name: web::Path<String>,
+    _: Administrative,
+) -> ApiResult {
+    let name = parse(&name)?;
+
+    let group = context
+        .db()
+        .groups()
+        .get_by_name(&name)
+        .await
+        .map_err(|err| failed(&context, &err))?
+        .ok_or_else(|| ApiError::not_found("There is no channel by that name."))?;
+
+    let held = context
+        .db()
+        .members()
+        .list_for_group(group.id)
+        .await
+        .map_err(|err| failed(&context, &err))?;
+
+    // One read for every account's name rather than one per membership: a
+    // channel has two rows per member and an installation has tens of accounts.
+    let owners = devices::usernames(context.db())
+        .await
+        .map_err(|err| failed(&context, &err))?;
+    let mut selections: HashMap<UserId, Selection> = HashMap::new();
+    let mut listed: Vec<GroupMember> = Vec::with_capacity(held.len());
+
+    for membership in &held {
+        let Some(username) = owners.get(&membership.user_id) else {
+            // The account has gone and the foreign key has not caught up yet;
+            // a member the UI cannot open is worse than a row that is absent.
+            continue;
+        };
+
+        let selection = match selections.get(&membership.user_id) {
+            Some(selection) => selection,
+            None => {
+                let read = channels::selection(&context, membership.user_id, None)
+                    .await
+                    .map_err(|err| refused(&err))?;
+
+                selections.entry(membership.user_id).or_insert(read)
+            }
+        };
+
+        listed.push(GroupMember {
+            username: username.clone(),
+            direction: membership.direction,
+            active: selection.is_active(&name, membership.direction),
+            source: membership.source,
+        });
+    }
+
+    listed.sort_by(|left, right| {
+        (left.username.as_str(), left.direction.as_str())
+            .cmp(&(right.username.as_str(), right.direction.as_str()))
+    });
+
+    Ok(json_ok(&listed))
+}
+
+/// Reports a channel-selection read that failed.
+///
+/// [`channels::selection`] only ever fails with one of our own errors, so
+/// there is nothing here a caller could act on.
+fn refused(err: &crate::marti::MartiError) -> ApiError {
+    error!(error = ?err, "Could not read a member's channel selection.");
+
+    ApiError::internal()
 }
 
 /// Reads a channel name out of a path segment.
@@ -434,5 +534,152 @@ mod tests {
                 StatusCode::FORBIDDEN,
             );
         }
+    }
+
+    #[actix_web::test]
+    async fn a_channel_lists_its_members_one_row_per_direction() {
+        let server = TestServer::start().await;
+        let (_, ada) = server.signed_in("ada", true).await;
+        let grace = server.user("grace", false).await;
+        let blue = server
+            .db()
+            .groups()
+            .create(crate::db::repos::NewGroup::manual(
+                GroupName::parse("Blue").unwrap(),
+            ))
+            .await
+            .unwrap();
+
+        server
+            .db()
+            .members()
+            .grant(
+                grace.id,
+                blue.id,
+                rustak_api::Direction::Both,
+                rustak_api::MembershipSource::Manual,
+            )
+            .await
+            .unwrap();
+
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let members: Vec<GroupMember> = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/v1/groups/Blue/members")
+                .insert_header(("authorization", bearer(&ada)))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(members.len(), 2, "one row per direction, as storage holds");
+        assert!(
+            members
+                .iter()
+                .all(|member| member.username.as_str() == "grace")
+        );
+        assert!(
+            members.iter().all(|member| member.active),
+            "a member who has said nothing has the channel on",
+        );
+
+        // The default channel every account joins is a separate listing, which
+        // is what makes the member count on a channel row mean anything.
+        let anon: Vec<GroupMember> = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/v1/groups/__ANON__/members")
+                .insert_header(("authorization", bearer(&ada)))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(anon.len(), 4, "two accounts, two directions each");
+    }
+
+    #[actix_web::test]
+    async fn a_member_who_has_switched_the_channel_off_is_listed_as_off() {
+        // A membership is a right and the selection is a preference. An
+        // administrator looking at a channel nobody is talking on needs to see
+        // which of the two is the reason.
+        let server = TestServer::start().await;
+        let (_, ada) = server.signed_in("ada", true).await;
+        let grace = server.user("grace", false).await;
+
+        channels::apply(
+            &server.context,
+            grace.id,
+            &[rustak_api::ActiveGroup {
+                group: GroupName::anon(),
+                direction: rustak_api::Direction::Out,
+                active: false,
+            }],
+            None,
+        )
+        .await
+        .unwrap();
+
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let members: Vec<GroupMember> = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/v1/groups/__ANON__/members")
+                .insert_header(("authorization", bearer(&ada)))
+                .to_request(),
+        )
+        .await;
+
+        let hers: Vec<&GroupMember> = members
+            .iter()
+            .filter(|member| member.username.as_str() == "grace")
+            .collect();
+
+        assert_eq!(hers.len(), 2);
+        assert!(
+            hers.iter()
+                .any(|member| member.direction == rustak_api::Direction::Out && !member.active),
+        );
+        assert!(
+            hers.iter()
+                .any(|member| member.direction == rustak_api::Direction::In && member.active),
+            "switching one direction off leaves the other alone",
+        );
+    }
+
+    #[actix_web::test]
+    async fn only_an_administrator_lists_a_channels_members() {
+        let server = TestServer::start().await;
+        let (_, grace) = server.signed_in("grace", false).await;
+        let (_, ada) = server.signed_in("ada", true).await;
+
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        assert_eq!(
+            test::call_service(
+                &app,
+                test::TestRequest::get()
+                    .uri("/api/v1/groups/__ANON__/members")
+                    .insert_header(("authorization", bearer(&grace)))
+                    .to_request(),
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN,
+        );
+
+        assert_eq!(
+            test::call_service(
+                &app,
+                test::TestRequest::get()
+                    .uri("/api/v1/groups/Vanished/members")
+                    .insert_header(("authorization", bearer(&ada)))
+                    .to_request(),
+            )
+            .await
+            .status(),
+            StatusCode::NOT_FOUND,
+        );
     }
 }

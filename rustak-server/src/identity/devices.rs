@@ -146,8 +146,13 @@ pub async fn to_dtos(db: &Database, rows: &[DeviceRow]) -> Result<Vec<Device>, E
 /// Every account's name, by row id.
 ///
 /// One read rather than one per device: an installation's device list is
-/// hundreds of rows and its account list is tens.
-async fn usernames(db: &Database) -> Result<HashMap<UserId, Username>, Error> {
+/// hundreds of rows and its account list is tens. Public because the
+/// certificate listing wants the same map for the same reason.
+///
+/// # Errors
+///
+/// A [`human_errors::Kind::System`] error if a read fails.
+pub async fn usernames(db: &Database) -> Result<HashMap<UserId, Username>, Error> {
     let mut owners = HashMap::new();
     let mut page = Page::first(500);
 

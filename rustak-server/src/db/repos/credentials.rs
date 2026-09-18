@@ -20,6 +20,7 @@ use rustak_core::{identity::PasswordHash, prelude::*};
 
 use crate::db::{
     Database,
+    repos::Page,
     row::{Timestamp, enum_col, id_col, opt_ts, ts},
 };
 
@@ -213,6 +214,43 @@ impl<'a> CredentialsRepo<'a> {
 
                 statement
                     .query_map([user_id.get()], CredentialRow::from_row)?
+                    .collect()
+            })
+            .await
+    }
+
+    /// Every credential this installation holds, newest first.
+    ///
+    /// Paged, because unlike an account's own list this one has no natural
+    /// bound: it is what an operator auditing outstanding client passwords
+    /// reads, and an installation that has been enrolling devices for a year
+    /// has a row per device per re-enrolment.
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::System`] error if the read fails.
+    pub async fn list_all(
+        &self,
+        include_revoked: bool,
+        page: Page,
+    ) -> Result<Vec<CredentialRow>, Error> {
+        self.db
+            .read(move |c| {
+                let filter = if include_revoked {
+                    ""
+                } else {
+                    "WHERE revoked_at IS NULL"
+                };
+                let mut statement = c.prepare(&format!(
+                    "SELECT {COLUMNS} FROM credentials {filter} \
+                     ORDER BY id DESC LIMIT ?1 OFFSET ?2"
+                ))?;
+
+                statement
+                    .query_map(
+                        rusqlite::params![page.limit(), page.offset()],
+                        CredentialRow::from_row,
+                    )?
                     .collect()
             })
             .await

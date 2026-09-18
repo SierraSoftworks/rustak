@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::identity::{CertificateId, Username};
+use crate::identity::{CertificateId, DeviceUid, Username};
 
 /// What a certificate is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,10 +156,22 @@ pub struct Certificate {
     pub not_before: DateTime<Utc>,
     pub not_after: DateTime<Utc>,
 
+    /// The device this certificate was issued to, where the enrolment named
+    /// one. Lets the UI go from a certificate to the phone holding it without
+    /// reading the whole device list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_uid: Option<DeviceUid>,
+
     /// When it was revoked. A revoked certificate fails the handshake and its
     /// live connections are dropped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked_at: Option<DateTime<Utc>>,
+
+    /// Why it was revoked, as [`RevocationReason::as_str`] spells it. Kept as
+    /// a string rather than the enum because the column is free text and a
+    /// value written by an older release must still be readable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revocation_reason: Option<String>,
 
     #[serde(default)]
     pub source: CertificateSource,
@@ -175,6 +187,148 @@ impl Certificate {
     pub fn is_valid_at(&self, now: DateTime<Utc>) -> bool {
         !self.is_revoked() && now >= self.not_before && now < self.not_after
     }
+
+    /// Which of the three states a listing filters by this certificate is in.
+    ///
+    /// Revocation outranks expiry: an administrator asking which certificates
+    /// were taken back wants the one that has since also run out.
+    pub fn state(&self, now: DateTime<Utc>) -> CertificateState {
+        if self.is_revoked() {
+            return CertificateState::Revoked;
+        }
+
+        if now >= self.not_after {
+            return CertificateState::Expired;
+        }
+
+        CertificateState::Active
+    }
+}
+
+/// What a certificate listing may be narrowed to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CertificateState {
+    /// Issued, not taken back, and not yet run out.
+    Active,
+
+    /// Taken back. Never returns to any other state.
+    Revoked,
+
+    /// Ran out on its own. Nothing was done to it.
+    Expired,
+}
+
+impl CertificateState {
+    /// Every state, in the order a reader is offered them.
+    pub const ALL: &'static [Self] = &[Self::Active, Self::Revoked, Self::Expired];
+
+    /// The value carried on the wire.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Revoked => "revoked",
+            Self::Expired => "expired",
+        }
+    }
+
+    /// A short phrase naming the state for somebody reading the UI.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Active => "Active",
+            Self::Revoked => "Revoked",
+            Self::Expired => "Expired",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|state| state.as_str() == value)
+    }
+}
+
+/// Why a certificate is being taken back.
+///
+/// Recorded on the row and in the audit log, because "revoked" on its own does
+/// not tell an administrator six months later whether a device was lost or a
+/// certificate simply replaced. The server has the same list; this is the half
+/// a caller may name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RevocationReason {
+    /// The person who holds it asked.
+    UserRequest,
+
+    /// The device carrying it is gone.
+    DeviceLost,
+
+    /// A newer certificate replaced it.
+    Superseded,
+
+    /// An administrator decided, and said no more than that.
+    #[default]
+    AdminAction,
+
+    /// The credential it was enrolled with was revoked. The server sets this
+    /// one itself; a caller naming it is describing rather than causing it.
+    CredentialRevoked,
+
+    /// The account it belongs to was disabled. As above.
+    UserDisabled,
+}
+
+impl RevocationReason {
+    /// Every reason, in the order a reader is offered them.
+    pub const ALL: &'static [Self] = &[
+        Self::UserRequest,
+        Self::DeviceLost,
+        Self::Superseded,
+        Self::AdminAction,
+        Self::CredentialRevoked,
+        Self::UserDisabled,
+    ];
+
+    /// The value carried on the wire and stored on the row.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::UserRequest => "user_request",
+            Self::DeviceLost => "device_lost",
+            Self::Superseded => "superseded",
+            Self::AdminAction => "admin_action",
+            Self::CredentialRevoked => "credential_revoked",
+            Self::UserDisabled => "user_disabled",
+        }
+    }
+
+    /// A short phrase naming the reason for somebody reading the UI.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::UserRequest => "The holder asked",
+            Self::DeviceLost => "The device is gone",
+            Self::Superseded => "Replaced by a newer certificate",
+            Self::AdminAction => "An administrator revoked it",
+            Self::CredentialRevoked => "Its enrolment credential was revoked",
+            Self::UserDisabled => "The account was switched off",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|reason| reason.as_str() == value)
+    }
+}
+
+/// What `POST /api/v1/certificates/{id}/revoke` carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct RevokeCertificateRequest {
+    /// Why. Absent means [`RevocationReason::AdminAction`], which is what an
+    /// administrator clicking the button without saying more has done.
+    #[serde(default)]
+    pub reason: RevocationReason,
 }
 
 #[cfg(test)]
@@ -192,7 +346,9 @@ mod tests {
             san: Vec::new(),
             not_before: "2026-09-18T12:00:00.000Z".parse().unwrap(),
             not_after: "2027-09-18T12:00:00.000Z".parse().unwrap(),
+            device_uid: Some(crate::identity::DeviceUid::parse("ANDROID-1").unwrap()),
             revoked_at: None,
+            revocation_reason: None,
             source: CertificateSource::Enrollment,
         }
     }
@@ -242,6 +398,7 @@ mod tests {
         assert_eq!(
             fields,
             vec![
+                "device_uid",
                 "fingerprint",
                 "id",
                 "kind",
@@ -274,6 +431,71 @@ mod tests {
 
         assert!(revoked.is_revoked());
         assert!(!revoked.is_valid_at(during));
+    }
+
+    #[test]
+    fn a_revoked_certificate_that_has_also_run_out_is_listed_as_revoked() {
+        // Otherwise `state=revoked` would quietly stop listing the certificate
+        // an administrator took back a year ago, which is exactly the one an
+        // audit is looking for.
+        let certificate = a_certificate();
+        let during: DateTime<Utc> = "2026-12-01T00:00:00Z".parse().unwrap();
+        let after: DateTime<Utc> = "2028-01-01T00:00:00Z".parse().unwrap();
+
+        assert_eq!(certificate.state(during), CertificateState::Active);
+        assert_eq!(certificate.state(after), CertificateState::Expired);
+
+        let revoked = Certificate {
+            revoked_at: Some("2026-10-01T00:00:00Z".parse().unwrap()),
+            revocation_reason: Some(RevocationReason::DeviceLost.as_str().into()),
+            ..certificate
+        };
+
+        assert_eq!(revoked.state(during), CertificateState::Revoked);
+        assert_eq!(revoked.state(after), CertificateState::Revoked);
+    }
+
+    #[test]
+    fn states_and_reasons_round_trip_through_their_wire_form() {
+        for state in CertificateState::ALL.iter().copied() {
+            let json = serde_json::to_string(&state).unwrap();
+
+            assert_eq!(json, format!("\"{}\"", state.as_str()));
+            assert_eq!(
+                serde_json::from_str::<CertificateState>(&json).unwrap(),
+                state
+            );
+            assert_eq!(CertificateState::parse(state.as_str()), Some(state));
+            assert!(!state.label().is_empty());
+        }
+
+        for reason in RevocationReason::ALL.iter().copied() {
+            let json = serde_json::to_string(&reason).unwrap();
+
+            assert_eq!(json, format!("\"{}\"", reason.as_str()));
+            assert_eq!(
+                serde_json::from_str::<RevocationReason>(&json).unwrap(),
+                reason
+            );
+            assert_eq!(RevocationReason::parse(reason.as_str()), Some(reason));
+            assert!(!reason.label().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_revocation_request_that_says_nothing_is_an_administrator_acting() {
+        let parsed: RevokeCertificateRequest =
+            serde_json::from_value(serde_json::json!({})).unwrap();
+
+        assert_eq!(parsed.reason, RevocationReason::AdminAction);
+        assert_eq!(
+            serde_json::from_value::<RevokeCertificateRequest>(
+                serde_json::json!({ "reason": "device_lost" })
+            )
+            .unwrap()
+            .reason,
+            RevocationReason::DeviceLost,
+        );
     }
 
     #[test]
