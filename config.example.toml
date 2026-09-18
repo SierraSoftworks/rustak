@@ -119,6 +119,38 @@ listen = ":8443"
 client_cert = "required"
 
 
+# The TAK-compatible HTTP surface (/Marti/**, /files/api/config, /oauth/*),
+# served on both listeners above. Certificate enrolment (/Marti/api/tls/*) and
+# the OAuth2 password grant (/oauth/token) accept HTTP Basic — a username with a
+# one-time enrolment token or a client password — and nothing else on either
+# listener does; see [auth] enrollment_token_ttl and client_passwords_enabled.
+# These keys decide what outside clients are told, so changing one changes what
+# already-enrolled devices do.
+[marti]
+# The host name written into URLs handed back to clients — a package download
+# link an EUD passes on to its peers, so it has to be a name they can resolve.
+# Default: the Host header of the request being answered, which is right for a
+# directly reachable server and wrong for one behind NAT or inside a container.
+# public_host = "tak.example.com"
+
+# The upload ceiling reported by GET /files/api/config, in megabytes. CloudTAK's
+# setup wizard will not save a server connection until that endpoint answers
+# with an integer here, so it is the first thing a CloudTAK bring-up exercises.
+upload_size_limit_mb = 400
+
+# Whether Access-Control-Allow-*: * is added to Marti responses. Off by default:
+# ATAK and CloudTAK's server are not browsers and never send an Origin, and the
+# admin UI is same-origin. Turning it on makes every Marti response readable by
+# any page the operator's users happen to visit.
+allow_all_origins = false
+
+# Whether crash reports posted to /Marti/ErrorLog are kept. They are stored with
+# the body truncated and the count capped. Turning this off discards them and
+# still answers 200, because a client that cannot file a crash report retries.
+store_error_logs = true
+error_log_retention = 200
+
+
 # The CoT streaming listener. A client certificate is always required: there is
 # no plaintext [stream.tcp] section and no anonymous access, by design.
 [stream.tls]

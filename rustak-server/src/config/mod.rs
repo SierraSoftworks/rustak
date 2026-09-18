@@ -40,6 +40,7 @@
 
 pub mod acme;
 pub mod auth;
+pub mod marti;
 pub mod oidc;
 pub mod pki;
 pub mod retention;
@@ -56,6 +57,7 @@ use serde::{Deserialize, Serialize};
 
 pub use acme::{AcmeChallenge, AcmeConfig, AcmeDirectory};
 pub use auth::{AuthConfig, RateLimitConfig};
+pub use marti::MartiConfig;
 pub use oidc::OidcConfig;
 pub use pki::{KeyType, PkiConfig};
 pub use retention::RetentionConfig;
@@ -84,6 +86,10 @@ pub struct Config {
     /// The public and Marti HTTP listeners.
     #[serde(default)]
     pub web: WebConfig,
+
+    /// The TAK-compatible HTTP surface served on both of them.
+    #[serde(default)]
+    pub marti: MartiConfig,
 
     /// The CoT streaming listener.
     #[serde(default)]
@@ -253,6 +259,7 @@ mod tests {
         config.web.public.plain_bind = Some("0.0.0.0:80".parse().unwrap());
         config.web.public.tls.cert_file = Some(PathBuf::from("/etc/rustak/fullchain.pem"));
         config.web.public.tls.key_file = Some(PathBuf::from("/etc/rustak/privkey.pem"));
+        config.marti.public_host = Some("tak.example.com".to_string());
         config.auth.issuer = Some("https://tak.example.com".to_string());
         config.auth.user_acl = Some(filt_rs::Filter::new("true").unwrap());
         config.auth.admin_acl = Some(filt_rs::Filter::new("true").unwrap());
