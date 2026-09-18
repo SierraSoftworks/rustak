@@ -113,7 +113,7 @@ generic failure to both clients.
 | Extended key usage | `clientAuth` (1.3.6.1.5.5.7.3.2); add `challengePassword` (1.2.840.113549.1.9.7) when the `version` query param was present — this is the "channels-capable" marker some clients gate optional UI on. ATAK itself performs **no EKU/KU inspection** on the returned cert (07 §1.8), so this is for TAK-ecosystem parity, not a functional requirement for ATAK. |
 | Serial | rustak should use a real random/sequential serial with no collision risk — TAK Server's own 31-bit non-cryptographic random (06 §3.5) is a known weak point, don't copy it |
 | Validity | configurable (default suggestion: 365 days), `notBefore` backdated slightly (TAK Server uses 720 minutes) to tolerate clock skew |
-| Subject | CSR subject **verbatim** — do not rewrite it |
+| Subject | TAK Server copies the CSR subject verbatim; **rustak replaces it** with `CN=<authenticated user>` + configured `O`/`OU` (only the CSR's public key survives; SANs/extensions dropped) — the CN is still validated against the user (design 03 §3, M2-01). Clients never inspect the subject beyond CN. |
 
 ## 5. QR code / quick-connect
 
