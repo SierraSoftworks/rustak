@@ -22,7 +22,7 @@
 
 pub mod append_log;
 pub mod content;
-mod frame;
+pub(crate) mod frame;
 mod segment;
 
 pub use append_log::{AppendLog, AppendLogOptions, DEFAULT_SEGMENT_BYTES};

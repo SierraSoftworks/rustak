@@ -51,10 +51,10 @@ pub struct LatestRow {
 
 impl LatestRow {
     /// The reader's half of the schema, in column order.
-    const COLUMNS: &'static str = "uid, type, callsign, user_id, device_id, group_bits, \
+    pub(super) const COLUMNS: &'static str = "uid, type, callsign, user_id, device_id, group_bits, \
                                    time, stale, xml, received_at";
 
-    fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+    pub(super) fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
             uid: row.get(0)?,
             kind: row.get(1)?,

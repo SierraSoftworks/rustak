@@ -173,11 +173,11 @@ pub struct FilesConfig {
 ///
 /// Never.
 pub async fn files_config(context: web::Data<AppContext>) -> MartiResult {
-    let config = context.config();
+    // The resolved ceiling, so that what the wizard is told is what the upload
+    // servlets will actually accept — see `files::limits`.
+    let upload_size_limit = crate::files::limits::limit_mb(&context.config(), context.db()).await?;
 
-    Ok(response::bare_json(&FilesConfig {
-        upload_size_limit: config.marti.upload_size_limit_mb,
-    }))
+    Ok(response::bare_json(&FilesConfig { upload_size_limit }))
 }
 
 /// `GET /Marti/api/util/isAdmin` — a bare boolean.

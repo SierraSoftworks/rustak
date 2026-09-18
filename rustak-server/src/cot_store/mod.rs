@@ -20,6 +20,7 @@
 
 pub mod history;
 pub mod latest;
+pub mod query;
 pub mod retention;
 pub mod writer;
 

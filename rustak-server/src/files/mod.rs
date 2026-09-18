@@ -29,9 +29,13 @@
 //! size limit is enforced inside the reader rather than around it.
 
 pub mod legacy;
+/// The upload ceiling and where it comes from (M3-03).
+pub mod limits;
 pub mod metadata;
 /// The Mission Package manifest reader and writer (M3-02).
 pub mod package;
+/// Changing a stored file's metadata from the admin API (M3-03).
+pub mod patch;
 pub mod search;
 pub mod store;
 pub mod upload;

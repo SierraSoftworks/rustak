@@ -67,13 +67,13 @@ pub(super) fn encode_frame(payload: &[u8]) -> Vec<u8> {
 /// segment after an unclean shutdown: the process died partway through a write.
 /// [`Frames::valid_len`] then reports where the last complete record ended,
 /// which is where the file is truncated back to.
-pub(super) struct Frames<'a> {
+pub(crate) struct Frames<'a> {
     bytes: &'a [u8],
     offset: usize,
 }
 
 impl<'a> Frames<'a> {
-    pub(super) fn new(bytes: &'a [u8]) -> Self {
+    pub(crate) fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, offset: 0 }
     }
 
