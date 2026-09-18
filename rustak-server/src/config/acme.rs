@@ -125,6 +125,40 @@ impl AcmeConfig {
             })
             .collect()
     }
+
+    /// Why `name` could never be ordered from a public authority, if it could
+    /// not.
+    ///
+    /// The three ways a configured name is hopeless: an address literal (ACME
+    /// has an `ip` identifier, but no public authority offers it), a bare
+    /// label with no domain at all, and anything under a suffix RFC 6761 or
+    /// RFC 8375 reserves for private networks. A wildcard is judged by the
+    /// name under it, because that is the name an authority validates.
+    ///
+    /// Returns a fragment that completes "cannot be ordered … : {reason}".
+    pub fn unorderable(name: &str) -> Option<&'static str> {
+        let name = name.trim().trim_end_matches('.').to_ascii_lowercase();
+        let name = name.strip_prefix("*.").unwrap_or(&name);
+
+        if name.parse::<std::net::IpAddr>().is_ok() {
+            return Some(
+                "it is an IP address, and a public certificate authority will not issue for one",
+            );
+        }
+
+        let Some((_, suffix)) = name.rsplit_once('.') else {
+            return Some("it is not a fully qualified name, so no authority could issue for it");
+        };
+
+        let reserved = matches!(
+            suffix,
+            "local" | "localhost" | "internal" | "lan" | "home" | "invalid" | "test"
+        ) || name.ends_with(".home.arpa");
+
+        reserved.then_some(
+            "it is under a suffix reserved for private networks, which no public authority can validate",
+        )
+    }
 }
 
 /// The ACME directory to order from.
@@ -341,5 +375,41 @@ mod tests {
         };
 
         assert!(err.to_string().contains("contact_email"), "{err}");
+    }
+
+    #[test]
+    fn a_name_a_public_authority_could_issue_for_is_accepted() {
+        for name in [
+            "tak.example.com",
+            "TAK.example.com.",
+            "*.example.com",
+            "a.b.c.example.co.uk",
+        ] {
+            assert_eq!(AcmeConfig::unorderable(name), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_name_that_could_never_be_validated_says_why() {
+        // Each of these is refused by the authority only *after* it has spent
+        // a failed-validation slot, so the reason has to come from us.
+        for (name, fragment) in [
+            ("192.168.1.10", "IP address"),
+            ("2001:db8::1", "IP address"),
+            ("*.10.0.0.1", "IP address"),
+            ("localhost", "fully qualified"),
+            ("rustak", "fully qualified"),
+            ("tak.lan", "private networks"),
+            ("tak.local", "private networks"),
+            ("tak.internal", "private networks"),
+            ("printer.home.arpa", "private networks"),
+            ("*.tak.lan", "private networks"),
+            ("TAK.LAN.", "private networks"),
+        ] {
+            let reason = AcmeConfig::unorderable(name)
+                .unwrap_or_else(|| panic!("{name} should not be orderable"));
+
+            assert!(reason.contains(fragment), "{name}: {reason}");
+        }
     }
 }

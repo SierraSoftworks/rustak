@@ -6,15 +6,22 @@
 //! |---|---|
 //! | `internal` | our own authority issues a certificate for the configured host names. The default. |
 //! | `files` | a chain and a key are read from disk. |
-//! | `acme` | refused, with a message saying when it arrives. |
+//! | `acme` | the last certificate an ACME order produced, behind a resolver that can be swapped without a restart. |
 //! | `none` | plaintext, and only when `allow_insecure_http` also says so. |
 //!
-//! # Why `acme` is an error rather than a fallback
+//! # Why `acme` starts with a certificate nobody trusts
 //!
-//! Silently serving an internally issued certificate where ACME was asked for
-//! would look like it worked: the listener comes up, the browser complains, and
-//! the operator spends an afternoon on a certificate authority they did not
-//! choose. A start-up failure that names the milestone costs them a minute.
+//! The first order cannot be placed until the listener is up: `tls-alpn-01` is
+//! answered *by* that listener on :443, and `http-01` is answered by a route on
+//! it. So a listener with no ACME certificate yet is bound with an internally
+//! issued one — the same certificate `mode = "internal"` would serve — and the
+//! renewal job replaces it through the resolver as soon as the order finishes.
+//! A browser sees one warning on a brand-new installation for as long as the
+//! order takes, rather than a listener that will not start until a certificate
+//! it cannot obtain has been obtained.
+//!
+//! The resolver is published to [`pki::acme`](crate::pki::acme) on the way out,
+//! because the job which renews the certificate is not holding one.
 
 use std::sync::Arc;
 
@@ -38,9 +45,10 @@ pub type PublicTls = Option<Arc<ServerConfig>>;
 /// # Errors
 ///
 /// A [`human_errors::Kind::User`] error for a configuration we will not serve —
-/// plaintext without the explicit opt-in, `acme` before M2, `files` pointing at
-/// something unreadable — and a [`human_errors::Kind::System`] error when the
-/// internal certificate cannot be issued or read back.
+/// plaintext without the explicit opt-in, `acme` with nothing to bootstrap
+/// from, `files` pointing at something unreadable — and a
+/// [`human_errors::Kind::System`] error when the internal certificate cannot be
+/// issued or read back.
 #[instrument("web.tls.resolve", skip_all, err(Display))]
 pub async fn resolve(
     config: &Config,
@@ -51,7 +59,7 @@ pub async fn resolve(
     match config.web.public.tls.mode {
         TlsMode::None => plaintext(config).map(|()| None),
         TlsMode::Files => from_files(config).map(Some),
-        TlsMode::Acme => Err(acme_not_yet()),
+        TlsMode::Acme => acme(config, db, secrets, ca).await.map(Some),
         TlsMode::Internal => internal(config, db, secrets, ca).await.map(Some),
     }
 }
@@ -104,15 +112,71 @@ fn plaintext(config: &Config) -> Result<(), Error> {
     ))
 }
 
-/// The failure for a mode we do not implement yet.
-fn acme_not_yet() -> Error {
-    human_errors::user(
-        "ACME arrives in M2, so this server cannot obtain a public certificate for itself yet.",
-        &[
-            "Set [web.public] tls.mode to 'internal' to use this installation's own authority.",
-            "Set it to 'files' and point cert_file and key_file at a certificate you already hold.",
-        ],
+/// A certificate obtained from an ACME authority, behind a live resolver.
+///
+/// The last issued certificate if there is one; otherwise an internally issued
+/// one, so that the listener binds and the first order has something to be
+/// answered on. Either way the resolver is what the listener consults, and the
+/// renewal job swaps the real certificate in through it.
+async fn acme(
+    config: &Config,
+    db: &Database,
+    secrets: &SecretStore,
+    ca: Option<&CaMaterial>,
+) -> Result<Arc<ServerConfig>, Error> {
+    let domains = crate::pki::acme::normalise(config.acme.domains(&config.server));
+
+    if domains.is_empty() {
+        return Err(human_errors::user(
+            "ACME has no names to order a certificate for.",
+            &[
+                "Set [acme] domains, or [server] domains, to the public host names this server answers to.",
+            ],
+        ));
+    }
+
+    let certified = match crate::pki::acme::stored_certificate(db, secrets, &domains).await? {
+        Some(certified) => {
+            info!(domains = ?domains, "Serving the certificate the last ACME order produced.");
+
+            certified
+        }
+        None => {
+            warn!(
+                domains = ?domains,
+                "No ACME certificate has been issued yet, so the public listener starts with one \
+                 from this installation's own authority. Browsers will warn until the first order \
+                 completes; watch GET /api/v1/settings/tls for it."
+            );
+
+            bootstrap(config, db, secrets, ca).await?
+        }
+    };
+
+    let resolver = crate::pki::HotSwapCertResolver::new(Some(certified));
+    crate::pki::acme::publish_resolver(Arc::clone(&resolver));
+
+    Ok(Arc::new(crate::pki::tls::public_server_config(resolver)))
+}
+
+/// The certificate an ACME listener binds with before its first order.
+async fn bootstrap(
+    config: &Config,
+    db: &Database,
+    secrets: &SecretStore,
+    ca: Option<&CaMaterial>,
+) -> Result<Arc<rustls::sign::CertifiedKey>, Error> {
+    let certificate = internal_certificate(config, db, secrets, ca).await?;
+
+    install_crypto_provider();
+
+    rustls::sign::CertifiedKey::from_der(
+        certificate.chain,
+        certificate.key,
+        &rustls::crypto::aws_lc_rs::default_provider(),
     )
+    .map(Arc::new)
+    .or_system_err(&["This is unexpected; please report it with the surrounding log entries."])
 }
 
 /// A chain and a key read from disk.
@@ -170,6 +234,19 @@ async fn internal(
     secrets: &SecretStore,
     ca: Option<&CaMaterial>,
 ) -> Result<Arc<ServerConfig>, Error> {
+    let certificate = internal_certificate(config, db, secrets, ca).await?;
+
+    build(certificate.chain, certificate.key)
+}
+
+/// The internally issued certificate, which two modes want for two reasons:
+/// `internal` serves it, and `acme` binds with it until its first order lands.
+async fn internal_certificate(
+    config: &Config,
+    db: &Database,
+    secrets: &SecretStore,
+    ca: Option<&CaMaterial>,
+) -> Result<crate::pki::ServerCertificate, Error> {
     let ca = ca.ok_or_else(|| {
         human_errors::system(
             "The certificate authority had not been loaded when the public listener was built.",
@@ -192,7 +269,7 @@ async fn internal(
 
     warn_if_untrusted(&names);
 
-    build(certificate.chain, certificate.key)
+    Ok(certificate)
 }
 
 /// Says once, at start-up, what an internally issued certificate means.
@@ -275,17 +352,117 @@ mod tests {
         );
     }
 
+    /// A configuration whose authority can actually be loaded, for the modes
+    /// that need one. ECDSA because an RSA authority is a second of bignum
+    /// arithmetic per test.
+    async fn with_authority(
+        db: &Database,
+        secrets: &SecretStore,
+        mode: TlsMode,
+        directory: &std::path::Path,
+    ) -> (Config, crate::pki::CaMaterial) {
+        let base = config(mode);
+        let config = Config {
+            pki: crate::config::PkiConfig {
+                key_type: crate::config::KeyType::EcdsaP256,
+                ..base.pki.clone()
+            },
+            ..base
+        };
+
+        let ca = crate::pki::load_or_create_root_ca(db, secrets, &config.pki, directory)
+            .await
+            .unwrap();
+
+        (config, ca)
+    }
+
     #[tokio::test]
-    async fn asking_for_acme_says_when_it_arrives_rather_than_quietly_doing_something_else() {
+    async fn an_acme_listener_binds_on_the_internal_certificate_before_its_first_order() {
+        // The whole reason the first order is possible at all: :443 has to be
+        // answering before the authority can validate anything on it.
         let db = database().await;
         let secrets = SecretStore::ephemeral();
+        let directory = tempfile::tempdir().unwrap();
+        let (mut config, ca) = with_authority(&db, &secrets, TlsMode::Acme, directory.path()).await;
+        config.acme.enabled = true;
+        config.acme.domains = vec!["tak.example.com".to_string()];
 
-        let refused = resolve(&config(TlsMode::Acme), &db, &secrets, None)
+        assert!(
+            resolve(&config, &db, &secrets, Some(&ca))
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        let resolver = crate::pki::acme::resolver().expect("the renewal has to find the resolver");
+        assert!(
+            resolver.is_ready(),
+            "the listener must present something, or every handshake fails until the order lands",
+        );
+    }
+
+    #[tokio::test]
+    async fn an_acme_listener_serves_the_certificate_the_last_order_produced() {
+        let db = database().await;
+        let secrets = SecretStore::ephemeral();
+        let directory = tempfile::tempdir().unwrap();
+        let (mut config, ca) = with_authority(&db, &secrets, TlsMode::Acme, directory.path()).await;
+        config.acme.enabled = true;
+        config.acme.domains = vec!["acme.example.com".to_string()];
+
+        let domains = vec!["acme.example.com".to_string()];
+        let id = crate::pki::acme::store::reserve(&db, &domains)
             .await
-            .unwrap_err();
+            .unwrap();
+        let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+        let issued = rcgen::CertificateParams::new(domains.clone())
+            .unwrap()
+            .self_signed(&key)
+            .unwrap();
+
+        crate::pki::acme::store::store(
+            &db,
+            &secrets,
+            id,
+            issued.pem(),
+            &key.serialize_der(),
+            (
+                chrono::Utc::now(),
+                chrono::Utc::now() + chrono::Duration::days(90),
+            ),
+            crate::config::AcmeChallenge::TlsAlpn01,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            resolve(&config, &db, &secrets, Some(&ca))
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        let presented = crate::pki::acme::resolver().unwrap().current().unwrap();
+        assert_eq!(
+            presented.end_entity_cert().unwrap().as_ref(),
+            issued.der().as_ref(),
+            "a restart must not throw away a certificate we already paid rate limit for",
+        );
+    }
+
+    #[tokio::test]
+    async fn an_acme_mode_with_no_names_says_which_keys_to_set() {
+        let db = database().await;
+        let secrets = SecretStore::ephemeral();
+        let mut config = config(TlsMode::Acme);
+        config.server.domains = Vec::new();
+        config.acme.domains = Vec::new();
+
+        let refused = resolve(&config, &db, &secrets, None).await.unwrap_err();
 
         assert!(refused.is(human_errors::Kind::User));
-        assert!(refused.description().contains("M2"));
+        assert!(refused.description().contains("names"));
     }
 
     #[tokio::test]
