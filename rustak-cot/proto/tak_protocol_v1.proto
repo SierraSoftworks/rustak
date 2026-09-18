@@ -1,43 +1,54 @@
-// TAK Protocol v1 — binary framing for Cursor-on-Target events.
+// TAK Protocol v1 — the binary framing Cursor-on-Target clients negotiate on
+// a streaming connection.
 //
-// This is a clean-room definition: the message and field names below, and
-// their field numbers and wire types, describe a publicly documented binary
-// encoding used by CoT-speaking clients. No text was copied from any GPL
-// source; the field numbers are facts about an existing wire format, not
-// original expression.
+// This is a clean-room definition. The message names, field names, field
+// numbers and wire types below describe an existing, publicly observable
+// binary encoding: they are facts about a format rustak has to interoperate
+// with, not original expression. No text, comment or fixture was copied from
+// any implementation of it.
 //
-// M0 defines just enough of the schema (`TakMessage`, `TakControl`, the
-// scalar fields of `CotEvent`, and an intentionally empty `Detail`) to prove
-// the protox/prost-build pipeline end to end. The typed detail sub-messages
-// (contact, group, precision location, status, takv, track, and the
-// extension-detail escape hatch) are filled in by a later milestone.
+// Two rules keep the schema honest:
+//
+//   * field numbers are load-bearing and must never be renumbered; and
+//   * proto3 ignores fields it does not know, so a peer that sends more than
+//     this file declares still decodes, and one that sends less still round
+//     trips through the defaults.
 syntax = "proto3";
 
-package rustak.cot.v1;
+package atakmap.commoncommo.protobuf.v1;
 
-// The single envelope carried by every framed protocol message. Either half
-// may be absent: a bare `TakControl` announces or negotiates protocol
-// capabilities without carrying an event, and a bare `CotEvent` is the
-// common case once a connection has settled on a protocol version.
+// The envelope carried by every framed message. Both halves are optional:
+// a lone `takControl` negotiates capabilities without carrying an event, and
+// a lone `cotEvent` is the steady state once a connection has settled.
+//
+// Numbers 3 and 4 are reserved: some servers add their own ingest and
+// creation timestamps there. They are informational, no client requires
+// them, and rustak neither emits nor reads them — but nothing else may claim
+// those numbers.
 message TakMessage {
   TakControl takControl = 1;
   CotEvent cotEvent = 2;
+  reserved 3, 4;
 }
 
-// Out-of-band control chatter used to negotiate which protocol version (and
-// which detail extensions) a connection will use, and to keep a contact's
-// identity attached to a stream that isn't currently sending CoT events.
+// Capability chatter: which protocol versions a peer understands, which
+// detail extensions it registered, and the contact id its stream belongs to.
+//
+// rustak negotiates in XML instead (`t-x-takp-v` / `-q` / `-r`), so this
+// message is decoded for completeness and never populated on the wire.
 message TakControl {
   uint32 minProtoVersion = 1;
   uint32 maxProtoVersion = 2;
   string contactUid = 3;
+  repeated uint32 extensionIds = 4;
 }
 
-// The protobuf-encoded equivalent of a CoT `<event>` element. Field numbers
-// are deliberately non-contiguous (16/17 were reserved for values added
-// after the original schema shipped) — we keep that gap rather than
-// renumber, since the numbers are the part of this format that must match
-// what CoT-speaking clients already send and expect to receive.
+// The binary form of a CoT `<event>` element.
+//
+// Times are milliseconds since the Unix epoch. `hae`, `ce` and `le` use the
+// 999999 sentinel for "unknown", exactly as the XML attributes do. `caveat`
+// and `releasableTo` were added after the original schema shipped, which is
+// why they sit above `detail` rather than beside the other markings.
 message CotEvent {
   string type = 1;
   string access = 2;
@@ -58,9 +69,68 @@ message CotEvent {
   string releasableTo = 17;
 }
 
-// Placeholder for the `<detail>` child element's typed sub-messages
-// (contact, group membership, precision location, status, TAK version
-// info, track, and opaque extension payloads). Left empty in M0 so
-// `CotEvent.detail` has somewhere to point; a later milestone adds the
-// fields without needing to touch `CotEvent` again.
-message Detail {}
+// The `<detail>` subtree, split into the six sub-messages every client knows
+// how to read plus an escape hatch for everything else.
+//
+// `xmlDetail` holds the children that were not promoted, serialised as raw
+// XML with no wrapping element and no declaration. A decoder parses it back
+// and merges it with the typed elements; on a name collision the `xmlDetail`
+// copy is the one that survives, because it is the only one that can carry
+// attributes and children the typed form has no room for.
+message Detail {
+  string xmlDetail = 1;
+  Contact contact = 2;
+  Group group = 3;
+  PrecisionLocation precisionLocation = 4;
+  Status status = 5;
+  Takv takv = 6;
+  Track track = 7;
+
+  // A detail element owned by a registered extension, carried as its own
+  // serialised bytes. rustak registers no extensions, so it relays these
+  // untouched rather than interpreting them.
+  message ExtensionEncodedDetail {
+    uint32 extensionId = 1;
+    bytes data = 2;
+  }
+
+  repeated ExtensionEncodedDetail extensionDetails = 8;
+}
+
+// `<contact callsign= endpoint=/>` — display name and reply address.
+message Contact {
+  string endpoint = 1;
+  string callsign = 2;
+}
+
+// `<__group name= role=/>` — the team colour and role a device reports.
+message Group {
+  string name = 1;
+  string role = 2;
+}
+
+// `<precisionlocation geopointsrc= altsrc=/>` — where the fix came from.
+message PrecisionLocation {
+  string geopointsrc = 1;
+  string altsrc = 2;
+}
+
+// `<status battery=/>` — remaining charge as a whole percentage.
+message Status {
+  uint32 battery = 1;
+}
+
+// `<takv device= platform= os= version=/>` — the reporting device's identity.
+message Takv {
+  string device = 1;
+  string platform = 2;
+  string os = 3;
+  string version = 4;
+}
+
+// `<track speed= course=/>` — ground speed in metres per second and course
+// over ground in degrees true.
+message Track {
+  double speed = 1;
+  double course = 2;
+}

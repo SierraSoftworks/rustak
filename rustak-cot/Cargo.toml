@@ -16,15 +16,22 @@ workspace = true
 [dependencies]
 prost = { workspace = true }
 prost-types = { workspace = true }
-bytes = { workspace = true }
+# `serde` is needed because `build.rs` derives Serialize/Deserialize on the
+# generated protobuf types, one of which carries a `bytes::Bytes` payload.
+bytes = { workspace = true, features = ["serde"] }
 quick-xml = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }
+memchr = { workspace = true }
+tokio-util = { workspace = true }   # `codec::{Decoder, Encoder}` traits only — this crate does no I/O
 
 [build-dependencies]
 protox = { workspace = true }
 prost-build = { workspace = true }
 
 [dev-dependencies]
+proptest = { workspace = true }
 rstest = { workspace = true }
 pretty_assertions = { workspace = true }
+tokio = { workspace = true }          # dev only: `io::duplex` for the `Framed` codec tests
+futures = { workspace = true }        # dev only: `StreamExt`/`SinkExt` to drive `Framed`
