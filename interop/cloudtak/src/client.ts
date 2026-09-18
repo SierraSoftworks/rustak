@@ -45,7 +45,12 @@ export class CloudTak {
     let body: string | Uint8Array | undefined;
 
     if (call.raw !== undefined) {
-      headers["Content-Type"] = call.contentType ?? "application/octet-stream";
+      // Only when the call asks for one. Defaulting to `application/octet-stream`
+      // is actively harmful here: CloudTAK's router consumes exactly that type
+      // with `bodyparser.raw`, and a handler that streams `req` onward then
+      // forwards nothing. See `uploadFile` in `missions.ts`.
+      if (call.contentType !== undefined) headers["Content-Type"] = call.contentType;
+
       body = new Uint8Array(call.raw);
     } else if (call.body !== undefined) {
       headers["Content-Type"] = "application/json";

@@ -81,7 +81,12 @@ async function signIn(page: Page, options: SmokeOptions, kept: string[]): Promis
   await username.fill(options.username);
   await password.fill(options.password);
 
-  await page.getByRole("button", { name: /sign in/i }).click();
+  // `exact` and the precise casing, because CloudTAK's login card carries two
+  // buttons whose accessible names both match /sign in/i — the `submit` one
+  // ("Sign In") and a secondary SSO one ("Sign in with …"). A loose match is a
+  // Playwright strict-mode violation rather than a wrong click, which is how it
+  // failed on run 35394055984.
+  await page.getByRole("button", { name: "Sign In", exact: true }).click();
 }
 
 /** Waits for the map to be a map rather than a spinner. */

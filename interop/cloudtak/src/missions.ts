@@ -119,13 +119,36 @@ export function parseSubmitted(body: unknown): string[] {
   return object.uids as string[];
 }
 
-/** Uploads a file and attaches it to the mission in one call. */
+/**
+ * Uploads a file and attaches it to the mission in one call.
+ *
+ * # Why this sends no `Content-Type`
+ *
+ * CloudTAK's handler streams the *request itself* onward — `api.Files.upload({…,
+ * contentLength: Number(req.headers['content-length'])}, req)` — so the body has
+ * to still be unread by the time the handler runs. Its router is
+ * `@openaddresses/batch-schema`, which installs four body parsers up front:
+ * `urlencoded`, `json`, `text` for `['text/*', 'application/xml',
+ * 'application/*+xml']`, and **`raw` for `['application/octet-stream']`**. Any
+ * of those consumes the stream, and what reaches the handler is an exhausted
+ * `req` that pipes zero bytes — so rustak answers
+ * `400 HTTP request body has no content` (`marti/sync.rs`, which is TAK
+ * Server's own message) and the failure looks like rustak's when it is ours.
+ * That is exactly how this read on run 35394055984 with
+ * `application/octet-stream`.
+ *
+ * Sending no `Content-Type` at all matches none of those parsers, so the stream
+ * survives; `fetch` still sets `Content-Length` from the buffer, which is the
+ * one header the handler actually reads. CloudTAK's own UI gets there by the
+ * other route — its `Upload` component posts the browser `File`'s own type,
+ * which for a data package is `application/zip` and is equally unparsed. Either
+ * works; this one does not have to claim the bytes are something they are not.
+ */
 export function uploadFile(guid: string, name: string, bytes: Buffer): Call {
   return {
     method: "POST",
     path: `/api/marti/missions/${encodeURIComponent(guid)}/upload?name=${encodeURIComponent(name)}`,
     raw: bytes,
-    contentType: "application/octet-stream",
   };
 }
 

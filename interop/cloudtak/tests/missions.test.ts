@@ -113,7 +113,11 @@ test("a file upload names the file in the query string and sends the bytes raw",
 
   assert.equal(call.method, "POST");
   assert.equal(call.path, `/api/marti/missions/${GUID}/upload?name=interop%20notes.txt`);
-  assert.equal(call.contentType, "application/octet-stream");
+  // No `Content-Type` on purpose. CloudTAK's router consumes
+  // `application/octet-stream` (and `text/*`, and JSON) with a body parser
+  // before the handler runs, and the handler streams the request onward — so a
+  // typed body arrives at rustak empty. See `uploadFile`.
+  assert.equal(call.contentType, undefined);
   assert.equal(call.raw?.equals(bytes), true);
 
   // The hash the runner looks for in the mission's contents afterwards is the

@@ -5,6 +5,93 @@ what remains. Brief: `.claude/plan/briefs/CI-01-ci-steward.md`.
 
 ---
 
+## 2026-09-18 — nightly 35394055984 (`c61b592`): CloudTAK's **first run** — 7 passed, 0 skipped, 2 failed
+
+Dispatched so `interop-cloudtak` would get its first real run. **The whole stack
+came up**: Postgres, `cloudtak-api:v13.89.0` and a rustak built from the
+checkout, on one compose network, in **10m52s** — inside M4-03 §4's 10–15 minute
+estimate and well inside the 60-minute bound. `[cloudtak] surfaces missing:
+(none)`, so nothing skipped, and 40/40 of the suite's own unit tests passed.
+
+Six of the eight API steps plus `package` passed: `configure-server`, `login`,
+**`channels`**, `data-sync`, `marker`, `changes`, `package`.
+
+**M4-03 §4's most likely failure did not fire.** `channels` — the per-device
+active-channel state against CloudTAK's missing `clientUid`, prediction #1 and
+the one flagged as "the assertion I would relax first" — **passed**. So did the
+bind-mount uid (#4). Two others did fail, one of them predicted.
+
+### F6 — `ui-smoke`: the login card has two "sign in" buttons (landed-ready)
+
+M4-03 §4 prediction #3, near enough:
+
+```
+locator.click: Error: strict mode violation:
+  getByRole('button', { name: /sign in/i }) resolved to 2 elements:
+  1) <button type="submit" class="btn btn-primary w-100"> Sign In </button>
+  2) <button type="button" class="btn btn-secondary …"> Sign in with … </button>
+```
+
+Not a missed selector — a loose one. The card carries the submit button and an
+SSO button, and both accessible names match `/sign in/i`. **Fixed** in
+`interop/cloudtak/src/smoke.ts`:
+`getByRole("button", { name: "Sign In", exact: true })`.
+
+### F7 — `file`: CloudTAK's router ate the body before its own handler could forward it
+
+This one was **not** predicted, and the failure pointed at the wrong component:
+
+```
+POST /api/marti/missions/{guid}/upload?name=interop-notes.txt answered 400:
+{"status":"BAD_REQUEST","code":2,"message":"Invalid Request: HTTP request body has no content."}
+```
+
+That message is **rustak's own** — `rustak-server/src/marti/sync.rs`, a faithful
+port of TAK Server's `UploadServlet` — so it reads as a rustak rejection. It is
+not. rustak was told the truth: nothing arrived.
+
+Reading CloudTAK's source settles it. Its handler streams the *request itself*
+onward:
+
+```ts
+// api/stateless/routes/marti-mission.ts, POST /marti/missions/:guid/upload
+const content = await api.Files.upload({
+    name, contentLength: Number(req.headers['content-length']), …
+}, req);                                    // ← the live stream
+```
+
+and its router is `@openaddresses/batch-schema`, which installs four body
+parsers before any route runs (`lib/schema.ts:219`):
+
+```js
+bodyparser.urlencoded(…)
+bodyparser.json(…)
+bodyparser.text({ type: ['text/*', 'application/xml', 'application/*+xml'] })
+bodyparser.raw({  type: ['application/octet-stream'] })      // ← ours
+```
+
+`bodyparser.raw` drains the stream into `req.body`, so the handler pipes an
+**exhausted** `req` and forwards zero bytes. Our `Content-Type:
+application/octet-stream` chose the one type guaranteed to be swallowed.
+
+**Fixed:** `uploadFile` now sends **no `Content-Type`**, which matches none of
+the four parsers, so the stream survives to the handler; `fetch` still sets
+`Content-Length` from the buffer, which is the only header the handler reads.
+`interop/cloudtak/src/client.ts` no longer defaults a raw body to
+`application/octet-stream` either — that default was the trap — and sets the
+header only when a call asks for one. (CloudTAK's own UI avoids this the other
+way: its `Upload` component posts the browser `File`'s type, `application/zip`
+for a data package, equally unparsed. Either works; ours does not have to claim
+a text note is a zip.)
+
+Files: `interop/cloudtak/src/missions.ts`, `src/client.ts`, `src/smoke.ts`,
+`tests/missions.test.ts`. Verified: typecheck clean, **40/40**.
+
+**Also in this run:** the EUD job was 8 passed / 1 failed — only `mp-download`,
+whose fix was not yet landed. Everything else held.
+
+---
+
 ## 2026-09-18 — `main` green on `0198065`; nightly 35392357088: **8 passed, 0 skipped, 1 failed**
 
 **`rust.yml` 35390806681 (`0198065`) — green, all 24 jobs.** `1569 passed; 0
@@ -403,7 +490,8 @@ and `docs/ci.md`.
 | Workflow | On `main` | Verdict |
 |---|---|---|
 | `rust.yml` | **green** on `0198065`, all 24 jobs | the 1-in-128 serial defect remains latent and written up |
-| `nightly.yml` `interop-eud` | **8 passed, 0 skipped, 1 failed** | only `mp-download`, and its fix is ready: the server side is now correct, the scenario sent an absolute path the receiver could not write |
+| `nightly.yml` `interop-eud` | **8 passed, 0 skipped, 1 failed** | only `mp-download`; fix ready (the scenario sent an absolute path the receiver could not write) |
+| `nightly.yml` `interop-cloudtak` | **first run: 7 passed, 0 skipped, 2 failed** | stack came up in 10m52s, no skips; both failures harness-side and fixed (§F6, §F7) |
 | `security_audit.yml` | **red, and has never been green** (8 of 8 recorded runs failed) | two advisories, neither fixable from this repository today — needs a decision, §S3 |
 | `changelog.yml` | green | — |
 
