@@ -4,6 +4,17 @@
 //! installed — the signing keys, the content store — already in place, plus the
 //! two or three lines every endpoint test otherwise repeats: seed an account,
 //! mint a session, put a bearer token on a request.
+//!
+//! # What is shared, and what is not
+//!
+//! Everything a test can observe is its own: a fresh in-memory database, a
+//! fresh data directory, a fresh secret store, a fresh rate limiter. Two things
+//! that cost real time and that no test asserts on are process-wide instead —
+//! the RSA token signing key ([`keys`](super::keys)) and the argon2id cost
+//! ([`use_testing_params`](rustak_core::identity::password::use_testing_params))
+//! — because generating a key and hashing at 19 MiB once per test is what made
+//! this suite unfinishable on a two-core runner under coverage. Both are still
+//! the real algorithms on the real code path; only their cost changes.
 
 use std::sync::Arc;
 
@@ -56,6 +67,10 @@ impl TestServer {
     ///
     /// As [`start`](Self::start).
     pub async fn start_with(f: impl Sized + FnOnce(&mut Config)) -> Self {
+        // Before anything is hashed, including by the endpoints this server is
+        // about to serve. Idempotent, so every test may call it.
+        rustak_core::identity::password::use_testing_params();
+
         let data_dir = tempfile::tempdir().expect("a temporary directory for the test server");
         let path = data_dir.path().to_path_buf();
 
@@ -70,11 +85,12 @@ impl TestServer {
         .await
         .expect("a mock context");
 
-        let issuer = JwtIssuer::load_or_create(
+        let issuer = JwtIssuer::load_or_adopt(
             context.db(),
             context.secrets(),
             &context.config().auth,
             TEST_ORIGIN,
+            &super::keys::JWT_SIGNING_KEY,
         )
         .await
         .expect("token signing keys");

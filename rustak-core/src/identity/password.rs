@@ -1,11 +1,24 @@
 //! argon2id hashing for every secret rustak stores.
 //!
 //! Enrolment tokens, client passwords and service tokens are all verified the
-//! same way and are all stored the same way: as an argon2id PHC string, at the
-//! crate default parameters (m = 19 MiB, t = 2, p = 1 — the RFC 9106 second
-//! recommended setting). Nothing here is configurable, because the cost of a
-//! password hash is a security decision rather than a performance knob, and a
-//! deployment that tuned it down would have no way to know it had.
+//! same way and are all stored the same way: as an argon2id PHC string, at
+//! [`Params::PRODUCTION`] (m = 19 MiB, t = 2, p = 1 — the RFC 9106 second
+//! recommended setting). There is no configuration key for this, because the
+//! cost of a password hash is a security decision rather than a performance
+//! knob, and a deployment that tuned it down would have no way to know it had.
+//!
+//! # The one exception, and why it cannot reach a deployment
+//!
+//! A test suite hashes thousands of times, and 19 MiB of memory-hard work per
+//! hash is minutes of a CI run that proves nothing about the algorithm.
+//! `use_testing_params` switches the process to [`Params::TESTING`], and it is
+//! the only way this cost ever changes. It is compiled out of a build that did
+//! not ask for the `testing` feature — which is also why it is named here
+//! without a link, since these documents are built without it — nothing under
+//! `src/` outside the test harnesses calls it, and a stored hash records the
+//! cost it was made at, so a row written cheaply stays verifiable and a
+//! deployment cannot end up hashing cheaply without somebody having written
+//! the call.
 //!
 //! # Two jobs, two functions
 //!
@@ -37,6 +50,7 @@
 //! with a stopwatch, which is the first step of every credential-stuffing run.
 
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use argon2::{Argon2, PasswordHasher as _, PasswordVerifier as _};
 use serde::{Deserialize, Serialize};
@@ -46,6 +60,74 @@ use super::secret::Secret;
 
 /// Hex characters of the sha256 prefix stored as a lookup hint.
 const HINT_LENGTH: usize = 16;
+
+/// Whether [`use_testing_params`] has been called. Only a test harness can set
+/// it, and only in a build that compiled the setter in at all.
+static CHEAP: AtomicBool = AtomicBool::new(false);
+
+/// What one argon2id hash costs.
+///
+/// Held as plain numbers rather than as `argon2::Params` so that the two
+/// settings below are readable at a glance and comparable in a test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Params {
+    /// Working memory, in kibibytes.
+    pub memory_kib: u32,
+    /// Passes over that memory.
+    pub iterations: u32,
+    /// Lanes.
+    pub parallelism: u32,
+}
+
+impl Params {
+    /// What every deployment hashes at: RFC 9106's second recommended setting.
+    pub const PRODUCTION: Self = Self {
+        memory_kib: 19 * 1024,
+        iterations: 2,
+        parallelism: 1,
+    };
+
+    /// What a test suite hashes at, once `use_testing_params` has been called.
+    ///
+    /// Still a real argon2id hash with a real salt — the algorithm under test
+    /// is the shipped one — but roughly five times cheaper, which is the
+    /// difference between a coverage run that finishes and one that is killed.
+    pub const TESTING: Self = Self {
+        memory_kib: 8 * 1024,
+        iterations: 1,
+        parallelism: 1,
+    };
+
+    /// The cost this process hashes at.
+    pub fn active() -> Self {
+        if CHEAP.load(Ordering::Relaxed) {
+            Self::TESTING
+        } else {
+            Self::PRODUCTION
+        }
+    }
+
+    /// The hasher these parameters describe.
+    fn hasher(self) -> Argon2<'static> {
+        // Infallible: both settings above are well inside argon2's bounds, and
+        // this is a private method, so no caller can reach it with numbers that
+        // are not one of them.
+        let params = argon2::Params::new(self.memory_kib, self.iterations, self.parallelism, None)
+            .expect("our own argon2 parameters are within the algorithm's limits");
+
+        Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params)
+    }
+}
+
+/// Switches this process to [`Params::TESTING`] for everything hashed from now
+/// on. Verification is unaffected: a hash carries the cost it was made at.
+///
+/// Call it from a test harness and nowhere else. See the [module
+/// documentation](self).
+#[cfg(any(test, feature = "testing"))]
+pub fn use_testing_params() {
+    CHEAP.store(true, Ordering::Relaxed);
+}
 
 /// The password [`verify_dummy`] burns time against.
 ///
@@ -103,7 +185,7 @@ impl std::fmt::Debug for PasswordHash {
     }
 }
 
-/// Hashes a secret with argon2id at the crate's parameters.
+/// Hashes a secret with argon2id at [`Params::active`].
 ///
 /// This blocks the calling thread for tens of milliseconds by design. In async
 /// code use [`hash_blocking`].
@@ -113,7 +195,8 @@ impl std::fmt::Debug for PasswordHash {
 /// Returns a [`human_errors::Kind::System`] error if argon2 refuses the input,
 /// which in practice means the process could not allocate its 19 MiB.
 pub fn hash(secret: &str) -> Result<PasswordHash, human_errors::Error> {
-    let hashed = Argon2::default()
+    let hashed = Params::active()
+        .hasher()
         .hash_password(secret.as_bytes())
         .map_err(|err| {
             human_errors::system(
@@ -132,6 +215,9 @@ pub fn hash(secret: &str) -> Result<PasswordHash, human_errors::Error> {
 /// no different action to take in the two cases. In async code use
 /// [`verify_blocking`].
 pub fn verify(secret: &str, hash: &PasswordHash) -> bool {
+    // `Argon2::default()` here is not the cost this verification runs at: the
+    // PHC string names the parameters its hash was made with, and those are the
+    // ones used, which is what lets a row survive a change of [`Params`].
     Argon2::default()
         .verify_password(secret.as_bytes(), hash.as_str())
         .is_ok()
@@ -238,6 +324,29 @@ mod tests {
         assert!(hashed.as_str().starts_with("$argon2id$"), "{hashed:?}");
         assert!(hashed.as_str().contains("m=19456"), "expected RFC 9106 m");
         assert!(hashed.as_str().contains("t=2"), "expected RFC 9106 t");
+    }
+
+    #[test]
+    fn a_cheaper_cost_still_produces_a_hash_the_verifier_accepts() {
+        // `use_testing_params` is process-wide and these tests share a process
+        // with the one above, which asserts the production cost — so this one
+        // reaches for the parameters directly rather than switching them.
+        assert_eq!(Params::active(), Params::PRODUCTION);
+        const { assert!(Params::TESTING.memory_kib < Params::PRODUCTION.memory_kib) };
+
+        let cheap = PasswordHash(
+            Params::TESTING
+                .hasher()
+                .hash_password(b"secret")
+                .unwrap()
+                .to_string(),
+        );
+
+        // The point of the switch: a row written at one cost verifies at
+        // another, because the cost travels inside the hash.
+        assert!(cheap.as_str().contains("m=8192"));
+        assert!(verify("secret", &cheap));
+        assert!(!verify("wrong", &cheap));
     }
 
     #[test]

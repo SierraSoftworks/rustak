@@ -19,6 +19,7 @@
 
 pub mod authenticator;
 pub mod context;
+pub mod keys;
 pub mod oidc;
 
 pub use authenticator::SoftAuthenticator;

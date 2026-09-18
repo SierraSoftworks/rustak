@@ -240,11 +240,15 @@ mod tests {
         .await
         .unwrap();
 
-        let issuer = crate::auth::JwtIssuer::load_or_create(
+        // The shared key rather than a generated one: these tests are about
+        // what a session token says, not about where its key came from, and an
+        // RSA-2048 generation each is a minute apiece under coverage.
+        let issuer = crate::auth::JwtIssuer::load_or_adopt(
             context.db(),
             context.secrets(),
             &context.config().auth,
             "https://tak.example.com",
+            &crate::testing::keys::JWT_SIGNING_KEY,
         )
         .await
         .unwrap();

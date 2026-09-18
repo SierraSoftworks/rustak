@@ -26,7 +26,17 @@ workspace = true
 # the in-process integration tests under `tests/`.
 # `tempfile` and `wiremock` are dev-dependencies too, so the same modules
 # compile under `cargo test` without the feature being asked for.
-testing = ["dep:tempfile", "dep:wiremock", "dep:p256", "dep:ed25519-dalek", "dep:ciborium"]
+# `rustak-core/testing` comes with it so that `password::use_testing_params`
+# exists for `TestServer` to call; see that function for why the cheaper
+# argon2 cost cannot reach a deployment.
+testing = [
+    "dep:tempfile",
+    "dep:wiremock",
+    "dep:p256",
+    "dep:ed25519-dalek",
+    "dep:ciborium",
+    "rustak-core/testing",
+]
 
 [dependencies]
 rustak-api = { workspace = true }

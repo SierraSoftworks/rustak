@@ -239,6 +239,7 @@ fn pki(config: &Config) -> Result<(), Error> {
             ),
             &[
                 "Write each entry as a [\"type\", \"value\"] pair, for example [\"OU\", \"EUD\"].",
+                "Neither half may be blank: an EUD builds its signing request from these entries, and OpenSSL refuses a zero-length subject component.",
                 "\"CN\" cannot be set here: the common name of an issued certificate is the username it identifies.",
             ],
         ));

@@ -36,7 +36,13 @@ Rendering (own words, exact structure — verified 06 §3.4, cross-checked again
   `nameEntry` and the `name`/`value` attributes.
 - **`nameEntry` must be emitted as ≥2 elements.** CloudTAK's `xml-js` "compact" mode collapses a
   single-element array to a bare object, and its `for (const ne of nameEntries.nameEntry)` then
-  throws on a non-iterable. Always emit at least `O` and `OU`, even if one is an empty string.
+  throws on a non-iterable. Always emit at least `O` and `OU`.
+- **A `nameEntry` value must be non-empty.** commoncommo's `generateCSR` passes each value to
+  OpenSSL's `X509_NAME_ENTRY_create_by_NID`, which rejects a zero-length directory string (the
+  minimum length for `OU` is 1), so padding the pair with `value=""` fails every enrolment at
+  `EnrollUpdate: step 1 … status 14 (CSR generation failed using provided parameters)` — seen on the
+  first real commoncommo run, nightly 35369773295. Pad with the organisation instead, which is also
+  TAK Server's own default shape (`O=TAK` beside `OU=TAK`).
 - `<nameEntries>` is the only optional child; when absent, the element is bare
   `<ns2:certificateConfig .../>`.
 

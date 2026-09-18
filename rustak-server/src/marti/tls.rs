@@ -10,10 +10,13 @@
 //! 1. **`200`, never `201`.** ATAK's status mapping treats only `200` as
 //!    success, so a `201` on a perfectly good enrolment reads as a failure
 //!    (`compat/enrollment.md` §3).
-//! 2. **At least two `<nameEntry>` elements.** CloudTAK parses the config
-//!    document with `xml-js` in compact mode, which collapses a single-element
-//!    array to a bare object; its `for (… of nameEntries.nameEntry)` then throws
-//!    on a non-iterable (§1).
+//! 2. **At least two `<nameEntry>` elements, none of them empty.** CloudTAK
+//!    parses the config document with `xml-js` in compact mode, which collapses
+//!    a single-element array to a bare object; its
+//!    `for (… of nameEntries.nameEntry)` then throws on a non-iterable (§1).
+//!    And commoncommo builds its signing request through OpenSSL, which refuses
+//!    a zero-length subject component — so the padding carries the organisation
+//!    rather than an empty string (§1, `padded_entries`).
 //! 3. **Bare base64, no PEM armour**, in both representations. Each client adds
 //!    the banner itself, and they disagree about which end does it (§3).
 //!
@@ -44,6 +47,10 @@ use super::enroll::{SignQuery, internal_error, issue};
 use super::error::{MartiError, MartiResult};
 use super::extract::ListenerRole;
 use super::response;
+
+/// What a name entry is padded with when the configuration leaves us nothing
+/// non-empty to pad with. Matches `[pki] organization`'s own default.
+const FALLBACK_NAME_ENTRY: &str = "rustak";
 
 /// Which representation the client asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,7 +110,7 @@ impl Representation {
 pub async fn config(request: HttpRequest, context: web::Data<AppContext>) -> MartiResult {
     let pki = match caller(&request, &context).await {
         Ok((_, pki)) => pki,
-        Err(response) => return Ok(response),
+        Err(response) => return Ok(*response),
     };
 
     Ok(response::xml(certificate_config(&pki)))
@@ -125,7 +132,7 @@ pub async fn sign_client_v2(
 ) -> MartiResult {
     let (resolved, pki) = match caller(&request, &context).await {
         Ok(pair) => pair,
-        Err(response) => return Ok(response),
+        Err(response) => return Ok(*response),
     };
 
     let Some(representation) = Representation::of(&request) else {
@@ -166,7 +173,7 @@ pub async fn sign_client_v1(
 ) -> MartiResult {
     let (resolved, pki) = match caller(&request, &context).await {
         Ok(pair) => pair,
-        Err(response) => return Ok(response),
+        Err(response) => return Ok(*response),
     };
 
     let issued = issue(
@@ -201,21 +208,29 @@ pub async fn sign_client_v1(
 /// because these paths answer a bare `Unauthorized` with a `WWW-Authenticate`
 /// challenge — the shape a TAK client and an HTTP client both understand —
 /// rather than the JSON envelope the rest of the Marti surface uses.
+///
+/// The refusal is boxed because it is the *error* half of this result, and an
+/// `HttpResponse` is large enough that `result_large_err` would otherwise fire
+/// on every caller: the success path would carry the size of a whole response
+/// it never uses. The wire shape is unaffected — the callers unbox and return
+/// the same response.
 async fn caller(
     request: &HttpRequest,
     context: &AppContext,
-) -> Result<(Resolved, std::sync::Arc<Pki>), HttpResponse> {
+) -> Result<(Resolved, std::sync::Arc<Pki>), Box<HttpResponse>> {
     let resolved = resolve_principal(context, request, policy_for(request))
         .await
-        .map_err(|failure| refusal(context, failure))?;
+        .map_err(|failure| Box::new(refusal(context, failure)))?;
 
     let pki = context.pki().map_err(|err| {
         error!(error = %err, "An enrolment request arrived before the authority was ready.");
         context.session().record_human_error(&err);
 
-        HttpResponse::ServiceUnavailable()
-            .insert_header((actix_web::http::header::CONTENT_TYPE, response::TEXT_PLAIN))
-            .body("Certificate enrollment is not available on this server.")
+        Box::new(
+            HttpResponse::ServiceUnavailable()
+                .insert_header((actix_web::http::header::CONTENT_TYPE, response::TEXT_PLAIN))
+                .body("Certificate enrollment is not available on this server."),
+        )
     })?;
 
     Ok((resolved, pki))
@@ -264,14 +279,7 @@ fn refusal(context: &AppContext, failure: AuthFailure) -> HttpResponse {
 /// than a URI — that is what TAK Server emits and what CloudTAK's client indexes
 /// by, so it is reproduced verbatim.
 fn certificate_config(pki: &Pki) -> String {
-    let mut entries = pki.name_entries();
-
-    // CloudTAK's compact-mode parser collapses a one-element array to an
-    // object and then iterates it. Two elements is the contract, not a
-    // preference — an empty value is better than a broken client.
-    if entries.len() < 2 {
-        entries.push(("OU", ""));
-    }
+    let entries = padded_entries(pki.name_entries(), pki.config().organization.trim());
 
     let rendered: String = entries
         .iter()
@@ -320,6 +328,46 @@ fn xml_body(pki: &Pki, issued: &IssuedCert) -> String {
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?><enrollment><signedCert>{}</signedCert>{chain}</enrollment>",
         bare_base64_64col(&issued.der),
     )
+}
+
+/// The name entries as both clients need to see them: at least two of them, and
+/// never one with an empty value.
+///
+/// Two rules, and one padding has to satisfy both.
+///
+/// CloudTAK's compact-mode parser collapses a one-element array to an object and
+/// then iterates it, so there must be two. commoncommo — ATAK's own networking
+/// core — builds its signing request by handing each value to OpenSSL's
+/// `X509_NAME_ENTRY_create_by_NID`, which refuses a zero-length directory
+/// string, so an `OU=""` pad failed *every* enrolment with "CSR generation
+/// failed using provided parameters" (status 14) on the first real EUD interop
+/// run. The organisation is therefore the filler, which is also TAK Server's own
+/// default shape: `O=TAK` beside `OU=TAK`.
+///
+/// The fallbacks below are unreachable in practice — configuration validation
+/// refuses a blank `name_entries` value, and `organization` is only empty if
+/// somebody blanked it — but the invariant is worth holding unconditionally
+/// rather than on the strength of a check in another module.
+fn padded_entries<'a>(
+    mut entries: Vec<(&'a str, &'a str)>,
+    organization: &'a str,
+) -> Vec<(&'a str, &'a str)> {
+    let filler = match organization {
+        "" => entries
+            .first()
+            .map_or(FALLBACK_NAME_ENTRY, |(_, value)| *value),
+        organization => organization,
+    };
+
+    if entries.is_empty() {
+        entries.push(("O", filler));
+    }
+
+    if entries.len() < 2 {
+        entries.push(("OU", filler));
+    }
+
+    entries
 }
 
 /// XML-escapes an attribute value.
@@ -384,6 +432,42 @@ mod tests {
     fn the_audit_trail_records_which_representation_was_served() {
         assert_eq!(Representation::Json.issued_via(), IssuedVia::EnrollV2Json);
         assert_eq!(Representation::Xml.issued_via(), IssuedVia::EnrollV2Xml);
+    }
+
+    #[test]
+    fn the_name_entries_are_padded_to_two_and_never_to_an_empty_value() {
+        // The empty `OU` this used to pad with failed every commoncommo
+        // enrolment at "CSR generation failed using provided parameters"
+        // (status 14): OpenSSL refuses a zero-length subject component. Both
+        // invariants — two entries, no empty value — hold for every shape the
+        // configuration can produce.
+        for (configured, organization, expected) in [
+            (vec![], "Sierra", vec![("O", "Sierra"), ("OU", "Sierra")]),
+            (
+                vec![("O", "Sierra")],
+                "Sierra",
+                vec![("O", "Sierra"), ("OU", "Sierra")],
+            ),
+            // `organization` blanked: the entry that is there is the filler.
+            (vec![("OU", "EUD")], "", vec![("OU", "EUD"), ("OU", "EUD")]),
+            // Nothing at all to work with.
+            (vec![], "", vec![("O", "rustak"), ("OU", "rustak")]),
+            // Two or more already: left exactly as configured.
+            (
+                vec![("O", "S"), ("OU", "E"), ("L", "Cape Town")],
+                "S",
+                vec![("O", "S"), ("OU", "E"), ("L", "Cape Town")],
+            ),
+        ] {
+            let padded = padded_entries(configured, organization);
+
+            assert_eq!(padded, expected);
+            assert!(padded.len() >= 2, "CloudTAK iterates this: {padded:?}");
+            assert!(
+                padded.iter().all(|(_, value)| !value.is_empty()),
+                "OpenSSL refuses a zero-length value: {padded:?}"
+            );
+        }
     }
 
     #[test]

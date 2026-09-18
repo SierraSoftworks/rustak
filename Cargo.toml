@@ -134,6 +134,17 @@ opt-level = 3
 [profile.dev.package.rsa]
 opt-level = 3
 
+# argon2id is memory-hard by design: one hash is tens of milliseconds optimised
+# and the better part of a second unoptimised, and the credential suites hash
+# hundreds of times. `blake2` is argon2's compression function, so the loop that
+# actually costs the time lives there rather than in `argon2` itself — overriding
+# one without the other buys almost nothing. Dependencies of a test target are
+# built with the `dev` profile, so these apply to `cargo test` as well.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

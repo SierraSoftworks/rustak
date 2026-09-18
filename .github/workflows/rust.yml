@@ -21,6 +21,7 @@ jobs:
   deduplicate:
     name: Check CI Result
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     permissions:
       contents: read
@@ -52,6 +53,7 @@ jobs:
   version:
     name: Start Release
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: deduplicate
     if: github.event_name != 'pull_request' || needs.deduplicate.outputs.cache-hit != 'true'
 
@@ -81,6 +83,7 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: deduplicate
 
     permissions:
@@ -119,6 +122,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: deduplicate
 
     permissions:
@@ -159,6 +163,7 @@ jobs:
   ui:
     name: Build UI
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: deduplicate
 
     permissions:
@@ -230,6 +235,7 @@ jobs:
   e2e:
     name: End-to-End Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs:
       - deduplicate
       - ui
@@ -295,11 +301,13 @@ jobs:
   # login and enrollment scenarios now run rather than skip, and with them the
   # mutually authenticated `GET /Marti/api/version` that proves an issued
   # certificate completes a handshake against our own listener. Scenarios whose
-  # endpoints are still to come (M2-06, M3, M4) report as skips naming the brief
-  # that will serve them, and start running on their own when it lands.
+  # endpoints are still to come (M3, M4) report as skips naming the brief that
+  # will serve them, and start running on their own when it lands. M2-06 landed
+  # the channel and contact surfaces, so those scenarios are gates now too.
   interop-node-tak:
     name: "Interop: node-tak"
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     needs:
       - deduplicate
@@ -359,6 +367,7 @@ jobs:
   build:
     name: ${{ matrix.os }}-${{ matrix.arch }}-${{ matrix.crate.bin }}
     runs-on: ${{ matrix.run_on }}
+    timeout-minutes: 45
 
     needs:
       - deduplicate
@@ -487,6 +496,7 @@ jobs:
   ci:
     name: CI
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     needs:
       - deduplicate
@@ -559,6 +569,7 @@ jobs:
   docker-build:
     name: "Docker Build: ${{ matrix.crate.bin }} (${{ matrix.platform }})"
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs:
       - build
 
@@ -657,6 +668,7 @@ jobs:
   docker-publish:
     name: "Docker Publish: ${{ matrix.crate.bin }}"
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs:
       - docker-build
 
@@ -723,6 +735,7 @@ jobs:
   tap:
     name: Update Homebrew Tap
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     if: github.event_name == 'release'
     needs:
       - build

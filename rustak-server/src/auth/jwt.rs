@@ -250,6 +250,44 @@ impl JwtIssuer {
         })
     }
 
+    /// As [`load_or_create`](Self::load_or_create), but adopting `pkcs8` — a
+    /// PKCS#8 RSA private key — instead of generating one when the database
+    /// holds no key yet.
+    ///
+    /// Only the test harness calls this, and only so that a suite can mint one
+    /// key per process rather than one per [`TestServer`]: RSA generation is
+    /// hundreds of milliseconds of bignum arithmetic, and a thousand tests each
+    /// paying it is the difference between a coverage run that finishes and one
+    /// the runner kills. Everything after this point — sealing, storage, the
+    /// tokens themselves — is the production path unchanged.
+    ///
+    /// # Errors
+    ///
+    /// As [`load_or_create`](Self::load_or_create), plus a
+    /// [`human_errors::Kind::System`] error when `pkcs8` is not a key we can
+    /// sign with.
+    ///
+    /// [`TestServer`]: crate::testing::TestServer
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn load_or_adopt(
+        db: &Database,
+        secrets: &SecretStore,
+        auth: &crate::config::AuthConfig,
+        base_url: &str,
+        pkcs8: &[u8],
+    ) -> Result<Self, Error> {
+        if db
+            .oauth_keys()
+            .list(KeyPurpose::AccessToken)
+            .await?
+            .is_empty()
+        {
+            store_key(db, secrets, SigningKey::from_pkcs8(pkcs8)?, pkcs8).await?;
+        }
+
+        Self::load_or_create(db, secrets, auth, base_url).await
+    }
+
     /// The identifier of the key tokens are currently signed with.
     pub fn active_kid(&self) -> &str {
         &self.active.kid
@@ -426,7 +464,17 @@ async fn create_key(db: &Database, secrets: &SecretStore) -> Result<SigningKey, 
         .await
         .or_system_err(ADVICE_REPORT)??;
 
-    let sealed = secrets.seal(&pkcs8, SecretContext::JwtSigningKey { kid: &key.kid })?;
+    store_key(db, secrets, key, &pkcs8).await
+}
+
+/// Seals a key that already exists and records it as the one to sign with.
+async fn store_key(
+    db: &Database,
+    secrets: &SecretStore,
+    key: SigningKey,
+    pkcs8: &[u8],
+) -> Result<SigningKey, Error> {
+    let sealed = secrets.seal(pkcs8, SecretContext::JwtSigningKey { kid: &key.kid })?;
 
     db.oauth_keys()
         .create(NewOauthKey {
@@ -454,12 +502,25 @@ mod tests {
         }
     }
 
+    /// An issuer on the shared test key.
+    ///
+    /// [`load_or_adopt`](JwtIssuer::load_or_adopt) rather than
+    /// [`load_or_create`](JwtIssuer::load_or_create) because generating an
+    /// RSA key per test is seconds each under `-Cinstrument-coverage`. The
+    /// tests that are *about* generation — rotation, and the stranger below —
+    /// still generate their own.
     async fn issuer() -> (Database, SecretStore, JwtIssuer) {
         let db = Database::open_in_memory().await.unwrap();
         let secrets = SecretStore::ephemeral();
-        let jwt = JwtIssuer::load_or_create(&db, &secrets, &auth(), "https://unused")
-            .await
-            .unwrap();
+        let jwt = JwtIssuer::load_or_adopt(
+            &db,
+            &secrets,
+            &auth(),
+            "https://unused",
+            &crate::testing::keys::JWT_SIGNING_KEY,
+        )
+        .await
+        .unwrap();
 
         (db, secrets, jwt)
     }
@@ -796,11 +857,12 @@ mod tests {
     #[tokio::test]
     async fn the_issuer_falls_back_to_the_server_url() {
         let db = Database::open_in_memory().await.unwrap();
-        let jwt = JwtIssuer::load_or_create(
+        let jwt = JwtIssuer::load_or_adopt(
             &db,
             &SecretStore::ephemeral(),
             &crate::config::AuthConfig::default(),
             "https://tak.example.com:8446",
+            &crate::testing::keys::JWT_SIGNING_KEY,
         )
         .await
         .unwrap();

@@ -37,7 +37,19 @@ deduplicate ──┬─ version ───────────────�
 - **`lint`** and **`test`** run once, workspace-wide. `rustak-ui` is excluded
   from the workspace (it targets `wasm32-unknown-unknown`), so it is not
   covered here — it is linted inside the `ui` job instead, where the wasm32
-  toolchain and Trunk are already installed.
+  toolchain and Trunk are already installed. `test` runs under
+  `-Cinstrument-coverage`; see [Keeping the test job inside its
+  timeout](#keeping-the-test-job-inside-its-timeout) for what that costs and
+  what pays for it.
+- **Every job carries a `timeout-minutes`** — 45 for `build`, 30 for `test`
+  and for the four that compile or image something big (`ui`, `e2e`,
+  `interop-node-tak`, `docker-build`), 20 for `lint`, `docker-publish` and
+  `tap`, 10 for the bookkeeping jobs (`deduplicate`, `version`, `ci`).
+  GitHub's own default is six hours, which is not a guard rail — a `test` job
+  that had stopped finishing at all ran until it was cancelled by hand. The
+  numbers are deliberately loose: a cold cache is the slow case and none of
+  these should come near them, so a job that *does* hit its timeout is a bug
+  report rather than a number to raise.
 - **`ui`** installs `trunk` pinned to **0.21.14** (`cargo binstall trunk@0.21.14`;
   0.22 was still beta at the time this pipeline was written — bump the pin
   deliberately, not via dependabot, which cannot see cargo-binstall installs).
@@ -119,6 +131,53 @@ workflow_dispatch                ──── interop-eud-image    active (manua
 `interop/rust` (the `rustak-client` fake-EUD suites) is **not** a separate
 workflow — it is part of `cargo test --workspace` in the `test` job, since
 those suites live under `rustak-server/tests/stream_*.rs`.
+
+## Keeping the test job inside its timeout
+
+The `test` job compiles the whole workspace with `RUSTFLAGS=-Cinstrument-coverage`
+and runs the lot on a two-vCPU runner — over 1300 tests in `rustak-server`'s
+library target alone, plus eleven integration binaries. Instrumentation applies to *every*
+crate in the graph, dependencies included — there is no stable per-package
+rustflag — so the arithmetic-heavy dependencies (`rsa`, `num-bigint-dig`,
+`argon2`, `blake2`) run with a counter update in their innermost loops. That is
+why an RSA-2048 generation that costs a fraction of a second uninstrumented costs
+*minutes* of CPU instrumented — measured at roughly two orders of magnitude on
+this workspace — and why the job once stopped finishing at all, with individual
+tests reported as "has been running for over 60 seconds". `grcov` already discards
+everything outside the workspace at *report* time, but that is after the cost
+has been paid.
+
+Three things keep it inside 30 minutes, all of them in test-only code:
+
+1. **One token signing key per test process.** `rustak-server/src/testing/keys.rs`
+   holds a `LazyLock` RSA-2048 key and `TestServer` adopts it through
+   `JwtIssuer::load_or_adopt`, instead of each of the 240-odd test servers
+   generating its own. Databases, data directories, secret stores and content
+   stores stay per test, so isolation is unchanged; the tests that are *about*
+   key generation (rotation, "a token signed by another server") still generate.
+2. **A cheaper argon2id cost in tests.** `rustak_core::identity::password::use_testing_params`
+   switches the process to `Params::TESTING` (m = 8 MiB, t = 1) and `TestServer`
+   calls it. It is compiled out without the `testing` feature, no deployment can
+   reach it, and verification is unaffected because a PHC string carries the
+   cost its hash was made at.
+3. **`opt-level = 3` for the crypto dependencies** (`[profile.dev.package.*]` in
+   the workspace `Cargo.toml`: `rsa`, `num-bigint-dig`, `argon2`, `blake2`).
+   Dependencies of a test target are built with the `dev` profile, so these
+   apply to `cargo test`.
+
+If the job ever creeps back towards its timeout, measure before changing
+anything: `cargo test -p rustak-server --features testing` with and without
+`RUSTFLAGS=-Cinstrument-coverage` gives the instrumentation multiplier directly,
+and `--lib <module>::` narrows it to one suite.
+
+Instrumenting only the workspace is the obvious fourth lever and it is not
+available on stable: `-Cinstrument-coverage` is a per-*invocation* flag and
+applies to every crate that invocation builds, and the per-package equivalent
+(`[profile.dev.package.<dep>] rustflags`) is nightly-only behind
+`-Zprofile-rustflags`. `cargo llvm-cov` does not change that — it sets the same
+flag through `RUSTFLAGS` and filters at report time, as `grcov` already does.
+So the levers are the three above; dropping coverage is not one, because codecov
+is a gate.
 
 ## Other workflows
 
