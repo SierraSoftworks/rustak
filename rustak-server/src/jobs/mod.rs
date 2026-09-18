@@ -58,7 +58,6 @@ pub mod mission_expiry;
 pub mod retention;
 pub mod runnable;
 pub mod service_health;
-pub mod tls_files;
 pub mod wal_checkpoint;
 
 pub use acme_renew::{
@@ -80,5 +79,4 @@ pub use runnable::{JobRegistration, JobRunnable};
 pub use service_health::{
     SERVICE_HEALTH_INTERVAL, SERVICE_HEALTH_PARTITION, ServiceHealthJob, ServiceHealthTask,
 };
-pub use tls_files::{TLS_FILES_PARTITION, TLS_FILES_RELOAD_KEY, TlsFilesJob, TlsFilesTask};
 pub use wal_checkpoint::{WAL_CHECKPOINT_PARTITION, WalCheckpointJob, WalCheckpointTask};
