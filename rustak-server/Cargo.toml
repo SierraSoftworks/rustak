@@ -1,0 +1,86 @@
+[package]
+name = "rustak-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+description = "rustak: a single-binary, embedded-SQLite TAK server."
+
+[lib]
+name = "rustak_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rustak"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[features]
+# Exposes test-only mocks (AppContext::new_mock, TestIdentityProvider, …) to
+# the in-process integration tests under `tests/`.
+testing = []
+
+[dependencies]
+rustak-api = { workspace = true }
+rustak-core = { workspace = true }
+rustak-cot = { workspace = true }
+actix-web = { workspace = true }
+actix-ws = { workspace = true }
+actix-multipart = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+futures-concurrency = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+rcgen = { workspace = true }
+rsa = { workspace = true }
+x509-parser = { workspace = true }
+instant-acme = { workspace = true }
+p12-keystore = { workspace = true }
+pem = { workspace = true }
+rusqlite = { workspace = true }
+tokio-rusqlite = { workspace = true }
+include_dir = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+quick-xml = { workspace = true }
+zip = { workspace = true }
+jsonwebtoken = { workspace = true }
+argon2 = { workspace = true }
+aes-gcm = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+base64 = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+zeroize = { workspace = true }
+filt-rs = { workspace = true }
+bitvec = { workspace = true }
+tracing = { workspace = true }
+tracing-batteries = { workspace = true }
+human-errors = { workspace = true }
+opentelemetry = { workspace = true }
+clap = { workspace = true }
+dotenvy = { workspace = true }
+inventory = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+rustak-client = { workspace = true }
+rstest = { workspace = true }
+wiremock = { workspace = true }
+tempfile = { workspace = true }
+pretty_assertions = { workspace = true }

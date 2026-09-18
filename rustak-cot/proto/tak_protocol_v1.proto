@@ -1,0 +1,66 @@
+// TAK Protocol v1 — binary framing for Cursor-on-Target events.
+//
+// This is a clean-room definition: the message and field names below, and
+// their field numbers and wire types, describe a publicly documented binary
+// encoding used by CoT-speaking clients. No text was copied from any GPL
+// source; the field numbers are facts about an existing wire format, not
+// original expression.
+//
+// M0 defines just enough of the schema (`TakMessage`, `TakControl`, the
+// scalar fields of `CotEvent`, and an intentionally empty `Detail`) to prove
+// the protox/prost-build pipeline end to end. The typed detail sub-messages
+// (contact, group, precision location, status, takv, track, and the
+// extension-detail escape hatch) are filled in by a later milestone.
+syntax = "proto3";
+
+package rustak.cot.v1;
+
+// The single envelope carried by every framed protocol message. Either half
+// may be absent: a bare `TakControl` announces or negotiates protocol
+// capabilities without carrying an event, and a bare `CotEvent` is the
+// common case once a connection has settled on a protocol version.
+message TakMessage {
+  TakControl takControl = 1;
+  CotEvent cotEvent = 2;
+}
+
+// Out-of-band control chatter used to negotiate which protocol version (and
+// which detail extensions) a connection will use, and to keep a contact's
+// identity attached to a stream that isn't currently sending CoT events.
+message TakControl {
+  uint32 minProtoVersion = 1;
+  uint32 maxProtoVersion = 2;
+  string contactUid = 3;
+}
+
+// The protobuf-encoded equivalent of a CoT `<event>` element. Field numbers
+// are deliberately non-contiguous (16/17 were reserved for values added
+// after the original schema shipped) — we keep that gap rather than
+// renumber, since the numbers are the part of this format that must match
+// what CoT-speaking clients already send and expect to receive.
+message CotEvent {
+  string type = 1;
+  string access = 2;
+  string qos = 3;
+  string opex = 4;
+  string uid = 5;
+  uint64 sendTime = 6;
+  uint64 startTime = 7;
+  uint64 staleTime = 8;
+  string how = 9;
+  double lat = 10;
+  double lon = 11;
+  double hae = 12;
+  double ce = 13;
+  double le = 14;
+  Detail detail = 15;
+  string caveat = 16;
+  string releasableTo = 17;
+}
+
+// Placeholder for the `<detail>` child element's typed sub-messages
+// (contact, group membership, precision location, status, TAK version
+// info, track, and opaque extension payloads). Left empty in M0 so
+// `CotEvent.detail` has somewhere to point; a later milestone adds the
+// fields without needing to touch `CotEvent` again.
+message Detail {}

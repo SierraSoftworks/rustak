@@ -1,0 +1,117 @@
+[workspace]
+resolver = "3"
+members = ["rustak-*"]
+exclude = ["rustak-ui"]          # wasm32 target; built with trunk (own Cargo.lock)
+default-members = ["rustak-server"]
+
+[workspace.package]
+version = "0.1.0"                # rewritten by the `version` CI job from the release tag
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+authors = ["Sierra Softworks"]
+repository = "https://github.com/SierraSoftworks/rustak"
+homepage = "https://github.com/SierraSoftworks/rustak"
+publish = false
+
+[workspace.dependencies]
+# ---- internal ----
+rustak-cot    = { path = "rustak-cot" }
+rustak-api    = { path = "rustak-api" }
+rustak-core   = { path = "rustak-core" }
+rustak-client = { path = "rustak-client" }
+rustak-server = { path = "rustak-server" }
+
+# ---- async / http ----
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "fs", "signal", "sync", "tracing"] }
+tokio-util = { version = "0.7.19", features = ["codec", "rt"] }
+tokio-stream = "0.1.19"
+futures = "0.3.34"
+futures-concurrency = "7.7.1"
+async-trait = "0.1.92"
+bytes = "1.12.1"
+actix-web = { version = "4.15.0", features = ["rustls-0_23"] }
+actix-ws = "0.4.0"
+actix-multipart = "0.8.2"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "form", "multipart", "stream", "http2", "charset"] }
+url = "2.5.8"
+
+# ---- tls / pki ----
+rustls = { version = "0.23.45", default-features = false, features = ["aws_lc_rs", "logging", "std", "tls12"] }
+tokio-rustls = { version = "0.26.5", default-features = false, features = ["aws_lc_rs", "logging", "tls12"] }
+rustls-pki-types = { version = "1.15.1", features = ["std"] }
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "aws_lc_rs", "x509-parser"] }
+x509-parser = { version = "0.18.1", features = ["verify-aws"] }
+instant-acme = { version = "0.8.5", default-features = false, features = ["aws-lc-rs", "hyper-rustls"] }
+p12-keystore = "0.3.2"
+pem = "4.0.0"
+rsa = { version = "0.9.10", features = ["getrandom", "sha2"] }   # RSA key generation (CA + JWT keys); rcgen cannot generate RSA
+
+# ---- storage ----
+rusqlite = { version = "0.40.2", features = ["bundled", "chrono", "serde_json"] }
+tokio-rusqlite = "0.8.0"
+include_dir = "0.7.4"
+
+# ---- serialization ----
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+toml = "1.1.6"
+chrono = { version = "0.4.45", features = ["serde"] }
+uuid = { version = "1.26.1", features = ["v4", "serde"] }
+quick-xml = { version = "0.42.0", features = ["serialize"] }
+prost = "0.14.4"
+prost-types = "0.14.4"
+prost-build = "0.14.4"
+protox = "0.9.1"
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }   # pure Rust, cross-friendly
+
+# ---- identity / crypto ----
+jsonwebtoken = { version = "11.1.0", features = ["aws_lc_rs"] }
+argon2 = "0.6.0"
+aes-gcm = "0.11.1"
+sha2 = "0.11.0"
+hmac = "0.13.0"
+base64 = "0.23.1"
+hex = "0.4.3"
+rand = "0.10.2"
+zeroize = { version = "1.9.0", features = ["derive"] }
+filt-rs = { version = "1.1.3", features = ["serde"] }
+bitvec = "1.1.1"
+
+# ---- telemetry / errors / cli ----
+tracing = "0.1.44"
+tracing-batteries = { git = "https://github.com/sierrasoftworks/tracing-batteries-rs.git", features = ["opentelemetry", "sentry", "analytics", "testing", "human_errors"] }
+human-errors = { version = "0.2.4", features = ["pretty", "force_backtraces"] }
+opentelemetry = "0.32.0"
+clap = { version = "4.6.7", features = ["derive", "cargo", "string", "env"] }
+dotenvy = "0.15.7"
+inventory = "0.3.24"
+
+# ---- dev ----
+rstest = "0.27.0"
+wiremock = "0.6.5"
+tempfile = "3.27.0"
+pretty_assertions = "1.4.1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+print_stdout = "warn"          # binaries log through tracing; `main.rs` allows print_stderr for the pretty error
+large_futures = "warn"
+
+# The tests generate RSA keys (CA, JWT signing key, test IdP); bignum math is
+# unusably slow unoptimised (same override automate carries).
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
+[profile.dev.package.rsa]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

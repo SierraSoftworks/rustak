@@ -1,0 +1,66 @@
+# config.example.toml — every key shown with its default unless marked (required)
+
+[server]
+name = "rustak"                       # shown to clients (Marti version/config), overridable from the setup wizard
+domains = ["tak.example.com"]        # public host names; first is the canonical one used in QR codes and .pref files
+# base_url = "https://tak.example.com:8446"   # inferred from server.domains / request Host when omitted
+trust_proxy = false                   # honour X-Forwarded-* only behind a trusted proxy
+data_dir = "./data"                   # database, key file, content store, ACME cache live here
+
+[storage]
+# database = "<data_dir>/rustak.sqlite"
+# content_dir = "<data_dir>/content"
+reader_connections = 2                # read-only WAL connections; 0 = reads share the writer
+busy_timeout = "5s"
+checkpoint_interval = "5m"            # PASSIVE wal_checkpoint job cadence
+
+[web.public]                          # browser UI, /api/v1, /oauth/*, /login/*, /Marti/api/tls/* (enrollment)
+listen = [":8446"]                    # add ":443" for a browser-friendly port (needs CAP_NET_BIND_SERVICE)
+[web.public.tls]
+mode = "none"                         # "none" (dev / behind a TLS proxy) | "files" | "acme"
+# cert_file = "/etc/rustak/fullchain.pem"
+# key_file  = "/etc/rustak/privkey.pem"
+
+[web.marti]                           # full Marti API over the internal CA (M2)
+enabled = true
+listen = ":8443"
+client_cert = "optional"              # "optional" | "required"
+
+[stream.tls]                          # CoT stream, internal CA, client cert required (M1)
+enabled = true
+listen = ":8089"
+idle_timeout = "90s"
+
+[auth]
+# oidc = { endpoint = "https://id.example.com", client_id = "rustak", client_secret = "${{ env.RUSTAK_OIDC_CLIENT_SECRET }}",
+#          scopes = ["profile", "email", "offline_access"], username_claim = "preferred_username", groups_claim = "groups" }
+# user_acl  = 'true'                  # filt-rs over method/path/client_ip/headers.*/claims.*; who may sign in to the UI (default: deny)
+# admin_acl = 'claims.groups contains "tak-admins"'   # OR the users.is_admin flag set by the wizard/CLI (default: deny)
+access_token_ttl = "1h"
+refresh_token_ttl = "30d"
+# secret_key = "${{ env.RUSTAK_SECRET_KEY }}"        # AES-256 key (base64/hex); generated into <database>.key when absent
+# previous_secret_keys = []
+
+[pki]
+ca_common_name = "rustak CA"
+organization = "rustak"
+key_type = "rsa-2048"                 # "rsa-2048" | "ecdsa-p256" — RSA by default for TAK ecosystem truststores
+ca_validity = "3650d"
+client_cert_validity = "365d"
+server_cert_validity = "397d"
+
+[acme]                                # public certificate for [web.public] when tls.mode = "acme" (M2)
+enabled = false
+directory = "https://acme-v02.api.letsencrypt.org/directory"
+# contact_email = "ops@example.com"
+# domains = []                        # defaults to server.domains
+challenge = "http-01"                 # "http-01" | "tls-alpn-01"
+renew_before = "30d"
+
+[retention]
+cot_history = "7d"
+cot_history_max_rows = 2000000
+audit = "90d"
+audit_max_entries = 100000
+archived_missions = "30d"
+content_orphans = "24h"

@@ -1,0 +1,24 @@
+[package]
+name = "rustak-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+description = "Shared JSON DTOs and validated identity newtypes for the admin API (server <-> UI). wasm-safe."
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+# Workspace-wide `uuid` enables the `v4` feature for crates that generate ids
+# (rustak-server); this crate only parses/serialises them, so it does not ask
+# for `v4` itself, though Cargo's feature unification means the wasm build
+# still includes it if another workspace member is compiled alongside it.
+uuid = { workspace = true }

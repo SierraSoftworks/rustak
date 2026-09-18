@@ -1,0 +1,15 @@
+# config.example.toml — placeholder.
+#
+# The sidecar config schema (server connection, service identity, per-service
+# settings) is defined by the `rustak-client::sidecar` implementation brief;
+# this file is a placeholder so `rustak-plugin-example` has one to point new
+# plugins at from day one. See `.claude/plan/plan.md` → Architecture ->
+# "Plugin (sidecar) contract".
+
+[server]
+# host = "tak.example.com"
+# stream = "ssl://tak.example.com:8089"
+# control = "https://tak.example.com:8446/api/v1"
+
+[service]
+name = "example"

@@ -1,0 +1,39 @@
+[package]
+name = "rustak-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+description = "Shared foundation for every rustak binary: config loading, telemetry bootstrap, human-errors prelude, credential/identity primitives, service-descriptor types."
+
+[lints]
+workspace = true
+
+[dependencies]
+rustak-api = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+tracing-batteries = { workspace = true }
+human-errors = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+chrono = { workspace = true }
+dotenvy = { workspace = true }
+argon2 = { workspace = true }
+rand = { workspace = true }
+zeroize = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+bitvec = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+rstest = { workspace = true }
+tempfile = { workspace = true }

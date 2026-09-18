@@ -1,0 +1,26 @@
+# Trunk configuration for the rustak admin single-page UI.
+#
+# `trunk serve` runs a dev server with hot reload; pass `--open` to launch a
+# browser. During development the UI talks to a live server for
+# `/api/v1/*` and `/oauth/*` requests via the proxies below, while serving
+# the wasm bundle itself.
+
+[build]
+target = "index.html"
+# Emit the compiled assets into ./dist so the server can embed them via
+# `include_dir!("$CARGO_MANIFEST_DIR/../rustak-ui/dist")`.
+dist = "dist"
+
+[watch]
+watch = ["src", "styles.scss", "index.html"]
+
+[serve]
+port = 8081
+# Proxy admin API and OAuth2 requests to a locally running server so the dev
+# UI can be exercised against real data. Adjust the backend address as
+# needed.
+[[proxy]]
+backend = "http://127.0.0.1:8446/api/v1"
+
+[[proxy]]
+backend = "http://127.0.0.1:8446/oauth"

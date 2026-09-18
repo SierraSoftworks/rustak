@@ -1,0 +1,30 @@
+[package]
+name = "rustak-cot"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+description = "CoT XML model and clean-room TAK Protocol codecs. No I/O, no server dependencies."
+
+[lints]
+workspace = true
+
+[dependencies]
+prost = { workspace = true }
+prost-types = { workspace = true }
+bytes = { workspace = true }
+quick-xml = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+
+[build-dependencies]
+protox = { workspace = true }
+prost-build = { workspace = true }
+
+[dev-dependencies]
+rstest = { workspace = true }
+pretty_assertions = { workspace = true }

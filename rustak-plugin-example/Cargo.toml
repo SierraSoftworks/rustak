@@ -1,0 +1,28 @@
+[package]
+name = "rustak-plugin-example"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+description = "Minimal sidecar template: service identity -> connect -> publish/subscribe CoT -> heartbeat. Copy-and-rename recipe for new plugins."
+
+[[bin]]
+name = "rustak-plugin-example"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+rustak-client = { workspace = true }
+rustak-core = { workspace = true }
+rustak-cot = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+human-errors = { workspace = true }
+clap = { workspace = true }

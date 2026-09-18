@@ -1,0 +1,32 @@
+[package]
+name = "rustak-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+description = "Sidecar SDK: TAK stream client, typed Marti API client, control-API client. Also used by the server's integration tests."
+
+[lints]
+workspace = true
+
+[dependencies]
+rustak-core = { workspace = true }
+rustak-cot = { workspace = true }
+rustak-api = { workspace = true }
+tokio = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+reqwest = { workspace = true }
+futures = { workspace = true }
+tokio-util = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+tracing = { workspace = true }
+human-errors = { workspace = true }

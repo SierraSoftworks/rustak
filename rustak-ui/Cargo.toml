@@ -1,0 +1,59 @@
+[package]
+name = "rustak-ui"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+authors = ["Sierra Softworks"]
+repository = "https://github.com/SierraSoftworks/rustak"
+homepage = "https://github.com/SierraSoftworks/rustak"
+publish = false
+description = "rustak admin SPA (Yew/Trunk): bootstrap, enrollment, configuration and admin only."
+
+# Excluded from the workspace (wasm32 target, own Cargo.lock), so this crate
+# cannot use `workspace = true` — every version below is pinned directly.
+
+[[bin]]
+name = "rustak-ui"
+path = "src/main.rs"
+
+[dependencies]
+rustak-api = { path = "../rustak-api" }
+# wasm32 has no OS randomness; `js` routes uuid through the browser (rustak-api leaves the choice to the target).
+uuid = { version = "1", features = ["js"] }
+
+yew = { version = "0.23", features = ["csr"] }
+yew-router = "0.20"
+
+gloo-net = "0.7"
+gloo-utils = "0.3"
+gloo-timers = { version = "0.4", features = ["futures"] }
+
+futures = "0.3"
+
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Location",
+    "History",
+    "Storage",
+    "UrlSearchParams",
+    "Crypto",
+    "HtmlInputElement",
+    "HtmlSelectElement",
+    "InputEvent",
+    "Navigator",
+    "Clipboard",
+    "Element",
+] }
+
+base64 = "0.23"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde", "wasmbind"] }
+
+log = "0.4"
+wasm-logger = "0.2"
+console_error_panic_hook = "0.1"
