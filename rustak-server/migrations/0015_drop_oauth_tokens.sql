@@ -1,0 +1,26 @@
+-- Removes `oauth_tokens`, which nothing has ever written to.
+--
+-- Migration `0003` created it as one generic table for authorization codes and
+-- pending identity-provider states. Neither ended up there. Codes went into
+-- `oauth_codes` (`0013`), where the client, the redirect URI and the proof-key
+-- challenge a code is bound to are columns rather than keys in a JSON blob — so
+-- a redemption that forgets to check one of them fails to compile instead of
+-- silently widening what the code is good for. The pending identity-provider
+-- state went into the `auth-state` key/value partition beside the passkey
+-- ceremonies, because it is opaque, one component owns it and it is read back
+-- whole. Refresh tokens were never here: they rotate in families and live in
+-- `refresh_tokens`.
+--
+-- So the table is dead in every sense that matters — no repository, no query,
+-- no row — and a dead table with a `user_id` foreign key and a `token_hash`
+-- column is worse than no table: the next person reading the schema has to work
+-- out whether it holds live credentials before they can answer any question
+-- about where this server keeps its secrets. Dropping it now, rather than
+-- leaving it for a migration that also has to move data, means this one cannot
+-- lose anything.
+--
+-- Its two indexes go with it; SQLite drops them with the table, and they are
+-- named here so that a reader of this file knows nothing else was left behind.
+--   idx_oauth_tokens_user     (user_id, kind)
+--   idx_oauth_tokens_expires  (expires_at)
+DROP TABLE IF EXISTS oauth_tokens;

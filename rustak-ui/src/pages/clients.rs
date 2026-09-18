@@ -12,8 +12,15 @@
 //! the same certificate. Taking access away is revoking that certificate,
 //! which is on the Devices page — and the confirmation here says so rather
 //! than implying an outcome this button does not have.
+//!
+//! # An empty list is two different answers
+//!
+//! `GET /clients` says `[]` for a quiet exercise and for an installation with
+//! no stream listener. `GET /clients/status` is what tells them apart, and this
+//! page asks it once so that the empty state can say which one it is looking
+//! at instead of describing both.
 
-use rustak_api::{ClientHistoryEntry, ConnectedClient};
+use rustak_api::{ClientHistoryEntry, ConnectedClient, StreamStatus};
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
@@ -36,6 +43,7 @@ const HISTORY_SECONDS: i64 = 86_400;
 pub fn clients() -> Html {
     let clients = use_resource(api::clients::list);
     let history = use_resource(|| api::clients::history(HISTORY_SECONDS));
+    let listener = use_resource(api::clients::status);
 
     let live = use_state(|| true);
 
@@ -82,7 +90,7 @@ pub fn clients() -> Html {
                     }
                 />
 
-                { connected_list(&clients.data, &clients.error, &reload) }
+                { connected_list(&clients.data, &clients.error, &listener.data, &reload) }
             </Card>
 
             <Card
@@ -98,6 +106,7 @@ pub fn clients() -> Html {
 fn connected_list(
     data: &Option<Vec<ConnectedClient>>,
     error: &Option<String>,
+    listener: &Option<StreamStatus>,
     reload: &Callback<()>,
 ) -> Html {
     match (data, error) {
@@ -110,10 +119,7 @@ fn connected_list(
             />
         },
         (Some(list), _) if list.is_empty() => html! {
-            <p class="panel-empty">
-                { "Nothing is connected. An installation with no stream listener says the same \
-                   thing, because nothing is." }
-            </p>
+            <p class="panel-empty">{ empty_reason(listener) }</p>
         },
         (Some(list), _) => html! {
             <ul class="client-list">
@@ -184,8 +190,11 @@ fn client_row(props: &ClientRowProps) -> Html {
 
             busy.set(true);
             spawn_local(async move {
+                // The incognito call answers the updated connection; the list
+                // is re-read either way, because disconnecting changes its
+                // length and the page shows both.
                 let outcome = match incognito {
-                    Some(on) => api::clients::set_incognito(&uid, on).await,
+                    Some(on) => api::clients::set_incognito(&uid, on).await.map(|_| ()),
                     None => api::clients::disconnect(&uid).await,
                 };
 
@@ -257,6 +266,25 @@ fn client_row(props: &ClientRowProps) -> Html {
                 <p class="client-row__error" role="alert">{ message.clone() }</p>
             }
         </div>
+    }
+}
+
+/// Why the list is empty, once the listener has said whether it is running.
+///
+/// Until it has, the page says the ambiguous thing — which is honest for the
+/// moment before the answer arrives, and is replaced rather than corrected.
+fn empty_reason(listener: &Option<StreamStatus>) -> &'static str {
+    match listener {
+        Some(status) if !status.enabled => {
+            "Nothing is connected. This server has no stream listener — switch on \
+             [stream.tls] in its configuration to let devices connect."
+        }
+        Some(status) if !status.bound => {
+            "Nothing is connected. The stream listener is switched on but has not \
+             come up; its start-up failure is in the server log."
+        }
+        Some(_) => "Nothing is connected. The stream listener is running and quiet.",
+        None => "Nothing is connected.",
     }
 }
 

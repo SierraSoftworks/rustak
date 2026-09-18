@@ -78,6 +78,46 @@ pub struct IncognitoRequest {
     pub on: bool,
 }
 
+/// What the stream listener itself is doing.
+///
+/// `GET /clients` answers `[]` both for "the listener is running and nobody is
+/// connected" and for "this installation has no listener", and those are
+/// different things for an operator to be told: the first is quiet, the second
+/// is a configuration problem. This is the field that tells them apart, so no
+/// page has to render the ambiguous sentence.
+///
+/// Administrative, like the rest of `/clients` — how many devices are on an
+/// installation is not something an unauthenticated caller learns, which is
+/// also why it is not on the public health check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamStatus {
+    /// Whether the configuration switches the listener on at all.
+    pub enabled: bool,
+
+    /// Whether it has bound and published its registry. `false` with `enabled`
+    /// true means it was asked for and did not come up.
+    pub bound: bool,
+
+    /// How many connections are open right now.
+    pub connections: u32,
+}
+
+impl StreamStatus {
+    /// What an installation with `[stream.tls] enabled = false` answers.
+    pub fn off() -> Self {
+        Self {
+            enabled: false,
+            bound: false,
+            connections: 0,
+        }
+    }
+
+    /// Whether an empty client list means "quiet" rather than "switched off".
+    pub fn is_listening(&self) -> bool {
+        self.enabled && self.bound
+    }
+}
+
 /// One client this server has seen, whether or not it is connected now.
 ///
 /// The enrolled device is the source, so a client that has never connected
@@ -176,6 +216,36 @@ mod tests {
 
         assert!(parsed.on);
         assert_eq!(serde_json::to_string(&parsed).unwrap(), r#"{"on":true}"#);
+    }
+
+    #[test]
+    fn an_empty_client_list_is_only_ambiguous_without_this() {
+        // "Nobody is connected" and "there is no listener" are different things
+        // for an operator to be told, and `GET /clients` answers `[]` for both.
+        let quiet = StreamStatus {
+            enabled: true,
+            bound: true,
+            connections: 0,
+        };
+        assert!(quiet.is_listening());
+
+        let off = StreamStatus::off();
+        assert!(!off.is_listening());
+        assert_eq!(off.connections, 0);
+
+        let asked_for_and_absent = StreamStatus {
+            enabled: true,
+            bound: false,
+            connections: 0,
+        };
+        assert!(
+            !asked_for_and_absent.is_listening(),
+            "configured but not bound is not listening either",
+        );
+
+        let json = serde_json::to_string(&quiet).unwrap();
+        assert_eq!(json, r#"{"enabled":true,"bound":true,"connections":0}"#);
+        assert_eq!(serde_json::from_str::<StreamStatus>(&json).unwrap(), quiet);
     }
 
     #[test]

@@ -74,10 +74,12 @@ pub async fn apply(db: &Database, hash: &str, change: &PackageUpdate) -> Result<
     }
 
     if let Some(at) = change.expiration {
-        // TAK's own `-1` is "never", and the column holds `NULL` for it.
-        let value = match at >= 0 {
-            true => Value::Integer(at),
-            false => Value::Null,
+        // The admin API says "never" with an explicit `null` and the Marti
+        // surface says it with TAK's own `-1`; the column holds `NULL` for
+        // both, and epoch milliseconds for anything else.
+        let value = match at {
+            Some(at) => Value::Integer(at.timestamp_millis()),
+            None => Value::Null,
         };
         set("expiration", value, &mut binds);
     }
@@ -113,6 +115,11 @@ mod tests {
     use super::*;
     use crate::db::repos::NewResource;
 
+    /// An expiry a long way off, and the same one every time.
+    fn expires() -> chrono::DateTime<chrono::Utc> {
+        "2026-09-25T12:00:00Z".parse().unwrap()
+    }
+
     async fn seeded() -> Database {
         let db = Database::open_in_memory().await.unwrap();
 
@@ -147,7 +154,7 @@ mod tests {
                 tool: Some("atak".to_string()),
                 groups: Some(vec!["Red".to_string(), "Green".to_string()]),
                 install_on_enrollment: Some(true),
-                expiration: Some(1_790_000_000_000),
+                expiration: Some(Some(expires())),
                 keywords: None,
             },
         )
@@ -162,7 +169,7 @@ mod tests {
         assert_eq!(row.tool, "atak");
         assert_eq!(row.groups, vec!["Red".to_string(), "Green".to_string()]);
         assert!(row.install_on_enrollment);
-        assert_eq!(row.expiration, Some(1_790_000_000_000));
+        assert_eq!(row.expiration, Some(expires().timestamp_millis()));
     }
 
     #[tokio::test]
@@ -190,14 +197,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_negative_expiry_clears_it_rather_than_storing_the_past() {
+    async fn an_explicit_null_clears_the_expiry_rather_than_leaving_it() {
         let db = seeded().await;
 
         apply(
             &db,
             "aa",
             &PackageUpdate {
-                expiration: Some(1_790_000_000_000),
+                expiration: Some(Some(expires())),
                 ..PackageUpdate::default()
             },
         )
@@ -207,7 +214,7 @@ mod tests {
             &db,
             "aa",
             &PackageUpdate {
-                expiration: Some(-1),
+                expiration: Some(None),
                 ..PackageUpdate::default()
             },
         )

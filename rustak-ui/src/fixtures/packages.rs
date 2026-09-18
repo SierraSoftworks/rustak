@@ -179,7 +179,7 @@ impl State {
                     keywords: vec!["missionpackage".to_string(), "iconset".to_string()],
                     groups: Vec::new(),
                     tool: "public".to_string(),
-                    expiration: Some(ago(-60 * 24 * 90).timestamp_millis()),
+                    expiration: Some(ago(-60 * 24 * 90)),
                     // The one every device is handed on enrolment, so the flag
                     // has somewhere to be true.
                     install_on_enrollment: true,
@@ -339,7 +339,8 @@ pub fn patch_package(hash: &str, change: &PackageUpdate) -> Result<PackageSummar
             package.install_on_enrollment = install;
         }
         if let Some(expiration) = change.expiration {
-            package.expiration = (expiration >= 0).then_some(expiration);
+            // `Some(None)` is an explicit `null`, which clears it.
+            package.expiration = expiration;
         }
 
         Ok(package.clone())
@@ -449,7 +450,7 @@ pub fn disconnect_client(client_uid: &str) -> Result<(), ApiError> {
     })
 }
 
-pub fn set_incognito(client_uid: &str, on: bool) -> Result<(), ApiError> {
+pub fn set_incognito(client_uid: &str, on: bool) -> Result<ConnectedClient, ApiError> {
     with(|state| {
         let client = state
             .clients
@@ -461,8 +462,19 @@ pub fn set_incognito(client_uid: &str, on: bool) -> Result<(), ApiError> {
 
         client.incognito = on;
 
-        Ok(())
+        Ok(client.clone())
     })
+}
+
+/// The demo installation has a listener, with the fixture clients on it.
+pub fn stream_status() -> rustak_api::StreamStatus {
+    let connections = clients().len();
+
+    rustak_api::StreamStatus {
+        enabled: true,
+        bound: true,
+        connections: u32::try_from(connections).unwrap_or(u32::MAX),
+    }
 }
 
 fn matches_cot(summary: &CotSummary, filter: &CotFilter) -> bool {

@@ -247,6 +247,7 @@ mod tests {
         ("GET", "/api/v1/packages/aa/content"),
         ("GET", "/api/v1/clients"),
         ("GET", "/api/v1/clients/history"),
+        ("GET", "/api/v1/clients/status"),
         ("DELETE", "/api/v1/clients/ANDROID-1"),
         ("POST", "/api/v1/clients/ANDROID-1/incognito"),
         ("GET", "/api/v1/cot"),

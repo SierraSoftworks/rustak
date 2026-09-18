@@ -53,7 +53,12 @@ pub enum ApiError {
     /// The caller is not permitted to do this. Signing in again will not help.
     Forbidden,
 
-    /// The wizard has already been completed, so its routes are gone.
+    /// What was asked for was here and is not any more: a completed wizard's
+    /// routes, a deleted mission.
+    ///
+    /// Deliberately without a message of its own — the two things a `410` means
+    /// on this server have nothing in common to say, so the caller that knows
+    /// which one it asked for supplies the sentence.
     Gone,
 
     /// The request never produced a response.
@@ -70,7 +75,7 @@ impl std::fmt::Display for ApiError {
             ApiError::Forbidden => {
                 write!(f, "Your account is not permitted to perform this action.")
             }
-            ApiError::Gone => write!(f, "This server has already been set up."),
+            ApiError::Gone => write!(f, "That is no longer available on this server."),
             ApiError::Network(message) => write!(f, "Network error: {message}"),
             ApiError::Server(message) => write!(f, "{message}"),
         }

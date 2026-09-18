@@ -590,3 +590,144 @@ async fn the_admin_listing_shows_a_mission_a_client_would_never_be_told_about() 
     assert!(detail["subscriptions"].is_array());
     assert!(detail["layers"].is_array());
 }
+
+/// The status of a request whose answer may have no body at all.
+macro_rules! status_of {
+    ($server:expr, $token:expr, $request:expr) => {{
+        let app = app!($server);
+        let response = test::call_service(
+            &app,
+            $request
+                .insert_header(("authorization", format!("Bearer {}", $token)))
+                .to_request(),
+        )
+        .await;
+
+        response.status().as_u16()
+    }};
+}
+
+#[actix_web::test]
+async fn a_deleted_mission_is_listed_only_when_it_is_asked_for_and_answers_410_with_itself() {
+    // The row is kept so a client syncing late can be told the mission went.
+    // Until this, nothing could show an operator that it had — which is most of
+    // the value of keeping it.
+    let server = TestServer::start().await;
+    let (token, guid) = mission(&server, "Standdown").await;
+    let (_, admin) = server.signed_in("root", true).await;
+
+    let status = status_of!(
+        &server,
+        admin.token,
+        test::TestRequest::delete().uri(&format!("/api/v1/missions/{guid}"))
+    );
+    assert_eq!(status, 204);
+
+    let (status, listed) = call!(
+        &server,
+        admin.token,
+        test::TestRequest::get().uri("/api/v1/missions")
+    );
+    assert_eq!(status, 200);
+    assert!(
+        listed.as_array().expect("an array").is_empty(),
+        "the default listing is still what is live: {listed}",
+    );
+
+    let (status, listed) = call!(
+        &server,
+        admin.token,
+        test::TestRequest::get().uri("/api/v1/missions?include_deleted=true")
+    );
+    assert_eq!(status, 200);
+    let rows = listed.as_array().expect("an array");
+    assert_eq!(rows.len(), 1, "{listed}");
+    assert_eq!(rows[0]["guid"], guid);
+    assert!(
+        rows[0]["deleted_at"].is_string(),
+        "the row says when it went: {listed}",
+    );
+
+    // The detail is a `410` — it is not here — carrying the mission, because
+    // "what was this and when did it go" is the question being asked.
+    let (status, detail) = call!(
+        &server,
+        admin.token,
+        test::TestRequest::get().uri(&format!("/api/v1/missions/{guid}"))
+    );
+
+    assert_eq!(status, 410);
+    assert_eq!(detail["name"], "Standdown", "{detail}");
+    assert!(detail["deleted_at"].is_string(), "{detail}");
+    assert!(detail["layers"].is_array());
+
+    // Deleting it again says the same thing the detail's status does, rather
+    // than a `404` (it is here) or a `500` (it was, before this brief).
+    let status = status_of!(
+        &server,
+        admin.token,
+        test::TestRequest::delete().uri(&format!("/api/v1/missions/{guid}"))
+    );
+    assert_eq!(status, 410, "deleting it twice is gone, not not-found");
+
+    let status = status_of!(
+        &server,
+        token,
+        test::TestRequest::get().uri("/api/v1/missions?include_deleted=true")
+    );
+    assert_eq!(status, 403, "the listing is administrative either way");
+}
+
+#[actix_web::test]
+async fn a_layer_reports_how_many_items_are_actually_filed_under_it() {
+    // It reported zero for every layer before this, while the tree drew the
+    // number — so a folder with four markers in it said it was empty.
+    let server = TestServer::start().await;
+    let (token, guid) = mission(&server, "Anvil").await;
+    let (_, admin) = server.signed_in("root", true).await;
+
+    for (name, uid) in [("Markers", "layer-root"), ("Empty", "layer-empty")] {
+        let (status, body) = call!(
+            &server,
+            token,
+            test::TestRequest::put().uri(&format!(
+                "/Marti/api/missions/Anvil/layers?name={name}&type=UID&uid={uid}"
+            ))
+        );
+        assert_eq!(status, 200, "{body}");
+    }
+
+    let (status, body) = call!(
+        &server,
+        token,
+        test::TestRequest::put()
+            .uri("/Marti/api/missions/Anvil/contents")
+            .set_json(json!({
+                "paths": { "layer-root": [{ "uids": ["UID-ONE", "UID-TWO"] }] }
+            }))
+    );
+    assert_eq!(status, 200, "{body}");
+
+    let (status, detail) = call!(
+        &server,
+        admin.token,
+        test::TestRequest::get().uri(&format!("/api/v1/missions/{guid}"))
+    );
+    assert_eq!(status, 200);
+
+    let layers = detail["layers"].as_array().expect("an array");
+    let count_of = |uid: &str| {
+        layers
+            .iter()
+            .find(|layer| layer["uid"] == uid)
+            .and_then(|layer| layer["item_count"].as_i64())
+            .unwrap_or(-1)
+    };
+
+    assert_eq!(count_of("layer-root"), 2, "{detail}");
+    assert_eq!(
+        count_of("layer-empty"),
+        0,
+        "a layer with nothing in it still says zero: {detail}",
+    );
+}

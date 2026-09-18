@@ -24,10 +24,11 @@ use crate::missions::model::Mission;
 use crate::missions::{MissionService, archive};
 use crate::prelude::*;
 
-use super::error::{ApiError, ApiResult, json_ok};
+use super::error::{ApiError, ApiResult, json_ok, json_with};
 use super::extract::Administrative;
 use super::missions_view::{
-    all_changes, change, connected_uids, failed, record, resolve, role_of, summary,
+    all_changes, change, connected_uids, failed, layer_counts, record, resolve, resolve_any,
+    role_of, summary,
 };
 
 /// Registers every mission route, the archive before the `{guid}` that would
@@ -49,17 +50,30 @@ pub fn routes(config: &mut web::ServiceConfig) {
         .route("/missions/{guid}", web::delete().to(remove));
 }
 
-/// `GET /api/v1/missions`.
+/// `GET /api/v1/missions?include_deleted=`.
+///
+/// A deleted mission's row is kept so that a client syncing late can be told it
+/// went; `include_deleted=true` is what lets the operator who deleted it see
+/// that it happened, which is most of the value of keeping the row.
 ///
 /// # Errors
 ///
 /// A `500` when a read fails.
-pub async fn list(context: web::Data<AppContext>, _: Administrative) -> ApiResult {
+pub async fn list(
+    context: web::Data<AppContext>,
+    query: web::Query<std::collections::HashMap<String, String>>,
+    _: Administrative,
+) -> ApiResult {
     let service = MissionService::new(context.get_ref().clone());
     let rows = context
         .db()
         .missions()
-        .list(crate::db::repos::MissionFilter::default())
+        .list(crate::db::repos::MissionFilter {
+            include_deleted: query
+                .get("include_deleted")
+                .is_some_and(|value| value == "true"),
+            ..crate::db::repos::MissionFilter::default()
+        })
         .await
         .map_err(|err| failed(err.into()))?;
 
@@ -74,6 +88,12 @@ pub async fn list(context: web::Data<AppContext>, _: Administrative) -> ApiResul
 
 /// `GET /api/v1/missions/{guid}`.
 ///
+/// A deleted mission answers `410` **with the detail in the body** rather than
+/// with the `{"error": …}` shape. The status is the honest answer to "is this
+/// mission here?" and the body is the honest answer to "what happened to it?",
+/// and an operator who has just followed a link from an audit entry is asking
+/// the second one. `deleted_at` on the summary is when.
+///
 /// # Errors
 ///
 /// A `404` when no mission holds that guid, and a `500` when a read fails.
@@ -83,7 +103,7 @@ pub async fn get(
     _: Administrative,
 ) -> ApiResult {
     let service = MissionService::new(context.get_ref().clone());
-    let mission = resolve(&service, &path.into_inner()).await?;
+    let mission = resolve_any(context.get_ref(), &path.into_inner()).await?;
     let connected = connected_uids(&context);
 
     let subscriptions = service
@@ -100,18 +120,19 @@ pub async fn get(
         })
         .collect();
 
+    let counts = layer_counts(context.get_ref(), &mission).await?;
     let layers = service
         .layers(&mission)
         .await
         .map_err(failed)?
         .into_iter()
         .map(|layer| MissionLayerSummary {
+            item_count: counts.get(&layer.uid).copied().unwrap_or(0),
             uid: layer.uid,
             name: layer.name,
             kind: layer.kind,
             parent_uid: layer.parent_uid,
             position: layer.position,
-            item_count: 0,
         })
         .collect();
 
@@ -123,7 +144,10 @@ pub async fn get(
         layers,
     };
 
-    Ok(json_ok(&detail))
+    match detail.summary.deleted_at.is_some() {
+        true => Ok(json_with(actix_web::http::StatusCode::GONE, &detail)),
+        false => Ok(json_ok(&detail)),
+    }
 }
 
 /// `GET /api/v1/missions/{guid}/changes?squashed=`.

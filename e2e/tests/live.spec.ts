@@ -31,6 +31,14 @@ test("a server with nothing connected says so rather than failing", async ({ pag
   await expect(page.getByText("Nothing is connected.", { exact: false })).toBeVisible();
   await expect(page.getByText("could not read", { exact: false })).toHaveCount(0);
 
+  // `[]` alone cannot say whether the listener is quiet or absent, which is a
+  // configuration problem and a normal Tuesday respectively. `GET
+  // /clients/status` is what tells them apart, and the empty state says which
+  // one it is looking at rather than describing both.
+  await expect(
+    page.getByText("no stream listener", { exact: false }),
+  ).toBeVisible();
+
   // The auto-refresh is on by default and switchable off, because a page left
   // open on a wall display should not be a request every five seconds for a
   // week.

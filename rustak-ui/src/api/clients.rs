@@ -19,8 +19,11 @@
 //! connection answer `503` instead, because "there is no registry" and "that
 //! uid is not connected" are different things to be told after clicking
 //! Disconnect.
+//!
+//! [`status`] is how the page tells the empty list apart from the switched-off
+//! one, which `[]` on its own cannot.
 
-use rustak_api::{ClientHistoryEntry, ConnectedClient, IncognitoRequest};
+use rustak_api::{ClientHistoryEntry, ConnectedClient, IncognitoRequest, StreamStatus};
 
 use crate::api::{ApiError, delete_empty, get_json, post_json};
 #[cfg(debug_assertions)]
@@ -34,6 +37,16 @@ pub async fn list() -> Result<Vec<ConnectedClient>, ApiError> {
     demo!(Ok(fixtures::clients()));
 
     get_json("/clients").await
+}
+
+/// Whether there is a listener at all, and how many are on it.
+///
+/// `[]` from [`list`] means both "nobody is connected" and "there is no
+/// listener", and those are a quiet exercise and a configuration problem.
+pub async fn status() -> Result<StreamStatus, ApiError> {
+    demo!(Ok(fixtures::stream_status()));
+
+    get_json("/clients/status").await
 }
 
 /// Every device seen in the last `secago` seconds, connected or not.
@@ -55,14 +68,15 @@ pub async fn disconnect(client_uid: &str) -> Result<(), ApiError> {
 /// Set rather than toggled: `/Marti/api/subscriptions/incognito/{uid}` toggles
 /// because the client asking is the one that knows what it is now. An
 /// operator's page does not, so this says which way it should end up.
-pub async fn set_incognito(client_uid: &str, on: bool) -> Result<(), ApiError> {
+///
+/// Answers the connection as it now is, so a caller that wants the resulting
+/// row has it without re-reading the whole list.
+pub async fn set_incognito(client_uid: &str, on: bool) -> Result<ConnectedClient, ApiError> {
     demo!(fixtures::set_incognito(client_uid, on));
 
-    let _: IncognitoRequest = post_json(
+    post_json(
         &format!("/clients/{}/incognito", urlencode(client_uid)),
         &IncognitoRequest { on },
     )
-    .await?;
-
-    Ok(())
+    .await
 }

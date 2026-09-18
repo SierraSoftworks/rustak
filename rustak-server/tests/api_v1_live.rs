@@ -26,7 +26,9 @@
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
 use chrono::{Duration, Utc};
-use rustak_api::{ClientHistoryEntry, ConnectedClient, CotDetail, CotSummary, FileSettings};
+use rustak_api::{
+    ClientHistoryEntry, ConnectedClient, CotDetail, CotSummary, FileSettings, StreamStatus,
+};
 use rustak_cot::codec::EncodedEvent;
 use rustak_cot::detail::{Contact, Group, contact::STREAMING_ENDPOINT};
 use rustak_cot::{CotTime, Event};
@@ -134,6 +136,35 @@ async fn disconnecting_or_hiding_a_uid_nothing_is_connected_under_is_not_found()
 }
 
 #[actix_web::test]
+async fn an_empty_client_list_is_explained_rather_than_left_ambiguous() {
+    // `/clients` answers `[]` for a listener with nobody on it and for no
+    // listener at all. This is what lets a page say "listener off" instead of
+    // the sentence that covers both and helps nobody.
+    let server = TestServer::start().await;
+    let (_, admin) = server.signed_in("grace", true).await;
+    let app = app!(server);
+
+    let status: StreamStatus = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/clients/status")
+            .insert_header(("authorization", bearer(&admin)))
+            .to_request(),
+    )
+    .await;
+
+    assert!(
+        !status.bound,
+        "a test server publishes no stream registry, so nothing can be connected",
+    );
+    assert_eq!(status.connections, 0);
+    assert!(
+        !status.is_listening(),
+        "an empty list here means switched off rather than quiet",
+    );
+}
+
+#[actix_web::test]
 async fn the_client_surface_is_administrative_throughout() {
     let server = TestServer::start().await;
     let (_, ordinary) = server.signed_in("ada", false).await;
@@ -142,6 +173,7 @@ async fn the_client_surface_is_administrative_throughout() {
     for request in [
         test::TestRequest::get().uri("/api/v1/clients"),
         test::TestRequest::get().uri("/api/v1/clients/history"),
+        test::TestRequest::get().uri("/api/v1/clients/status"),
         test::TestRequest::delete().uri("/api/v1/clients/ANDROID-1"),
         test::TestRequest::post()
             .uri("/api/v1/clients/ANDROID-1/incognito")
@@ -626,4 +658,94 @@ fn urlencoding(value: &str) -> String {
             other => format!("%{other:02X}"),
         })
         .collect()
+}
+
+#[actix_web::test]
+async fn the_cot_listing_takes_the_same_window_the_history_does() {
+    // "What came in during the last ten minutes" is the question an exercise
+    // asks, and it is decided in SQL rather than over the page — a window that
+    // ended an hour ago has none of its rows in the newest hundred.
+    let server = TestServer::start().await;
+    let (_, admin) = server.signed_in("grace", true).await;
+    let now = Utc::now();
+
+    upsert_batch(
+        server.db(),
+        vec![
+            record("UID-NOW", "a-f-G-U-C", "ALPHA", now, &[]),
+            record(
+                "UID-THEN",
+                "a-f-G-U-C",
+                "BRAVO",
+                now - Duration::hours(6),
+                &[],
+            ),
+        ],
+    )
+    .await
+    .expect("stored messages");
+
+    let app = app!(server);
+
+    let uids = |listed: Vec<CotSummary>| {
+        listed
+            .into_iter()
+            .map(|summary| summary.uid)
+            .collect::<Vec<_>>()
+    };
+
+    let all: Vec<CotSummary> = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/cot")
+            .insert_header(("authorization", bearer(&admin)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(all.len(), 2, "no window is still all of it");
+
+    let recent: Vec<CotSummary> = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/cot?secago=600")
+            .insert_header(("authorization", bearer(&admin)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(uids(recent), vec!["UID-NOW".to_string()]);
+
+    // An explicit window that closed before now, which is the case a filter
+    // applied to the newest page could not answer at all.
+    let historic: Vec<CotSummary> = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/api/v1/cot?start={}&end={}",
+                urlencoding(&(now - Duration::hours(7)).to_rfc3339()),
+                urlencoding(&(now - Duration::hours(5)).to_rfc3339()),
+            ))
+            .insert_header(("authorization", bearer(&admin)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(uids(historic), vec!["UID-THEN".to_string()]);
+
+    let backwards = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/api/v1/cot?start={}&end={}",
+                urlencoding(&now.to_rfc3339()),
+                urlencoding(&(now - Duration::hours(1)).to_rfc3339()),
+            ))
+            .insert_header(("authorization", bearer(&admin)))
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(
+        backwards.status(),
+        StatusCode::BAD_REQUEST,
+        "the same refusal the per-uid history gives",
+    );
 }

@@ -29,6 +29,7 @@ use actix_web::{HttpResponse, web};
 use chrono::{Duration, Utc};
 use rustak_api::{
     AuditCategory, AuditOutcome, ClientHistoryEntry, ConnectedClient, IncognitoRequest,
+    StreamStatus,
 };
 
 use crate::cot_store::latest::{self, LatestRow};
@@ -56,6 +57,7 @@ const MAX_HISTORY: u32 = 500;
 pub fn routes(config: &mut web::ServiceConfig) {
     config
         .route("/clients/history", web::get().to(history))
+        .route("/clients/status", web::get().to(status))
         .route("/clients", web::get().to(list))
         .route("/clients/{uid}", web::delete().to(disconnect))
         .route("/clients/{uid}/incognito", web::post().to(incognito));
@@ -101,6 +103,34 @@ pub async fn list(context: web::Data<AppContext>, _: Administrative) -> ApiResul
         .collect();
 
     Ok(json_ok(&listed))
+}
+
+/// `GET /api/v1/clients/status` — what the listener itself is doing.
+///
+/// [`list`] answers `[]` both for an installation whose listener is running
+/// with nobody on it and for one that has no listener at all, and a page cannot
+/// tell an operator which without asking this. Administrative, like the rest of
+/// the surface: how many devices are on an installation is not something the
+/// public health check hands out.
+///
+/// # Errors
+///
+/// A `500` when the registry cannot be read, which it cannot be here.
+pub async fn status(context: web::Data<AppContext>, _: Administrative) -> ApiResult {
+    let enabled = context.config().stream.tls.enabled;
+    let connections = match context.has_live() {
+        true => context
+            .live()
+            .map_err(|err| failed(&context, &err))?
+            .connected(),
+        false => 0,
+    };
+
+    Ok(json_ok(&StreamStatus {
+        enabled,
+        bound: context.has_live(),
+        connections: u32::try_from(connections).unwrap_or(u32::MAX),
+    }))
 }
 
 /// `DELETE /api/v1/clients/{uid}` — close every connection claiming that uid.
@@ -177,7 +207,23 @@ pub async fn incognito(
     )
     .await;
 
-    Ok(json_ok(&IncognitoRequest { on }))
+    // The updated connection rather than the request that changed it, so the
+    // page that drew the switch has the row it is now looking at instead of
+    // having to re-read the whole list to find out.
+    let index = context
+        .db()
+        .groups()
+        .index()
+        .await
+        .map_err(|err| failed(&context, &err))?;
+    let updated = live
+        .snapshot()
+        .iter()
+        .find(|peer| peer.uid == *uid)
+        .map(|peer| describe(peer, &live, &index))
+        .ok_or_else(missing)?;
+
+    Ok(json_ok(&updated))
 }
 
 /// `GET /api/v1/clients/history?secago&limit`.
@@ -515,6 +561,35 @@ mod tests {
             vec![GroupName::parse("Red").unwrap()],
             "what reaches it",
         );
+    }
+
+    #[tokio::test]
+    async fn hiding_a_connection_answers_the_connection_rather_than_the_request() {
+        // The page that drew the switch wants the row it is now looking at.
+        // Answering with the body it sent made the toggle two requests.
+        let live = live_with_alpha(&[(7, Direction::In)]).await;
+        let mut index = GroupIndex::new();
+        index.insert(7, GroupName::parse("Blue").unwrap());
+
+        let hub = live.hub();
+        for handle in hub.handles_for_uid("ANDROID-1") {
+            hub.set_incognito(handle.id(), true);
+        }
+
+        let peer = live
+            .snapshot()
+            .into_iter()
+            .find(|peer| peer.uid == "ANDROID-1")
+            .expect("the connection that was just changed");
+        let described = describe(&peer, &live, &index);
+
+        assert!(described.incognito, "the answer carries the new state");
+        assert_eq!(described.client_uid, "ANDROID-1");
+        assert_eq!(
+            described.callsign, "ALPHA",
+            "and everything else the row needs, so nothing has to be re-read",
+        );
+        assert_eq!(described.in_groups, vec![GroupName::parse("Blue").unwrap()]);
     }
 
     #[tokio::test]

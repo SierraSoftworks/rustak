@@ -27,6 +27,7 @@ use rusqlite::params;
 use rustak_cot::Event;
 
 use crate::db::Database;
+use crate::db::row::Timestamp;
 use crate::prelude::*;
 use crate::store::frame::Frames;
 
@@ -49,6 +50,15 @@ pub struct LatestQuery {
     pub kind: Option<String>,
     /// Part of a callsign, matched without regard to case.
     pub callsign: Option<String>,
+    /// The earliest relay time to include, when the caller named a window.
+    ///
+    /// Decided in SQL rather than over the page, unlike the channel rule: a
+    /// window that ended an hour ago has none of its rows in the newest page,
+    /// so narrowing afterwards would answer "nothing happened" for every
+    /// question about the past.
+    pub since: Option<DateTime<Utc>>,
+    /// The latest relay time to include.
+    pub until: Option<DateTime<Utc>>,
     /// How many rows, already clamped by the caller.
     pub limit: u32,
     /// How many rows to skip.
@@ -66,16 +76,27 @@ pub async fn latest(db: &Database, query: LatestQuery) -> Result<Vec<LatestRow>,
         "SELECT {} FROM cot_latest \
          WHERE (?1 IS NULL OR type LIKE ?1 || '%') \
            AND (?2 IS NULL OR callsign LIKE '%' || ?2 || '%') \
-         ORDER BY received_at DESC, uid ASC LIMIT ?3 OFFSET ?4",
+           AND (?3 IS NULL OR received_at >= ?3) \
+           AND (?4 IS NULL OR received_at <= ?4) \
+         ORDER BY received_at DESC, uid ASC LIMIT ?5 OFFSET ?6",
         LatestRow::COLUMNS
     );
+    let since = query.since.map(Timestamp::from);
+    let until = query.until.map(Timestamp::from);
 
     db.read(move |connection| {
         let mut statement = connection.prepare_cached(&sql)?;
 
         statement
             .query_map(
-                params![query.kind, query.callsign, limit, query.offset],
+                params![
+                    query.kind,
+                    query.callsign,
+                    since,
+                    until,
+                    limit,
+                    query.offset
+                ],
                 LatestRow::from_row,
             )?
             .collect()

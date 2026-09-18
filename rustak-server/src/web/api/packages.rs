@@ -277,11 +277,24 @@ pub(super) fn summarise(row: &ResourceRow) -> PackageSummary {
         keywords: row.keywords.clone(),
         groups: row.groups.clone(),
         tool: row.tool.clone(),
-        expiration: row.expiration,
+        expiration: expires_at(row.expiration),
         install_on_enrollment: row.install_on_enrollment,
         mission_package: row.is_mission_package,
         mission_name: row.mission_name.clone(),
     }
+}
+
+/// A stored expiry as an instant, or [`None`] for a package that never expires.
+///
+/// The column is epoch milliseconds because that is what TAK's own surface
+/// stores and serves; the admin API states an instant so that no browser has to
+/// know the convention. A value SQLite cannot hold as a date — which would take
+/// a row written outside this server — reads as "never" rather than failing the
+/// listing it appears in.
+fn expires_at(millis: Option<i64>) -> Option<chrono::DateTime<chrono::Utc>> {
+    millis
+        .filter(|at| *at >= 0)
+        .and_then(chrono::DateTime::from_timestamp_millis)
 }
 
 /// Whether a free-text search matches a row.

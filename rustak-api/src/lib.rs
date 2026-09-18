@@ -60,7 +60,7 @@ pub use certificate::{
     Certificate, CertificateKind, CertificateSource, CertificateState, RevocationReason,
     RevokeCertificateRequest,
 };
-pub use client::{ClientHistoryEntry, ConnectedClient, IncognitoRequest};
+pub use client::{ClientHistoryEntry, ConnectedClient, IncognitoRequest, StreamStatus};
 pub use config_package::{ConfigPackageRequest, ConfigPackageVariant};
 pub use cot::{CotDetail, CotSummary};
 pub use credential::{

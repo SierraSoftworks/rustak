@@ -13,12 +13,7 @@ Items too small for a brief of their own, or waiting for a milestone. Remove a l
 - **Config-package UI** — the server has `POST /api/v1/config-packages` (M3-02); the admin UI has no page for it yet, nor for packages/profiles/clients/CoT browser (design 04 §8.3).
 - **Local toolchain is older than CI's stable** and this machine cannot reach static.rust-lang.org; CI is the authority for new clippy lints until that changes.
 
-## Admin API polish found by the operations UI (M3-04) — bundle into one brief once M3-03 has landed
-- `GET /api/v1/missions?include_deleted=true` (the row renders `deleted_at` but nothing can list soft-deleted missions) and a `410` detail body that carries the deleted mission.
-- `GET /api/v1/missions/{guid}` hard-codes `item_count: 0` per layer — one join.
-- `POST /api/v1/clients/{uid}/incognito` should answer with the updated client, not the request.
-- Report the stream listener's state (off vs quiet) so `GET /clients` = `[]` is unambiguous — a field on `GET /api/v1/health` or `/clients`.
-- `GET /api/v1/cot` lacks the time window the per-uid history has.
-- `ApiError::Gone`'s message is wizard-specific and now reachable from mission detail.
-- Package `expiration` is epoch ms with negative-means-never; consider RFC 3339 nullable on `/api/v1`.
-- Optional: a dry run for `POST /config-packages`.
+## Admin API polish found by the operations UI (M3-04) — closed by M3-06
+- Optional: a dry run for `POST /config-packages`. The only way to find out whether a package can be built for an account is to download one, so the panel has to offer the button before it knows. Left open by M3-06: not worth an endpoint on its own yet.
+- **`GET /api/v1/missions/{guid}`'s `410` body is not read by the console.** M3-06 made the deleted-mission detail answer `410` carrying the whole `MissionDetail`; `rustak-ui`'s client turns every `410` into `ApiError::Gone` before the body is looked at, so the detail page says "That is no longer available on this server." where it could render the mission and when it went. One branch in `api/missions.rs::get` and one in `pages/mission_detail.rs`. Found by M3-06.
+- **Nothing reports when the stream listener bound.** `GET /api/v1/clients/status` answers `{enabled, bound, connections}`; the `bound_at` M3-06's brief asked for needs a timestamp recorded where the listener publishes its registry (`stream/live.rs`, `services/mod.rs`), both of which were another agent's in-flight files. Found by M3-06.

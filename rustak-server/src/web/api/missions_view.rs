@@ -20,18 +20,84 @@ use crate::prelude::*;
 use super::error::ApiError;
 use super::extract::Administrative;
 
-/// The mission a guid names, deleted rows included.
+/// The live mission a guid names.
+///
+/// A deleted one is a `410` rather than a `404`: the row is deliberately kept
+/// so that a client syncing late is told the mission went, and the same
+/// distinction is worth making to the operator who just clicked Delete twice.
 pub(super) async fn resolve(service: &MissionService, guid: &str) -> Result<Mission, ApiError> {
-    let guid = MissionGuid::parse(guid)
-        .map_err(|_| ApiError::bad_request("That is not a mission identifier."))?;
-
-    match service.resolve(&MissionRef::Guid(*guid.as_uuid())).await {
+    match service
+        .resolve(&MissionRef::Guid(*parse(guid)?.as_uuid()))
+        .await
+    {
         Ok(mission) => Ok(mission),
         Err(crate::marti::MartiError::NotFound(_)) => {
             Err(ApiError::not_found("There is no mission with that id."))
         }
+        Err(crate::marti::MartiError::Gone(_)) => Err(deleted()),
         Err(err) => Err(failed(err)),
     }
+}
+
+/// The mission a guid names, whether or not it has been deleted.
+///
+/// Read straight from the repository rather than through
+/// [`MissionService::resolve`], which turns a deleted row into an error — the
+/// detail page is the one caller that wants the row *because* it is deleted, so
+/// that it can say when and what was in it instead of an empty page.
+pub(super) async fn resolve_any(context: &AppContext, guid: &str) -> Result<Mission, ApiError> {
+    context
+        .db()
+        .missions()
+        .by_guid(*parse(guid)?.as_uuid())
+        .await
+        .map_err(|err| failed(err.into()))?
+        .map(Mission::from_row)
+        .ok_or_else(|| ApiError::not_found("There is no mission with that id."))
+}
+
+/// What a caller asking after a deleted mission is told.
+pub(super) fn deleted() -> ApiError {
+    ApiError::gone("That mission has been deleted.")
+}
+
+/// A guid, or the `400` that says it was not one.
+fn parse(guid: &str) -> Result<MissionGuid, ApiError> {
+    MissionGuid::parse(guid).map_err(|_| ApiError::bad_request("That is not a mission identifier."))
+}
+
+/// How many items and resources are filed under each layer of a mission.
+///
+/// Counted over the rows the mission's own contents are read from rather than
+/// asked for as a second aggregate: both tables are read by primary key over
+/// one mission and both carry `layer_uid`, so the tally costs nothing beyond
+/// the reads the detail already needs. A layer with nothing under it is absent
+/// from the map and reads as zero.
+pub(super) async fn layer_counts(
+    context: &AppContext,
+    mission: &Mission,
+) -> Result<std::collections::HashMap<String, u32>, ApiError> {
+    let repo = context.db().mission_contents();
+    let uids = repo
+        .uids(mission.id)
+        .await
+        .map_err(|err| failed(err.into()))?;
+    let contents = repo
+        .contents(mission.id)
+        .await
+        .map_err(|err| failed(err.into()))?;
+
+    let filed = uids
+        .into_iter()
+        .filter_map(|row| row.layer_uid)
+        .chain(contents.into_iter().filter_map(|row| row.layer_uid));
+
+    let mut counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    for layer_uid in filed {
+        *counts.entry(layer_uid).or_default() += 1;
+    }
+
+    Ok(counts)
 }
 
 /// The listing form of one mission, with its counts.

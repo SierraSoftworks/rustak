@@ -328,7 +328,7 @@ async fn a_patch_writes_every_field_and_a_change_that_does_nothing_is_refused() 
                 "tool": "atak",
                 "keywords": ["missionpackage"],
                 "install_on_enrollment": true,
-                "expiration": 1_790_000_000_000i64,
+                "expiration": "2026-09-25T12:00:00Z",
             }))
             .to_request(),
     )
@@ -338,7 +338,50 @@ async fn a_patch_writes_every_field_and_a_change_that_does_nothing_is_refused() 
     assert_eq!(patched.tool, "atak");
     assert!(patched.install_on_enrollment);
     assert!(patched.mission_package);
-    assert_eq!(patched.expiration, Some(1_790_000_000_000));
+    assert_eq!(
+        patched.expiration,
+        Some("2026-09-25T12:00:00Z".parse().unwrap()),
+        "an expiry is an instant on this surface, whatever the column holds",
+    );
+
+    // And an explicit `null` clears it, which is the thing TAK's `-1` said with
+    // a sign and nothing in a JSON body can.
+    let cleared: PackageSummary = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::patch()
+            .uri(&format!("/api/v1/packages/{}", stored.hash))
+            .insert_header(("authorization", bearer(&admin)))
+            .set_json(serde_json::json!({ "expiration": serde_json::Value::Null }))
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(cleared.expiration, None);
+
+    // A change that names nothing but the name leaves it alone, rather than
+    // reading as "clear it" — the difference the second `Option` exists for.
+    let renamed: PackageSummary = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::patch()
+            .uri(&format!("/api/v1/packages/{}", stored.hash))
+            .insert_header(("authorization", bearer(&admin)))
+            .set_json(serde_json::json!({ "expiration": "2026-11-01T00:00:00Z" }))
+            .to_request(),
+    )
+    .await;
+    assert!(renamed.expiration.is_some());
+
+    let untouched: PackageSummary = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::patch()
+            .uri(&format!("/api/v1/packages/{}", stored.hash))
+            .insert_header(("authorization", bearer(&admin)))
+            .set_json(serde_json::json!({ "name": "Renamed again" }))
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(untouched.expiration, renamed.expiration);
 
     let empty = test::call_service(
         &app,

@@ -18,7 +18,8 @@
  *   a client syncing late is told the mission went rather than simply failing
  *   to find it — `GET /api/v1/missions/{guid}` answers `410 Gone` afterwards,
  *   which is why the page reports the outcome of the delete rather than
- *   re-reading.
+ *   re-reading. The `410` carries the mission, and
+ *   `GET /api/v1/missions?include_deleted=true` lists it.
  */
 
 import { bootstrapAdmin, expect, gotoApp, signIn, test } from "./helpers";
@@ -46,10 +47,14 @@ test("a mission a client created is listed, opened, and deleted", async ({ page 
     `/Marti/api/missions/${name}?creatorUid=${creator}&description=Created+by+the+end-to-end+suite&tool=public`,
     { headers: { Authorization: `Bearer ${session.token}` } },
   );
+  const createdBody = (await created.json()) as { data?: Array<{ guid?: string }> };
   expect(
     created.status(),
-    `PUT /Marti/api/missions/${name} should have created it: ${await created.text()}`,
+    `PUT /Marti/api/missions/${name} should have created it: ${JSON.stringify(createdBody)}`,
   ).toBe(201);
+
+  const guid = createdBody.data?.[0]?.guid;
+  expect(guid, "the create answers the mission's immutable identifier").toBeTruthy();
 
   // --- the listing -------------------------------------------------------
 
@@ -131,14 +136,32 @@ test("a mission a client created is listed, opened, and deleted", async ({ page 
   ).toBeVisible();
 
   // The row is kept in the database so that a client syncing late is told the
-  // mission went — but `GET /api/v1/missions` takes no `include_deleted`, so
-  // the console cannot show it and the listing is simply empty. That gap is
-  // recorded in the M3-04 status file; this asserts what the server actually
-  // does rather than what the page is ready for.
+  // mission went. The console's listing asks for the live ones, so it is empty
+  // — and `?include_deleted=true` is what shows an operator that the deletion
+  // happened at all, which is most of the value of keeping the row.
   await gotoApp(page, "/admin/missions");
   await page.getByLabel("Filter").fill(name);
   await expect(page.getByRole("link", { name, exact: true })).toHaveCount(0);
   await expect(page.locator(".mission-row")).toHaveCount(0);
+
+  const deleted = await page.request.get("/api/v1/missions?include_deleted=true", {
+    headers: { Authorization: `Bearer ${session.token}` },
+  });
+  expect(deleted.status()).toBe(200);
+  const rows = (await deleted.json()) as Array<{ name: string; deleted_at?: string }>;
+  const gone = rows.find((row) => row.name === name);
+  expect(gone, `the deleted mission should be listed: ${JSON.stringify(rows)}`).toBeTruthy();
+  expect(gone?.deleted_at, "and should say when it went").toBeTruthy();
+
+  // Its detail is a `410` — it is not here — carrying the mission itself,
+  // because "what was this and when did it go" is the question being asked.
+  const detail = await page.request.get(`/api/v1/missions/${guid}`, {
+    headers: { Authorization: `Bearer ${session.token}` },
+  });
+  expect(detail.status()).toBe(410);
+  const body = (await detail.json()) as { name?: string; deleted_at?: string };
+  expect(body.name).toBe(name);
+  expect(body.deleted_at).toBeTruthy();
 });
 
 test("an address that is not a mission identifier says so rather than failing to load", async ({

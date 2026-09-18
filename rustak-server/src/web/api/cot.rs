@@ -42,6 +42,9 @@ const DEFAULT_SECAGO: i64 = 3600;
 /// The most history entries one request may carry.
 const MAX_HISTORY: usize = 500;
 
+/// A half-open-ended span of time, as both of the reads here narrow by.
+type Window = (DateTime<Utc>, DateTime<Utc>);
+
 /// Registers the CoT browser's routes.
 pub fn routes(config: &mut web::ServiceConfig) {
     config
@@ -66,11 +69,45 @@ pub struct ListQuery {
     #[serde(default)]
     pub group: Option<GroupName>,
 
+    /// How many seconds back to look, which is TAK's own spelling.
+    #[serde(default)]
+    pub secago: Option<i64>,
+
+    #[serde(default)]
+    pub start: Option<DateTime<Utc>>,
+
+    #[serde(default)]
+    pub end: Option<DateTime<Utc>>,
+
     #[serde(default)]
     pub page: Option<u32>,
 
     #[serde(default)]
     pub limit: Option<u32>,
+}
+
+impl ListQuery {
+    /// The window this listing is narrowed to, or [`None`] for all of it.
+    ///
+    /// The three parameters mean here exactly what they mean on the per-uid
+    /// history, which is the point — "what came in during the last ten minutes"
+    /// is the question an exercise asks, and asking it two different ways on
+    /// two neighbouring endpoints would be the surprise.
+    ///
+    /// The one difference is the default: a listing with no window is the whole
+    /// of `cot_latest`, because that is what a map's initial load is, while a
+    /// device's history is unbounded and has to start somewhere.
+    ///
+    /// # Errors
+    ///
+    /// A `400` when the window runs backwards.
+    fn window(&self) -> Result<Option<Window>, ApiError> {
+        if self.secago.is_none() && self.start.is_none() && self.end.is_none() {
+            return Ok(None);
+        }
+
+        bounds(self.secago, self.start, self.end, None).map(Some)
+    }
 }
 
 /// The window a history request asks for.
@@ -97,40 +134,62 @@ impl HistoryQuery {
     ///
     /// A `400` when the window runs backwards, which is almost always a client
     /// that has swapped the two parameters.
-    fn window(&self) -> Result<(DateTime<Utc>, DateTime<Utc>), ApiError> {
-        let now = Utc::now();
-        let end = self.end.unwrap_or(now);
-        let start = match (self.start, self.secago) {
-            (Some(start), _) => start,
-            (None, Some(secago)) => end - Duration::seconds(secago.max(0)),
-            (None, None) => end - Duration::seconds(DEFAULT_SECAGO),
-        };
-
-        if start > end {
-            return Err(ApiError::bad_request("That window ends before it starts."));
-        }
-
-        Ok((start, end))
+    fn window(&self) -> Result<Window, ApiError> {
+        bounds(self.secago, self.start, self.end, Some(DEFAULT_SECAGO))
     }
 }
 
-/// `GET /api/v1/cot?type&callsign&group&page&limit`.
+/// The window three parameters describe, `start` beating `secago`.
+///
+/// `default_secago` is how far back a request that named neither a `start` nor
+/// a `secago` reaches; [`None`] means the beginning of time. An `end` in the
+/// future is left alone rather than clamped to now — asking for a window that
+/// has not finished is how a page polls.
 ///
 /// # Errors
 ///
-/// A `404` when a channel is named that this installation does not have, and a
-/// `500` when a read fails.
+/// A `400` when the window ends before it starts, which is almost always a
+/// caller that has swapped the two parameters.
+fn bounds(
+    secago: Option<i64>,
+    start: Option<DateTime<Utc>>,
+    end: Option<DateTime<Utc>>,
+    default_secago: Option<i64>,
+) -> Result<Window, ApiError> {
+    let end = end.unwrap_or_else(Utc::now);
+    let start = match (start, secago.or(default_secago)) {
+        (Some(start), _) => start,
+        (None, Some(secago)) => end - Duration::seconds(secago.max(0)),
+        (None, None) => DateTime::UNIX_EPOCH,
+    };
+
+    if start > end {
+        return Err(ApiError::bad_request("That window ends before it starts."));
+    }
+
+    Ok((start, end))
+}
+
+/// `GET /api/v1/cot?type&callsign&group&secago&start&end&page&limit`.
+///
+/// # Errors
+///
+/// A `400` for a window that ends before it starts, a `404` when a channel is
+/// named that this installation does not have, and a `500` when a read fails.
 pub async fn list(
     context: web::Data<AppContext>,
     request: web::Query<ListQuery>,
     caller: Authenticated,
 ) -> ApiResult {
     let limit = request.limit.unwrap_or(PAGE_SIZE).clamp(1, query::MAX_PAGE);
+    let window = request.window()?;
     let rows = query::latest(
         context.db(),
         query::LatestQuery {
             kind: request.kind.clone(),
             callsign: request.callsign.clone(),
+            since: window.map(|(start, _)| start),
+            until: window.map(|(_, end)| end),
             limit,
             offset: request.page.unwrap_or(0).saturating_mul(limit),
         },
@@ -478,6 +537,53 @@ mod tests {
         .unwrap();
 
         assert_eq!(start, explicit, "an explicit start is not a suggestion");
+    }
+
+    #[test]
+    fn a_listing_with_no_window_asked_for_has_none() {
+        // The whole of `cot_latest` is what a map's initial load is, so the
+        // listing cannot acquire the history's default hour by sharing its
+        // parser.
+        assert_eq!(ListQuery::default().window().unwrap(), None);
+    }
+
+    #[test]
+    fn a_listing_window_means_what_it_means_on_the_history() {
+        let end = Utc::now();
+        let (start, resolved) = ListQuery {
+            secago: Some(600),
+            end: Some(end),
+            ..ListQuery::default()
+        }
+        .window()
+        .unwrap()
+        .expect("a window was asked for");
+
+        assert_eq!(resolved, end);
+        assert_eq!((end - start).num_seconds(), 600);
+
+        // An `end` alone reaches back to the beginning rather than to an hour
+        // before it: "everything up to then" is what was asked.
+        let (start, _) = ListQuery {
+            end: Some(end),
+            ..ListQuery::default()
+        }
+        .window()
+        .unwrap()
+        .expect("a window was asked for");
+
+        assert_eq!(start, DateTime::UNIX_EPOCH);
+
+        assert!(
+            ListQuery {
+                start: Some(end),
+                end: Some(end - Duration::hours(1)),
+                ..ListQuery::default()
+            }
+            .window()
+            .is_err(),
+            "the same refusal the history gives",
+        );
     }
 
     #[test]
