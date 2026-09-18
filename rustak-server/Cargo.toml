@@ -107,6 +107,9 @@ rustak-server = { path = ".", features = ["testing"] }
 # integration suites drive the listener with.
 rustak-client = { workspace = true, features = ["testing"] }
 rstest = { workspace = true }
+# The squashed-change fold is held against a naive replay model over generated
+# histories; nothing else in this crate needs generated input.
+proptest = { workspace = true }
 wiremock = { workspace = true }
 tempfile = { workspace = true }
 pretty_assertions = { workspace = true }

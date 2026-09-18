@@ -184,7 +184,14 @@ async fn listen(context: &AppContext) -> Result<(), Error> {
     let components = (
         stopping_on_exit(&shutdown, serve(context.clone(), server)),
         stopping_on_exit(&shutdown, serve_marti(context.clone(), marti)),
-        stopping_on_exit(&shutdown, crate::stream::serve(context.clone(), pki)),
+        stopping_on_exit(
+            &shutdown,
+            crate::stream::serve(
+                context.clone(),
+                pki,
+                crate::missions::MissionPublisher::shared(context.clone()),
+            ),
+        ),
         stopping_on_exit(&shutdown, jobs(context.clone())),
         stopping_on_exit(&shutdown, housekeeping(context.clone())),
     )

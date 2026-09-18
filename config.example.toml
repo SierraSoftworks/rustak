@@ -426,6 +426,13 @@ audit_max_entries = 100000
 
 archived_missions = "30d"
 
+# How long a deleted mission keeps answering `410 Gone` before its row, its
+# change history and its subscriptions are removed for good. The `410` is what
+# tells a client holding a stale Data Sync that the mission was removed rather
+# than that it is looking in the wrong place, which stops mattering once every
+# client has noticed.
+missions_purge_after = "14d"
+
 # How long a stored blob that nothing refers to is kept. Not zero: an upload is
 # referenced a moment after it is stored, and a collector running in between
 # would delete the file out from under the request that wrote it.

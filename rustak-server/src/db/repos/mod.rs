@@ -15,6 +15,7 @@ pub mod credentials;
 pub mod devices;
 pub mod groups;
 pub mod members;
+pub mod missions;
 pub mod oauth_keys;
 pub mod passkeys;
 pub mod refresh_tokens;
@@ -27,11 +28,18 @@ pub mod users;
 
 use super::Database;
 
+pub use certificates::list::CertificateFilter;
 pub use certificates::{CertificateRow, CertificatesRepo, NewCertificate, RevocationDetails};
 pub use credentials::{CredentialRow, CredentialsRepo, NewCredential};
 pub use devices::{DeviceRow, DeviceSeen, DevicesRepo, NewDevice};
 pub use groups::{GroupRow, GroupsRepo, NewGroup};
 pub use members::{ActiveChannel, MembersRepo, Membership};
+pub use missions::changes::{MissionChangeRow, MissionChangesRepo, NewChange};
+pub use missions::contents::{MissionContentRow, MissionContentsRepo, MissionUidRow};
+pub use missions::subscriptions::{
+    MissionSubscriptionRow, MissionSubscriptionsRepo, NewSubscription,
+};
+pub use missions::{MissionFilter, MissionPatch, MissionRow, MissionsRepo, NewMission};
 pub use oauth_keys::{KeyAlgorithm, KeyPurpose, NewOauthKey, OauthKeyRow, OauthKeysRepo};
 pub use passkeys::{NewPasskey, PasskeyRow, PasskeysRepo};
 pub use refresh_tokens::{Exchange, NewRefreshToken, RefreshTokenRow, RefreshTokensRepo};
@@ -40,6 +48,7 @@ pub use revoked_jtis::RevokedJtisRepo;
 pub use services::{NewService, ServiceRow, ServicesRepo};
 pub use settings::{SettingRow, SettingsRepo};
 pub use stream_segments::{NewStreamSegment, StreamSegmentRow, StreamSegmentsRepo};
+pub use users::profile::ProfileChange;
 pub use users::{NewUser, OidcProfile, UserRow, UsersRepo};
 
 /// A window over a listing.

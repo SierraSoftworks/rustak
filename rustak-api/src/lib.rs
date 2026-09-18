@@ -40,6 +40,7 @@ pub mod error;
 pub mod group;
 pub mod health;
 pub mod identity;
+pub mod mission;
 pub mod passkey;
 pub mod profile;
 pub mod service;
@@ -51,7 +52,10 @@ pub use audit::{AuditCategory, AuditOutcome, AuditRecord};
 pub use auth::{
     AuthMetadata, AuthMode, AuthVia, Me, TokenExchangeRequest, TokenRefreshRequest, TokenResponse,
 };
-pub use certificate::{Certificate, CertificateKind, CertificateSource};
+pub use certificate::{
+    Certificate, CertificateKind, CertificateSource, CertificateState, RevocationReason,
+    RevokeCertificateRequest,
+};
 pub use config_package::{ConfigPackageRequest, ConfigPackageVariant};
 pub use credential::{
     CreateCredentialRequest, Credential, CredentialCreated, CredentialKind, ENROLL_URL,
@@ -60,7 +64,7 @@ pub use credential::{
 pub use device::Device;
 pub use error::ApiErrorBody;
 pub use group::{
-    ActiveGroup, CreateGroupRequest, Group, GroupMembership, GroupPatch, GroupSource,
+    ActiveGroup, CreateGroupRequest, Group, GroupMember, GroupMembership, GroupPatch, GroupSource,
     MembershipSource,
 };
 pub use health::{ComponentStatus, Health};
@@ -68,6 +72,10 @@ pub use identity::{
     CertificateId, CredentialId, DeviceId, DeviceUid, DeviceUidError, Direction, GroupId,
     GroupName, GroupNameError, MissionGuid, MissionId, PasskeyId, ProfileId, ResourceId, ServiceId,
     ServiceName, ServiceNameError, UserId, Username, UsernameError,
+};
+pub use mission::{
+    MissionChangeKind, MissionChangeSummary, MissionDetail, MissionLayerSummary, MissionRoleKind,
+    MissionRoleUpdate, MissionSubscriptionSummary, MissionSummary, UidDetails,
 };
 pub use passkey::{
     PasskeyChallenge, PasskeyLoginFinish, PasskeyLoginStart, PasskeyRegistrationFinish,

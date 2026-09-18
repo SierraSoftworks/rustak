@@ -42,6 +42,7 @@ pub mod files;
 pub mod identity;
 pub mod jobs;
 pub mod marti;
+pub mod missions;
 pub mod pki;
 pub mod prelude;
 pub mod profiles;

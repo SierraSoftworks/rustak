@@ -21,6 +21,8 @@
 //! | [`replay`] | the latest position of everyone a newcomer may see |
 //! | [`notify`] | `t-x-d-d`, `t-x-g-c`, and closing a revoked session |
 //! | [`mission_hook`] | where `<dest mission>` will go in M4 |
+//! | [`mission_notify`] | the `t-x-m-*` notices a mission pushes |
+//! | [`mission_payload`] | what those notices carry inside `<mission>` |
 //! | [`live`] | the handle the rest of the server holds |
 //! | [`metrics`] | what the listener counts |
 //!
@@ -51,6 +53,8 @@ pub mod listener_tls;
 pub mod live;
 pub mod metrics;
 pub mod mission_hook;
+pub mod mission_notify;
+pub mod mission_payload;
 pub mod negotiation;
 pub mod notify;
 pub mod registry;
@@ -72,6 +76,10 @@ pub use hub::Hub;
 pub use live::LiveState;
 pub use metrics::StreamMetrics;
 pub use mission_hook::{MissionIngest, MissionRef, NoMissions};
+pub use mission_notify::{ChangeKind, MissionNotice, NoticeMission, Recipients};
+pub use mission_payload::{
+    MissionChangeXml, MissionLayerXml, MissionRoleXml, ResourceXml, UidDetailsXml,
+};
 pub use notify::Notifier;
 pub use resolver::{CertPrincipalResolver, DbPrincipalResolver, StreamPrincipal};
 pub use router::{Disposition, Router};
@@ -254,6 +262,10 @@ impl StreamRuntime {
 
 /// Binds and runs the stream listener, for [`runtime::run_all`].
 ///
+/// `missions` is the `<dest mission>` publisher, passed in rather than built
+/// here so that this module never has to know what a mission is — the M1 stub
+/// ([`mission_hook::no_missions`]) and the real one satisfy the same trait.
+///
 /// `pki` is [`None`] on an installation that has turned the listener off,
 /// because loading the authority also issues this server's own certificate and
 /// a development server with no configured host name has none to issue.
@@ -267,7 +279,11 @@ impl StreamRuntime {
 /// # Errors
 ///
 /// A [`human_errors::Kind::User`] error when the address will not bind.
-pub async fn serve(context: AppContext, pki: Option<Arc<Pki>>) -> Result<(), Error> {
+pub async fn serve(
+    context: AppContext,
+    pki: Option<Arc<Pki>>,
+    missions: Arc<dyn MissionIngest>,
+) -> Result<(), Error> {
     let shutdown = context.shutdown().clone();
 
     let Some(pki) = pki.filter(|_| context.config().stream.tls.enabled) else {
@@ -277,7 +293,7 @@ pub async fn serve(context: AppContext, pki: Option<Arc<Pki>>) -> Result<(), Err
         return Ok(());
     };
 
-    let runtime = StreamRuntime::bind(&context, &pki, mission_hook::no_missions()).await?;
+    let runtime = StreamRuntime::bind(&context, &pki, missions).await?;
 
     // Published the moment the registry exists, because the Marti surface reads
     // it: `/Marti/api/contacts/all`, `/Marti/api/clientEndPoints` and the

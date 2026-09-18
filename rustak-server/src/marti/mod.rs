@@ -48,6 +48,7 @@ pub mod extract;
 pub mod files;
 pub mod groups;
 pub mod headers;
+pub mod missions;
 pub mod oauth;
 pub mod principal;
 pub mod profiles;
@@ -151,6 +152,10 @@ fn api_routes(config: &mut web::ServiceConfig) {
             .configure(sync_metadata::routes)
             .configure(files::routes)
             .configure(stub_routes)
+            // Data Sync (M4-01), after the `/missions/{name}/kml` stub above
+            // so that the literal keeps winning, and with its own registration
+            // order for the literals that would be read as mission names.
+            .configure(missions::routes)
             // Its own, rather than the application's: a nested scope inherits
             // the *App*'s default service, which is the single-page shell, and
             // a missing `/Marti/api` route would be answered with HTML and a
@@ -291,6 +296,9 @@ const PATHS: &[&str] = &[
     "/Marti/api/contacts/all",
     "/Marti/api/clientEndPoints",
     "/Marti/api/subscriptions/all",
+    "/Marti/api/missions",
+    "/Marti/api/pagedmissions",
+    "/Marti/api/missioncount",
     "/Marti/api/video",
     "/Marti/api/injectors/cot/uid",
     "/Marti/api/repeater/list",

@@ -22,6 +22,7 @@
 
 pub mod audit;
 pub mod auth;
+pub mod certificates;
 pub mod config_packages;
 pub mod credentials;
 pub mod devices;
@@ -31,6 +32,8 @@ pub mod groups;
 pub mod health;
 pub mod me;
 pub mod middleware;
+pub mod missions;
+pub mod missions_view;
 pub mod passkey;
 pub mod profile_files;
 pub mod profiles;
@@ -70,6 +73,7 @@ pub fn configure() -> actix_web::Scope<
             .route("/auth/passkeys/{id}", web::delete().to(passkey::remove))
             .route("/users", web::get().to(users::list))
             .route("/users", web::post().to(users::create))
+            .route("/users/{username}", web::get().to(users::get))
             .route("/users/{username}", web::patch().to(users::patch))
             .route("/users/{username}/groups", web::get().to(users_groups::get))
             .route("/users/{username}/groups", web::put().to(users_groups::put))
@@ -77,6 +81,7 @@ pub fn configure() -> actix_web::Scope<
             .route("/groups", web::post().to(groups::create))
             .route("/groups/{name}", web::patch().to(groups::patch))
             .route("/groups/{name}", web::delete().to(groups::remove))
+            .route("/groups/{name}/members", web::get().to(groups::members))
             .route("/credentials", web::get().to(credentials::list))
             .route("/credentials", web::post().to(credentials::create))
             .route("/credentials/{id}", web::delete().to(credentials::remove))
@@ -89,7 +94,17 @@ pub fn configure() -> actix_web::Scope<
             .route("/devices/{uid}", web::delete().to(devices::remove))
             .route(
                 "/devices/{uid}/active-groups",
+                web::get().to(devices::active_groups),
+            )
+            .route(
+                "/devices/{uid}/active-groups",
                 web::put().to(devices::set_active_groups),
+            )
+            .route("/certificates", web::get().to(certificates::list))
+            .route("/certificates/{id}", web::get().to(certificates::get))
+            .route(
+                "/certificates/{id}/revoke",
+                web::post().to(certificates::revoke),
             )
             .route("/audit", web::get().to(audit::list))
             .route("/settings", web::get().to(settings::get))
@@ -100,6 +115,7 @@ pub fn configure() -> actix_web::Scope<
             // Device profiles and the manual configuration package, whose own
             // registration order puts `/profiles/pref-catalog` ahead of the
             // `{id}` that would otherwise swallow it.
+            .configure(missions::routes)
             .configure(profiles::routes)
             .configure(config_packages::routes),
     )
@@ -164,6 +180,7 @@ mod tests {
         ("DELETE", "/api/v1/auth/passkeys/1"),
         ("GET", "/api/v1/users"),
         ("POST", "/api/v1/users"),
+        ("GET", "/api/v1/users/ada"),
         ("PATCH", "/api/v1/users/ada"),
         ("GET", "/api/v1/users/ada/groups"),
         ("PUT", "/api/v1/users/ada/groups"),
@@ -171,6 +188,7 @@ mod tests {
         ("POST", "/api/v1/groups"),
         ("PATCH", "/api/v1/groups/Blue"),
         ("DELETE", "/api/v1/groups/Blue"),
+        ("GET", "/api/v1/groups/Blue/members"),
         ("GET", "/api/v1/credentials"),
         ("POST", "/api/v1/credentials"),
         ("DELETE", "/api/v1/credentials/1"),
@@ -178,7 +196,11 @@ mod tests {
         ("GET", "/api/v1/devices"),
         ("GET", "/api/v1/devices/ANDROID-1"),
         ("DELETE", "/api/v1/devices/ANDROID-1"),
+        ("GET", "/api/v1/devices/ANDROID-1/active-groups"),
         ("PUT", "/api/v1/devices/ANDROID-1/active-groups"),
+        ("GET", "/api/v1/certificates"),
+        ("GET", "/api/v1/certificates/1"),
+        ("POST", "/api/v1/certificates/1/revoke"),
         ("GET", "/api/v1/audit"),
         ("GET", "/api/v1/settings"),
         ("POST", "/api/v1/setup/server"),

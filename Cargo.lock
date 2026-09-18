@@ -3933,6 +3933,7 @@ dependencies = [
  "parking_lot",
  "pem 4.0.0",
  "pretty_assertions",
+ "proptest",
  "quick-xml",
  "rand 0.10.2",
  "rcgen",
