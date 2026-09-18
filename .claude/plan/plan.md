@@ -1,10 +1,9 @@
 # rustak — a lightweight Rust-native TAK server
 
-> Status: IN PROGRESS (2026-09-18, night). M0–M6 implementation landed. Gates met: rust.yml green; nightly EUD harness
-> (ATAK's commoncommo) 9/9 and CloudTAK compose 9/9 with nothing skipped (run 35396135680). Independent reviews
-> (`.claude/plan/reviews/R-01..03`) found security, wire-contract and robustness defects; fix briefs M5-02, M4-04,
-> M1-09 are in flight, stream-side robustness follows. Remaining: first pre-release tag (user decision), manual
-> checklists in `docs/compat/` to be run on real devices.
+> Status: IN PROGRESS (2026-09-19). M0–M6 landed; both interop suites 9/9; the three independent reviews
+> (`.claude/plan/reviews/`) are actioned except the stream-side robustness items (M1-10, in flight). Remaining:
+> first pre-release tag (user decision), running the manual checklists in `docs/compat/` on real devices, and the
+> backlog in `.claude/plan/backlog.md`.
 
 ## Context
 

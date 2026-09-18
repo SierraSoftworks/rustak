@@ -1,0 +1,13 @@
+# M1-10 — Robustness fixes from R-03: the stream side
+
+**Read first:** `.claude/plan/reviews/R-03-robustness-review.md` — this brief covers **C1, H1, H2, M2, M4, M7** (the rest landed as M1-09; read `.claude/plan/status/M1-09-robustness-storage-jobs.md` for its note on M4), `.claude/plan/conventions.md`, status M1-05, M1-08, M2-11, M4-04 (the `<dest mission>` path now goes through `Hub::resolve_uids`), `compat/streaming.md`.
+
+**Deliver, each with the test the review sketches (deterministic where possible):**
+- **C1** connect-time replay: make replay `async` and send with `send().await` under a per-message timeout, exempt it from the consecutive-drop close counter, and validate `[stream.limits] queue_len` against `max_connections` at config load (warn if replay of a full house cannot fit). Test: 900 fake subscribers registered in the hub, one new connection, assert it is not closed and receives every reachable SA.
+- **H1** writer task lifetime: the writer gets a shutdown arm and a write timeout (`[stream.limits] write_timeout`, default 30 s); when the read side ends, the writer is aborted after the drain budget so the TLS session and socket are dropped. Test: a peer that stops reading is closed within the timeout and the task count returns to baseline.
+- **H2** hostile `<marti>`: cap `<dest>` elements per message (e.g. 64), dedupe names before lookup, resolve groups from the in-memory channel table (no DB read on the routing path — load the name→bitpos map once and refresh on change), and never hold the hub read lock across a DB call. Test: a frame with 250k identical `<dest group>` elements is rejected/truncated in microseconds.
+- **M2** callsign changes re-index (`Hub` callsign map updated on SA with a new callsign; old entry removed). Test: rename then `<dest callsign>` resolves the new name only.
+- **M4** shutdown ordering: the CoT store stops after the stream drain within the budget (M1-09's status note has the exact change in `stream/mod.rs`).
+- **M7** `CotRecord::new` no longer forces both encodings up front; encode lazily/once (the `EncodedEvent` cache already exists — reuse it) so a dropped record costs nothing.
+
+**Files you own:** `rustak-server/src/stream/**`, `rustak-server/src/config/stream.rs`, `config/validate.rs` (stream rules only), `cot_store/writer.rs` (M7 only), `rustak-server/tests/stream_*.rs`, `config.example.toml` (`[stream.limits]` block), your status file. The CI steward edits tests/CI; no other implementation agent is running. No `git`/`but` writes; files < 300 functional lines. Exit checks: the standard set plus `cd interop/node-tak && npm test` (25/25) and `cd interop/eud && npm test`. Status: `.claude/plan/status/M1-10-robustness-stream.md`.
