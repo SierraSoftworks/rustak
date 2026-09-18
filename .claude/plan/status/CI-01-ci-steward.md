@@ -5,6 +5,129 @@ what remains. Brief: `.claude/plan/briefs/CI-01-ci-steward.md`.
 
 ---
 
+## 2026-09-19 — `dd4177a` broke `main` with a module that had no file
+
+Run 35405146908 failed `Lint`, `Test` and `Build UI` together — three jobs, one
+cause, and not a code defect at all.
+
+```
+Lint      Error writing files: failed to resolve mod `tls_files`:
+          rustak-server/src/jobs/tls_files.rs does not exist
+Test      error[E0583]: file not found for module `tls_files`
+Build UI  (the same fmt resolution error)
+CI        the always() aggregator, consequential
+```
+
+`dd4177a` (M1-09, storage/jobs robustness) landed a `rustak-server/src/jobs/mod.rs`
+carrying `pub mod tls_files;` at line 61 and a `pub use tls_files::{…}` at line
+83, while `rustak-server/src/jobs/tls_files.rs` was **never added to the index** —
+`git ls-tree origin/main` found nothing, and the file sat in the working tree as
+untracked, 11,596 bytes, written at 00:14.
+
+**Not M1-09's own work.** The TLS-files-reload agent (M2-13) had already added
+those two lines to `jobs/mod.rs` while its module was still untracked, and
+M1-09's commit took the whole of that shared file. A commit boundary drawn
+across two agents' edits to one file.
+
+**Fixed by the coordinator** as `7cda0ec`, "fix(jobs): Drop the registration of a
+module that has not landed yet" — the two lines are off `main` and the file stays
+untracked for M2-13 to land together with its own wiring. Verified: `main`'s
+`jobs/mod.rs` has no `tls_files` reference, and the working tree still holds the
+untracked file. The coordinator has also changed its landing procedure to diff
+shared files against the verified snapshot at commit time, which is the durable
+fix.
+
+**Worth keeping.** The cheapest guard against this class is already in the
+toolchain: `cargo fmt` resolves every `mod` declaration and fails in under a
+second when one has no file, which is exactly how CI caught it. A pre-commit
+`cargo fmt --all --check` would have caught it before the push rather than after.
+
+I did not act on this myself: option (a) was a commit, which is the
+orchestrator's, and option (b) — deleting the two lines — is non-test `src/`
+belonging to another agent's in-flight work.
+
+---
+
+## 2026-09-18 — four consecutive green `rust.yml` runs, and one infrastructure flake
+
+`06dbf64`, `d4ac801`, `20411d67`, `3d3f949` all **green**, every job. `main` has
+been stable across the docs and review-brief landings.
+
+**35396788511 (`2b65b50`) failed on `darwin-arm64-rustak-plugin-example`, and it
+is not ours.** The commit is documentation only — the security review and its
+brief — so a darwin build failure could not be a code problem, and the log
+confirms it. The build succeeded and the *artifact upload* could not resolve
+GitHub's endpoint:
+
+```
+With the provided path, there will be 1 file uploaded
+Artifact name is valid!
+Root directory input is valid!
+##[error]Failed to CreateArtifact: Unable to make request: ENOTFOUND
+```
+
+`ENOTFOUND` is DNS. The same job's cache step also logged `digest-mismatch:
+error` twice, which is the same class of transient. Nothing to fix in this
+repository; the response was `gh run rerun --failed` (GitHub refuses it while
+the rest of the run is still going, so it waited for completion first).
+
+**The re-run passed with no change, which settles it.** 35396788511 is now
+`success`, and so is 35397474913 (`b8ab5d4`). That is **six consecutive green
+`rust.yml` runs** on `main`.
+
+If this recurs, the fix is not a hand re-run each time: `actions/upload-artifact`
+takes no retry of its own, so the `build` job's upload step would want wrapping
+in a retry (or `continue-on-error` plus an explicit retry step). One occurrence
+is not a pattern; a second inside a day would be, and I would propose the change
+then rather than keep re-running by hand.
+
+**This is the first genuinely external failure of the session.** Recording it so
+the pattern is visible if it recurs: a `build` matrix job failing at
+`upload-artifact` or `rust-cache` with a network error, on a commit that cannot
+have caused it, is infrastructure. A job failing at `cargo build` on such a
+commit would not be, and would be worth a hard look at the cache key.
+
+---
+
+## 2026-09-18 — nightly 35396135680 (`3d3f949`): **every interop suite green, first time**
+
+```
+[eud]      surfaces missing: (none)      9 passed, 0 skipped, 0 failed.
+[cloudtak] surfaces missing: (none)      9 passed, 0 skipped, 0 failed.
+```
+
+| | |
+|---|---|
+| **EUD** | `chat-direct` `disconnect` `enroll-basic` `enroll-revoked` `mp-download` `mp-upload` `negotiate-refused` `negotiate-silent` `two-eud-routing` — all ✔, in **13m43s** |
+| **CloudTAK** | `configure-server` `login` `channels` `data-sync` `marker` `file` `changes` `package` `ui-smoke` — all ✔, in **9m21s** |
+| **EUD image** | ✔ (cache hit, 27s) |
+
+Nothing skipped in either suite, so this is nine scenarios and nine steps
+actually run against ATAK's own `commoncommo` and against CloudTAK's real
+container — not a green made of skips. `interop-cloudtak`'s second run ever, and
+its first clean one.
+
+**The whole arc, for the record.** Every failure these suites found on the way
+here was real and has been closed:
+
+| Found | Where it turned out to be | Closed by |
+|---|---|---|
+| `chat-direct` never got a `b-t-f-s` | server — nothing sent one | M1-08 |
+| `mp-download`'s URL was `https://{server.name}/…` | server — `request_base_url` returns `None` for every HTTP/2 client | M3-05, from `CI-01-2026-09-18-mission-package-url.md` |
+| `mp-download` still fetched 0 bytes | harness — an absolute path made the receiver's output file unwritable | §F-mp |
+| `disconnect` failed both client-log assertions | harness — `Interface Down` is never logged after `remiface`, and `log_any` means "in any order" | §F1 |
+| `chat-direct` also reported a short run | harness — the runtime guard read the shortest EUD, not the scenario | §F1 |
+| `enroll-revoked` 404'd on revoke | harness — revoking a *spent one-time token* instead of the certificate | §F3 |
+| `enroll-revoked` then failed on `clientEndPoints` | harness — "absent" asked of the union of everything ever seen | §F3 |
+| the runner died and hung the job for 82 minutes | harness — an unawaited rejection, and an orphan holding the step's stdout | §F2-nightly |
+| CloudTAK `file` got `400 … body has no content` | harness — `application/octet-stream` is eaten by `batch-schema`'s `bodyparser.raw` before CloudTAK's handler can forward the stream | §F7 |
+| CloudTAK `ui-smoke` strict-mode violation | harness — two buttons match `/sign in/i` | §F6 |
+
+Two of the ten were server-side; both were written up rather than patched from
+here, and both were fixed by the owning agent. The rest were mine.
+
+---
+
 ## 2026-09-18 — nightly 35394055984 (`c61b592`): CloudTAK's **first run** — 7 passed, 0 skipped, 2 failed
 
 Dispatched so `interop-cloudtak` would get its first real run. **The whole stack
@@ -489,9 +612,9 @@ and `docs/ci.md`.
 
 | Workflow | On `main` | Verdict |
 |---|---|---|
-| `rust.yml` | **green** on `0198065`, all 24 jobs | the 1-in-128 serial defect remains latent and written up |
-| `nightly.yml` `interop-eud` | **8 passed, 0 skipped, 1 failed** | only `mp-download`; fix ready (the scenario sent an absolute path the receiver could not write) |
-| `nightly.yml` `interop-cloudtak` | **first run: 7 passed, 0 skipped, 2 failed** | stack came up in 10m52s, no skips; both failures harness-side and fixed (§F6, §F7) |
+| `rust.yml` | **green** — six consecutive runs through `b8ab5d4` | one darwin artifact-upload DNS flake, green on re-run with no change |
+| `nightly.yml` `interop-eud` | **green — 9 passed, 0 skipped, 0 failed** | 13m43s |
+| `nightly.yml` `interop-cloudtak` | **green — 9 passed, 0 skipped, 0 failed** | 9m21s, second run ever |
 | `security_audit.yml` | **red, and has never been green** (8 of 8 recorded runs failed) | two advisories, neither fixable from this repository today — needs a decision, §S3 |
 | `changelog.yml` | green | — |
 

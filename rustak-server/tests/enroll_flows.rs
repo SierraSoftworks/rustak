@@ -122,6 +122,63 @@ async fn harness() -> Harness {
     unreachable!("the loop either returns or panics on its last iteration")
 }
 
+/// How long to wait for the Marti listener to start answering.
+const MARTI_READY_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How long a probe holds a connection open before calling the listener ready.
+const MARTI_PROBE: Duration = Duration::from_millis(250);
+
+/// Waits until the Marti listener stops closing connections as they arrive.
+///
+/// `build_marti` **binds** the socket, and only the spawned `Server` future
+/// starts the workers that serve it — so a connection arriving in between is
+/// completed by the kernel from the backlog and then dropped by actix, which
+/// has no worker to hand it to. `reqwest` reports that as `connection closed`
+/// part-way through the handshake. On a quiet machine the gap is too small to
+/// hit and this suite passes; under a loaded `cargo test --workspace` the
+/// spawned task is starved and M5-02 measured the two real-mTLS tests failing
+/// four runs in five. CI has not shown it, which is consistent — the runner is
+/// slow but not contended.
+///
+/// The probe sits deliberately *below* TLS, because that is the layer the
+/// failure is at. A listener with a worker holds the connection open waiting
+/// for a ClientHello, so a read that **times out** is the ready signal; an
+/// immediate EOF or reset is "not yet". Nothing is written, no certificate is
+/// issued and no row is created, so this is invisible to every assertion.
+///
+/// This also closes a quieter hazard. Two tests here assert that a handshake is
+/// *refused* — the revoked certificate and the caller with none — and a
+/// listener that drops connections because it has no worker yet would satisfy
+/// both for entirely the wrong reason. Waiting until it genuinely serves means
+/// those two can only pass on a real refusal.
+async fn await_marti(port: u16) {
+    use tokio::io::AsyncReadExt as _;
+
+    let deadline = std::time::Instant::now() + MARTI_READY_TIMEOUT;
+
+    loop {
+        if let Ok(mut stream) = tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await {
+            let mut byte = [0u8; 1];
+
+            match tokio::time::timeout(MARTI_PROBE, stream.read(&mut byte)).await {
+                // Held open, waiting for us to speak: a worker has it.
+                Err(_elapsed) => return,
+                // It spoke first, which it can only do if it is serving.
+                Ok(Ok(1..)) => return,
+                // EOF or a reset: bound, but nothing is serving it yet.
+                Ok(Ok(_) | Err(_)) => {}
+            }
+        }
+
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the Marti listener on {port} never started answering",
+        );
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 /// One attempt at [`harness`], which fails only when the port was taken.
 async fn try_harness() -> Result<Harness, human_errors::Error> {
     let (reservation, port) = reserve_port();
@@ -163,6 +220,7 @@ async fn try_harness() -> Result<Harness, human_errors::Error> {
     let handle = listener.handle();
 
     actix_web::rt::spawn(listener);
+    await_marti(port).await;
 
     Ok(Harness {
         server,
