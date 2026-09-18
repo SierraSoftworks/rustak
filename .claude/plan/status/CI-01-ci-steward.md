@@ -5,6 +5,114 @@ what remains. Brief: `.claude/plan/briefs/CI-01-ci-steward.md`.
 
 ---
 
+## 2026-09-18 — nightly 35388998399 (`8b5a31c`): **7 passed, 0 skipped, 2 failed**, in 15m08s
+
+No hang, no skips, all nine scenarios ran. **15m08s** end to end, which both
+validates the three fixes from the previous entry and confirms the new
+`timeout-minutes: 30` is the right bound.
+
+| Scenario | Result | Note |
+|---|---|---|
+| `chat-direct` | **✔ — first pass ever** | M1-08's `b-t-f-s` bounce landed and ATAK reads it. This was M2-09 §4's one predicted standing failure, and it is closed. |
+| `disconnect` | ✔ | holding since F1 |
+| `enroll-basic` | ✔ | |
+| `mp-upload` | ✔ | |
+| `negotiate-refused` | ✔ | |
+| `negotiate-silent` | ✔ | |
+| `two-eud-routing` | ✔ | |
+| `enroll-revoked` | ✖ | the *harness* — §F3 below. The server did everything right. |
+| `mp-download` | ✖ | **expected**: the HTTP/2 `:authority` fix is `e2e77a9`, which is newer than the `8b5a31c` this ran on. |
+
+### F3 — `client_endpoints_absent` was asked of the wrong data (landed-ready)
+
+`enroll-revoked` ran to completion for the first time — `[alpha] revoked at
+T+25s`, so the switch to `POST /api/v1/certificates/{id}/revoke` works — and
+then failed on one assertion: `/Marti/api/clientEndPoints lists 'REVOKED-ALPHA',
+which it should not.`
+
+**The server is not at fault; it is the best result in this run.** Its own log:
+
+```
+20:08:34.913  POST /api/v1/certificates/{id}/revoke
+20:08:34.915  pki.revoke{fingerprint=7405…}: stream::notify: Closed stream connection
+20:08:34.913  stream.conn{user=eud-revoked-alpha}: A client left the stream. rx=23 tx=3
+20:08:50.118  pki::tls::client_verifier: Refused a client certificate at the handshake. fingerprint=7405…
+20:09:05.659  … refused again
+20:09:21.200  … and again
+```
+
+Both halves of what M2-09 §4 called "uncertain" hold: revocation drops the live
+session by fingerprint, **and** the stream listener re-checks revocation on every
+new handshake rather than only against the live set. Three reconnection attempts,
+three refusals.
+
+The failure is mine. `sample()` accumulates every callsign ever seen into one
+`Set`, and `checkClientEndpoints` was given that union for both directions.
+That is right for `client_endpoints_present` — "did it get as far as connecting"
+— and cannot ever be right for `client_endpoints_absent`, because an EUD that is
+revoked mid-scenario *has* to connect first and is therefore in the union by
+construction. The assertion could only ever fail.
+
+**Fixed:** the revocation task now takes a reading of `/Marti/api/clientEndPoints`
+five seconds after the revoke returns — after it, and while the EUD is still
+running, which is the only moment at which "no longer connected" means anything —
+and `checkClientEndpoints` judges `absent` against that snapshot while `present`
+still reads the union. A scenario with no revocation falls back to the union,
+where the two are the same question. The five seconds are because the revoke
+response returns once the hook has closed the connection, but the listener's view
+of who is connected updates on the connection task.
+
+Files: `interop/eud/src/execute.ts`, `interop/eud/src/expect.ts`,
+`interop/eud/tests/expect.test.ts` (new case: *a revoked EUD is judged on the
+reading taken after it was revoked*, plus the reworded message in the existing
+one). Verified: typecheck clean, **43/43**.
+
+### F4 — `rustak-server/tests/enroll_flows.rs`: the `reserve_port` TOCTOU (landed-ready)
+
+M6-01 traced a flake under `cargo test --workspace` to `reserve_port()`, which
+bound `:0`, read the port and **closed the socket immediately** — leaving the
+port unclaimed for the whole of `TestServer::start_with` plus `Pki::load`,
+hundreds of milliseconds under load, during which any other test binding `:0`
+could take it.
+
+`build_marti` binds from the configuration and returns an already-`run()`
+`Server`, so a test cannot hand it a pre-bound listener or read the port back
+without changing `src/web/server.rs`. Closed from the test side instead, in two
+parts: `reserve_port` now **returns the listener still bound**, and the caller
+drops it in the instruction immediately before `build_marti` binds — reducing
+the window from hundreds of milliseconds to two instructions — and `harness()`
+retries on a fresh port up to `BIND_ATTEMPTS` (5) if even that is lost, so the
+suite cannot flake at all. `try_harness` returns `Result` so a bind failure is a
+retry rather than a panic; every other `expect` is unchanged.
+
+Verified: `cargo test -p rustak-server --features testing --test enroll_flows`
+→ **10 passed**; rustfmt clean.
+
+### F5 — two unused imports failing `Lint` on `main` (landed-ready, `src/`)
+
+Wave A (`36c1411`) went in with `Lint` red:
+
+```
+error: unused import: `rustak_core::prelude::*`
+  --> rustak-server/src/web/api/events.rs:40:5
+  --> rustak-server/src/web/api/services.rs:25:5
+  = note: `-D unused-imports` implied by `-D warnings`
+```
+
+Both files import `rustak_core::prelude::*` **and** `crate::prelude::*`, and
+`rustak-server/src/prelude.rs:27` is `pub use rustak_core::prelude::*;` — so the
+first is redundant. (The other three files in `web/api` that import the core
+prelude — `subject.rs`, `error.rs`, `extract.rs` — do not also import the crate
+prelude, which is why only these two errored.)
+
+These are non-test `src/` files, which I do not normally edit. Applied under the
+brief's one-line-lint exception and flagged here because it is two line
+deletions with no behavioural change and `main` is red without them: if the
+owning agent is mid-edit and about to *use* the core prelude in either file, take
+their version over mine.
+
+---
+
 ## 2026-09-18 — nightly 35379867680: **cancelled at the 90-minute timeout**, and why
 
 Dispatched at 18:23 on `1e5e1c3`; killed by its own `timeout-minutes: 90` at
@@ -188,8 +296,8 @@ and `docs/ci.md`.
 
 | Workflow | On `main` | Verdict |
 |---|---|---|
-| `rust.yml` | **green** on `973117a` and again on `1e5e1c3` | fixed by §F2; `bootstrap.rs` 3 passed in 30.81 s |
-| `nightly.yml` `interop-eud` | **cancelled at its 90-minute timeout** on the re-dispatch | three harness defects, all three fixed below and awaiting a landing; `disconnect` and `chat-direct` confirmed fixed before it died |
+| `rust.yml` | green on `973117a` and `1e5e1c3`; **red again on wave A (`36c1411`)** | `Lint` only, two unused imports — §F5, fix ready |
+| `nightly.yml` `interop-eud` | **7 passed, 0 skipped, 2 failed** in 15m08s | `chat-direct` passes for the first time; `enroll-revoked` is §F3 (harness), `mp-download` needs the HTTP/2 fix that landed after this sha |
 | `security_audit.yml` | **red, and has never been green** (8 of 8 recorded runs failed) | two advisories, neither fixable from this repository today — needs a decision, §S3 |
 | `changelog.yml` | green | — |
 

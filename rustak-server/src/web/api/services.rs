@@ -22,7 +22,6 @@
 
 use actix_web::{HttpRequest, HttpResponse, web};
 use rustak_api::{Heartbeat, ServiceDescriptor};
-use rustak_core::prelude::*;
 
 use crate::auth::resolve::AuthFailure;
 use crate::db::repos::ServiceRow;

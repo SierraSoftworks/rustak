@@ -37,7 +37,6 @@ use actix_web::web::Bytes;
 use actix_web::{HttpRequest, HttpResponse, web};
 use futures::Stream;
 use rustak_api::event::ServerEvent;
-use rustak_core::prelude::*;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::plugins::{ServerEvents, auth};

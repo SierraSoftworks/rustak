@@ -242,21 +242,33 @@ function checkCertificate(
 /** The server half of a scenario's expectations. */
 export function checkClientEndpoints(
   expect: ServerExpectations,
-  callsigns: readonly string[],
+  everSeen: readonly string[],
+  stillConnected: readonly string[] = everSeen,
 ): string[] {
   const failures: string[] = [];
 
+  // "Present" is a question about the whole run — did this EUD ever get far
+  // enough to be listed — so it reads the union the sampler accumulated.
   for (const wanted of expect.clientEndPointsPresent) {
-    if (!callsigns.includes(wanted)) {
+    if (!everSeen.includes(wanted)) {
       failures.push(
-        `/Marti/api/clientEndPoints does not list '${wanted}'; it lists ${callsigns.join(", ") || "nobody"}.`,
+        `/Marti/api/clientEndPoints does not list '${wanted}'; it lists ${everSeen.join(", ") || "nobody"}.`,
       );
     }
   }
 
+  // "Absent" is a question about a moment, and it cannot be asked of the union:
+  // an EUD that is revoked mid-scenario had to connect first, so it is in the
+  // union by construction. The caller passes the reading taken after the
+  // revocation instead, and a scenario with no revocation falls back to the
+  // union, where the two are the same question.
   for (const unwanted of expect.clientEndPointsAbsent) {
-    if (callsigns.includes(unwanted)) {
-      failures.push(`/Marti/api/clientEndPoints lists '${unwanted}', which it should not.`);
+    if (stillConnected.includes(unwanted)) {
+      failures.push(
+        `/Marti/api/clientEndPoints still lists '${unwanted}' after it should have gone; it lists ${
+          stillConnected.join(", ") || "nobody"
+        }.`,
+      );
     }
   }
 

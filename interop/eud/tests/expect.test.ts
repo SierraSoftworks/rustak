@@ -157,6 +157,18 @@ test("an EUD scripted to leave early does not make the scenario a short run", ()
   );
 });
 
+test("a revoked EUD is judged on the reading taken after it was revoked", () => {
+  // It connected (so it is in the union) and then went (so it is not in the
+  // snapshot). Asking the union would fail a scenario the server passed.
+  const expectation = { ...scenario.expect, clientEndPointsAbsent: ["ALPHA"] };
+
+  assert.deepEqual(checkClientEndpoints(expectation, ["ALPHA"], []), []);
+
+  const still = checkClientEndpoints(expectation, ["ALPHA"], ["ALPHA"]);
+  assert.equal(still.length, 1);
+  assert.match(still[0], /still lists 'ALPHA'/);
+});
+
 test("the server half reports both directions", () => {
   assert.deepEqual(checkClientEndpoints(scenario.expect, ["ALPHA"]), []);
 
@@ -171,7 +183,7 @@ test("the server half reports both directions", () => {
   );
 
   assert.equal(forbidden.length, 1);
-  assert.match(forbidden[0], /lists 'ALPHA', which it should not/);
+  assert.match(forbidden[0], /still lists 'ALPHA' after it should have gone/);
 });
 
 test("the audit expectation reads the server's own record", () => {

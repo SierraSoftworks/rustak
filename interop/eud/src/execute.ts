@@ -52,6 +52,15 @@ export interface ScenarioResult {
   readonly artefacts?: string;
 }
 
+/**
+ * How long to let a revocation settle before reading `clientEndPoints` back.
+ *
+ * The revoke response returns once the hook has closed the connection, but the
+ * listener's own view of who is connected is updated on the connection task, so
+ * a read taken in the same millisecond can still see the departing client.
+ */
+const SETTLE_MS = 5_000;
+
 /** Sleeps, for a scenario's staggered starts. */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -70,6 +79,17 @@ export async function executeScenario(
     const seen = new Set<string>();
     const sampling = sample(session, seen);
 
+    // `seen` accumulates every callsign the sampler ever saw, which is the right
+    // data for `client_endpoints_present` ("it got as far as connecting") and
+    // exactly the wrong data for `client_endpoints_absent`: `enroll-revoked`'s
+    // EUD *has* to connect before there is anything to revoke, so asking whether
+    // it appears anywhere in the union can only ever answer yes. Run 35388998399
+    // failed on precisely that while the server had done everything right — it
+    // closed the live session by fingerprint and then refused three
+    // reconnections at the handshake. So `absent` is judged against this
+    // snapshot instead.
+    let afterRevocation: Set<string> | undefined;
+
     // These start running the moment they are created and are not awaited until
     // every container has exited, so a revocation that throws would spend
     // minutes as a rejected promise nobody is watching — and node kills the
@@ -86,6 +106,17 @@ export async function executeScenario(
         try {
           await revokeEud(session, eud.id);
           notes.push(`[${eud.id}] revoked at T+${eud.revokeAfterSeconds}s`);
+
+          // A reading taken *after* the revocation and *while the EUD is still
+          // running* — which is the only moment at which "no longer connected"
+          // means anything. See `afterRevocation` below.
+          await sleep(SETTLE_MS);
+          afterRevocation = new Set(await connectedCallsigns(session));
+          notes.push(
+            `clientEndPoints ${(SETTLE_MS / 1_000).toFixed(0)}s after revoking: ${
+              [...afterRevocation].join(", ") || "nobody"
+            }`,
+          );
         } catch (error) {
           failures.push(
             `[${eud.id}] revoking at T+${eud.revokeAfterSeconds}s failed: ${
@@ -145,7 +176,9 @@ export async function executeScenario(
     }
 
     failures.push(...checkRuntime(scenario, artefacts));
-    failures.push(...checkClientEndpoints(scenario.expect, [...seen]));
+    failures.push(
+      ...checkClientEndpoints(scenario.expect, [...seen], [...(afterRevocation ?? seen)]),
+    );
     notes.push(`clientEndPoints saw: ${[...seen].join(", ") || "nobody"}`);
 
     if (scenario.expect.auditMatches.length > 0) {
