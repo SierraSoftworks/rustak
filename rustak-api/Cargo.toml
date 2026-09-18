@@ -17,8 +17,18 @@ workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
-# Workspace-wide `uuid` enables the `v4` feature for crates that generate ids
-# (rustak-server); this crate only parses/serialises them, so it does not ask
-# for `v4` itself, though Cargo's feature unification means the wasm build
-# still includes it if another workspace member is compiled alongside it.
+# The one dependency this crate cannot inherit from the workspace table.
+#
+# That table turns on `uuid/v4` for the crates that mint identifiers
+# (rustak-server), and `v4` needs a source of randomness that
+# `wasm32-unknown-unknown` does not have: uuid refuses to compile for wasm
+# without `js`, `rng-getrandom` or `rng-rand`. Features are additive, so
+# inheriting and then removing `v4` is not possible — the version has to be
+# named here instead. This crate only ever parses and renders identifiers, so
+# `serde` is all it wants, and design 01 section 1.2 says as much ("`uuid` here
+# without `v4`/`js`").
+#
+# The tidier fix belongs in the root manifest: drop `v4` from the workspace
+# table and let rustak-server ask for it. That is not this brief's file to
+# change, so this override stands until it is.
 uuid = { workspace = true }

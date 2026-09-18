@@ -1,15 +1,34 @@
-//! Shared JSON contract between `rustak-server` and `rustak-ui`: DTOs for
-//! the admin API, and the validated identity newtypes (`Username`,
-//! `DeviceUid`, `GroupName`, typed row ids, …) that both crates share
-//! without either depending on the other.
+//! The JSON contract between `rustak-server` and the people and programs that
+//! talk to it, and the validated identity newtypes that both ends share.
 //!
-//! wasm-safe: this crate depends only on `serde`/`serde_json`/`chrono`/`uuid`
-//! so it can be compiled for `wasm32-unknown-unknown` by `rustak-ui` as well
-//! as linked into `rustak-server`. No tokio, no tracing, no rusqlite.
+//! Two jobs, and they belong together:
 //!
-//! Every module below is an empty placeholder for M0; the DTOs and newtypes
-//! themselves are added by a dedicated implementation brief (see
-//! `.claude/plan/design/01-foundations-storage-ci.md` §2.1).
+//! - **The admin API's data-transfer types.** Every `/api/v1` request and
+//!   response body is defined here once, so the Yew admin UI and the server
+//!   cannot drift apart about what a field is called or what it may hold.
+//! - **Identity newtypes.** [`Username`], [`DeviceUid`], [`GroupName`] and the
+//!   typed row identifiers validate on the way in, so a value that reached a
+//!   handler has already been checked — and there is exactly one definition of
+//!   what a username may contain, rather than one per crate that handles them.
+//!
+//! This crate is deliberately free of any web framework, database or runtime
+//! dependency: only `serde`, `serde_json`, `chrono` and `uuid`. That is what
+//! lets it compile for `wasm32-unknown-unknown` alongside the browser UI as
+//! well as link into the server. No tokio, no tracing, no rusqlite.
+//!
+//! # What is not here
+//!
+//! Secrets. A credential's secret exists in exactly one response
+//! ([`CredentialCreated`]) and nowhere else in this crate — no hashes, no
+//! hints, no lengths, no key material. Several of the types below carry a test
+//! asserting their field list, so adding one that could hold a secret breaks a
+//! test named after the reason not to. The types that do carry a secret redact
+//! it in their `Debug` rendering, so that logging a response cannot leak a
+//! session.
+//!
+//! The TAK-facing wire formats are not here either. The Marti API's XML and its
+//! JSON envelopes are TAK's shapes rather than ours, and they live in the
+//! server beside the routes that have to emit them byte for byte.
 
 pub mod audit;
 pub mod auth;
@@ -20,7 +39,38 @@ pub mod error;
 pub mod group;
 pub mod health;
 pub mod identity;
+pub mod passkey;
 pub mod service;
 pub mod settings;
 pub mod setup;
 pub mod user;
+
+pub use audit::{AuditCategory, AuditOutcome, AuditRecord};
+pub use auth::{
+    AuthMetadata, AuthMode, AuthVia, Me, TokenExchangeRequest, TokenRefreshRequest, TokenResponse,
+};
+pub use certificate::{Certificate, CertificateKind, CertificateSource};
+pub use credential::{CreateCredentialRequest, Credential, CredentialCreated, CredentialKind};
+pub use device::Device;
+pub use error::ApiErrorBody;
+pub use group::{Group, GroupMembership, GroupSource, MembershipSource};
+pub use health::{ComponentStatus, Health};
+pub use identity::{
+    CertificateId, CredentialId, DeviceId, DeviceUid, DeviceUidError, Direction, GroupId,
+    GroupName, GroupNameError, MissionGuid, MissionId, PasskeyId, ProfileId, ResourceId, ServiceId,
+    ServiceName, ServiceNameError, UserId, Username, UsernameError,
+};
+pub use passkey::{
+    PasskeyChallenge, PasskeyLoginFinish, PasskeyLoginStart, PasskeyRegistrationFinish,
+    PasskeyRegistrationStart, PasskeySummary,
+};
+pub use service::{
+    Capability, CapabilityError, Heartbeat, ServiceDescriptor, ServiceEndpoints, ServiceState,
+    ServiceStatus, ServiceSummary,
+};
+pub use settings::ServerSettings;
+pub use setup::{
+    AdminCreated, CaKeyType, CaSummary, CreateAdminRequest, InitCaRequest, ServerSettingsRequest,
+    SetupStatus,
+};
+pub use user::{User, UserKind, UserPatch, UserSource};
