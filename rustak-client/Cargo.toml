@@ -17,6 +17,9 @@ workspace = true
 rustak-core = { workspace = true }
 rustak-cot = { workspace = true }
 rustak-api = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
 tokio = { workspace = true }
 tokio-rustls = { workspace = true }
 rustls = { workspace = true }
@@ -30,3 +33,6 @@ serde_json = { workspace = true }
 url = { workspace = true }
 tracing = { workspace = true }
 human-errors = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1,15 +1,85 @@
-# config.example.toml — placeholder.
+# rustak-plugin-example configuration.
 #
-# The sidecar config schema (server connection, service identity, per-service
-# settings) is defined by the `rustak-client::sidecar` implementation brief;
-# this file is a placeholder so `rustak-plugin-example` has one to point new
-# plugins at from day one. See `.claude/plan/plan.md` → Architecture ->
-# "Plugin (sidecar) contract".
+# Every key is shown with its default. A key that is commented out has its
+# default written beside it; a key that is shown uncommented is set to its
+# default, so this file describes a working sidecar as it stands.
+#
+# Any value may be written as "${{ env.NAME }}", which is substituted from the
+# environment (or from the file passed to --env) before the file is parsed. That
+# is how a service token stays out of a file you commit or bind-mount.
+#
+# Unknown and misplaced keys are refused rather than ignored, so
+# `rustak-plugin-example --config config.example.toml --check` is a real check
+# of this file. This crate's test suite loads it, so it cannot drift from the
+# code either.
+#
+# Durations are written as "45s", "15m", "12h" or "30d".
 
-[server]
-# host = "tak.example.com"
-# stream = "ssl://tak.example.com:8089"
-# control = "https://tak.example.com:8446/api/v1"
 
 [service]
+# The service's name. Required: the stream uid (SERVICE-<name>), the control-API
+# path and the certificate subject are all derived from it. One plugin binary
+# deployed twice against the same server is two names.
 name = "example"
+
+# What to call this service in the admin UI. Default: its name.
+# display_name = "Example sidecar"
+
+# What this service advertises that it does, as lower-case dotted tokens.
+# Default: [].
+# capabilities = ["cot.publish"]
+
+# The token this service authenticates to /api/v1/services/* with. Default:
+# none. It is a credential, so it belongs in the environment rather than here;
+# an unset variable is refused at start-up by name rather than sent as literal
+# "${{ env.… }}" text.
+# token = "${{ env.RUSTAK_SERVICE_TOKEN }}"
+
+# The client certificate and private key this service opens the CoT stream with,
+# in PEM. Default: none — and neither half is usable without the other, so
+# setting one without the other is refused. The stream client that uses them
+# lands in M1.
+# certificate = "/etc/rustak/example.pem"
+# key = "/etc/rustak/example.key"
+
+# The truststore used to verify the server's certificate, in PEM.
+# Default: the platform's own roots.
+# truststore = "/etc/rustak/truststore.pem"
+
+
+[server]
+# Where the rustak server is. Every endpoint is optional: a plugin only needs
+# the ones it uses, and this one connects to none of them yet. They are
+# reported to the server on registration, which is what makes a misconfigured
+# sidecar diagnosable from the admin UI.
+#
+# The CoT stream, as a TAK connect string. Default: none.
+# stream = "ssl://tak.example.com:8089"
+
+# The Marti API. Default: none.
+# marti = "https://tak.example.com:8443"
+
+# The service control API. Default: none.
+# control = "https://tak.example.com:8446"
+
+
+[sidecar]
+# How often the plugin's `tick` runs. The first one happens as soon as the
+# sidecar has started, not one interval later. Default: "30s" — this file sets
+# it lower so that a plugin you have just started says something while you are
+# still watching it.
+tick = "5s"
+
+# How long `stop` is given before the harness stops waiting and reports the
+# overrun. A shutdown that can be blocked indefinitely is one that ends in
+# `kill -9`.
+shutdown_grace = "10s"
+
+
+[settings]
+# This plugin's own settings. A real plugin puts its feed URLs, API keys and
+# filters here; the whole table is whatever your `Sidecar::Settings` type says
+# it is.
+#
+# What each heartbeat says.
+message = "The example sidecar is alive."

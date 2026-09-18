@@ -3525,7 +3525,10 @@ dependencies = [
 name = "rustak-client"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bytes",
+ "chrono",
+ "clap",
  "futures",
  "human-errors",
  "reqwest 0.13.5",
@@ -3536,6 +3539,7 @@ dependencies = [
  "rustls-pki-types",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-rustls",
  "tokio-util",
