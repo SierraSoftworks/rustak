@@ -6,13 +6,23 @@
 //! truststore, and from then on the mutual-TLS handshake is the authentication.
 //! There is nothing else to check the handshake against.
 //!
-//! # What is here in M0
+//! # The shape of this module
 //!
-//! Only what the first-run wizard needs: generating a key ([`keys`]), creating
-//! or reloading the root authority ([`ca`]), and the textual encodings
-//! certificates travel in ([`pem`]). Signing requests, client and server
-//! certificate issuance, revocation, PKCS#12 bundles, the rustls configuration
-//! builders and ACME arrive with M2, on top of these.
+//! | File | What it answers |
+//! |---|---|
+//! | [`keys`] | generating and reloading the private keys we own |
+//! | [`ca`] | the root authority: creation, storage, reload, export |
+//! | [`csr`] | reading a signing request in any form a client sends one |
+//! | [`issue`] | signing a client certificate, with our subject |
+//! | [`server_cert`] | the certificate our own listeners present |
+//! | [`mod@revoke`] | taking one back, and the cache the handshake consults |
+//! | [`p12`] | PKCS#12 bundles in the shapes TAK clients read |
+//! | [`pem`] | the textual encodings certificates travel in |
+//! | [`tls`] | the rustls configurations the three listeners are built from |
+//! | [`facade`] | [`Pki`], which ties enrolment and revocation together |
+//!
+//! ACME — a publicly trusted certificate for the browser-facing listener — is
+//! separate and arrives with its own brief; nothing here depends on it.
 //!
 //! # We choose the subject, the client chooses the key
 //!
@@ -25,11 +35,28 @@
 //! Marti listeners resolve to a user.
 
 pub mod ca;
+pub mod csr;
+pub mod facade;
+pub mod issue;
 pub mod keys;
+pub mod p12;
 pub mod pem;
+pub mod revoke;
 pub mod server_cert;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+pub mod tls;
 
 pub use ca::{CaMaterial, ca_certificate_path, load_or_create_root_ca};
+pub use csr::{CsrEncoding, CsrKey, CsrPolicy, ParsedCsr, parse_csr};
+pub use facade::{Enrollment, IssuedVia, Pki};
+pub use issue::{IssueRequest, IssuedCert, issue_client_cert};
 pub use keys::{KeyType, generate_key, key_pair_from_pkcs8, signature_algorithm};
+pub use p12::{P12Options, client_keystore, legacy_signclient_v1, truststore};
 pub use pem::{bare_base64_64col, parse_pem_chain, pem_certificate, sha256_fingerprint};
+pub use revoke::{CertRejection, RevocationCache, RevokeReason, revoke};
 pub use server_cert::{ServerCertificate, load_or_issue as load_or_issue_server_cert};
+pub use tls::{
+    HotSwapCertResolver, ListenerKind, PeerCertificate, RustakClientVerifier, marti_server_config,
+    stream_server_config,
+};

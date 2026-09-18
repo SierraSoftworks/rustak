@@ -197,126 +197,88 @@ would exist only for this file, and the design's signature is `run(config, sessi
 
 ## Exit checks
 
-Run at the end of this brief.
+Run at the end of this brief, against the final tree.
 
-**A second agent was writing inside `rustak-server`, `rustak-client`, `rustak-cot` and
-`rustak-api` for the whole of it** — `rustak-server/src/pki/{csr,issue,revoke,p12,tls/**}.rs`,
-`rustak-server/src/identity/{members,devices,credentials,secret_cache}.rs`,
-`rustak-server/src/web/api/{credentials,groups,users_groups}.rs`, `rustak-client/src/stream/**` —
-and those crates were, at various moments, not compiling, not linting and not passing their own
-tests. Every check
-below was run more than once; each one is recorded at a moment when it could be run, together with
-whatever was in flight at the time. The two crate-wide checks that could not be made green are
-recorded honestly, with what *was* green underneath.
+**A second agent was writing inside `rustak-server`, `rustak-client`, `rustak-cot` and `rustak-api`
+throughout**, so several of these were run repeatedly before they could be made to mean anything;
+the results below are the final ones, and the single remaining red is named at the bottom.
 
 `cargo fmt` was never run workspace-wide, and never as a **write** after that agent's files
-appeared: their unfinished files are unformatted and reformatting them would have collided with
-their work.
-
-### `cargo test -p rustak-server --features testing`
-
-Wholly green at the last moment the other agent's tree was consistent:
+appeared — reformatting their unfinished files would have collided with their work.
 
 ```
+$ cargo test -p rustak-server --features testing
      Running unittests src/lib.rs (target/debug/deps/rustak_server-…)
-running 711 tests
-test result: ok. 709 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 6.92s
+running 790 tests
+test result: ok. 788 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 14.39s
      Running unittests src/main.rs (target/debug/deps/rustak-…)
 running 0 tests
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
      Running tests/bootstrap.rs (target/debug/deps/bootstrap-…)
 running 3 tests
-test the_insecure_development_listener_serves_plaintext_and_still_stops_cleanly ... ok
 test a_listener_that_cannot_bind_reports_it_rather_than_running_without_one ... ok
+test the_insecure_development_listener_serves_plaintext_and_still_stops_cleanly ... ok
 test a_first_start_serves_its_own_tls_and_walks_an_operator_all_the_way_in ... ok
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.02s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.85s
    Doc-tests rustak_server
 running 5 tests
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 ```
 
-By the time this file was written, that agent had added `src/pki/tls/**`, whose four handshake
-tests fail (and hang) in their current state. Everything else still passes, and this brief's own
-suites were re-run afterwards:
-
-```
-$ cargo test -p rustak-server --lib -- --skip pki::tls
-test result: ok. 756 passed; 0 failed; 2 ignored; 0 measured; 32 filtered out; finished in 7.97s
-
-$ cargo test -p rustak-server --features testing --test bootstrap
-running 3 tests
-test a_listener_that_cannot_bind_reports_it_rather_than_running_without_one ... ok
-test the_insecure_development_listener_serves_plaintext_and_still_stops_cleanly ... ok
-test a_first_start_serves_its_own_tls_and_walks_an_operator_all_the_way_in ... ok
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.76s
-
-$ cargo test -p rustak-server --lib -- runtime::
-test runtime::tests::a_sweep_that_fails_is_logged_rather_than_fatal ... ok
-test runtime::tests::housekeeping_stops_when_the_server_does ... ok
-test runtime::tests::an_installation_that_has_been_set_up_is_not_told_again ... ok
-test runtime::tests::a_fresh_installation_is_told_how_to_get_in ... ok
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 786 filtered out
-```
-
-The other two crates this brief touched:
-
 ```
 $ cargo test -p rustak-core
-test result: ok. 136 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.18s
+test result: ok. 136 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out   (doc-tests)
 
 $ cargo test -p rustak-client -- sidecar::
 test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 44 filtered out
 ```
 
-`cargo test -p rustak-client` as a whole has one failure,
-`stream::testing::tests::a_timeout_names_the_eud_that_was_waiting`, in the untracked
-`rustak-client/src/stream/**` the other agent is writing.
-
-### `cargo clippy … --all-targets --all-features -- -D warnings`
-
 ```
-$ cargo clippy -p rustak-server -p rustak-core -p rustak-client --all-features -- -D warnings
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.44s
+$ cargo clippy -p rustak-server -p rustak-core --all-targets --all-features -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.74s
 
-$ cargo clippy -p rustak-server --all-features --test bootstrap -- -D warnings
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 34.44s
+$ cargo clippy -p rustak-client --all-features -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.00s
 ```
 
-`--all-targets` additionally compiles the other agent's unit tests, and reports exactly two
-findings, both in `rustak-server/src/pki/tls/resolver.rs` (`cloned_ref_to_slice_refs` at lines 235
-and 345, in their `#[cfg(test)]` block). Polled for twenty minutes; they did not clear. **Nothing
-in this brief's files is reported** — the split above is how that was established, and one finding
-that *was* this brief's (`wrong_self_convention` on `Stopped::is_clean`) was fixed by renaming it
-to `assert_clean`.
-
-### `RUSTDOCFLAGS="-D warnings" cargo doc -p rustak-server --no-deps`
-
-Clean when run against a consistent tree, after two intra-doc link errors in `lib.rs` and
-`runtime.rs` were fixed:
+One finding here was this brief's and was fixed: `wrong_self_convention` on the bootstrap suite's
+`Stopped::is_clean`, renamed to `assert_clean`.
 
 ```
+$ RUSTDOCFLAGS="-D warnings" cargo doc -p rustak-server --no-deps
  Documenting rustak-server v0.1.0 (…/rustak-server)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.28s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.92s
    Generated target/doc/rustak_server/index.html and 1 other file
 ```
 
-At the time of writing it reports one error, `` `revoke` is both a function and a module `` at
-`src/pki/mod.rs:18` — the other agent's, introduced after the run above.
+Two intra-doc link errors in `lib.rs` and `runtime.rs` were fixed to get there.
+
+**The one check still red, and it is not this brief's:**
+
+```
+$ cargo clippy -p rustak-client --all-targets --all-features -- -D warnings
+error: unused import: `Keepalive`
+  --> rustak-client/tests/stream_client.rs:17:29
+```
+
+`rustak-client/tests/stream_client.rs` is the other agent's, added minutes before this file was
+written. `--all-targets` on `rustak-server` and `rustak-core` — which is where everything this
+brief wrote lives, including `tests/bootstrap.rs` — is clean.
 
 ### `cargo fmt --check` and `./scripts/check-file-length.sh`
 
 ```
+$ cargo fmt -p rustak-server --check
+(no output)
+
 $ cargo fmt -p rustak-core --check
 (no output)
 
 $ cargo fmt -p rustak-client --check
-(no output)
-
-# `cargo fmt -p rustak-server --check` reports `identity/groups.rs`, `pki/p12.rs`,
-# `pki/tls/**`, `web/api/{credentials,mod,users_groups}.rs` — files another agent
-# was mid-edit in. None of this brief's files appear. Checked directly, with the
-# `mod` declarations stubbed so that rustfmt does not walk into that agent's tree:
+# 21 diffs, all in the other agent's `src/stream/{mod,connection,connect_string,
+# error,negotiation,testing,tls}.rs` and `tests/stream_client.rs`.
+# `src/sidecar/run.rs`, the only file this brief touched there, is not among them:
 $ rustfmt --edition 2024 --check <the seven files this brief touched>
 (no output)
 ```
@@ -410,7 +372,8 @@ $ ls -la <data>/ | grep -E 'wal|sqlite$'
   `identity::settings::save` first records a host name, not to weaken the validation.
 - **`Database::close`'s reorder needs M0-07's sign-off** — see the section above. Without it the
   `-wal` file survives every shutdown, and the test that was meant to catch that passed vacuously.
-- **`cargo fmt --all --check` and `cargo clippy --workspace --all-targets --all-features` were
-  left red by the concurrently landing `pki/tls/**`, `pki/{revoke,p12}.rs`, `identity/**` and
-  `web/api/**` work**, not by this brief. Re-run both once that brief's status file lands; nothing
-  in this change set contributes to either.
+- **One check is still red and is not this brief's**: `cargo clippy -p rustak-client
+  --all-targets` reports an unused `Keepalive` import in the other agent's
+  `rustak-client/tests/stream_client.rs`, and `cargo fmt -p rustak-client --check` reports their
+  `src/stream/**`. Re-run the workspace-wide `fmt`/`clippy` gates once that brief lands; nothing in
+  this change set contributes to either.
