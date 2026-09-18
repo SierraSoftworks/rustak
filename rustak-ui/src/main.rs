@@ -1,23 +1,29 @@
-//! rustak admin UI entry point.
+//! rustak's admin console.
 //!
-//! M0 only proves the Trunk/Yew build pipeline: routes, the protected-route
-//! gate, the login/setup-wizard flows, the dashboard and its fixtures all
-//! arrive in a later implementation brief (see
-//! `.claude/plan/design/01-foundations-storage-ci.md` §8, step 13).
+//! A single-page Yew application served by `rustak-server` from the bundle
+//! Trunk writes into `dist/`. It talks to `/api/v1` and to nothing else, so the
+//! same bundle works behind any host name without being rebuilt.
+//!
+//! # Demo mode
+//!
+//! Appending `?demo` to any URL makes every API call read from
+//! [`fixtures`] instead of the network, which is how the interface is developed
+//! and reviewed before a server exists to talk to. The substitution happens in
+//! the API client, so no page knows demo mode exists — and no page can forget
+//! to support it.
 
-use yew::prelude::*;
+mod api;
+mod app;
+mod auth;
+mod components;
+mod fixtures;
+mod pages;
+mod util;
 
-#[function_component(App)]
-fn app() -> Html {
-    html! {
-        <main class="app-shell">
-            <h1>{ "rustak" }</h1>
-        </main>
-    }
-}
+pub use app::Route;
 
 fn main() {
     console_error_panic_hook::set_once();
     wasm_logger::init(wasm_logger::Config::default());
-    yew::Renderer::<App>::new().render();
+    yew::Renderer::<app::App>::new().render();
 }

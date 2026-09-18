@@ -1,9 +1,14 @@
 # Trunk configuration for the rustak admin single-page UI.
 #
 # `trunk serve` runs a dev server with hot reload; pass `--open` to launch a
-# browser. During development the UI talks to a live server for
-# `/api/v1/*` and `/oauth/*` requests via the proxies below, while serving
-# the wasm bundle itself.
+# browser. During development the UI talks to a live server for `/api/v1/*`,
+# `/oauth/*`, `/login/*` and `/Marti/*` requests via the proxies below, while
+# serving the wasm bundle itself.
+#
+# For a fully offline preview, append `?demo` to any URL: every API call is then
+# served from the baked-in fixtures instead of the network, so the whole console
+# can be walked with no server running at all. Demo mode exists only in debug
+# builds.
 
 [build]
 target = "index.html"
@@ -16,11 +21,22 @@ watch = ["src", "styles.scss", "index.html"]
 
 [serve]
 port = 8081
-# Proxy admin API and OAuth2 requests to a locally running server so the dev
-# UI can be exercised against real data. Adjust the backend address as
-# needed.
+# Proxy admin API, OAuth2 and Marti requests to a locally running server so the
+# dev UI can be exercised against real data. Adjust the backend address as
+# needed; `8446` is the default public listener.
 [[proxy]]
 backend = "http://127.0.0.1:8446/api/v1"
 
 [[proxy]]
 backend = "http://127.0.0.1:8446/oauth"
+
+# The browser sign-in pages that federate to an identity provider (M5). They
+# keep their original paths because the redirect URI is registered with the
+# provider.
+[[proxy]]
+backend = "http://127.0.0.1:8446/login"
+
+# Marti is mounted on the public listener as well as on :8443, so a page that
+# needs it in development can reach it here without a client certificate.
+[[proxy]]
+backend = "http://127.0.0.1:8446/Marti"

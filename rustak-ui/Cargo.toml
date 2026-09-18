@@ -41,12 +41,29 @@ web-sys = { version = "0.3", features = [
     "Storage",
     "UrlSearchParams",
     "Crypto",
+    "SubtleCrypto",
     "HtmlInputElement",
     "HtmlSelectElement",
+    "HtmlTextAreaElement",
     "InputEvent",
     "Navigator",
     "Clipboard",
     "Element",
+
+    # WebAuthn. Passkeys are the local sign-in method (there are no passwords),
+    # so `navigator.credentials` is not optional chrome here — it is the whole
+    # of `auth::passkey`. The ceremony payloads themselves stay opaque JSON
+    # (see `rustak_api::passkey`); these bindings only carry them across.
+    "Credential",
+    "CredentialsContainer",
+    "CredentialCreationOptions",
+    "CredentialRequestOptions",
+    "PublicKeyCredential",
+    "PublicKeyCredentialCreationOptions",
+    "PublicKeyCredentialRequestOptions",
+    "AuthenticatorResponse",
+    "AuthenticatorAttestationResponse",
+    "AuthenticatorAssertionResponse",
 ] }
 
 base64 = "0.23"
