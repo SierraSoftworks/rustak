@@ -45,12 +45,19 @@ export interface VirtualAuthenticator {
   credentials(): Promise<VirtualCredential[]>;
 
   /**
-   * Re-stores every credential as a **discoverable** (resident) one.
+   * Re-stores every credential as a **non-discoverable** one.
    *
-   * See the note in `attachAuthenticator` for why this is needed, and what it
-   * is standing in for.
+   * The opposite of a work-around: it manufactures the situation the
+   * username-assisted sign-in exists for — a credential an authenticator did
+   * not keep, so the browser cannot offer it without being told which account
+   * to look for. Real examples are a key registered against another server, an
+   * authenticator that ignored `residentKey`, and anything registered by a
+   * version of rustak that asked for `discouraged`. None of those can be
+   * produced here, and this can.
+   *
+   * Returns how many it converted.
    */
-  makeCredentialsDiscoverable(): Promise<number>;
+  makeCredentialsUndiscoverable(): Promise<number>;
 
   /** Detaches it, so the context has no way to sign in any more. */
   remove(): Promise<void>;
@@ -60,17 +67,15 @@ export interface VirtualAuthenticator {
  * Attaches a virtual authenticator to the page's browser context.
  *
  * `isUserVerified` and `hasUserVerification` are both on because the server
- * asks for `userVerification: "required"` (it is `webauthn-rs`'s default for
- * `start_passkey_registration`), and an authenticator that could not perform
- * user verification would have every ceremony refused before it started.
+ * asks for `userVerification: "required"` at registration and at both sign-in
+ * ceremonies, and an authenticator that could not perform user verification
+ * would have every one of them refused before it started.
  *
- * `hasResidentKey` is on so that a *discoverable* credential can exist at all.
- * It does not make one: the server sends `residentKey: "discouraged"`, so the
- * credential this authenticator creates is **not** discoverable, and the admin
- * UI's only passkey sign-in is the discoverable one (it never asks for a
- * username). `makeCredentialsDiscoverable` bridges that gap for the specs that
- * sign in through the UI — see `.claude/plan/status/M0-14-e2e-specs.md`, which
- * records it as a server/UI defect rather than a property of this harness.
+ * `hasResidentKey` is on because the server asks for `residentKey: "required"`
+ * (`rustak-server/src/auth/passkeys.rs`), so a credential registered here is
+ * **discoverable** and the sign-in prompt — which never asks for a username —
+ * can find it. An authenticator without it would refuse the registration
+ * outright, which is the behaviour a real security key with no room left has.
  */
 export async function attachAuthenticator(
   page: Page,
@@ -106,10 +111,10 @@ export async function attachAuthenticator(
 
     credentials,
 
-    async makeCredentialsDiscoverable() {
+    async makeCredentialsUndiscoverable() {
       const held = await credentials();
       const converted = held.filter(
-        (credential) => !credential.isResidentCredential,
+        (credential) => credential.isResidentCredential,
       );
 
       for (const credential of converted) {
@@ -121,7 +126,7 @@ export async function attachAuthenticator(
           authenticatorId,
           credential: {
             ...credential,
-            isResidentCredential: true,
+            isResidentCredential: false,
           },
         });
       }

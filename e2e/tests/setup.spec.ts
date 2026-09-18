@@ -78,29 +78,31 @@ test("the first-run wizard turns a token on disk into an administrator who can s
 
   // Step 5 — the certificate authority.
   //
-  // KNOWN DEFECT, worked around here: rustak creates its root authority during
-  // start-up (`runtime::listen` calls `pki::load_or_create_root_ca` before it
-  // binds anything), so by the time the wizard offers to create one there
-  // already is one and `POST /api/v1/setup/ca` answers `409`. The step is then
-  // a dead end in the linear walk — but not in the wizard as a whole, because
-  // `Step::resume_from` skips a step the server says is already done, so
-  // reloading resumes at the last one. Recorded in
-  // `.claude/plan/status/M0-14-e2e-specs.md`; when the defect is fixed this
-  // branch stops being taken and the spec still passes.
-  const authority = page.getByRole("button", { name: "Create the authority" });
-  await expect(authority).toBeVisible();
-  await authority.click();
+  // There already is one: `runtime::listen` calls `pki::load_or_create_root_ca`
+  // before it binds anything, because the certificate the listener presents is
+  // issued by it. So the step shows what exists — with the fingerprint an
+  // operator is supposed to check, and the certificate to install — rather than
+  // a form whose answers would be ignored.
+  await expect(page.getByRole("button", { name: "Create the authority" })).toHaveCount(0);
+  await expect(page.getByText("This server already has an authority")).toBeVisible();
 
-  const finish = page.getByRole("button", { name: "Finish setup" });
-  const alreadyHasCa = page.getByText("This server already has a certificate authority.");
-  await expect(finish.or(alreadyHasCa).first()).toBeVisible();
+  const fingerprint = page.locator(".detail-list code");
+  await expect(fingerprint).toBeVisible();
+  expect(
+    (await fingerprint.innerText()).trim(),
+    "the fingerprint shown is the SHA-256 of the authority's certificate",
+  ).toMatch(/^[0-9a-f]{64}$/);
 
-  if (await alreadyHasCa.isVisible()) {
-    await page.reload();
-    await waitForApp(page);
-  }
+  const download = page.getByRole("link", { name: "Download the authority certificate" });
+  await expect(download).toHaveAttribute("download", "ca.crt");
+  expect(
+    decodeURIComponent((await download.getAttribute("href"))!.split(",", 2)[1]!),
+  ).toContain("-----BEGIN CERTIFICATE-----");
+
+  await page.getByRole("button", { name: "Continue" }).click();
 
   // Step 6 — closing the wizard, which is the other one-way door.
+  const finish = page.getByRole("button", { name: "Finish setup" });
   await expect(finish).toBeVisible();
   await finish.click();
 

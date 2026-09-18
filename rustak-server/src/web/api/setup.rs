@@ -47,11 +47,7 @@ pub async fn status(context: web::Data<AppContext>) -> ApiResult {
     let db = context.db();
     let stored = settings::stored(db).await.map_err(failed)?;
     let has_admin = db.users().count_admins().await.map_err(failed)? > 0;
-    let has_ca = db
-        .get::<serde_json::Value>(pki::ca::PKI_PARTITION, pki::ca::ROOT_CA_KEY)
-        .await
-        .map_err(failed)?
-        .is_some();
+    let has_ca = has_ca(db).await?;
     let has_server_name = !settings::resolve(&context.config(), db)
         .await
         .map_err(failed)?
@@ -176,13 +172,53 @@ pub async fn server(
     Ok(json_ok(&saved))
 }
 
-/// `POST /setup/ca`: creates this installation's certificate authority.
+/// `GET /setup/ca`: the authority this installation already has.
+///
+/// The wizard's authority step shows what is there before offering to make
+/// anything, because on almost every installation there is already something
+/// there — see [`ca`].
 ///
 /// # Errors
 ///
-/// `410` once the wizard is done, `409` when an authority already exists — it
-/// is what every enrolled device trusts, so replacing one is not something a
-/// wizard step gets to do — and `500` when it cannot be created.
+/// `410` once the wizard is done, `404` when no authority has been created
+/// yet, and `500` when the stored record cannot be read or decrypted.
+pub async fn get_ca(context: web::Data<AppContext>, _caller: Administrative) -> ApiResult {
+    open(&context).await?;
+
+    let db = context.db();
+
+    if !has_ca(db).await? {
+        return Err(ApiError::not_found(
+            "This server has no certificate authority yet.",
+        ));
+    }
+
+    // Safe to call the creating form: the record exists, so this loads it.
+    let config = context.config();
+    let material =
+        pki::load_or_create_root_ca(db, context.secrets(), &config.pki, &config.server.data_dir)
+            .await
+            .map_err(|err| ApiError::from_human(&err))?;
+
+    Ok(json_ok(&summarise(&material)))
+}
+
+/// `POST /setup/ca`: makes sure this installation has a certificate authority.
+///
+/// Idempotent, and it has to be: the listener presents a certificate issued by
+/// this authority, so start-up creates one before it can bind and the wizard
+/// has never once been the first to ask. Refusing the step because the thing it
+/// asks for already exists would dead-end the only linear walk through the
+/// wizard there is.
+///
+/// What it will not do is *replace* one — that is what every enrolled device
+/// trusts — so the requested common name and key type apply only when there is
+/// nothing to adopt, and the response says which authority you got either way.
+///
+/// # Errors
+///
+/// `410` once the wizard is done, and `500` when the authority cannot be
+/// created or read back.
 pub async fn ca(
     context: web::Data<AppContext>,
     body: web::Json<InitCaRequest>,
@@ -191,18 +227,7 @@ pub async fn ca(
     open(&context).await?;
 
     let db = context.db();
-
-    if db
-        .get::<serde_json::Value>(pki::ca::PKI_PARTITION, pki::ca::ROOT_CA_KEY)
-        .await
-        .map_err(failed)?
-        .is_some()
-    {
-        return Err(ApiError::conflict(
-            "This server already has a certificate authority.",
-        ));
-    }
-
+    let adopted = has_ca(db).await?;
     let config = context.config();
     let requested = crate::config::PkiConfig {
         ca_common_name: body.common_name.trim().to_string(),
@@ -224,20 +249,46 @@ pub async fn ca(
             .await
             .map_err(|err| ApiError::from_human(&err))?;
 
+    // Two different events, because "the wizard created the authority every
+    // device will trust" and "the wizard accepted the one start-up made" are
+    // not the same thing to whoever reads this log later.
     audit(
         &context,
-        "setup.ca",
+        if adopted {
+            "setup.ca.adopted"
+        } else {
+            "setup.ca"
+        },
         AuditOutcome::Success,
         &caller.user.username,
     )
     .await;
 
-    Ok(json_ok(&CaSummary {
+    Ok(json_ok(&summarise(&material)))
+}
+
+/// Whether a root authority has been created.
+async fn has_ca(db: &crate::db::Database) -> Result<bool, ApiError> {
+    Ok(db
+        .get::<serde_json::Value>(pki::ca::PKI_PARTITION, pki::ca::ROOT_CA_KEY)
+        .await
+        .map_err(failed)?
+        .is_some())
+}
+
+/// The authority as the wizard shows it, certificate included.
+///
+/// The certificate is the public half — it is handed to every device that
+/// enrols — so sending it is how an operator gets it into a truststore without
+/// being told to go and read a file off the server.
+fn summarise(material: &pki::CaMaterial) -> CaSummary {
+    CaSummary {
         subject: material.subject().to_string(),
         fingerprint: material.fingerprint().to_string(),
         not_before: material.not_before(),
         not_after: material.not_after(),
-    }))
+        certificate_pem: Some(material.certificate_pem()),
+    }
 }
 
 /// `POST /setup/complete`: closes the wizard, for good.
@@ -478,7 +529,7 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn the_wizard_creates_the_authority_once() {
+    async fn the_wizard_creates_the_authority_once_and_adopts_it_afterwards() {
         let (server, _) = waiting().await;
         let (_, session) = server.signed_in("ada", true).await;
         let app = test::init_service(App::new().configure(server.app())).await;
@@ -502,20 +553,75 @@ mod tests {
         assert!(summary.subject.starts_with("CN=Hilltop CA"));
         assert_eq!(summary.fingerprint.len(), 64);
         assert!(summary.not_after > summary.not_before);
+        assert!(
+            summary
+                .certificate_pem
+                .as_deref()
+                .is_some_and(|pem| pem.starts_with("-----BEGIN CERTIFICATE-----")),
+            "the wizard hands back the certificate an operator has to install",
+        );
 
-        // Replacing one is not something a wizard step gets to do: it is what
-        // every enrolled device trusts.
-        let again = test::call_service(
+        // Asking again is not a second attempt at anything: on a real server
+        // start-up has already made one before the wizard can be reached, and a
+        // step that refused what is already true would dead-end the walk.
+        let again: CaSummary = test::call_and_read_body_json(
             &app,
             test::TestRequest::post()
                 .uri("/api/v1/setup/ca")
                 .insert_header(("authorization", bearer(&session)))
-                .set_json(&request)
+                .set_json(serde_json::json!({
+                    "common_name": "Somebody Else's CA",
+                    "key_type": "rsa2048",
+                }))
                 .to_request(),
         )
         .await;
 
-        assert_eq!(again.status(), StatusCode::CONFLICT);
+        // Adopted, never replaced: it is what every enrolled device trusts.
+        assert_eq!(again.fingerprint, summary.fingerprint);
+        assert_eq!(again.subject, summary.subject);
+    }
+
+    #[actix_web::test]
+    async fn the_authority_can_be_read_back_before_the_wizard_offers_to_make_one() {
+        let (server, _) = waiting().await;
+        let (_, session) = server.signed_in("ada", true).await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let missing = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/v1/setup/ca")
+                .insert_header(("authorization", bearer(&session)))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+        let created: CaSummary = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/v1/setup/ca")
+                .insert_header(("authorization", bearer(&session)))
+                .set_json(serde_json::json!({
+                    "common_name": "Hilltop CA",
+                    "key_type": "ecdsa_p256",
+                }))
+                .to_request(),
+        )
+        .await;
+
+        let read: CaSummary = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/v1/setup/ca")
+                .insert_header(("authorization", bearer(&session)))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(read, created);
     }
 
     #[actix_web::test]
@@ -568,6 +674,21 @@ mod tests {
                 "{uri} was still reachable after the wizard finished",
             );
         }
+
+        let read_back = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/v1/setup/ca")
+                .insert_header(("authorization", bearer(&session)))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(
+            read_back.status(),
+            StatusCode::GONE,
+            "GET /setup/ca was still reachable after the wizard finished",
+        );
 
         let status: SetupStatus = test::call_and_read_body_json(
             &app,

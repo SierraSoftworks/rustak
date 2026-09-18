@@ -1,14 +1,13 @@
-//! The last three steps: what the server is called, the authority it issues
-//! from, and closing the wizard.
+//! Two of the last three steps: what the server is called, and closing the
+//! wizard. The authority between them is [`super::ca`], which is a step with
+//! two quite different faces.
 
-use rustak_api::{CaKeyType, InitCaRequest, ServerSettingsRequest};
+use rustak_api::ServerSettingsRequest;
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
 use crate::api;
-use crate::components::{
-    Alert, AlertKind, Button, ButtonKind, Field, Select, SelectOption, TextInput,
-};
+use crate::components::{Alert, AlertKind, Button, ButtonKind, Field, TextInput};
 use crate::util::nav_href;
 
 #[derive(Properties, PartialEq)]
@@ -118,125 +117,6 @@ pub fn server_step(props: &ServerStepProps) -> Html {
                 onclick={on_submit}
             >
                 { "Save and continue" }
-            </Button>
-        </>
-    }
-}
-
-#[derive(Properties, PartialEq)]
-pub struct CaStepProps {
-    pub on_created: Callback<()>,
-}
-
-/// Step five: the certificate authority.
-///
-/// Its private key is generated here and sealed at rest; it never leaves the
-/// server. Everything an EUD trusts hangs off this, so it is created once and
-/// not replaced casually.
-#[function_component(CaStep)]
-pub fn ca_step(props: &CaStepProps) -> Html {
-    let common_name = use_state(|| "rustak CA".to_string());
-    let organization = use_state(String::new);
-    let key_type = use_state(CaKeyType::default);
-    let busy = use_state(|| false);
-    let error = use_state(|| None::<String>);
-
-    let on_submit = {
-        let (common_name, organization, key_type) =
-            (common_name.clone(), organization.clone(), key_type.clone());
-        let (busy, error, on_created) = (busy.clone(), error.clone(), props.on_created.clone());
-
-        Callback::from(move |_: MouseEvent| {
-            let request = InitCaRequest {
-                common_name: common_name.trim().to_string(),
-                organization: {
-                    let trimmed = organization.trim();
-                    (!trimmed.is_empty()).then(|| trimmed.to_string())
-                },
-                key_type: *key_type,
-            };
-
-            let (busy, error, on_created) = (busy.clone(), error.clone(), on_created.clone());
-            busy.set(true);
-            spawn_local(async move {
-                match api::setup::init_ca(&request).await {
-                    Ok(_) => {
-                        error.set(None);
-                        on_created.emit(());
-                    }
-                    Err(err) => error.set(Some(err.to_string())),
-                }
-                busy.set(false);
-            });
-        })
-    };
-
-    let options: Vec<SelectOption> = CaKeyType::ALL
-        .iter()
-        .map(|kind| SelectOption::new(kind.as_str(), kind.label()))
-        .collect();
-
-    let chosen = AttrValue::from(key_type.as_str());
-    let on_key_type = {
-        let key_type = key_type.clone();
-        Callback::from(move |value: Option<String>| {
-            if let Some(parsed) = value.as_deref().and_then(CaKeyType::parse) {
-                key_type.set(parsed);
-            }
-        })
-    };
-
-    html! {
-        <>
-            <p class="wizard__lead">
-                { "This authority signs every client and server certificate rustak issues. \
-                   Its key is generated here, sealed at rest, and never leaves the server." }
-            </p>
-
-            if let Some(message) = &*error {
-                <Alert
-                    kind={AlertKind::Error}
-                    title="The certificate authority could not be created."
-                    message={message.clone()}
-                />
-            }
-
-            <Field id="ca-common-name" label="Common name" required=true
-                help="What a device shows when it asks whether to trust this authority.">
-                <TextInput
-                    id="ca-common-name"
-                    value={(*common_name).clone()}
-                    onchange={let cn = common_name.clone(); Callback::from(move |v| cn.set(v))}
-                />
-            </Field>
-
-            <Field id="ca-organization" label="Organisation">
-                <TextInput
-                    id="ca-organization"
-                    value={(*organization).clone()}
-                    placeholder="Example"
-                    onchange={let org = organization.clone(); Callback::from(move |v| org.set(v))}
-                />
-            </Field>
-
-            <Field id="ca-key-type" label="Key type"
-                help="RSA is the compatible choice: older TAK clients and their Java \
-                    keystores are reliable with it and less so with anything else.">
-                <Select
-                    id="ca-key-type"
-                    value={Some(chosen)}
-                    options={options}
-                    onchange={on_key_type}
-                />
-            </Field>
-
-            <Button
-                kind={ButtonKind::Primary}
-                busy={*busy}
-                disabled={common_name.trim().is_empty()}
-                onclick={on_submit}
-            >
-                { "Create the authority" }
             </Button>
         </>
     }

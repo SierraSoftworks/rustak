@@ -203,7 +203,18 @@ pub fn set_server_settings(request: &ServerSettingsRequest) -> ServerSettings {
     })
 }
 
+/// The demo installation's authority, if the wizard has got that far.
+pub fn ca() -> Option<CaSummary> {
+    with(|state| state.ca.clone())
+}
+
 pub fn init_ca(request: &InitCaRequest) -> CaSummary {
+    // Idempotent, like the server's: an authority that exists is adopted rather
+    // than replaced by whatever the form happened to say.
+    if let Some(existing) = ca() {
+        return existing;
+    }
+
     let summary = CaSummary {
         subject: match &request.organization {
             Some(organization) => format!("CN={}, O={organization}", request.common_name),

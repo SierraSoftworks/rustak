@@ -11,6 +11,7 @@
 //! where the *server* got to.
 
 mod admin;
+mod ca;
 mod server;
 mod steps;
 
@@ -25,7 +26,8 @@ use crate::components::{Alert, AlertKind, Layout, LoadingNote};
 use crate::fixtures;
 
 use admin::{AdminStep, PasskeyStep, TokenStep};
-use server::{CaStep, DoneStep, ServerStep};
+use ca::CaStep;
+use server::{DoneStep, ServerStep};
 use steps::{Step, Stepper};
 
 #[function_component(Setup)]

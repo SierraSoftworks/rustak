@@ -260,13 +260,18 @@ export async function bootstrapAdmin(page: Page): Promise<Session> {
     `POST /api/v1/setup/server should have succeeded: ${await named.text()}`,
   ).toBe(200);
 
-  // Tolerated, not asserted: rustak creates its root authority during start-up
-  // (`runtime::listen`), so by the time the wizard asks for one there already
-  // is one and this answers `409`. Recorded in this brief's status file.
-  await page.request.post("/api/v1/setup/ca", {
+  // rustak creates its root authority during start-up (`runtime::listen`), so
+  // by the time the wizard asks for one there already is one. The step is
+  // idempotent: it adopts what is there and answers with it, rather than
+  // refusing the only linear walk through the wizard there is.
+  const authority = await page.request.post("/api/v1/setup/ca", {
     headers: authorised,
     data: { common_name: "rustak e2e CA", key_type: "ecdsa_p256" },
   });
+  expect(
+    authority.status(),
+    `POST /api/v1/setup/ca should have succeeded: ${await authority.text()}`,
+  ).toBe(200);
 
   const completed = await page.request.post("/api/v1/setup/complete", {
     headers: authorised,

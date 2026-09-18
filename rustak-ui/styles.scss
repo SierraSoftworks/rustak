@@ -975,6 +975,16 @@ footer {
     flex-direction: column;
     gap: 0.6rem;
   }
+
+  // The username-assisted passkey fallback, below a rule so that it reads as a
+  // second resort rather than a second button.
+  &__aside {
+    margin: 1.25rem 0 0;
+    padding-top: 1.25rem;
+    border-top: 1px solid $border-lighter;
+    font-size: 0.875rem;
+    text-align: left;
+  }
 }
 
 // The first-run wizard

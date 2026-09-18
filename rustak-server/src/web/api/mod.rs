@@ -90,6 +90,7 @@ pub fn configure() -> actix_web::Scope<
             .route("/audit", web::get().to(audit::list))
             .route("/settings", web::get().to(settings::get))
             .route("/setup/server", web::post().to(setup::server))
+            .route("/setup/ca", web::get().to(setup::get_ca))
             .route("/setup/ca", web::post().to(setup::ca))
             .route("/setup/complete", web::post().to(setup::complete)),
     )
@@ -171,6 +172,7 @@ mod tests {
         ("GET", "/api/v1/audit"),
         ("GET", "/api/v1/settings"),
         ("POST", "/api/v1/setup/server"),
+        ("GET", "/api/v1/setup/ca"),
         ("POST", "/api/v1/setup/ca"),
         ("POST", "/api/v1/setup/complete"),
     ];

@@ -114,13 +114,20 @@ Two things make that work here:
   browser's own origin checks, user verification and signature counter are
   unchanged, so what the specs exercise is the ceremony rather than a stub of
   it.
+- **Every passkey is discoverable.** The server registers with
+  `residentKey: "required"`, so the credential the authenticator creates is one
+  the browser can offer to a ceremony that names nobody — which is the only kind
+  the sign-in prompt runs. Nothing in the suite adjusts a credential to make a
+  sign-in work. `makeCredentialsUndiscoverable` exists for the opposite reason:
+  one spec needs a credential the prompt *cannot* find, to reach the
+  username-assisted fallback.
 
 ## The specs, and the order they run in
 
 | Spec | What it covers |
 |---|---|
-| `setup.spec.ts` | The first-run wizard, through the UI: token → administrator → passkey → server name → authority → finish, and then that every `/setup/*` route answers `410` and the token file is gone. |
-| `auth.spec.ts` | Passkey sign-in and sign-out; a browser with no passkey; a passkey offered at the wrong host. |
+| `setup.spec.ts` | The first-run wizard, through the UI: token → administrator → passkey → server name → authority (which already exists, so the step shows its fingerprint and offers the certificate) → finish, and then that every `/setup/*` route answers `410` and the token file is gone. |
+| `auth.spec.ts` | Passkey sign-in and sign-out; a browser with no passkey; a passkey offered at the wrong host; the username-assisted fallback for a passkey the browser cannot offer on its own. |
 | `navigation.spec.ts` | Every destination in the navigation strip, the SPA deep-link fallback, the not-found page, and the landing page getting out of the way. |
 | `smoke.spec.ts` | `robots.txt` ahead of the catch-all, `/api/v1/health`, and the bundle booting. |
 

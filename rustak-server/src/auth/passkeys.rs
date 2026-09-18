@@ -19,6 +19,17 @@
 //! itself is on another port. The relying-party identifier is unchanged by it,
 //! and it applies to loopback only.
 //!
+//! # Every passkey we register is discoverable
+//!
+//! The sign-in prompt has no username field, so signing in is a *discoverable*
+//! ceremony: an empty `allowCredentials`, with the authenticator naming the
+//! account. A credential the authenticator did not store cannot answer one, so
+//! registration asks for `residentKey: "required"` — see `require_discoverable`
+//! below, which is also where the reason it is a patch rather than a parameter
+//! is written down. A username-assisted sign-in is
+//! still offered as a fallback ([`Passkeys::start_login`] with an account), for
+//! a key registered elsewhere or by an older version of this server.
+//!
 //! # Why a counter that goes backwards is fatal
 //!
 //! `webauthn-rs` compares the authenticator's signature counter against the one
@@ -133,9 +144,12 @@ impl Passkeys {
         )
         .await?;
 
+        let mut options = public_key_of(&options)?;
+        require_discoverable(&mut options);
+
         Ok(PasskeyChallenge {
             challenge_id,
-            options: public_key_of(&options)?,
+            options,
         })
     }
 
@@ -322,6 +336,42 @@ pub fn to_summary(row: &PasskeyRow) -> PasskeySummary {
     }
 }
 
+/// Asks the authenticator to store the credential where it can be found again.
+///
+/// # Why this is patched rather than asked for
+///
+/// The sign-in prompt has no username field, and deliberately so: naming an
+/// account before proving anything is how somebody finds out which accounts
+/// exist. That makes sign-in a *discoverable* ceremony — an empty
+/// `allowCredentials`, with the authenticator saying which account it holds —
+/// and a credential that is not discoverable cannot answer one.
+///
+/// `webauthn-rs` 0.5's [`Webauthn::start_passkey_registration`] hard-codes
+/// `require_resident_key(false)`, which becomes `residentKey: "discouraged"` on
+/// the wire, and the high-level API exposes no way to say otherwise. So the
+/// emitted options are corrected here. It is safe to do on the serialised form
+/// alone: the stored ceremony state carries the same flag, but nothing at
+/// verification time reads it (`webauthn-rs-core` destructures it as `_`), so
+/// the two cannot disagree about anything that matters.
+///
+/// `required` rather than `preferred` because the two are identical in every
+/// major browser, and `required` is the one that fails at creation rather than
+/// producing a credential that cannot sign in. `userVerification` is left at
+/// `webauthn-rs`'s `required`: both sign-in ceremonies demand a verified user,
+/// so a credential registered without verification would register happily and
+/// then be refused at every attempt to use it.
+fn require_discoverable(options: &mut serde_json::Value) {
+    let Some(selection) = options
+        .get_mut("authenticatorSelection")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+
+    selection.insert("residentKey".to_string(), "required".into());
+    selection.insert("requireResidentKey".to_string(), true.into());
+}
+
 /// The `publicKey` member the browser is handed.
 fn public_key_of<T: Serialize>(options: &T) -> Result<serde_json::Value, Error> {
     let mut rendered = serde_json::to_value(options).or_system_err(&[
@@ -447,6 +497,45 @@ mod tests {
                     .any(|line| line.contains("base_url"))
             );
         }
+    }
+
+    #[test]
+    fn registration_asks_the_authenticator_to_store_the_credential() {
+        // Sign-in is a discoverable ceremony, so a credential the authenticator
+        // did not keep is a passkey that can never be used. `webauthn-rs` asks
+        // for `discouraged` and gives us no way to say otherwise, so the
+        // emitted options are corrected on the way out.
+        let mut options = serde_json::json!({
+            "challenge": "c2FsdA",
+            "authenticatorSelection": {
+                "requireResidentKey": false,
+                "residentKey": "discouraged",
+                "userVerification": "required",
+            },
+        });
+
+        require_discoverable(&mut options);
+
+        let selection = &options["authenticatorSelection"];
+        assert_eq!(selection["residentKey"], "required");
+        assert_eq!(selection["requireResidentKey"], true);
+        assert_eq!(
+            selection["userVerification"], "required",
+            "both sign-in ceremonies demand a verified user, so registration has to too",
+        );
+    }
+
+    #[test]
+    fn options_without_an_authenticator_selection_are_left_alone() {
+        // Nothing here should be able to turn a ceremony `webauthn-rs` shaped
+        // into one it did not, so a shape we do not recognise is passed through
+        // rather than invented.
+        let mut options = serde_json::json!({ "challenge": "c2FsdA" });
+        let original = options.clone();
+
+        require_discoverable(&mut options);
+
+        assert_eq!(options, original);
     }
 
     #[test]

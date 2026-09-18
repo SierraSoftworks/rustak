@@ -14,6 +14,7 @@
  */
 
 import {
+  ADMIN,
   attachAuthenticator,
   bootstrapAdmin,
   cacheSession,
@@ -48,7 +49,7 @@ test("a browser holding no passkey for this server cannot sign in, and is not to
 
 test("a passkey registered for one host is refused at another", async ({ page, baseURL }) => {
   const session = await bootstrapAdmin(page);
-  const authenticator = await attachAuthenticator(page);
+  await attachAuthenticator(page);
 
   // Registered against `localhost`, which is what `[server] base_url` makes the
   // relying party. Deliberately *without* signing the page in: the credential
@@ -63,7 +64,6 @@ test("a passkey registered for one host is refused at another", async ({ page, b
     registered.status,
     `the passkey registration should have succeeded: ${JSON.stringify(registered.body)}`,
   ).toBe(200);
-  await authenticator.makeCredentialsDiscoverable();
 
   // The same server, the same credential, the same authenticator — only the
   // name in the address bar differs. `127.0.0.1` is not a registrable suffix of
@@ -105,17 +105,16 @@ test("an administrator signs in with a passkey, and signing out ends the session
     `the passkey registration should have succeeded: ${JSON.stringify(registered.body)}`,
   ).toBe(200);
 
-  // KNOWN DEFECT, worked around here: the server registers passkeys with
-  // `residentKey: "discouraged"`, so the credential is not discoverable — while
-  // the sign-in prompt only ever runs a *discoverable* ceremony, because it
-  // never asks for a username. A real authenticator that happened to store the
-  // credential anyway (most platform ones do) would work; this one honours the
-  // flag, so the credential is re-stored as discoverable to match. Recorded in
-  // `.claude/plan/status/M0-14-e2e-specs.md`.
+  // Nothing is done to the credential between registering it and using it. The
+  // server asks for `residentKey: "required"`, so the authenticator stored it
+  // and the browser can offer it to a ceremony that names nobody — which is the
+  // only kind the sign-in prompt runs.
+  const held = await authenticator.credentials();
+  expect(held.length, "the registration should have produced a credential").toBeGreaterThan(0);
   expect(
-    await authenticator.makeCredentialsDiscoverable(),
-    "the freshly registered passkey should have been non-discoverable",
-  ).toBeGreaterThan(0);
+    held.every((credential) => credential.isResidentCredential),
+    "every passkey this server registers has to be discoverable",
+  ).toBe(true);
 
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
@@ -135,5 +134,53 @@ test("an administrator signs in with a passkey, and signing out ends the session
 
   // Signing out revoked the session every other spec was going to use, and the
   // passkey that could mint another is in this profile. Hand the fresh one on.
+  cacheSession(renewed!);
+});
+
+test("a passkey the browser cannot offer on its own is reached by naming the account", async ({
+  page,
+}) => {
+  // The fallback, and the one case it exists for. Everything rustak registers
+  // now is discoverable, so the only way to produce a credential the prompt
+  // cannot find is to make one: a key registered against another server, an
+  // authenticator that ignored `residentKey`, or anything from a version of
+  // rustak that asked for `discouraged` would all look like this.
+  const session = await bootstrapAdmin(page);
+  const authenticator = await attachAuthenticator(page);
+
+  await signIn(page, session);
+  await gotoApp(page, "/admin");
+  await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+
+  const registered = await registerPasskey(page, {
+    label: uniqueName("Not discoverable"),
+    token: session.token,
+  });
+  expect(
+    registered.status,
+    `the passkey registration should have succeeded: ${JSON.stringify(registered.body)}`,
+  ).toBe(200);
+
+  expect(
+    await authenticator.makeCredentialsUndiscoverable(),
+    "there should have been a discoverable credential to convert",
+  ).toBeGreaterThan(0);
+
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+
+  // Folded away by default, so that a username field is never the first thing
+  // this page offers — naming an account before proving anything is how
+  // somebody would find out which accounts exist.
+  await expect(page.getByLabel("Username")).toHaveCount(0);
+  await page.getByRole("button", { name: "Sign in with a username instead" }).click();
+
+  await page.getByLabel("Username").fill(ADMIN.username);
+  await page.getByRole("button", { name: "Sign in as this account" }).click();
+
+  await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+
+  const renewed = await storedSession(page);
+  expect(renewed, "the named ceremony should have established a session").toBeTruthy();
   cacheSession(renewed!);
 });

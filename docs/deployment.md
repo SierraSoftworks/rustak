@@ -317,6 +317,24 @@ Day to day, signing in to the admin UI is either:
   (`[server] base_url`, falling back to the first `[server] domains` entry),
   which is why that value has to be a name a browser will actually use, not
   an IP address.
+
+  rustak registers passkeys as **discoverable** credentials
+  (`residentKey: "required"`, `userVerification: "required"`), because the
+  sign-in prompt never asks for a username — the authenticator says which
+  account it holds, so the prompt cannot be used to find out which accounts
+  exist. Practically that means the authenticator has to be able to *store*
+  the credential and to verify the user: a platform authenticator (Touch ID,
+  Windows Hello, Android, iCloud Keychain) always can, and a security key
+  needs a PIN set and a free credential slot. A key with no slots left refuses
+  the registration outright rather than producing a passkey that could not
+  sign in afterwards.
+
+  The sign-in page also offers **"Sign in with a username instead"**, which
+  runs the ceremony against one named account's credentials. It is there for a
+  passkey the browser cannot offer on its own — one registered against another
+  server, one from an authenticator that ignored `residentKey`, or one
+  registered before this behaviour changed. A username with no passkey and a
+  username that does not exist are refused identically.
 - **OIDC** — federated sign-in to an external identity provider, configured
   under `[auth.oidc]`. Group membership comes from the provider's claims;
   users mint their own per-device enrollment tokens and (opt-in) client

@@ -160,6 +160,13 @@ pub fn ca_summary() -> CaSummary {
         fingerprint: "9f2c41a7e5b83d0c6148ab29fe7d3506c81b4af92e0d7c35619ab84fd2703e5c".to_string(),
         not_before: ago(60 * 24 * 30),
         not_after: ago(-60 * 24 * 365 * 10),
+        // Not a certificate, and deliberately not one: a demo build must not
+        // hand anybody bytes that look like something to trust.
+        certificate_pem: Some(
+            "-----BEGIN CERTIFICATE-----\nZGVtbyBtb2RlIGhhcyBubyBhdXRob3JpdHk=\n\
+             -----END CERTIFICATE-----\n"
+                .to_string(),
+        ),
     }
 }
 

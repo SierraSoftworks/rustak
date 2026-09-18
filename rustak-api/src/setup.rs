@@ -178,6 +178,16 @@ pub struct CaSummary {
 
     pub not_before: DateTime<Utc>,
     pub not_after: DateTime<Utc>,
+
+    /// The authority's own certificate, PEM encoded.
+    ///
+    /// Public by construction — it is what every enrolled device is given, and
+    /// what a browser has to be told to trust — so there is nothing withheld by
+    /// sending it. Optional because the caller may not have asked for it: the
+    /// wizard wants it so an operator can install the authority before they
+    /// need it, and a listing does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certificate_pem: Option<String>,
 }
 
 /// Tells the server what it is called and where it is reachable.
@@ -322,9 +332,25 @@ mod tests {
             fingerprint: "b".repeat(64),
             not_before: "2026-09-18T12:00:00Z".parse().unwrap(),
             not_after: "2036-09-18T12:00:00Z".parse().unwrap(),
+            certificate_pem: None,
         };
         let json = serde_json::to_string(&summary).unwrap();
+        assert!(
+            !json.contains("certificate_pem"),
+            "a summary with no certificate must not claim an empty one: {json}",
+        );
         assert_eq!(serde_json::from_str::<CaSummary>(&json).unwrap(), summary);
+
+        // A summary from a version that never had the field still parses, which
+        // is what keeps an older client working against a newer server.
+        let exported = CaSummary {
+            certificate_pem: Some(
+                "-----BEGIN CERTIFICATE-----\nMII\n-----END CERTIFICATE-----\n".into(),
+            ),
+            ..summary.clone()
+        };
+        let json = serde_json::to_string(&exported).unwrap();
+        assert_eq!(serde_json::from_str::<CaSummary>(&json).unwrap(), exported);
 
         let settings = ServerSettingsRequest {
             name: "rustak".into(),
