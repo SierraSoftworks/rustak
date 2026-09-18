@@ -49,6 +49,14 @@ pub struct TextInputProps {
     /// a password manager that this field names the account a passkey is for.
     #[prop_or_default]
     pub autocomplete: Option<AttrValue>,
+
+    /// The id of a `<datalist>` whose options the browser suggests.
+    ///
+    /// A suggestion, never a constraint: the preference catalogue is the
+    /// twenty keys worth offering out of the thousands ATAK has, so a field
+    /// that refused anything outside it would refuse most of what is valid.
+    #[prop_or_default]
+    pub list: Option<AttrValue>,
 }
 
 #[function_component(TextInput)]
@@ -80,6 +88,7 @@ pub fn text_input(props: &TextInputProps) -> Html {
             placeholder={props.placeholder.clone()}
             disabled={props.disabled}
             autocomplete={props.autocomplete.clone()}
+            list={props.list.clone()}
             {oninput}
             {onblur}
         />

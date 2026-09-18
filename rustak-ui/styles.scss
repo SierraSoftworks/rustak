@@ -1538,7 +1538,10 @@ footer {
 
 .device-row {
   @include entity-row;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto;
+  // Four things, not three: the certificate a device presented is its own
+  // subject with its own action, and folding it into the metadata row would
+  // put a revocation behind a line of dimmed text.
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) minmax(0, 1.5fr) auto;
 
   &__identity {
     @include entity-identity;
@@ -1860,6 +1863,618 @@ footer {
 }
 
 // -----------------------------------------------------------------------------
+// 5.9 Operations: profiles, missions, files and documents
+// -----------------------------------------------------------------------------
+// The same five mixins as the identity lists, so a mission row and a device row
+// read the same way even though they describe different things. What differs is
+// the column count, which is what each row actually has to say.
+
+.entity-link {
+  color: $brand;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 0.9rem;
+
+  &:hover,
+  &:focus-visible {
+    text-decoration: underline;
+  }
+}
+
+.profile-list {
+  @include entity-list;
+}
+
+.profile-row {
+  @include entity-row;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto auto;
+
+  &__identity {
+    @include entity-identity;
+  }
+
+  &__name {
+    font-weight: 600;
+    font-size: 0.9rem;
+
+    &--link {
+      @extend .entity-link;
+    }
+  }
+
+  &__description {
+    font-size: 0.78rem;
+    color: $text-secondary;
+  }
+
+  &__meta {
+    @include entity-meta;
+  }
+
+  &__error {
+    @include entity-error;
+  }
+}
+
+.profile-file-list {
+  @include entity-list;
+  margin-top: 1rem;
+}
+
+.profile-file-row {
+  @include entity-row;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) auto;
+
+  &__identity {
+    @include entity-identity;
+  }
+
+  &__name {
+    font-family: $font-mono;
+    font-size: 0.82rem;
+    overflow-wrap: anywhere;
+  }
+
+  &__mime {
+    font-size: 0.75rem;
+    color: $text-secondary;
+  }
+
+  &__meta {
+    @include entity-meta;
+  }
+
+  &__error {
+    @include entity-error;
+  }
+}
+
+.mission-list {
+  @include entity-list;
+}
+
+.mission-row {
+  @include entity-row;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto;
+
+  // A deleted mission is kept so that a client syncing late is told it went,
+  // so it stays in the list — dimmed, rather than removed, because it is still
+  // a fact about this server.
+  &--deleted {
+    opacity: 0.65;
+  }
+
+  &__identity {
+    @include entity-identity;
+  }
+
+  &__name {
+    font-weight: 600;
+    font-size: 0.9rem;
+
+    &--link {
+      @extend .entity-link;
+    }
+  }
+
+  &__description {
+    font-size: 0.78rem;
+    color: $text-secondary;
+  }
+
+  &__meta {
+    @include entity-meta;
+  }
+
+  &__state {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    justify-content: flex-end;
+  }
+}
+
+.subscriber-list {
+  @include entity-list;
+}
+
+.subscriber-row {
+  @include entity-row;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto auto auto;
+
+  &__identity {
+    @include entity-identity;
+  }
+
+  &__uid {
+    font-family: $font-mono;
+    font-size: 0.78rem;
+    color: $text-secondary;
+    overflow-wrap: anywhere;
+  }
+
+  &__meta {
+    @include entity-meta;
+  }
+
+  &__error {
+    @include entity-error;
+  }
+}
+
+.change-list {
+  @include entity-list;
+}
+
+.change-row {
+  @include entity-row;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 2fr);
+
+  &__identity {
+    @include entity-identity;
+  }
+
+  &__uid {
+    font-family: $font-mono;
+    font-size: 0.78rem;
+    color: $text-secondary;
+    overflow-wrap: anywhere;
+  }
+
+  &__meta {
+    @include entity-meta;
+  }
+}
+
+// The layer tree. Indented by nesting rather than by a computed depth, so a
+// branch can be moved without anything having to be recalculated.
+.layer-tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+
+  .layer-tree {
+    margin-left: 1.25rem;
+    padding-left: 0.75rem;
+    border-left: 1px solid $border-lighter;
+  }
+}
+
+.layer-node {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.4rem 0;
+
+  &__name {
+    font-weight: 600;
+    font-size: 0.875rem;
+  }
+
+  &__kind {
+    font-family: $font-mono;
+    font-size: 0.75rem;
+    color: $text-secondary;
+  }
+
+  &__count {
+    font-size: 0.78rem;
+    color: $text-secondary;
+  }
+}
+
+// The certificate a device last presented, and taking it back.
+.certificate {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.8rem;
+  color: $text-secondary;
+  min-width: 0;
+
+  &__fingerprint {
+    font-family: $font-mono;
+    overflow-wrap: anywhere;
+  }
+
+  // The reason is a choice made before the confirmation, not a field somebody
+  // fills in, so it takes the width of its longest option rather than the
+  // width of the row.
+  .field__select {
+    width: auto;
+    max-width: 14rem;
+    font-size: 0.78rem;
+    padding-top: 0.2rem;
+    padding-bottom: 0.2rem;
+  }
+
+  &__error {
+    flex-basis: 100%;
+    margin: 0;
+    color: $danger;
+  }
+}
+
+// The typed preference list. Three controls and a button per row, with the
+// catalogue's own note under them.
+.prefs-editor {
+  display: flex;
+  flex-direction: column;
+  // "Add a preference" is one action, not a bar across the card, so the column
+  // does not stretch its children — the list opts back in below.
+  align-items: flex-start;
+  gap: 0.75rem;
+
+  &__list {
+    @include entity-list;
+    align-self: stretch;
+  }
+
+  > .panel-empty {
+    align-self: stretch;
+  }
+}
+
+.pref-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 8rem) minmax(0, 2fr) auto;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid $border-lighter;
+
+  li:last-child & {
+    border-bottom: none;
+  }
+
+  &__note {
+    grid-column: 1 / -1;
+    margin: 0;
+    font-size: 0.78rem;
+    color: $text-secondary;
+
+    &--error {
+      color: $danger;
+    }
+  }
+
+  &__default {
+    color: $text-placeholder;
+  }
+}
+
+// A channel selector that is a plain set rather than a membership: no
+// direction, no source, just which channels this thing is limited to.
+// An action with a qualifier above it. Both a switch and a button group are
+// `inline-flex`, so without this they share a line and the qualifier's text
+// runs under the buttons it qualifies.
+.stacked-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.85rem;
+  margin-top: 1rem;
+}
+
+.channel-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+}
+
+.detail-list__pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+// Choosing a file. The zone is a `<label>` around a real file input, so the
+// keyboard, the focus ring and the accessible name come from the browser and
+// the drop handler is an addition rather than a replacement.
+.file-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 1.5rem 1rem;
+  border: 1px dashed $border-base;
+  border-radius: $radius;
+  background: $fill-lighter;
+  cursor: pointer;
+  text-align: center;
+  transition: border-color $transition, background $transition;
+
+  &:hover,
+  &--over {
+    border-color: $brand;
+    background: $brand-tint;
+  }
+
+  &--disabled {
+    cursor: progress;
+    opacity: 0.6;
+  }
+
+  // Visually hidden rather than `display: none`, which would take the input
+  // out of the focus order and leave the zone unreachable from a keyboard.
+  &__input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  &__input:focus-visible + .file-drop__label {
+    outline: 2px solid $brand;
+    outline-offset: 3px;
+    border-radius: $radius-sm;
+  }
+
+  &__label {
+    font-weight: 600;
+    font-size: 0.875rem;
+    color: $text-regular;
+  }
+
+  &__help {
+    font-size: 0.78rem;
+    color: $text-secondary;
+  }
+}
+
+// An XML document, shown verbatim and coloured. Every run below is a Yew text
+// node, so nothing here can reach the DOM as markup.
+.xml {
+  margin: 0;
+  padding: 0.85rem 1rem;
+  max-height: 28rem;
+  overflow: auto;
+  background: $fill-lighter;
+  border: 1px solid $border-lighter;
+  border-radius: $radius;
+  font-family: $font-mono;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: $text-primary;
+
+  &:focus-visible {
+    @include focus-ring;
+  }
+
+  &__punct {
+    color: $text-placeholder;
+  }
+
+  &__name {
+    color: $brand;
+    font-weight: 600;
+  }
+
+  &__attr {
+    color: $text-regular;
+  }
+
+  &__value {
+    color: $warning;
+  }
+
+  &__aside {
+    color: $text-secondary;
+    font-style: italic;
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 5.10 Live operations: packages, clients and situational awareness
+// -----------------------------------------------------------------------------
+
+.package-list {
+  @include entity-list;
+}
+
+.package-row {
+  @include entity-row;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto auto;
+
+  &__identity {
+    @include entity-identity;
+  }
+
+  &__name {
+    font-weight: 600;
+    font-size: 0.9rem;
+  }
+
+  &__filename {
+    font-family: $font-mono;
+    font-size: 0.75rem;
+    color: $text-secondary;
+    overflow-wrap: anywhere;
+  }
+
+  &__meta {
+    @include entity-meta;
+  }
+
+  &__state {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    justify-content: flex-end;
+  }
+
+  &__error {
+    @include entity-error;
+  }
+
+  // The editor is opened per row rather than on a page of its own: everything
+  // in it is one `PATCH` against the row it sits under, and moving it away
+  // would mean carrying the row's identity to a second place.
+  &__editor {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.85rem;
+    background: $fill-lighter;
+    border: 1px solid $border-lighter;
+    border-radius: $radius;
+
+    .field__input {
+      max-width: 18rem;
+    }
+  }
+}
+
+.client-list {
+  @include entity-list;
+}
+
+.client-row {
+  @include entity-row;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2.4fr) auto auto;
+
+  &__identity {
+    @include entity-identity;
+  }
+
+  &__uid {
+    font-family: $font-mono;
+    font-size: 0.78rem;
+    color: $text-secondary;
+    overflow-wrap: anywhere;
+  }
+
+  &__meta {
+    @include entity-meta;
+  }
+
+  &__error {
+    @include entity-error;
+  }
+}
+
+.cot-list {
+  @include entity-list;
+}
+
+.cot-row {
+  @include entity-row;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2.4fr) auto;
+  border-radius: $radius;
+  transition: background $transition;
+
+  &--selected {
+    background: $brand-tint;
+  }
+
+  // The whole identity is the control that opens the drawer, so it is a button
+  // rather than a row with a button on it — a person clicking a callsign means
+  // "show me this one".
+  &__select {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.1rem;
+    min-width: 0;
+    padding: 0.25rem 0.4rem;
+    margin: -0.25rem -0.4rem;
+    background: none;
+    border: none;
+    border-radius: $radius-sm;
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+
+    &:hover {
+      background: rgba(20, 102, 79, 0.06);
+    }
+
+    &:focus-visible {
+      @include focus-ring;
+    }
+  }
+
+  &__name {
+    font-weight: 600;
+    font-size: 0.9rem;
+  }
+
+  &__uid {
+    font-family: $font-mono;
+    font-size: 0.78rem;
+    color: $text-secondary;
+    overflow-wrap: anywhere;
+  }
+
+  &__meta {
+    @include entity-meta;
+  }
+}
+
+.cot-drawer__heading {
+  margin: 1.25rem 0 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: $text-regular;
+}
+
+.cot-drawer__note {
+  margin: 0.5rem 0 0;
+  font-size: 0.78rem;
+  color: $text-secondary;
+}
+
+.cot-history {
+  @include entity-list;
+
+  &__row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.9rem;
+    padding: 0.4rem 0;
+    border-bottom: 1px solid $border-lighter;
+    font-size: 0.8rem;
+    color: $text-secondary;
+
+    &:last-child {
+      border-bottom: none;
+    }
+  }
+}
+
+// -----------------------------------------------------------------------------
 // 6. Responsive
 // -----------------------------------------------------------------------------
 
@@ -1919,7 +2534,16 @@ footer {
   .device-row,
   .channel-row,
   .member-row,
-  .channel-picker__row {
+  .channel-picker__row,
+  .profile-row,
+  .profile-file-row,
+  .mission-row,
+  .subscriber-row,
+  .change-row,
+  .pref-row,
+  .package-row,
+  .client-row,
+  .cot-row {
     grid-template-columns: minmax(0, 1fr);
 
     // A grid item stretches to its column by default, which turns a pill into a
@@ -1953,5 +2577,19 @@ footer {
 
   .wizard {
     padding-top: 4rem;
+  }
+
+  .mission-row__state,
+  .package-row__state {
+    justify-content: flex-start;
+  }
+
+  .package-row__editor {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .pref-row {
+    gap: 0.5rem;
   }
 }

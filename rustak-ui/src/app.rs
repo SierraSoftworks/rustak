@@ -49,10 +49,23 @@ pub enum Route {
     Services,
     #[at("/admin/missions")]
     Missions,
+    /// One Data Sync mission, addressed by guid because a name may be renamed
+    /// and may itself be a bare UUID.
+    #[at("/admin/missions/:guid")]
+    MissionDetail { guid: String },
     #[at("/admin/packages")]
     Packages,
+    /// What is connected to the stream listener right now.
+    #[at("/admin/clients")]
+    Clients,
+    /// The latest situational-awareness message per identifier.
+    #[at("/admin/cot")]
+    CotBrowser,
     #[at("/admin/profiles")]
     Profiles,
+    /// One device profile, with its preferences and its files.
+    #[at("/admin/profiles/:id")]
+    ProfileEditor { id: i64 },
     #[at("/admin/activity")]
     Activity,
     #[at("/admin/settings")]
@@ -89,8 +102,24 @@ impl Route {
             Route::Groups => ("Channels", "Who can see whose position reports."),
             Route::Services => ("Services", "The sidecars connected to this server."),
             Route::Missions => ("Missions", "Data Sync missions and their subscribers."),
+            Route::MissionDetail { .. } => (
+                "Mission",
+                "One Data Sync mission: who is on it, what changed, and how it is arranged.",
+            ),
             Route::Packages => ("Data packages", "The files this server hands out."),
+            Route::Clients => (
+                "Clients",
+                "What is connected right now, and what each is publishing.",
+            ),
+            Route::CotBrowser => (
+                "Situational awareness",
+                "The latest message this server holds for each identifier.",
+            ),
             Route::Profiles => ("Device profiles", "What each device is configured with."),
+            Route::ProfileEditor { .. } => (
+                "Device profile",
+                "One profile: when it is delivered, to whom, and what it carries.",
+            ),
             Route::Activity => (
                 "Activity",
                 "What this server has done, and what it refused.",
@@ -285,8 +314,12 @@ fn switch(route: Route) -> Html {
         Route::Groups => admin(html! { <pages::Groups /> }),
         Route::Services => admin(html! { <pages::Services /> }),
         Route::Missions => admin(html! { <pages::Missions /> }),
+        Route::MissionDetail { guid } => admin(html! { <pages::MissionDetailPage {guid} /> }),
         Route::Packages => admin(html! { <pages::Packages /> }),
+        Route::Clients => admin(html! { <pages::Clients /> }),
+        Route::CotBrowser => admin(html! { <pages::CotBrowser /> }),
         Route::Profiles => admin(html! { <pages::Profiles /> }),
+        Route::ProfileEditor { id } => admin(html! { <pages::ProfileEditor {id} /> }),
         Route::Activity => admin(html! { <pages::Activity /> }),
         Route::Settings => admin(html! { <pages::Settings /> }),
         #[cfg(debug_assertions)]

@@ -19,10 +19,18 @@
 
 pub mod audit;
 pub mod auth;
+pub mod certificates;
+pub mod clients;
+pub mod config_packages;
+pub mod cot;
 pub mod credentials;
 pub mod devices;
+pub mod download;
 pub mod groups;
 pub mod health;
+pub mod missions;
+pub mod packages;
+pub mod profiles;
 pub mod settings;
 pub mod setup;
 pub mod users;

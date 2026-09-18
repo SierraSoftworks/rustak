@@ -50,6 +50,26 @@ web-sys = { version = "0.3", features = [
     "Clipboard",
     "Element",
 
+    # Files in both directions. A profile file, a config package and a mission
+    # archive all travel as bytes an administrator either chose or is about to
+    # be handed, and every one of those endpoints needs the bearer token — so
+    # neither direction can be a plain `<a href>` or a form `action`. The
+    # upload side hands the browser's own `File` straight to `FormData` (the
+    # bytes are never read into wasm), and the download side turns the fetched
+    # body into a `Blob` and clicks a detached anchor at it.
+    "Document",
+    "Node",
+    "HtmlElement",
+    "HtmlAnchorElement",
+    "Blob",
+    "BlobPropertyBag",
+    "Url",
+    "File",
+    "FileList",
+    "FormData",
+    "DataTransfer",
+    "DragEvent",
+
     # WebAuthn. Passkeys are the local sign-in method (there are no passwords),
     # so `navigator.credentials` is not optional chrome here — it is the whole
     # of `auth::passkey`. The ceremony payloads themselves stay opaque JSON

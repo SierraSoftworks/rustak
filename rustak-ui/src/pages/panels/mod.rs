@@ -7,13 +7,16 @@
 //! "enrol my phone" and "enrol somebody's phone" the same flow instead of two
 //! that drift.
 
+mod certificate;
 mod channels;
+mod config_package;
 mod credentials;
 mod devices;
 mod mint;
 mod profile;
 
 pub use channels::ChannelsPanel;
+pub use config_package::ConfigPackagePanel;
 pub use credentials::CredentialsPanel;
 pub use devices::DevicesPanel;
 pub use profile::ProfilePanel;

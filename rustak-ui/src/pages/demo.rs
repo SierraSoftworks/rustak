@@ -7,13 +7,13 @@
 //!
 //! Debug builds only, alongside the fixtures it renders with.
 
-use rustak_api::{AuditOutcome, ComponentStatus};
+use rustak_api::{AuditOutcome, ComponentStatus, MissionRoleKind};
 use yew::prelude::*;
 
 use crate::components::{
-    Alert, AlertKind, Button, ButtonGroup, ButtonKind, Card, Center, EmptyState, Field, Layout,
-    LoadingNote, NumberInput, SecretInput, Select, SelectOption, Stat, StatusPill, StatusTone,
-    Switch, TextArea, TextInput,
+    Alert, AlertKind, Button, ButtonGroup, ButtonKind, Card, Center, EmptyState, Field, FileDrop,
+    Layout, LoadingNote, NumberInput, RoleBadge, SecretInput, Select, SelectOption, Stat,
+    StatusPill, StatusTone, Switch, TextArea, TextInput, XmlView,
 };
 
 #[function_component(DemoControls)]
@@ -31,6 +31,8 @@ pub fn demo_controls() -> Html {
                     <Pills />
                     <Alerts />
                     <Inputs />
+                    <Files />
+                    <Documents />
                     <Furniture />
                 </div>
             </main>
@@ -194,6 +196,64 @@ fn inputs() -> Html {
                 />
             </Field>
         </Card>
+    }
+}
+
+/// A CoT event, which is the document `XmlView` exists for.
+///
+/// Deliberately contains an escaped `&` and a comment: both are places where a
+/// viewer that reached the DOM as markup, or one that dropped what it could
+/// not colour, would show an operator something the client did not send.
+const SAMPLE_COT: &str = concat!(
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+    "<event version=\"2.0\" uid=\"ANDROID-2f1c9a7b4e0d\" type=\"a-f-G-U-C\"\n",
+    "       time=\"2026-09-18T12:00:00.000Z\" start=\"2026-09-18T12:00:00.000Z\"\n",
+    "       stale=\"2026-09-18T12:02:00.000Z\" how=\"m-g\">\n",
+    "  <point lat=\"51.50735\" lon=\"-0.12776\" hae=\"12.4\" ce=\"9.5\" le=\"9999999.0\"/>\n",
+    "  <detail>\n",
+    "    <contact callsign=\"QUINN &amp; CO\" endpoint=\"*:-1:stcp\"/>\n",
+    "    <__group name=\"Cyan\" role=\"Team Member\"/>\n",
+    "    <!-- written by a plugin -->\n",
+    "    <takv device=\"Pixel 8\" platform=\"ATAK-CIV\" os=\"34\" version=\"5.2.0\"/>\n",
+    "  </detail>\n",
+    "</event>",
+);
+
+#[function_component(Files)]
+fn files() -> Html {
+    html! {
+        <Card title="Choosing a file">
+            <FileDrop
+                id="gallery-file-drop"
+                help="Also reachable from a keyboard: it is a label around a real file input."
+                onfiles={Callback::noop()}
+            />
+            <FileDrop
+                id="gallery-file-drop-busy"
+                label="A zone that is already uploading"
+                busy=true
+                onfiles={Callback::noop()}
+            />
+        </Card>
+    }
+}
+
+#[function_component(Documents)]
+fn documents() -> Html {
+    html! {
+        <>
+            <Card title="Mission roles">
+                <div class="gallery__row">
+                    { for MissionRoleKind::ALL.iter().map(|role| html! {
+                        <RoleBadge key={role.as_str()} role={*role} />
+                    }) }
+                </div>
+            </Card>
+
+            <Card title="An XML document">
+                <XmlView xml={SAMPLE_COT} label="A sample CoT event" />
+            </Card>
+        </>
     }
 }
 

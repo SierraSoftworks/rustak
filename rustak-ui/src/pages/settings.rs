@@ -8,6 +8,11 @@
 //! The passkeys are not read-only, and deliberately so: the one thing worth
 //! doing from this page today is registering a second way in before the first
 //! one is lost.
+//!
+//! [`TlsCard`] and [`FilesCard`] carry the two things on this page worth
+//! acting on: ordering a certificate when the last order failed, and the
+//! upload ceiling, which is a limit rather than a suggestion because the same
+//! number is advertised to clients and enforced on every upload.
 
 use rustak_api::PasskeySummary;
 use wasm_bindgen_futures::spawn_local;
@@ -21,6 +26,8 @@ use crate::components::{
 use crate::util::{format_iso8601, optional_relative};
 
 use super::load::{use_refresh_action, use_resource};
+use super::settings_files::FilesCard;
+use super::settings_tls::TlsCard;
 
 #[function_component(Settings)]
 pub fn settings() -> Html {
@@ -89,6 +96,10 @@ pub fn settings() -> Html {
             >
                 { details }
             </Card>
+
+            <TlsCard />
+
+            <FilesCard />
 
             <Card
                 title="Your passkeys"

@@ -14,12 +14,44 @@
 //! no path that could reach them.
 
 #[cfg(debug_assertions)]
+mod certificates;
+#[cfg(debug_assertions)]
 mod data;
+#[cfg(debug_assertions)]
+mod missions;
+#[cfg(debug_assertions)]
+mod packages;
+#[cfg(debug_assertions)]
+mod profiles;
 #[cfg(debug_assertions)]
 mod store;
 
 #[cfg(debug_assertions)]
+pub use certificates::*;
+#[cfg(debug_assertions)]
+pub use missions::*;
+#[cfg(debug_assertions)]
+pub use packages::*;
+#[cfg(debug_assertions)]
+pub use profiles::*;
+#[cfg(debug_assertions)]
 pub use store::*;
+
+/// A valid, empty zip archive: the end-of-central-directory record and nothing
+/// else.
+///
+/// Demo mode has no package builder behind it — assembling a Mission Package
+/// is the server's job, and a second implementation here would be one more
+/// thing to keep honest — so every download in demo mode is this. It is a
+/// *valid* archive rather than arbitrary bytes so that a browser handed one
+/// opens it and finds it empty, instead of reporting a corrupt file and
+/// leaving the reader wondering which of the two they are looking at.
+#[cfg(debug_assertions)]
+pub fn empty_zip() -> Vec<u8> {
+    let mut bytes = vec![0x50, 0x4b, 0x05, 0x06];
+    bytes.extend(std::iter::repeat_n(0u8, 18));
+    bytes
+}
 
 /// Returns true when the current URL asks for demo mode (`?demo`).
 #[cfg(debug_assertions)]

@@ -39,28 +39,6 @@ macro_rules! stub {
 }
 
 stub!(
-    Missions,
-    missions,
-    "M4",
-    "Data Sync missions, their subscribers and their contents, with the change \
-     log that tells you who added what."
-);
-
-stub!(
-    Packages,
-    packages,
-    "M3",
-    "The data packages this server hands out, and the files inside them."
-);
-
-stub!(
-    Profiles,
-    profiles,
-    "M3",
-    "The preferences each device is sent on enrolment and on connection."
-);
-
-stub!(
     Services,
     services,
     "M6",

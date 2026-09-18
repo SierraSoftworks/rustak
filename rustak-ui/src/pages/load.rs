@@ -12,6 +12,7 @@ use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
 use crate::api::ApiError;
+use crate::api::download::{Download, save};
 use crate::components::{PageActions, RefreshButton};
 
 /// The state of one fetched resource.
@@ -93,4 +94,61 @@ pub fn use_refresh_action(reload: Callback<()>, busy: bool) {
             }
         }
     });
+}
+
+/// A file being fetched so the browser can save it.
+pub struct Downloading {
+    /// True while the request is in flight, so the button cannot be pressed
+    /// twice and the reader knows something is happening — a mission archive
+    /// takes as long as it takes.
+    pub busy: bool,
+
+    /// Why it did not arrive. Shown rather than swallowed, because the useful
+    /// refusals here say something worth acting on: "that profile has no
+    /// preferences and no files, so a device would receive nothing".
+    pub error: Option<String>,
+
+    pub start: Callback<()>,
+}
+
+/// Fetches a file on demand and hands it to the browser to save.
+///
+/// Two steps rather than one, and deliberately: a browser that has already
+/// been told to download something cannot then be told the request failed, so
+/// the bytes are fetched first and only saved once there is something to save.
+#[hook]
+pub fn use_download<F, Fut>(fetch: F) -> Downloading
+where
+    F: Fn() -> Fut + 'static,
+    Fut: Future<Output = Result<Download, ApiError>> + 'static,
+{
+    let busy = use_state(|| false);
+    let error = use_state(|| None::<String>);
+
+    let start = {
+        let (busy, error) = (busy.clone(), error.clone());
+        Callback::from(move |_| {
+            if *busy {
+                return;
+            }
+
+            let (busy, error) = (busy.clone(), error.clone());
+            let request = fetch();
+
+            busy.set(true);
+            spawn_local(async move {
+                match request.await {
+                    Ok(file) => error.set(save(&file).err().map(|err| err.to_string())),
+                    Err(err) => error.set(Some(err.to_string())),
+                }
+                busy.set(false);
+            });
+        })
+    };
+
+    Downloading {
+        busy: *busy,
+        error: (*error).clone(),
+        start,
+    }
 }

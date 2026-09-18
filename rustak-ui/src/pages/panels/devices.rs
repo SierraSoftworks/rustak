@@ -7,13 +7,14 @@
 //!
 //! # Forgetting is not revoking
 //!
-//! `DELETE /api/v1/devices/{uid}` removes what we knew about a client; the
-//! certificate it enrolled with belongs to the *account*, and taking that back
-//! is what revoking the credential it was issued against does. The button says
-//! "Forget" for that reason, and the panel points at the credential list rather
-//! than implying a revocation it does not perform.
+//! `DELETE /api/v1/devices/{uid}` removes what we knew about a client and
+//! leaves its certificate working, so the button says "Forget". Taking the
+//! certificate back is the *other* action on the row — see
+//! [`super::certificate`] — and it is separate because the two have different
+//! consequences: forgetting loses a record, revoking drops a live connection
+//! and refuses the next handshake.
 
-use rustak_api::{Device, DeviceUid, Username};
+use rustak_api::{Certificate, Device, DeviceUid, Username};
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
@@ -22,6 +23,7 @@ use crate::components::{Alert, AlertKind, Card, ConfirmButton, Field, LoadingNot
 use crate::util::{format_iso8601, short_relative};
 
 use super::super::load::use_resource;
+use super::certificate::CertificateDetails;
 
 #[derive(Properties, PartialEq)]
 pub struct DevicesPanelProps {
@@ -52,6 +54,15 @@ pub fn devices_panel(props: &DevicesPanelProps) -> Html {
     let devices = use_resource(move || {
         let owner = owner.clone();
         async move { api::devices::list(owner.as_ref()).await }
+    });
+
+    // One request for the whole list rather than one per row: a device names
+    // the certificate it last presented by identifier, and resolving each one
+    // on its own would be an N+1 on a page whose whole job is to be scanned.
+    let owner = props.username.clone();
+    let certificates = use_resource(move || {
+        let owner = owner.clone();
+        async move { api::certificates::list(owner.as_ref(), None).await }
     });
 
     let filter = use_state(String::new);
@@ -93,8 +104,19 @@ pub fn devices_panel(props: &DevicesPanelProps) -> Html {
                             <li key={device.id.get()}>
                                 <DeviceRow
                                     device={device.clone()}
+                                    certificate={certificate_for(
+                                        device,
+                                        certificates.data.as_deref().unwrap_or_default(),
+                                    )}
                                     show_owner={props.show_owner}
-                                    on_changed={devices.reload.clone()}
+                                    on_changed={
+                                        let (devices, certificates) =
+                                            (devices.reload.clone(), certificates.reload.clone());
+                                        Callback::from(move |_| {
+                                            devices.emit(());
+                                            certificates.emit(());
+                                        })
+                                    }
                                 />
                             </li>
                         }) }
@@ -137,9 +159,35 @@ fn matches_filter(device: &Device, needle: &str) -> bool {
     .any(|field| field.to_lowercase().contains(&needle))
 }
 
+/// The certificate this device last presented, out of the ones we read.
+///
+/// By identifier first, because that is what the device row actually points
+/// at. The fallback to the newest one issued to the same uid covers a device
+/// whose row has not caught up with a renewal — showing the certificate that
+/// is really in use beats showing none.
+fn certificate_for(device: &Device, certificates: &[Certificate]) -> Option<Certificate> {
+    if let Some(found) = device
+        .last_certificate_id
+        .and_then(|id| certificates.iter().find(|held| held.id == id))
+    {
+        return Some(found.clone());
+    }
+
+    certificates
+        .iter()
+        .filter(|held| held.device_uid.as_ref() == Some(&device.uid))
+        .max_by_key(|held| held.not_before)
+        .cloned()
+}
+
 #[derive(Properties, PartialEq)]
 struct DeviceRowProps {
     device: Device,
+
+    /// The certificate it last presented, when one could be read.
+    #[prop_or_default]
+    certificate: Option<Certificate>,
+
     show_owner: bool,
     on_changed: Callback<()>,
 }
@@ -192,8 +240,13 @@ fn device_row(props: &DeviceRowProps) -> Html {
                 if let Some(ip) = props.device.last_ip {
                     <span title="Where we last saw it connect from">{ ip.to_string() }</span>
                 }
-                <span title={certificate_title(&props.device)}>{ certificate(&props.device) }</span>
             </div>
+
+            <CertificateDetails
+                certificate={props.certificate.clone()}
+                had_one={props.device.last_certificate_id.is_some()}
+                on_changed={props.on_changed.clone()}
+            />
 
             <ConfirmButton
                 label="Forget"
@@ -211,24 +264,5 @@ fn device_row(props: &DeviceRowProps) -> Html {
                 <p class="device-row__error" role="alert">{ message.clone() }</p>
             }
         </div>
-    }
-}
-
-/// What we can say about the certificate this device presented.
-///
-/// Only that there was one: the admin API has no endpoint that describes a
-/// certificate, so the fingerprint and the expiry an operator wants here cannot
-/// be read yet (see the status file for M2-07).
-fn certificate(device: &Device) -> String {
-    match device.last_certificate_id {
-        Some(id) => format!("Certificate #{id}"),
-        None => "No certificate".to_string(),
-    }
-}
-
-fn certificate_title(device: &Device) -> &'static str {
-    match device.last_certificate_id {
-        Some(_) => "The certificate this device last presented.",
-        None => "This device has never presented a client certificate.",
     }
 }

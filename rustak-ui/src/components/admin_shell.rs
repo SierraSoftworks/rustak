@@ -91,9 +91,12 @@ pub fn admin_shell(props: &AdminShellProps) -> Html {
 }
 
 /// Every destination, in the order somebody works through them: what is
-/// connected, who may connect, what they exchange, and how the server is set up.
+/// happening now, what is connected, who may connect, what they exchange, and
+/// how the server is set up.
 const NAV: &[(Route, &str)] = &[
     (Route::Dashboard, "Dashboard"),
+    (Route::Clients, "Live"),
+    (Route::CotBrowser, "Situation"),
     (Route::Devices, "Devices"),
     (Route::Users, "Users"),
     (Route::Groups, "Channels"),
@@ -117,8 +120,11 @@ fn admin_nav() -> Html {
         let active = match (route, &current) {
             (Route::Dashboard, Route::Dashboard | Route::AdminRoot) => true,
             // One account's page is somewhere inside Users, so the strip must
-            // not read as though nothing is selected while it is open.
+            // not read as though nothing is selected while it is open. The
+            // same for a mission and a profile, which are rows on their lists.
             (Route::Users, Route::Users | Route::UserDetail { .. }) => true,
+            (Route::Missions, Route::Missions | Route::MissionDetail { .. }) => true,
+            (Route::Profiles, Route::Profiles | Route::ProfileEditor { .. }) => true,
             (route, current) => route == current,
         };
 

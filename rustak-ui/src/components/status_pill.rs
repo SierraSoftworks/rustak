@@ -8,7 +8,7 @@ use rustak_api::{AuditOutcome, ComponentStatus};
 use yew::prelude::*;
 
 /// How much attention the pill is asking for.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusTone {
     /// Working as intended.
     Ok,

@@ -1,10 +1,11 @@
-//! One account, in four views.
+//! One account, in five views.
 //!
-//! An operator dealing with a person deals with four different things about
-//! them — who they are, what they carry, what they can present, and what they
-//! can see — and those are four endpoints with four shapes. Tabs rather than one
-//! long page, because the reason somebody opened this is usually exactly one of
-//! the four and the other three are in the way.
+//! An operator dealing with a person deals with several different things about
+//! them — who they are, what they carry, what they can present, what they can
+//! see, and how to get a client configured when it cannot enrol — and those
+//! are five endpoints with five shapes. Tabs rather than one long page,
+//! because the reason somebody opened this is usually exactly one of them and
+//! the rest are in the way.
 
 use rustak_api::{User, Username};
 use yew::prelude::*;
@@ -16,7 +17,9 @@ use crate::components::{Alert, AlertKind, LoadingNote};
 use crate::util::nav_href;
 
 use super::load::{use_refresh_action, use_resource};
-use super::panels::{ChannelsPanel, CredentialsPanel, DevicesPanel, ProfilePanel};
+use super::panels::{
+    ChannelsPanel, ConfigPackagePanel, CredentialsPanel, DevicesPanel, ProfilePanel,
+};
 
 /// The views this page offers, in the order an operator works through them.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -25,6 +28,7 @@ enum Tab {
     Devices,
     Credentials,
     Channels,
+    Package,
 }
 
 impl Tab {
@@ -33,6 +37,7 @@ impl Tab {
         Self::Devices,
         Self::Credentials,
         Self::Channels,
+        Self::Package,
     ];
 
     fn label(self) -> &'static str {
@@ -41,6 +46,7 @@ impl Tab {
             Self::Devices => "Devices",
             Self::Credentials => "Credentials",
             Self::Channels => "Channels",
+            Self::Package => "Package",
         }
     }
 }
@@ -120,6 +126,7 @@ fn view(tab: Tab, user: &User, reload: &Callback<()>) -> Html {
             <CredentialsPanel username={Some(user.username.clone())} />
         },
         Tab::Channels => html! { <ChannelsPanel username={user.username.clone()} /> },
+        Tab::Package => html! { <ConfigPackagePanel username={user.username.clone()} /> },
     }
 }
 
