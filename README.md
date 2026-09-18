@@ -17,11 +17,11 @@ It is built for the deployments the official server is too large for — a famil
 a HAM radio club, a homelab — without giving up the security model a TAK deployment is supposed to
 have.
 
-> **Status: pre-release.** The CoT stream, enrolment, channels, data packages, device profiles and
-> the CloudTAK login path are implemented and covered by the interop suites below; Data Sync
-> (missions) is in progress and ACME is planned. There is no tagged release yet. Progress is
-> tracked in [`.claude/plan/plan.md`](.claude/plan/plan.md) and the per-milestone notes under
-> [`.claude/plan/status/`](.claude/plan/status/).
+> **Status: pre-release.** The CoT stream, enrolment, channels, data packages, device profiles,
+> Data Sync (missions), ACME certificates, the CloudTAK login path, browser single sign-on and the
+> sidecar API are implemented and covered by the interop suites below. There is no tagged release
+> yet. Progress is tracked in [`.claude/plan/plan.md`](.claude/plan/plan.md) and the per-milestone
+> notes under [`.claude/plan/status/`](.claude/plan/status/).
 
 ## Installation
 
@@ -143,8 +143,7 @@ does today, as read from its source; corrections are welcome.
 ## Not included
 
 Video streaming and recording, voice, server federation, QUIC transport, ExCheck and iTAK-specific
-behaviour are out of scope for now. Data Sync (missions) and ACME certificates for the public
-listener are under development.
+behaviour are out of scope for now.
 
 ## Documentation
 
