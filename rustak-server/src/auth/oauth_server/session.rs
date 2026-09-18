@@ -96,6 +96,16 @@ pub async fn token_access(request: HttpRequest, context: web::Data<AppContext>) 
 }
 
 /// `GET|POST /logout` — end this session and clear its cookies.
+///
+/// # Why `GET` does less than `POST`
+///
+/// `GET /logout` is mounted because TAK clients navigate to it, and a top-level
+/// navigation is exactly what `SameSite=Lax` still attaches the cookie to — so
+/// any site can link to it. Signing *this* session out that way is a nuisance
+/// the cookie is there for; taking every refresh family on the account with it
+/// would let one link sign somebody out of every device they own (R-01 M2).
+/// So the `GET` revokes the token that was presented, and only the `POST` —
+/// which is same-site by construction — ends the account's other sessions.
 pub async fn logout(request: HttpRequest, context: web::Data<AppContext>) -> HttpResponse {
     if let Ok(resolved) =
         resolve_principal(context.get_ref(), &request, ListenerAuthPolicy::public()).await
@@ -112,9 +122,13 @@ pub async fn logout(request: HttpRequest, context: web::Data<AppContext>) -> Htt
             .map(|claims| claims.jti.clone())
             .unwrap_or_default();
 
-        if let Err(err) =
+        let ended = if request.method() == actix_web::http::Method::POST {
             tokens::revoke(context.get_ref(), &jti, expires_at, resolved.user.id).await
-        {
+        } else {
+            tokens::revoke_session(context.get_ref(), &jti, expires_at).await
+        };
+
+        if let Err(err) = ended {
             warn!(error = %err, "Could not revoke a session that was signing out.");
             context.session().record_human_error(&err);
         }

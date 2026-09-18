@@ -748,3 +748,234 @@ async fn re_enrolling_is_a_fresh_certificate_rather_than_a_conflict() {
 
     harness.stop().await;
 }
+
+#[actix_web::test]
+async fn every_advertised_name_entry_appears_in_the_issued_subject() {
+    // R-02 M6. `GET /Marti/api/tls/config` has to advertise at least two
+    // `<nameEntry>` elements with non-empty values — CloudTAK's `xml-js`
+    // collapses a one-element array and commoncommo refuses a zero-length
+    // subject component — and that padding used to be done in `marti::tls` over
+    // the advertised list alone. With stock configuration the server therefore
+    // told a device to build `CN + O + OU` and then issued `CN + O`, so
+    // `warn_on_subject_mismatch` fired on every ATAK enrolment and
+    // `compat/enrollment.md` §1/§4's "the advertised and issued subjects agree"
+    // was not true of the default path.
+    //
+    // Run against the **default** configuration on purpose: the default is what
+    // was wrong, and a fixture with explicit `name_entries` hides it.
+    let harness = harness().await;
+    let token = credential(&harness.server, "ada", CredentialKind::EnrollmentToken).await;
+    let app = test::init_service(App::new().configure(harness.app())).await;
+
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/Marti/api/tls/config")
+            .insert_header((AUTHORIZATION, basic("ada", &token)))
+            .insert_header((ACCEPT, "application/xml"))
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(response.status().as_u16(), 200);
+
+    let document = String::from_utf8(test::read_body(response).await.to_vec()).unwrap();
+    let advertised: Vec<(String, String)> = document
+        .match_indices("<nameEntry ")
+        .map(|(at, _)| {
+            let element = &document[at..document[at..].find("/>").unwrap() + at];
+            let field = |key: &str| {
+                let start = element.find(&format!("{key}=\"")).unwrap() + key.len() + 2;
+                let rest = &element[start..];
+
+                rest[..rest.find('"').unwrap()].to_string()
+            };
+
+            (field("name"), field("value"))
+        })
+        .collect();
+
+    assert!(
+        advertised.len() >= 2,
+        "xml-js collapses a one-element array: {document}",
+    );
+    assert!(
+        advertised.iter().all(|(_, value)| !value.is_empty()),
+        "OpenSSL refuses a zero-length subject component: {document}",
+    );
+
+    let (csr, _) = signing_request("ada");
+    let issued: serde_json::Value = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::post()
+            .uri("/Marti/api/tls/signClient/v2?clientUid=ANDROID-1&version=3")
+            .insert_header((AUTHORIZATION, basic("ada", &token)))
+            .insert_header((ACCEPT, "application/json"))
+            .set_payload(csr)
+            .to_request(),
+    )
+    .await;
+
+    // The base64 is bare but line-wrapped, which the strict engine refuses.
+    let bare: String = issued["signedCert"]
+        .as_str()
+        .expect("a signed certificate")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let der = base64::engine::general_purpose::STANDARD
+        .decode(bare)
+        .expect("bare base64");
+    let (_, certificate) = x509_parser::parse_x509_certificate(&der).expect("a certificate");
+    let subject = certificate.subject().to_string();
+
+    for (name, value) in &advertised {
+        assert!(
+            subject.contains(&format!("{name}={value}")),
+            "the enrolment document advertised {name}={value} and the issued subject \
+             is '{subject}' — a device builds its signing request from exactly these \
+             entries, so one the issuer drops is a subject that disagrees with itself",
+        );
+    }
+
+    harness.stop().await;
+}
+
+#[actix_web::test]
+async fn one_enrolment_token_produces_exactly_one_certificate() {
+    // R-01 M3. Usability was checked in one read and the spend was a later,
+    // unconditional write, so two concurrent posts of the same token both
+    // passed and both received a certificate — the window being one argon2
+    // verification plus a signature. The consumption is now the gate.
+    let harness = harness().await;
+    let token = credential(&harness.server, "ada", CredentialKind::EnrollmentToken).await;
+    let app = test::init_service(App::new().configure(harness.app())).await;
+
+    let post = |body: String| {
+        test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/Marti/api/tls/signClient/v2?clientUid=ANDROID-RACE&version=5.1.0")
+                .insert_header((AUTHORIZATION, basic("ada", &token)))
+                .insert_header((ACCEPT, "application/json"))
+                .insert_header((CONTENT_TYPE, "application/octet-stream"))
+                .set_payload(body)
+                .to_request(),
+        )
+    };
+
+    let (first, second) = tokio::join!(
+        post(signing_request("ada").0),
+        post(signing_request("ada").0)
+    );
+    let statuses = [first.status().as_u16(), second.status().as_u16()];
+
+    assert_eq!(
+        statuses.iter().filter(|status| **status == 200).count(),
+        1,
+        "exactly one of two racing enrolments may win: {statuses:?}",
+    );
+
+    let user = harness
+        .server
+        .db()
+        .users()
+        .get_by_username(&Username::parse("ada").unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    let held = harness
+        .server
+        .db()
+        .credentials()
+        .list_for_user(user.id, true)
+        .await
+        .unwrap();
+
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].uses, 1, "and the token is spent exactly once");
+    assert!(held[0].revoked_at.is_some(), "a one-time token stays spent");
+
+    harness.stop().await;
+}
+
+#[actix_web::test]
+async fn a_spent_enrolment_token_cannot_be_presented_again() {
+    let harness = harness().await;
+    let token = credential(&harness.server, "ada", CredentialKind::EnrollmentToken).await;
+    let app = test::init_service(App::new().configure(harness.app())).await;
+
+    for expected in [200, 401] {
+        let response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/Marti/api/tls/signClient/v2?clientUid=ANDROID-ONCE&version=5.1.0")
+                .insert_header((AUTHORIZATION, basic("ada", &token)))
+                .insert_header((ACCEPT, "application/json"))
+                .insert_header((CONTENT_TYPE, "application/octet-stream"))
+                .set_payload(signing_request("ada").0)
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(response.status().as_u16(), expected);
+    }
+
+    harness.stop().await;
+}
+
+#[actix_web::test]
+async fn a_device_uid_cannot_be_taken_from_the_account_that_enrolled_it() {
+    // R-01 M4. A device uid is in every CoT event that device sends and in
+    // `GET /Marti/api/clientEndPoints`, so it is not a secret — and taking the
+    // row over takes the `device_group_state` the owner's channels are
+    // intersected against with it.
+    let harness = harness().await;
+    let ada = credential(&harness.server, "ada", CredentialKind::ClientPassword).await;
+    let grace = credential(&harness.server, "grace", CredentialKind::ClientPassword).await;
+    let app = test::init_service(App::new().configure(harness.app())).await;
+
+    let enrol = |username: &'static str, password: String| {
+        test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/Marti/api/tls/signClient/v2?clientUid=ANDROID-ADA&version=5.1.0")
+                .insert_header((AUTHORIZATION, basic(username, &password)))
+                .insert_header((ACCEPT, "application/json"))
+                .insert_header((CONTENT_TYPE, "application/octet-stream"))
+                .set_payload(signing_request(username).0)
+                .to_request(),
+        )
+    };
+
+    assert_eq!(enrol("ada", ada).await.status().as_u16(), 200);
+
+    let stolen = enrol("grace", grace).await;
+
+    assert_eq!(
+        stolen.status().as_u16(),
+        403,
+        "another account's device uid is not one to enrol with",
+    );
+
+    let device = harness
+        .server
+        .db()
+        .devices()
+        .get_by_uid(&DeviceUid::parse("ANDROID-ADA").unwrap())
+        .await
+        .unwrap()
+        .expect("the device row");
+    let ada_row = harness
+        .server
+        .db()
+        .users()
+        .get_by_username(&Username::parse("ada").unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(device.user_id, ada_row.id);
+
+    harness.stop().await;
+}

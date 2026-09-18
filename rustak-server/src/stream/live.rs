@@ -65,6 +65,16 @@ pub struct ConnectionSummary {
 
     /// The callsign it reports, once it has said.
     pub callsign: Option<String>,
+
+    /// Its effective group rights, so that a watcher can answer the same
+    /// "who may see this" question the hub answers for the client listing.
+    /// Shared rather than copied: this is the connection's own set.
+    pub groups: Arc<GroupSet>,
+
+    /// Whether the client has asked not to be shown to its peers. A watcher
+    /// that announced it anyway would undo the feature over a different
+    /// transport (R-01 M14).
+    pub incognito: bool,
 }
 
 impl ConnectionSummary {
@@ -75,6 +85,8 @@ impl ConnectionSummary {
             username: subscription.principal.username.clone(),
             client_uid: subscription.client_uid.clone(),
             callsign: subscription.callsign.clone(),
+            groups: Arc::clone(&subscription.principal.groups),
+            incognito: subscription.incognito,
         }
     }
 }
@@ -221,6 +233,34 @@ impl LiveState {
     /// the ones it has not opened yet.
     pub fn disconnect_by_fingerprint(&self, fingerprint: &str) -> usize {
         self.hub.disconnect_by_fingerprint(fingerprint)
+    }
+
+    /// Closes every connection an account has open.
+    ///
+    /// The stream resolves a principal once, at the TLS handshake, and makes no
+    /// database call thereafter — so switching an account off used to leave its
+    /// device receiving every reachable peer's position and injecting CoT until
+    /// its TCP connection happened to drop (R-01 H5). Disabling an account is
+    /// the control an operator reaches for when a device is lost, so it has to
+    /// end what is already open, not only refuse what comes next.
+    ///
+    /// Answers how many connections were closed.
+    pub fn disconnect_by_user(&self, username: &Username) -> usize {
+        let handles = self.hub.handles_for_user(username);
+
+        for handle in &handles {
+            handle.close();
+        }
+
+        if !handles.is_empty() {
+            info!(
+                %username,
+                connections = handles.len(),
+                "Closed the stream connections of an account that may no longer use them."
+            );
+        }
+
+        handles.len()
     }
 
     /// Sends one message to every connection claiming a `clientUid`.

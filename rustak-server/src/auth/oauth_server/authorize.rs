@@ -30,11 +30,12 @@
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, web};
 
-use crate::auth::resolve::{ListenerAuthPolicy, resolve_principal};
+use crate::auth::resolve::{RequestFacts, Resolved, bearer};
 use crate::auth::tokens;
 use crate::config::OAuthClient;
 use crate::db::repos::UserRow;
 use crate::prelude::*;
+use crate::web::helpers::request::client_ip;
 
 use super::codes::{self, NewCode, S256};
 use super::login;
@@ -112,10 +113,10 @@ pub async fn authorize(
         code_challenge: challenge,
     };
 
-    match resolve_principal(context.get_ref(), &request, ListenerAuthPolicy::public()).await {
+    match browser_session(context.get_ref(), &request).await {
         // Already signed in here, so there is nothing to ask anybody: mint the
         // code and send them back.
-        Ok(resolved) => {
+        Some(resolved) => {
             deliver_code(
                 context.get_ref(),
                 &resolved.user,
@@ -127,17 +128,55 @@ pub async fn authorize(
 
         // Nobody yet. The identity provider establishes who they are and
         // `/login/redirect` finishes this same request.
-        Err(_) if config.auth.oidc.is_some() => {
+        None if config.auth.oidc.is_some() => {
             login::begin_federation(context.get_ref(), &request, pending).await
         }
 
-        Err(_) => {
+        None => {
             warn!(
                 client = %client_id,
                 "An authorization request arrived with no session and no identity provider to establish one.",
             );
 
             error_redirect(redirect_uri, "access_denied", &query.state)
+        }
+    }
+}
+
+/// The browser session on this request, if there is one.
+///
+/// **Only** the `access_token_N` cookies the `/login/*` flow and the admin UI
+/// set — never an `Authorization` header. An authorization code is an upgrade:
+/// it is exchanged for a *session*, with a refresh family that outlives the
+/// credential that asked for it by weeks. Minting one for any bearer meant that
+/// two extra requests turned a password-grant access token — which
+/// `compat/oauth.md` §1 deliberately issues with no refresh token — into a
+/// 30-day refresh family (R-01 H2). Only a caller who is already holding a
+/// browser session has something to upgrade, and a browser session is a cookie.
+///
+/// A failure to resolve the cookie is [`None`] rather than an error: it means
+/// "nobody is signed in here yet", which is the federation path, not a refusal.
+async fn browser_session(context: &AppContext, request: &HttpRequest) -> Option<Resolved> {
+    let token = super::access_token_from_cookies(request.headers())?;
+    let config = context.config();
+    let facts = RequestFacts {
+        method: request.method().as_str(),
+        path: request.path(),
+        client_ip: client_ip(
+            config.server.trust_proxy,
+            request.headers(),
+            request.peer_addr(),
+        )
+        .map(|ip| ip.to_string()),
+        headers: request.headers(),
+    };
+
+    match bearer(context, &token, &facts).await {
+        Ok(resolved) => Some(resolved),
+        Err(failure) => {
+            debug!(reason = ?failure, "A session cookie established no identity at /oauth/authorize.");
+
+            None
         }
     }
 }

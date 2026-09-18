@@ -215,12 +215,18 @@ pub async fn patch(
             .map_err(|err| failed(&context, &err))?;
 
         if disabled {
-            // Refusing new sign-ins is not enough on its own: a client holding
-            // a refresh token would otherwise keep minting access tokens.
-            db.refresh_tokens()
-                .revoke_all_for_user(user.id)
-                .await
-                .map_err(|err| failed(&context, &err))?;
+            // Refusing new sign-ins is not enough on its own. A client holding
+            // a refresh token would keep minting access tokens, a CoT stream
+            // session resolves its principal once at the handshake and would
+            // keep sending and receiving, and an open event feed would keep
+            // delivering — so disabling has to end all three (R-01 H5).
+            let closed = crate::identity::sessions::end_all(context.get_ref(), &user).await;
+
+            info!(
+                username = %user.username,
+                connections = closed,
+                "Switched an account off and ended the sessions it had open."
+            );
         }
     }
 

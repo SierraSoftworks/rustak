@@ -245,6 +245,18 @@ pub async fn remove(
         return Err(ApiError::not_found("That credential has already gone."));
     }
 
+    // A service token and a client password have no certificate to cascade to,
+    // so revoking one used to leave every session it had already bought running
+    // — including an open `GET /api/v1/events` (R-01 H5). Best-effort and after
+    // the revocation is stored: the credential is gone either way.
+    let closed = crate::identity::sessions::end_all(context.get_ref(), &subject.user).await;
+
+    info!(
+        credential = %row.id,
+        connections = closed,
+        "Revoked a credential and ended the sessions it had bought."
+    );
+
     record(
         &context,
         "credential.revoked",

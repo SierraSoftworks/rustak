@@ -17,11 +17,11 @@ use crate::marti::{CiQuery, MissionRef, response, response::kind};
 use crate::missions::MissionService;
 use crate::missions::invitations::MissionInvitation;
 use crate::missions::model::Mission;
-use crate::missions::roles::{Permission, Role, require};
+use crate::missions::roles::{Permission, Role};
 use crate::prelude::*;
 
 use super::super::error::{MartiError, MartiResult};
-use super::MissionCtx;
+use super::{MissionCtx, allowed};
 
 /// One invitation, as the wire spells it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -169,14 +169,7 @@ pub async fn invite_bulk(
 /// [`MartiError::Forbidden`] without `MISSION_READ`.
 #[instrument("marti.missions.invitations", skip_all)]
 pub async fn listing(ctx: MissionCtx, reference: MissionRef) -> MartiResult {
-    let mission = ctx.service.resolve(&reference).await?;
-    let role = ctx
-        .service
-        .role_for_request(&mission, &ctx.who, ctx.claims())
-        .await?;
-
-    require(role, Permission::Read)?;
-
+    let mission = allowed(&ctx, &reference, Permission::Read).await?;
     let rendered: Vec<MissionInvitationJson> = ctx
         .service
         .invitations(&mission)
@@ -252,15 +245,7 @@ fn announce(
 
 /// The mission, once the caller is known to be allowed to write to it.
 async fn writable(ctx: &MissionCtx, reference: &MissionRef) -> Result<Mission, MartiError> {
-    let mission = ctx.service.resolve(reference).await?;
-    let role = ctx
-        .service
-        .role_for_request(&mission, &ctx.who, ctx.claims())
-        .await?;
-
-    require(role, Permission::Write)?;
-
-    Ok(mission)
+    allowed(ctx, reference, Permission::Write).await
 }
 
 /// The role an invitation grants, defaulting to `MISSION_SUBSCRIBER`.

@@ -34,9 +34,11 @@ use std::pin::Pin;
 use actix_web::{FromRequest, HttpRequest, dev::Payload, web};
 
 use crate::auth::{MissionClaims, MissionTokens, mission_bearer, mission_token};
-use crate::missions::MissionService;
+use crate::missions::roles::{MissionRole, Permission, require};
+use crate::missions::{Mission, MissionService};
 use crate::prelude::*;
 
+use super::MissionRef;
 use super::error::{MartiError, MartiResult};
 use super::principal::MartiPrincipal;
 
@@ -60,6 +62,56 @@ impl MissionCtx {
     pub fn claims(&self) -> Option<&MissionClaims> {
         self.claims.as_ref()
     }
+}
+
+/// The mission this request names, once the caller holds a permission.
+///
+/// **Every** handler under `/Marti/api/missions/**` that touches one mission
+/// goes through here. It is one function rather than a `readable`/`writable`
+/// pair per route file because R-02 found three routes that had simply been
+/// written without a check at all (C1, H4, H5) — a duplicated helper is a
+/// helper somebody can forget to call, and the authorization matrix test in
+/// `tests/missions_authz.rs` walks every route against this one rule.
+///
+/// # Errors
+///
+/// [`MartiError::NotFound`] or [`MartiError::Gone`] for the mission itself, and
+/// [`MartiError::Forbidden`] naming the permission the caller was missing.
+pub(super) async fn allowed(
+    ctx: &MissionCtx,
+    reference: &MissionRef,
+    permission: Permission,
+) -> Result<Mission, MartiError> {
+    let (mission, role) = resolved(ctx, reference).await?;
+
+    require(role, permission)?;
+
+    Ok(mission)
+}
+
+/// The mission and the role this request holds on it, checking neither.
+///
+/// The one place a mission route resolves a role. Every caller either hands the
+/// answer straight to [`require`] (which is what [`allowed`] is) or, in the one
+/// route whose refusal is not a refusal — `GET {n}` answers a **stripped
+/// `200`** rather than a `403` to an `API_VERSION >= 3` client, per
+/// `compat/missions.md` §5 — inspects it first. A route that resolves a mission
+/// any other way is the bug class R-02 C1/H4/H5 found.
+///
+/// # Errors
+///
+/// [`MartiError::NotFound`] or [`MartiError::Gone`] for the mission itself.
+pub(super) async fn resolved(
+    ctx: &MissionCtx,
+    reference: &MissionRef,
+) -> Result<(Mission, Option<MissionRole>), MartiError> {
+    let mission = ctx.service.resolve(reference).await?;
+    let role = ctx
+        .service
+        .role_for_request(&mission, &ctx.who, ctx.claims())
+        .await?;
+
+    Ok((mission, role))
 }
 
 impl FromRequest for MissionCtx {

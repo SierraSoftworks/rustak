@@ -55,6 +55,14 @@ pub fn scope_for(is_admin: bool) -> String {
     }
 }
 
+/// Whether a granted scope string carries [`SCOPE_ADMIN`].
+///
+/// Exact, space-separated comparison rather than a substring search: a scope
+/// named `administrator-readonly` must not satisfy `admin`.
+pub fn grants_admin(scope: &str) -> bool {
+    scope.split(' ').any(|granted| granted == SCOPE_ADMIN)
+}
+
 /// Issues a fresh session: a signed access token and a new refresh family.
 ///
 /// # Errors
@@ -131,7 +139,12 @@ pub async fn rotate<S: Services>(
         return Err(rejected());
     }
 
-    let is_admin = user.is_effective_admin();
+    // Recomputed from the account rather than copied from the row, so that
+    // somebody demoted while a family was alive stops being an administrator on
+    // the next rotation — and then clamped by the scope the family was minted
+    // with, so a family deliberately capped at `api` cannot widen itself back to
+    // `api admin` on its first refresh (R-01 M6).
+    let is_admin = user.is_effective_admin() && grants_admin(&spent.scope);
     let scope = scope_for(is_admin);
     let (token, claims) = services.jwt()?.issue(&user.username, &scope, None, None)?;
     let refresh = mint(services, &user, &scope, client, spent.family).await?;
@@ -162,7 +175,7 @@ pub async fn revoke<S: Services>(
 ) -> Result<(), Error> {
     let db = services.db();
 
-    db.revoked_jtis().revoke(jti, expires_at).await?;
+    revoke_session(services, jti, expires_at).await?;
 
     if let Err(err) = db.refresh_tokens().revoke_all_for_user(user_id).await {
         warn!(error = %err, "Could not revoke the refresh tokens of somebody signing out.");
@@ -170,6 +183,25 @@ pub async fn revoke<S: Services>(
     }
 
     Ok(())
+}
+
+/// Ends **one** session: the access token is listed by its `jti` and nothing
+/// else is touched.
+///
+/// The narrow half of [`revoke`], for the sign-out a cross-site link can
+/// trigger: `GET /logout` is a top-level navigation `SameSite=Lax` still
+/// attaches the cookie to, so it must not be able to end the account's other
+/// sessions (R-01 M2).
+///
+/// # Errors
+///
+/// A [`human_errors::Kind::System`] error if the revocation cannot be recorded.
+pub async fn revoke_session<S: Services>(
+    services: &S,
+    jti: &str,
+    expires_at: chrono::DateTime<Utc>,
+) -> Result<(), Error> {
+    services.db().revoked_jtis().revoke(jti, expires_at).await
 }
 
 /// Stores a fresh refresh token and returns the half the caller keeps.
@@ -363,9 +395,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_renewal_picks_up_an_account_that_has_become_an_administrator() {
-        // The alternative is somebody having to sign out and back in before a
-        // change an administrator just made takes effect.
+    async fn a_renewal_cannot_widen_the_scope_its_family_was_minted_with() {
+        // R-01 M6. The scope stored with a family is a ceiling: a family minted
+        // for an ordinary session stays ordinary however administrative its
+        // account later becomes, so a token deliberately capped at `api` cannot
+        // buy `api admin` with one refresh. Promotion takes effect on the next
+        // sign-in, which is the direction that costs nothing if it is late.
         let context = context().await;
         let user = user(&context, false).await;
         let session = issue_session(&context, &user, false, None).await.unwrap();
@@ -382,7 +417,39 @@ mod tests {
             .unwrap();
         let claims = context.jwt().unwrap().verify(&renewed.token).unwrap();
 
-        assert!(claims.scope.split(' ').any(|scope| scope == SCOPE_ADMIN));
+        assert_eq!(claims.scope, SCOPE_API);
+        assert!(!grants_admin(&claims.scope));
+
+        let fresh = issue_session(&context, &user, true, None).await.unwrap();
+        let fresh_claims = context.jwt().unwrap().verify(&fresh.token).unwrap();
+
+        assert!(
+            grants_admin(&fresh_claims.scope),
+            "signing in again is what picks the promotion up",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_renewal_drops_administrative_scope_the_account_has_lost() {
+        // The other direction is not a ceiling and must still be immediate:
+        // a demotion has to take effect without waiting for a token to expire.
+        let context = context().await;
+        let user = user(&context, true).await;
+        let session = issue_session(&context, &user, true, None).await.unwrap();
+
+        context
+            .db()
+            .users()
+            .set_admin_override(user.id, Some(false))
+            .await
+            .unwrap();
+
+        let renewed = rotate(&context, &session.refresh_token.unwrap(), None)
+            .await
+            .unwrap();
+        let claims = context.jwt().unwrap().verify(&renewed.token).unwrap();
+
+        assert!(!grants_admin(&claims.scope));
     }
 
     #[tokio::test]

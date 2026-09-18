@@ -7,11 +7,11 @@
 
 use crate::marti::time::TimeWindow;
 use crate::marti::{CiQuery, MissionRef, response, response::kind};
-use crate::missions::roles::{Permission, require};
+use crate::missions::roles::Permission;
 use crate::prelude::*;
 
 use super::super::error::MartiResult;
-use super::MissionCtx;
+use super::{MissionCtx, allowed};
 
 /// `GET {n}/changes` — the change log inside a window.
 ///
@@ -24,13 +24,7 @@ use super::MissionCtx;
 /// [`MartiError::InvalidRequest`]: crate::marti::MartiError::InvalidRequest
 #[instrument("marti.missions.changes", skip_all)]
 pub async fn listing(ctx: MissionCtx, reference: MissionRef, query: CiQuery) -> MartiResult {
-    let mission = ctx.service.resolve(&reference).await?;
-    let role = ctx
-        .service
-        .role_for_request(&mission, &ctx.who, ctx.claims())
-        .await?;
-
-    require(role, Permission::Read)?;
+    let mission = allowed(&ctx, &reference, Permission::Read).await?;
 
     let window = TimeWindow::parse(
         query.parsed::<i64>("secago")?,
@@ -58,13 +52,7 @@ pub async fn listing(ctx: MissionCtx, reference: MissionRef, query: CiQuery) -> 
 /// [`MartiError::Forbidden`]: crate::marti::MartiError::Forbidden
 #[instrument("marti.missions.cot", skip_all)]
 pub async fn cot(ctx: MissionCtx, reference: MissionRef, query: CiQuery) -> MartiResult {
-    let mission = ctx.service.resolve(&reference).await?;
-    let role = ctx
-        .service
-        .role_for_request(&mission, &ctx.who, ctx.claims())
-        .await?;
-
-    require(role, Permission::Read)?;
+    let mission = allowed(&ctx, &reference, Permission::Read).await?;
 
     let document = ctx
         .service

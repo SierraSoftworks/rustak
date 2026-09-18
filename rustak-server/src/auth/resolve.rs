@@ -616,17 +616,75 @@ mod tests {
 
     #[tokio::test]
     async fn an_expression_can_grant_administrative_access_per_request() {
+        // The account is not stored as an administrator; the expression is what
+        // makes this request an administrative one. The token carries the admin
+        // scope, because after R-01 H1 the granted scope is a ceiling over
+        // every source of administrative access, the expression included.
         let server = TestServer::start_with(|config| {
             config.auth.admin_acl = Some(filt_rs::Filter::new(r#"username == "ada""#).unwrap());
         })
         .await;
-        let (_, session) = server.signed_in("ada", false).await;
+        let user = server.user("ada", false).await;
+        let (token, _) = server
+            .jwt()
+            .unwrap()
+            .issue(&user.username, "api admin", None, None)
+            .unwrap();
         let headers = HeaderMap::new();
 
-        let resolved = bearer(&server.context, &session.token, &facts(&headers))
+        let resolved = bearer(&server.context, &token, &facts(&headers))
             .await
             .unwrap();
 
         assert!(resolved.principal.is_admin);
+    }
+
+    #[tokio::test]
+    async fn an_expression_cannot_widen_a_token_that_was_granted_no_admin_scope() {
+        // R-01 H1. Both the installation's policy and the credential's own
+        // grant have to say "administrator"; the narrower of the two wins, so a
+        // password-grant token held by somebody an expression would promote is
+        // still only an ordinary session.
+        let server = TestServer::start_with(|config| {
+            config.auth.admin_acl = Some(filt_rs::Filter::new(r#"username == "ada""#).unwrap());
+        })
+        .await;
+        let user = server.user("ada", false).await;
+        let (token, _) = server
+            .jwt()
+            .unwrap()
+            .issue(&user.username, "api", None, None)
+            .unwrap();
+        let headers = HeaderMap::new();
+
+        let resolved = bearer(&server.context, &token, &facts(&headers))
+            .await
+            .unwrap();
+
+        assert!(!resolved.principal.is_admin);
+    }
+
+    #[tokio::test]
+    async fn an_expression_still_takes_administrative_access_away_per_request() {
+        // The narrowing direction is the one that must stay live: a token
+        // granted the admin scope is still refused when the expression that
+        // guards this request says no.
+        let server = TestServer::start_with(|config| {
+            config.auth.admin_acl = Some(filt_rs::Filter::new(r#"username == "nobody""#).unwrap());
+        })
+        .await;
+        let user = server.user("ada", false).await;
+        let (token, _) = server
+            .jwt()
+            .unwrap()
+            .issue(&user.username, "api admin", None, None)
+            .unwrap();
+        let headers = HeaderMap::new();
+
+        let resolved = bearer(&server.context, &token, &facts(&headers))
+            .await
+            .unwrap();
+
+        assert!(!resolved.principal.is_admin);
     }
 }

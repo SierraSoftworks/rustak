@@ -92,6 +92,7 @@ impl Passkeys {
                 label,
                 bootstrap,
             },
+            self.rp_id_name(),
             &encoded,
         )
         .await?;
@@ -123,6 +124,9 @@ impl Passkeys {
         label: Option<&str>,
     ) -> Result<(UserId, PasskeyRow, bool), Error> {
         let ceremony = passkey_store::claim(db, challenge_id).await?;
+        // See `finish_login`: the relying party is pinned when the ceremony
+        // starts (R-01 M10).
+        passkey_store::require_rp_id(&ceremony, self.rp_id_name())?;
 
         let CeremonyKind::Register {
             user_id,

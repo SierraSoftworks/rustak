@@ -20,17 +20,22 @@ use actix_web::web;
 
 use crate::marti::{CiQuery, MissionRef, response, response::kind};
 use crate::missions::render::Render;
-use crate::missions::roles::{MissionRole, Permission, Role, require};
-use crate::missions::{Mission, SubscribeReq, role_json, subscription_json};
+use crate::missions::roles::{Permission, Role};
+use crate::missions::{SubscribeReq, role_json, subscription_json};
 use crate::prelude::*;
 
 use super::super::error::{MartiError, MartiResult};
-use super::MissionCtx;
+use super::{MissionCtx, allowed, resolved};
 
 /// The `API_VERSION` a client must claim for the nested mission.
 const NESTED_FROM_API_VERSION: u32 = 3;
 
 /// `PUT {n}/subscription` — subscribe a device and mint its token.
+///
+/// One of the three mission routes that deliberately does **not** go through
+/// `allowed`: it is how a caller *acquires* a role, so the credential it checks
+/// is the password, the standing invitation or the token in the request
+/// (`compat/missions.md` §9), not a role it already holds.
 ///
 /// # Errors
 ///
@@ -83,21 +88,32 @@ pub async fn subscribe(ctx: MissionCtx, reference: MissionRef, query: CiQuery) -
 
 /// `GET {n}/subscription?uid=` — one device's subscription.
 ///
+/// **No token is minted here and none is rendered.** R-02 C1: this route used
+/// to call the service's minting read with no permission check at all, so an
+/// anonymous caller naming a mission and a predictable subscriber uid was handed
+/// a `MISSION_OWNER` credential. The read is now the stored row
+/// ([`MissionService::stored_subscription`]) behind `MISSION_READ`, which is
+/// what `compat/missions.md` §9 describes — the token is minted by `PUT`
+/// (§10), and `/subscriptions/roles` is the deliberately token-free listing.
+///
+/// [`MissionService::stored_subscription`]: crate::missions::MissionService::stored_subscription
+///
 /// # Errors
 ///
+/// [`MartiError::Forbidden`] without `MISSION_READ`, and
 /// [`MartiError::NotFound`] when that device is not subscribed.
 #[instrument("marti.missions.subscription", skip_all)]
 pub async fn get(ctx: MissionCtx, reference: MissionRef, query: CiQuery) -> MartiResult {
-    let mission = ctx.service.resolve(&reference).await?;
+    let mission = allowed(&ctx, &reference, Permission::Read).await?;
     let found = ctx
         .service
-        .subscription(&mission, &client_uid(&query)?)
+        .stored_subscription(&mission, &client_uid(&query)?)
         .await?
         .ok_or_else(|| MartiError::NotFound("that subscription".to_string()))?;
 
     Ok(response::ok(
         kind::MISSION_SUBSCRIPTION_FQCN,
-        subscription_json(&found, None, true),
+        subscription_json(&found, None, false),
     ))
 }
 
@@ -106,12 +122,18 @@ pub async fn get(ctx: MissionCtx, reference: MissionRef, query: CiQuery) -> Mart
 /// `disconnectOnly` is accepted and ignored; see
 /// [`MissionService::unsubscribe`](crate::missions::MissionService::unsubscribe).
 ///
+/// Behind `MISSION_READ` rather than `MISSION_WRITE`: unsubscribing is what a
+/// read-only subscriber does when it leaves, and requiring write would strand
+/// them. R-02 H4 — it used to be behind nothing at all, so anybody could
+/// unsubscribe anybody from anything.
+///
 /// # Errors
 ///
+/// [`MartiError::Forbidden`] without `MISSION_READ`, and
 /// [`MartiError::InvalidRequest`] with neither `uid` nor `topic`.
 #[instrument("marti.missions.unsubscribe", skip_all)]
 pub async fn unsubscribe(ctx: MissionCtx, reference: MissionRef, query: CiQuery) -> MartiResult {
-    let mission = ctx.service.resolve(&reference).await?;
+    let mission = allowed(&ctx, &reference, Permission::Read).await?;
 
     ctx.service
         .unsubscribe(&mission, &client_uid(&query)?)
@@ -219,6 +241,9 @@ pub async fn all_by_guid(ctx: MissionCtx) -> MartiResult {
 
 /// `GET {n}/role` — the role this request carries.
 ///
+/// Deliberately not behind `allowed`: "what may I do here" has to be answerable
+/// by somebody who may do nothing, which is what the absent `data` says.
+///
 /// The envelope carries no `data` at all when the caller has no role, which is
 /// how a client tells "read only" from "nothing".
 ///
@@ -227,11 +252,7 @@ pub async fn all_by_guid(ctx: MissionCtx) -> MartiResult {
 /// [`MartiError::NotFound`] or [`MartiError::Gone`] for the mission itself.
 #[instrument("marti.missions.role", skip_all)]
 pub async fn role(ctx: MissionCtx, reference: MissionRef) -> MartiResult {
-    let mission = ctx.service.resolve(&reference).await?;
-    let held = ctx
-        .service
-        .role_for_request(&mission, &ctx.who, ctx.claims())
-        .await?;
+    let (_, held) = resolved(&ctx, &reference).await?;
 
     Ok(response::status(
         StatusCode::OK,
@@ -272,6 +293,9 @@ pub async fn set_role(ctx: MissionCtx, reference: MissionRef, query: CiQuery) ->
 }
 
 /// `GET /missions/{name}/token?password=` — mint an `ACCESS` token.
+///
+/// Deliberately not behind `allowed`: the password **is** the credential, and
+/// a wrong one is the `403` (`compat/missions.md` §9).
 ///
 /// `201`, not `200`: TAK Server answers a created token with a created status
 /// and CloudTAK follows it.
@@ -352,21 +376,4 @@ fn client_uid(query: &CiQuery) -> Result<String, MartiError> {
         .filter(|uid| !uid.is_empty())
         .map(str::to_string)
         .ok_or_else(|| MartiError::InvalidRequest("uid or topic is required".to_string()))
-}
-
-/// The mission this request names, once the caller holds a permission.
-async fn allowed(
-    ctx: &MissionCtx,
-    reference: &MissionRef,
-    permission: Permission,
-) -> Result<Mission, MartiError> {
-    let mission = ctx.service.resolve(reference).await?;
-    let role: Option<MissionRole> = ctx
-        .service
-        .role_for_request(&mission, &ctx.who, ctx.claims())
-        .await?;
-
-    require(role, permission)?;
-
-    Ok(mission)
 }

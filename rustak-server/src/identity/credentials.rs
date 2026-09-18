@@ -195,6 +195,54 @@ pub async fn record_use(
     Ok(())
 }
 
+/// Claims a one-time credential before it has bought anything.
+///
+/// The gate and the spend are the same write (see
+/// [`CredentialsRepo::claim_single_use`](crate::db::repos::CredentialsRepo::claim_single_use)),
+/// so of two concurrent enrolments carrying the same token exactly one gets a
+/// certificate. A reusable credential has nothing to claim and answers `true`.
+///
+/// # Errors
+///
+/// A [`human_errors::Kind::System`] error if the write fails.
+pub async fn claim_single_use(
+    db: &Database,
+    credential: &CredentialRow,
+    cache: &VerifiedSecretCache,
+) -> Result<bool, Error> {
+    if !credential.kind.is_single_use() {
+        return Ok(true);
+    }
+
+    let claimed = db.credentials().claim_single_use(credential.id).await?;
+
+    if claimed {
+        cache.forget(credential.id);
+    }
+
+    Ok(claimed)
+}
+
+/// Puts back a claim whose issuance then failed.
+///
+/// # Errors
+///
+/// A [`human_errors::Kind::System`] error if the write fails.
+pub async fn release_single_use(
+    db: &Database,
+    credential: &CredentialRow,
+    cache: &VerifiedSecretCache,
+) -> Result<(), Error> {
+    if !credential.kind.is_single_use() {
+        return Ok(());
+    }
+
+    db.credentials().release_single_use(credential.id).await?;
+    cache.forget(credential.id);
+
+    Ok(())
+}
+
 /// Takes a credential back, and with it every certificate bought with it.
 ///
 /// Returns whether anything was live to revoke, so a caller can answer `404`

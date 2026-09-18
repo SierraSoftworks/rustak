@@ -198,17 +198,33 @@ pub async fn put_config(
 }
 
 /// Resolves the caller and the named service, refusing one that is not theirs.
+///
+/// A non-administrator gets the **same** `404` for a name that is not
+/// registered and for one that belongs to somebody else. Answering `404` for
+/// the first and `403` for the second made this endpoint an existence oracle
+/// over the whole sidecar fleet — `403` means registered — which is exactly
+/// what `GET /api/v1/services` is administrative to prevent (R-01 M16).
+/// `packages::readable` writes the same rule out for a package that is out of
+/// the caller's channels.
+///
+/// `404` rather than `403` for both, because it is the answer a sidecar can
+/// act on: a service whose registration an operator has just removed reads it
+/// as "register again", which is what it should do. Nobody learns anything
+/// from it that they did not already know.
 async fn owned(
     context: &AppContext,
     request: &HttpRequest,
     name: &str,
 ) -> Result<(Caller, ServiceRow), ApiError> {
     let caller = caller(context, request).await?;
-    let row = registry::require(context, &service_name(name)?)
-        .await
-        .map_err(|err| failed(context, err))?;
-
-    caller.require_owns(&row).map_err(refusal)?;
+    let name = service_name(name)?;
+    let row = match registry::require(context, &name).await {
+        Ok(row) if caller.owns(&row) => row,
+        Err(RegistryError::Unavailable(err)) => {
+            return Err(failed(context, RegistryError::Unavailable(err)));
+        }
+        Ok(_) | Err(_) => return Err(failed(context, RegistryError::Unknown(name))),
+    };
 
     Ok((caller, row))
 }
@@ -418,9 +434,14 @@ mod tests {
                 .await;
         }
 
+        // R-01 M16. The same answer as a name nothing is registered under,
+        // because `403` would mean "registered" and turn this endpoint into an
+        // existence oracle over the whole sidecar fleet.
         for (method, uri) in [
             ("GET", "/api/v1/services/adsb/config"),
             ("DELETE", "/api/v1/services/adsb"),
+            ("GET", "/api/v1/services/nothing-here/config"),
+            ("DELETE", "/api/v1/services/nothing-here"),
         ] {
             let refused = test::TestRequest::default()
                 .method(method.parse().unwrap())
@@ -429,8 +450,26 @@ mod tests {
                 .send_request(&app)
                 .await;
 
-            assert_eq!(refused.status(), StatusCode::FORBIDDEN, "{method} {uri}");
+            assert_eq!(refused.status(), StatusCode::NOT_FOUND, "{method} {uri}");
         }
+
+        // And the body says the same thing either way, so the message is not
+        // the oracle the status no longer is.
+        let mut bodies = Vec::new();
+        for name in ["adsb", "nothing-here"] {
+            let refused = test::TestRequest::get()
+                .uri(&format!("/api/v1/services/{name}/config"))
+                .insert_header(("authorization", format!("Bearer {weather}")))
+                .send_request(&app)
+                .await;
+
+            bodies.push(
+                String::from_utf8(test::read_body(refused).await.to_vec())
+                    .unwrap()
+                    .replace(name, "<name>"),
+            );
+        }
+        assert_eq!(bodies[0], bodies[1], "{bodies:?}");
 
         // And registering under the other one's name is a conflict, not a theft.
         let stolen = test::TestRequest::post()

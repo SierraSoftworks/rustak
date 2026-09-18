@@ -28,7 +28,7 @@ use crate::auth::{Passkeys, RateLimiter, passkeys, setup, tokens};
 use crate::db::{AuditEntry, repos::UserRow};
 use crate::identity::settings;
 use crate::prelude::*;
-use crate::web::helpers::request::{client_address, request_base_url};
+use crate::web::helpers::request::client_address;
 
 use super::error::{ApiError, ApiResult, json_ok};
 use super::extract::Authenticated;
@@ -68,7 +68,7 @@ pub async fn register_start(
         trimmed.to_string()
     };
 
-    let challenge = relying_party(&context, &request)
+    let challenge = relying_party(&context)
         .await?
         .start_registration(context.db(), &user, label, bootstrap)
         .await
@@ -95,7 +95,7 @@ pub async fn register_finish(
     let address = address(&context, &request);
     limiter.check(address, SUBJECT).map_err(too_many)?;
 
-    let outcome = relying_party(&context, &request)
+    let outcome = relying_party(&context)
         .await?
         .finish_registration(
             context.db(),
@@ -117,6 +117,22 @@ pub async fn register_finish(
     limiter.record_success(address, SUBJECT);
 
     let user = load(&context, user_id).await?;
+
+    // Re-read rather than trusted from the ceremony: an account switched off
+    // between `register/start` and `register/finish` must not be handed the
+    // bootstrap session below, which `login_finish` already refuses (R-01 L3).
+    if user.disabled {
+        record(
+            &context,
+            "passkey.registered",
+            AuditOutcome::Denied,
+            &user.username,
+        )
+        .await;
+
+        return Err(ApiError::forbidden("That account has been switched off."));
+    }
+
     record(
         &context,
         "passkey.registered",
@@ -167,18 +183,34 @@ pub async fn login_start(
                 .filter(|user| !user.disabled)
                 // Deliberately the same failure as an account with no passkey:
                 // the sign-in page must not be a way to ask which accounts
-                // exist.
-                .ok_or_else(no_passkey)?,
+                // exist. The *status* still differs — a `200` carrying options
+                // means the account is there — so the outcome is recorded with
+                // the limiter, which is what makes the difference cost
+                // something to observe (R-01 M9).
+                .ok_or_else(|| {
+                    limiter.record_failure(address, SUBJECT);
+
+                    no_passkey()
+                })?,
         ),
         None => None,
     };
 
-    let challenge = relying_party(&context, &request)
+    let challenge = relying_party(&context)
         .await?
         .start_login(context.db(), user.as_ref())
         .await
-        .map_err(|err| ApiError::from_human(&err))?;
+        .map_err(|err| {
+            limiter.record_failure(address, SUBJECT);
 
+            ApiError::from_human(&err)
+        })?;
+
+    // No `record_success` here on purpose. A `login/start` that found an
+    // account proves nothing about who asked, so clearing the bucket would let
+    // a probe reset its own budget every time it guessed a real name; the
+    // window expires on its own, and `login/finish` is where somebody who
+    // actually signed in is credited.
     Ok(json_ok(&challenge))
 }
 
@@ -197,7 +229,7 @@ pub async fn login_finish(
     let address = address(&context, &request);
     limiter.check(address, SUBJECT).map_err(too_many)?;
 
-    let row = match relying_party(&context, &request)
+    let row = match relying_party(&context)
         .await?
         .finish_login(context.db(), &body.challenge_id, &body.credential)
         .await
@@ -353,17 +385,25 @@ async fn authorise(
     Ok((load(context, user_id).await?, true))
 }
 
-/// The relying party for the host this request arrived on.
-async fn relying_party(context: &AppContext, request: &HttpRequest) -> Result<Passkeys, ApiError> {
+/// The relying party this installation is configured as.
+///
+/// From `[server] base_url`/`domains` or the wizard's stored answer, and from
+/// **nowhere else**. It used to fall back to the request's own `Host` header —
+/// or `X-Forwarded-Host` under `trust_proxy` — which made the caller the source
+/// of the value the origin check compares against, and let a server reachable
+/// under a second name mint credentials under that name and accept them
+/// (R-01 M10). Refusing is the right answer: an installation that does not know
+/// what it is called cannot pin a passkey to itself, and a ceremony run under a
+/// guess would have to be re-run under the real name anyway.
+async fn relying_party(context: &AppContext) -> Result<Passkeys, ApiError> {
     let config = context.config();
 
     let base_url = settings::base_url(&config, context.db())
         .await
         .map_err(|err| ApiError::from_human(&err))?
-        .or_else(|| request_base_url(config.server.trust_proxy, request))
         .ok_or_else(|| {
             ApiError::bad_request(
-                "This server does not know what host it is reached on, so it cannot run a passkey ceremony.",
+                "This server does not know what host it is reached on, so it cannot run a passkey ceremony.                  Set `[server] domains` or `[server] base_url` and restart it.",
             )
         })?;
 
@@ -1587,6 +1627,85 @@ mod tests {
         assert!(
             String::from_utf8_lossy(&test::read_body(second).await).contains("already registered"),
             "and it has to be refused for that reason rather than incidentally",
+        );
+    }
+
+    #[actix_web::test]
+    async fn probing_for_accounts_by_name_runs_into_the_limiter() {
+        // R-01 M9. `login/start` checked the limiter and never recorded an
+        // outcome, and a bucket only locks once a failure is counted — so the
+        // endpoint was effectively unlimited, and a `200` carrying challenge
+        // options is a clean "this account exists, is enabled and has a
+        // passkey".
+        let server = TestServer::start_with(|config| {
+            config.auth.rate_limit.attempts = 3;
+        })
+        .await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let mut statuses = Vec::new();
+
+        for index in 0..6 {
+            let response = test::TestRequest::post()
+                .uri("/api/v1/auth/passkey/login/start")
+                .set_json(serde_json::json!({ "username": format!("guess{index}") }))
+                .send_request(&app)
+                .await;
+
+            statuses.push(response.status());
+        }
+
+        assert!(
+            statuses.contains(&StatusCode::TOO_MANY_REQUESTS),
+            "a wordlist has to run out of attempts: {statuses:?}",
+        );
+    }
+
+    #[actix_web::test]
+    async fn a_ceremony_needs_a_configured_base_url_rather_than_the_host_header() {
+        // R-01 M10. The relying-party identifier used to fall back to the
+        // request's own `Host` — so the caller supplied the value the origin
+        // check compares against.
+        let server = TestServer::start_with(|config| {
+            config.server.domains = Vec::new();
+            config.server.base_url = None;
+        })
+        .await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let refused = test::TestRequest::post()
+            .uri("/api/v1/auth/passkey/login/start")
+            .insert_header(("host", "evil.example.net"))
+            .set_json(serde_json::json!({}))
+            .send_request(&app)
+            .await;
+
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+
+        let body = String::from_utf8(test::read_body(refused).await.to_vec()).unwrap();
+
+        assert!(!body.contains("evil.example.net"), "{body}");
+    }
+
+    #[actix_web::test]
+    async fn a_ceremony_records_the_relying_party_it_was_started_under() {
+        let server = TestServer::start().await;
+        let (app, _) = ceremony!(server);
+
+        let started = challenge!(
+            &app,
+            "/api/v1/auth/passkey/login/start",
+            serde_json::json!({})
+        );
+
+        let ceremony = crate::auth::passkey_store::claim(server.db(), &started.challenge_id)
+            .await
+            .expect("the ceremony is claimable once");
+
+        assert_eq!(ceremony.rp_id, TEST_HOST);
+        assert!(
+            crate::auth::passkey_store::require_rp_id(&ceremony, "evil.example.net").is_err(),
+            "a ceremony started here cannot be finished somewhere else",
         );
     }
 }

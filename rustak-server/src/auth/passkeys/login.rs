@@ -129,6 +129,11 @@ impl Passkeys {
         credential: &serde_json::Value,
     ) -> Result<PasskeyRow, Error> {
         let ceremony = passkey_store::claim(db, challenge_id).await?;
+        // A ceremony started under one host name cannot be finished under
+        // another: the verifier is rebuilt per request, so without this the
+        // relying party a challenge was issued for and the one it is checked
+        // against need not be the same (R-01 M10).
+        passkey_store::require_rp_id(&ceremony, self.rp_id_name())?;
         let encoded = passkey_store::state_of(&ceremony)?;
 
         let raw_id = raw_id_of(credential)?;
@@ -207,7 +212,7 @@ impl Passkeys {
         ])?;
 
         Ok(PasskeyChallenge {
-            challenge_id: passkey_store::begin(db, kind, state).await?,
+            challenge_id: passkey_store::begin(db, kind, self.rp_id_name(), state).await?,
             options,
         })
     }

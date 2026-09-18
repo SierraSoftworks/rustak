@@ -14,12 +14,12 @@ use crate::marti::time::TimeWindow;
 use crate::marti::{CiQuery, MissionRef, response, response::kind};
 use crate::missions::logs::{LogEntry, LogEntryJson};
 use crate::missions::model::Mission;
-use crate::missions::roles::{Permission, require};
+use crate::missions::roles::Permission;
 use crate::prelude::*;
 use crate::stream::ChangeKind;
 
 use super::super::error::{MartiError, MartiResult};
-use super::MissionCtx;
+use super::{MissionCtx, allowed};
 
 /// `POST /missions/logs/entries` — write a new entry.
 ///
@@ -68,9 +68,15 @@ pub async fn update(ctx: MissionCtx, body: web::Json<LogEntryJson>) -> MartiResu
 
 /// `GET /missions/logs/entries/{id}` — one entry.
 ///
+/// Readable by a caller who may read **any** of the missions the entry names,
+/// which is exactly the set [`listing`] would already have shown it to. R-02
+/// H5: this route had no role check at all, so a leaked id read the log of a
+/// password-protected or invite-only mission.
+///
 /// # Errors
 ///
-/// [`MartiError::NotFound`] when there is no such entry.
+/// [`MartiError::NotFound`] when there is no such entry, and
+/// [`MartiError::Forbidden`] without `MISSION_READ` on any of its missions.
 #[instrument("marti.missions.log_get", skip_all)]
 pub async fn get(ctx: MissionCtx, path: web::Path<String>) -> MartiResult {
     let id = path.into_inner();
@@ -81,17 +87,32 @@ pub async fn get(ctx: MissionCtx, path: web::Path<String>) -> MartiResult {
         .await?
         .ok_or_else(|| MartiError::NotFound(format!("Log entry {id}")))?;
 
+    require_on_any(&ctx, &entry.mission_names, Permission::Read).await?;
+
     Ok(response::ok(kind::LOG_ENTRY, vec![entry.to_json()]))
 }
 
 /// `DELETE /missions/logs/entries/{id}` — remove one.
 ///
+/// One entry can be filed against several missions and the delete removes it
+/// from all of them, so it needs `MISSION_WRITE` on **every** one — the same
+/// rule [`write`] applies on the way in. R-02 H5.
+///
 /// # Errors
 ///
-/// [`MartiError::NotFound`] when there is no such entry.
+/// [`MartiError::NotFound`] when there is no such entry, and
+/// [`MartiError::Forbidden`] without `MISSION_WRITE` on one of its missions.
 #[instrument("marti.missions.log_delete", skip_all)]
 pub async fn remove(ctx: MissionCtx, path: web::Path<String>) -> MartiResult {
     let id = path.into_inner();
+
+    let entry = ctx
+        .service
+        .log_entry(&id)
+        .await?
+        .ok_or_else(|| MartiError::NotFound(format!("Log entry {id}")))?;
+
+    require_on_all(&ctx, &entry.mission_names, Permission::Write).await?;
 
     if !ctx.service.delete_log(&id).await? {
         return Err(MartiError::NotFound(format!("Log entry {id}")));
@@ -131,13 +152,7 @@ pub async fn all(ctx: MissionCtx) -> MartiResult {
 /// [`MartiError::Forbidden`] without `MISSION_READ`.
 #[instrument("marti.missions.log_listing", skip_all)]
 pub async fn listing(ctx: MissionCtx, reference: MissionRef, query: CiQuery) -> MartiResult {
-    let mission = ctx.service.resolve(&reference).await?;
-    let role = ctx
-        .service
-        .role_for_request(&mission, &ctx.who, ctx.claims())
-        .await?;
-
-    require(role, Permission::Read)?;
+    let mission = allowed(&ctx, &reference, Permission::Read).await?;
 
     let window = TimeWindow::parse(
         query.parsed::<i64>("secago")?,
@@ -161,20 +176,7 @@ async fn write(ctx: &MissionCtx, id: &str, body: LogEntryJson) -> MartiResult {
     let mut missions: Vec<Mission> = Vec::new();
 
     for name in &body.mission_names {
-        let mission = ctx
-            .service
-            .by_name(name)
-            .await?
-            .filter(|mission| !mission.is_deleted())
-            .ok_or_else(|| MartiError::NotFound(format!("Mission {name}")))?;
-
-        let role = ctx
-            .service
-            .role_for_request(&mission, &ctx.who, ctx.claims())
-            .await?;
-
-        require(role, Permission::Write)?;
-        missions.push(mission);
+        missions.push(allowed(ctx, &MissionRef::parse(name)?, Permission::Write).await?);
     }
 
     let entry = ctx.service.write_log(id, &body, &missions).await?;
@@ -186,4 +188,49 @@ async fn write(ctx: &MissionCtx, id: &str, body: LogEntryJson) -> MartiResult {
     }
 
     Ok(response::created(kind::LOG_ENTRY, entry.to_json()))
+}
+
+/// Refuses unless the caller holds `permission` on at least one named mission.
+///
+/// A log entry belongs to every mission it names, and [`listing`] already shows
+/// it to anybody who can read any one of them — so reading it by id asks the
+/// same question rather than a stricter one.
+async fn require_on_any(
+    ctx: &MissionCtx,
+    names: &[String],
+    permission: Permission,
+) -> Result<(), MartiError> {
+    let mut refusal = MartiError::Forbidden(format!(
+        "{} is required on this mission",
+        permission.as_str()
+    ));
+
+    for name in names {
+        match allowed(ctx, &MissionRef::parse(name)?, permission).await {
+            Ok(_) => return Ok(()),
+            Err(err) => refusal = err,
+        }
+    }
+
+    Err(refusal)
+}
+
+/// Refuses unless the caller holds `permission` on every named mission.
+async fn require_on_all(
+    ctx: &MissionCtx,
+    names: &[String],
+    permission: Permission,
+) -> Result<(), MartiError> {
+    if names.is_empty() {
+        return Err(MartiError::Forbidden(format!(
+            "{} is required on this mission",
+            permission.as_str()
+        )));
+    }
+
+    for name in names {
+        allowed(ctx, &MissionRef::parse(name)?, permission).await?;
+    }
+
+    Ok(())
 }

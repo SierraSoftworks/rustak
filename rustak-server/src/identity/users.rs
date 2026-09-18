@@ -144,6 +144,21 @@ async fn refuse_takeover(
 /// access either way and taking the narrower of the two would silently ignore
 /// whichever one the operator actually configured.
 ///
+/// # The scope is a ceiling, not decoration
+///
+/// What the account *may* do and what the presented credential was *granted*
+/// are two different questions, and the answer is the narrower of them. The
+/// stored decision above answers the first; [`AuthMethod::Bearer`]'s `scope`
+/// answers the second, and is ANDed in. Without that, a token deliberately
+/// minted narrow — the password grant's, or one whose refresh family was capped
+/// when its holder was an ordinary user — still carried everything its account
+/// could do, and every "this scope is the ceiling" comment in the OAuth server
+/// described a control that did not exist (R-01 H1).
+///
+/// Only a bearer token carries a scope. A client certificate, HTTP Basic, a
+/// passkey assertion and the first-run token are not scoped grants, so they are
+/// bounded by the account alone.
+///
 /// # Errors
 ///
 /// A [`human_errors::Kind::System`] error if the channel read fails.
@@ -159,6 +174,7 @@ pub async fn principal(
         UserKind::Person => PrincipalKind::Person,
     };
 
+    let granted_admin = scope_grants_admin(&via);
     let mut principal =
         Principal::new(row.id, row.username.clone(), kind, via).with_groups(Arc::new(groups));
 
@@ -167,9 +183,22 @@ pub async fn principal(
     principal.is_admin = match row.admin_override {
         Some(decided) => decided,
         None => row.is_admin || acl_admin,
-    } && !row.disabled;
+    } && !row.disabled
+        && granted_admin;
 
     Ok(principal)
+}
+
+/// Whether the credential behind a request was granted administrative scope.
+///
+/// [`true`] for every credential that is not a scoped grant: the scope is a
+/// ceiling over what the account may do, and a credential that carries none
+/// lowers nothing.
+fn scope_grants_admin(via: &AuthMethod) -> bool {
+    match via {
+        AuthMethod::Bearer { scope, .. } => crate::auth::tokens::grants_admin(scope),
+        _ => true,
+    }
 }
 
 /// What `GET /api/v1/me` answers.
@@ -408,6 +437,96 @@ mod tests {
                 .await
                 .unwrap()
                 .is_admin
+        );
+    }
+
+    #[tokio::test]
+    async fn a_token_granted_no_administrative_scope_administers_nothing() {
+        // R-01 H1. The account may administer; the credential presented on this
+        // request was not granted it, and the narrower of the two is what the
+        // request is answered under.
+        let db = database().await;
+        let row = provision(&db, &oidc(), &identity("ada", "subject-1"), true, true)
+            .await
+            .unwrap();
+
+        let narrow = principal(
+            &db,
+            &row,
+            AuthMethod::Bearer {
+                jti: "a-token".to_string(),
+                scope: "api".to_string(),
+            },
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !narrow.is_admin,
+            "a token minted narrow must not carry everything its account may do",
+        );
+
+        let wide = principal(
+            &db,
+            &row,
+            AuthMethod::Bearer {
+                jti: "a-token".to_string(),
+                scope: "api admin".to_string(),
+            },
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert!(wide.is_admin);
+    }
+
+    #[tokio::test]
+    async fn a_scope_that_merely_starts_with_admin_is_not_the_admin_scope() {
+        let db = database().await;
+        let row = provision(&db, &oidc(), &identity("ada", "subject-1"), true, true)
+            .await
+            .unwrap();
+
+        let refused = principal(
+            &db,
+            &row,
+            AuthMethod::Bearer {
+                jti: "a-token".to_string(),
+                scope: "api administrator-readonly".to_string(),
+            },
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert!(!refused.is_admin);
+    }
+
+    #[tokio::test]
+    async fn a_credential_that_carries_no_scope_is_bounded_by_the_account_alone() {
+        // A client certificate, Basic and a passkey assertion are not scoped
+        // grants; treating their absent scope as "not admin" would lock the
+        // first-run wizard and every certificate-authenticated sidecar out.
+        let db = database().await;
+        let row = provision(&db, &oidc(), &identity("ada", "subject-1"), true, true)
+            .await
+            .unwrap();
+
+        assert!(
+            principal(
+                &db,
+                &row,
+                AuthMethod::ClientCert {
+                    fingerprint: "ab".to_string(),
+                    serial: "01".to_string(),
+                },
+                true,
+            )
+            .await
+            .unwrap()
+            .is_admin
         );
     }
 

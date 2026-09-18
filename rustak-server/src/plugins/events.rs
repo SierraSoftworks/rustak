@@ -49,6 +49,8 @@ use crate::prelude::*;
 use crate::stream::live::{ConnectionChange, ConnectionWatcher};
 use crate::stream::mission_notify::MissionNotice;
 
+use super::visibility::Audience;
+
 /// How many recent events are kept for `Last-Event-ID` to resume from.
 ///
 /// Also the broadcast channel's depth, so that "too far behind to resume" and
@@ -60,6 +62,21 @@ pub const RING: usize = 256;
 /// a file that has just arrived, which is the only one the feed reports.
 const UPLOADED: &str = "uploaded";
 
+/// One published event, with the rule that says who may be shown it.
+///
+/// The bus and the ring carry this rather than a bare [`ServerEvent`], so that
+/// the decision is made where the channel list is still in hand and every
+/// subscriber is filtered against the same recorded answer — including when it
+/// is replayed from the ring to a consumer resuming from `Last-Event-ID`.
+#[derive(Clone, Debug)]
+pub struct PublishedEvent {
+    /// What goes on the wire, unchanged.
+    pub event: ServerEvent,
+
+    /// Who may be shown it.
+    pub audience: Audience,
+}
+
 /// The bus every server event is published on.
 ///
 /// Cheap to clone — one [`Arc`] — and safe to hold: publishing into a bus with
@@ -70,9 +87,16 @@ pub struct ServerEvents {
 }
 
 struct Inner {
-    sender: broadcast::Sender<ServerEvent>,
+    sender: broadcast::Sender<Arc<PublishedEvent>>,
     next_id: AtomicU64,
-    recent: Mutex<VecDeque<ServerEvent>>,
+    /// Behind an [`Arc`] so that a resume or a lagged refill copies pointers
+    /// rather than up to 256 payloads while holding the lock every publisher —
+    /// including `Hub::announce`, on a connecting client's own task — waits on
+    /// (R-01 M12).
+    recent: Mutex<VecDeque<Arc<PublishedEvent>>>,
+    /// Accounts whose open feeds must re-authorize immediately, rather than
+    /// waiting for the next periodic check.
+    invalidated: broadcast::Sender<Username>,
 }
 
 impl Default for ServerEvents {
@@ -85,12 +109,14 @@ impl ServerEvents {
     /// A bus with nothing on it and nobody listening.
     pub fn new() -> Self {
         let (sender, _) = broadcast::channel(RING);
+        let (invalidated, _) = broadcast::channel(RING);
 
         Self {
             inner: Arc::new(Inner {
                 sender,
                 next_id: AtomicU64::new(0),
                 recent: Mutex::new(VecDeque::with_capacity(RING)),
+                invalidated,
             }),
         }
     }
@@ -102,8 +128,33 @@ impl ServerEvents {
     /// a replay from the ring.
     ///
     /// [`RecvError::Lagged`]: broadcast::error::RecvError::Lagged
-    pub fn subscribe(&self) -> broadcast::Receiver<ServerEvent> {
+    pub fn subscribe(&self) -> broadcast::Receiver<Arc<PublishedEvent>> {
         self.inner.sender.subscribe()
+    }
+
+    /// How many feeds are open right now.
+    ///
+    /// `web::api::events` caps them: a broadcast channel keeps one `RING`-slot
+    /// buffer per receiver, so unbounded subscribers is unbounded memory.
+    pub fn subscribers(&self) -> usize {
+        self.inner.sender.receiver_count()
+    }
+
+    /// Starts hearing about accounts whose open feeds must re-authorize.
+    ///
+    /// Disabling an account or revoking the token behind it has to take the
+    /// feed away *now* rather than at the next periodic check (R-01 H4/H5), and
+    /// the feed is an HTTP response rather than a registered connection, so
+    /// there is nothing for `LiveState` to close. This is how it is told.
+    pub fn invalidations(&self) -> broadcast::Receiver<Username> {
+        self.inner.invalidated.subscribe()
+    }
+
+    /// Tells every open feed belonging to `username` to re-authorize now.
+    ///
+    /// Never fails: no open feed is the ordinary case.
+    pub fn invalidate(&self, username: &Username) {
+        let _ = self.inner.invalidated.send(username.clone());
     }
 
     /// Everything still held that happened after `id`, oldest first.
@@ -112,13 +163,13 @@ impl ServerEvents {
     /// everything the ring holds, which is the honest answer to "I have been
     /// away too long": the consumer sees a gap in the ids and can re-read
     /// whatever it keeps state about.
-    pub fn since(&self, id: u64) -> Vec<ServerEvent> {
+    pub fn since(&self, id: u64) -> Vec<Arc<PublishedEvent>> {
         self.inner
             .recent
             .lock()
             .iter()
-            .filter(|event| event.id > id)
-            .cloned()
+            .filter(|published| published.event.id > id)
+            .map(Arc::clone)
             .collect()
     }
 
@@ -133,12 +184,15 @@ impl ServerEvents {
     /// Never fails: a bus with no subscribers is the ordinary case, and an event
     /// nobody was listening for is still worth keeping for the next consumer to
     /// resume over.
-    pub fn publish(&self, payload: ServerEventPayload) -> ServerEvent {
-        let event = ServerEvent {
-            id: self.inner.next_id.fetch_add(1, Ordering::Relaxed) + 1,
-            at: Utc::now(),
-            payload,
-        };
+    pub fn publish(&self, payload: ServerEventPayload, audience: Audience) -> ServerEvent {
+        let published = Arc::new(PublishedEvent {
+            event: ServerEvent {
+                id: self.inner.next_id.fetch_add(1, Ordering::Relaxed) + 1,
+                at: Utc::now(),
+                payload,
+            },
+            audience,
+        });
 
         {
             let mut recent = self.inner.recent.lock();
@@ -147,13 +201,13 @@ impl ServerEvents {
                 recent.pop_front();
             }
 
-            recent.push_back(event.clone());
+            recent.push_back(Arc::clone(&published));
         }
 
         // `Err` means nobody is subscribed, which is not a failure.
-        let _ = self.inner.sender.send(event.clone());
+        let _ = self.inner.sender.send(Arc::clone(&published));
 
-        event
+        published.event.clone()
     }
 
     /// Reports every connection that joins or leaves the CoT stream.
@@ -174,10 +228,25 @@ impl ServerEvents {
                 callsign: connection.callsign.clone(),
             };
 
-            events.publish(match change {
-                ConnectionChange::Joined(_) => ServerEventPayload::ClientConnected(client),
-                ConnectionChange::Left(_) => ServerEventPayload::ClientDisconnected(client),
-            });
+            // A connection is announced to the readers it could have reached
+            // over the stream itself, which is the rule `Hub::snapshot_for`
+            // applies to the client listing (R-01 H3). An incognito client is
+            // announced to administrators alone — they see it in
+            // `GET /api/v1/clients` too — because appearing unasked is exactly
+            // what going incognito is a refusal of (R-01 M14).
+            let audience = if connection.incognito {
+                Audience::Administrators
+            } else {
+                Audience::Reachable(Arc::clone(&connection.groups))
+            };
+
+            events.publish(
+                match change {
+                    ConnectionChange::Joined(_) => ServerEventPayload::ClientConnected(client),
+                    ConnectionChange::Left(_) => ServerEventPayload::ClientDisconnected(client),
+                },
+                audience,
+            );
         }));
     }
 
@@ -192,19 +261,42 @@ impl ServerEvents {
     pub fn mission_changed(&self, notice: &MissionNotice) {
         let mission = notice.mission();
 
-        self.publish(ServerEventPayload::MissionChanged(MissionEvent {
-            name: mission.name.clone(),
-            guid: Some(mission.guid.clone()),
-            change: change_type(notice).to_string(),
-            author_uid: notice.author_uid().map(ToOwned::to_owned),
-        }));
+        // The same rule the mission listing applies, and the same one the CoT
+        // stream's own broadcast arm applies: a caller who may receive from one
+        // of the mission's channels may know it changed, and nobody else may
+        // (R-01 H3). An empty list is `__ANON__`, which is what makes a mission
+        // nobody scoped visible to the installation rather than to nobody.
+        let audience = Audience::Channels(
+            mission
+                .groups
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<String>>(),
+        );
+
+        self.publish(
+            ServerEventPayload::MissionChanged(MissionEvent {
+                name: mission.name.clone(),
+                guid: Some(mission.guid.clone()),
+                change: change_type(notice).to_string(),
+                author_uid: notice.author_uid().map(ToOwned::to_owned),
+            }),
+            audience,
+        );
     }
 
     /// `channel.changed`: an account's channels were re-evaluated.
     pub fn channel_changed(&self, username: &Username) {
-        self.publish(ServerEventPayload::ChannelChanged(ChannelEvent {
-            username: username.to_string(),
-        }));
+        // Whose channels changed is a fact about one account. An administrator
+        // watching the installation needs it; another tenant's sidecar does not,
+        // and the account itself does, so that a sidecar re-reads its own
+        // memberships after an operator edits them.
+        self.publish(
+            ServerEventPayload::ChannelChanged(ChannelEvent {
+                username: username.to_string(),
+            }),
+            Audience::Account(username.clone()),
+        );
     }
 
     /// `package.uploaded`, for the one file audit action that is an arrival.
@@ -218,24 +310,60 @@ impl ServerEvents {
             return;
         }
 
-        self.publish(ServerEventPayload::PackageUploaded(PackageEvent {
-            uid: resource.uid.clone(),
-            name: resource.name.clone(),
-            hash: resource.hash.clone(),
-            size: resource.size,
-            mission_package: resource.is_mission_package,
-            submitter: resource.submitter.clone(),
-        }));
+        // The hash is the download handle for `GET /Marti/sync/content?hash=`,
+        // so this event is at least as sensitive as the package itself and is
+        // filtered by exactly the rule `packages::readable` applies (R-01 H3).
+        self.publish(
+            ServerEventPayload::PackageUploaded(PackageEvent {
+                uid: resource.uid.clone(),
+                name: resource.name.clone(),
+                hash: resource.hash.clone(),
+                size: resource.size,
+                mission_package: resource.is_mission_package,
+                submitter: resource.submitter.clone(),
+            }),
+            Audience::Channels(resource.groups.clone()),
+        );
     }
 
     /// `service.status`: a registered service said how it is doing.
     pub fn service_status(&self, name: &ServiceName, state: ServiceState, message: Option<&str>) {
-        self.publish(ServerEventPayload::ServiceStatus(ServiceEvent {
-            name: name.clone(),
-            state,
-            message: message.map(ToOwned::to_owned),
-        }));
+        // `GET /api/v1/services` is administrative precisely so that one
+        // sidecar cannot enumerate the fleet (R-01 M16); the feed must not be
+        // the way around it. A service still hears about itself.
+        self.publish(
+            ServerEventPayload::ServiceStatus(ServiceEvent {
+                name: name.clone(),
+                state,
+                message: message.map(|said| bounded(said).to_string()),
+            }),
+            Audience::Service(name.clone()),
+        );
     }
+}
+
+/// How much of a service's own status message is carried on the bus.
+///
+/// `Heartbeat.message` has no length bound of its own and the control API is
+/// deliberately unrate-limited, so a ring of 256 events was a quarter of a
+/// gigabyte one service token could pin (R-01 M12). The events are behind an
+/// [`Arc`] now, so each one is resident once rather than twice — and a sidecar
+/// reporting why it is unhealthy still has nothing useful to say past this.
+const MESSAGE_LIMIT: usize = 512;
+
+/// `message`, truncated at [`MESSAGE_LIMIT`] on a character boundary.
+fn bounded(message: &str) -> &str {
+    if message.len() <= MESSAGE_LIMIT {
+        return message;
+    }
+
+    let mut end = MESSAGE_LIMIT;
+
+    while end > 0 && !message.is_char_boundary(end) {
+        end -= 1;
+    }
+
+    &message[..end]
 }
 
 /// The CoT type the stream would carry for this notice.
@@ -269,9 +397,12 @@ mod tests {
     use super::*;
 
     fn channel(events: &ServerEvents, username: &str) -> ServerEvent {
-        events.publish(ServerEventPayload::ChannelChanged(ChannelEvent {
-            username: username.to_string(),
-        }))
+        events.publish(
+            ServerEventPayload::ChannelChanged(ChannelEvent {
+                username: username.to_string(),
+            }),
+            Audience::Everyone,
+        )
     }
 
     #[test]
@@ -296,8 +427,11 @@ mod tests {
 
         let received = receiver.recv().await.unwrap();
 
-        assert_eq!(received.name(), "channel.changed");
-        assert_eq!(received.id, 2, "the id is the bus's, not the receiver's");
+        assert_eq!(received.event.name(), "channel.changed");
+        assert_eq!(
+            received.event.id, 2,
+            "the id is the bus's, not the receiver's"
+        );
     }
 
     #[test]
@@ -322,8 +456,8 @@ mod tests {
         let resumed = events.since(1);
 
         assert_eq!(resumed.len(), 2);
-        assert_eq!(resumed[0].id, 2);
-        assert_eq!(resumed[1].id, 3);
+        assert_eq!(resumed[0].event.id, 2);
+        assert_eq!(resumed[1].event.id, 3);
         assert!(events.since(3).is_empty());
     }
 
@@ -338,7 +472,7 @@ mod tests {
 
         assert_eq!(everything.len(), RING);
         assert_eq!(
-            everything[0].id, 11,
+            everything[0].event.id, 11,
             "the oldest ten were dropped, and the id says so"
         );
     }
@@ -359,7 +493,7 @@ mod tests {
         let published = events.since(0);
 
         assert_eq!(published.len(), 1);
-        assert_eq!(published[0].name(), "package.uploaded");
+        assert_eq!(published[0].event.name(), "package.uploaded");
     }
 
     #[test]
@@ -374,11 +508,34 @@ mod tests {
 
         let published = events.since(0);
         assert_eq!(published.len(), 1);
-        assert_eq!(published[0].name(), "service.status");
+        assert_eq!(published[0].event.name(), "service.status");
         assert!(
             format!("{:?}", published[0]).contains("Degraded"),
             "{:?}",
             published[0]
+        );
+    }
+
+    #[test]
+    fn a_services_own_words_are_bounded_before_they_reach_the_ring() {
+        // R-01 M12. The message is a sidecar's, has no length of its own, and
+        // is kept for 256 events.
+        let events = ServerEvents::new();
+        let said = "é".repeat(MESSAGE_LIMIT);
+
+        events.service_status(
+            &ServiceName::parse("weather").unwrap(),
+            ServiceState::Degraded,
+            Some(&said),
+        );
+
+        let published = events.since(0);
+        let rendered = serde_json::to_string(&published[0].event).unwrap();
+
+        assert!(rendered.len() < said.len(), "{}", rendered.len());
+        assert!(
+            rendered.contains('é'),
+            "truncating on a character boundary keeps it readable",
         );
     }
 

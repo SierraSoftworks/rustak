@@ -128,12 +128,16 @@ mod tests {
 
     async fn identity_for(server: &TestServer, username: &str, is_admin: bool) -> Identity {
         let user = server.user(username, is_admin).await;
+        // The scope a session for this account would actually be issued with:
+        // `users::principal` treats it as a ceiling, so a helper that always
+        // said `api` would silently make every administrator an ordinary user.
+        let scope = crate::auth::tokens::scope_for(is_admin);
         let principal = crate::identity::users::principal(
             server.db(),
             &user,
             rustak_core::identity::AuthMethod::Bearer {
                 jti: "a-token".to_string(),
-                scope: "api".to_string(),
+                scope: scope.clone(),
             },
             false,
         )
@@ -151,7 +155,7 @@ mod tests {
                 nbf: 0,
                 exp: 0,
                 jti: "a-token".to_string(),
-                scope: "api".to_string(),
+                scope,
                 dev: None,
             }),
         }

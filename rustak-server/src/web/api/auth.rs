@@ -137,8 +137,9 @@ async fn sign_in(
 
     // The nonce is `None` here because the browser runs the authorization
     // request itself and binds the flow with proof key for code exchange
-    // instead. The server-driven `/login/*` flow TAK clients use issues one,
-    // and passes it here, when it arrives in M2.
+    // instead. The server-driven `/login/*` flow TAK clients use does issue
+    // one, and checks it in `oauth_server::login` against the `PendingAuth` it
+    // recorded — a nonce this endpoint has nothing to compare against.
     let claims = oidc::validate_token(context, provider, &tokens_from_provider.id_token, None)
         .await
         .map_err(|err| ApiError::from_human(&err))?;

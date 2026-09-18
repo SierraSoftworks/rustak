@@ -230,22 +230,29 @@ impl RevocationCache {
         )
     }
 
-    /// A read that treats a poisoned lock as "not in the set".
+    /// A read that keeps working through a poisoned lock.
     ///
-    /// A poisoned lock means a thread panicked while holding it, which cannot
-    /// leave a *missing* entry — only a half-written one — so the safe reading
-    /// for the `known` set is "we have no record", which refuses, and for the
-    /// `revoked` set the reload that follows any such panic restores it.
+    /// Nothing panics under this lock, so a poisoned one is a state that should
+    /// not arise — but the previous reading of it was fail-**open** for the one
+    /// set where that matters: "not in the set" refuses correctly for `known`
+    /// and *accepts a revoked certificate* for `revoked`, and the comment
+    /// claiming a later reload would restore it could not be true, because the
+    /// reload's write is itself `if let Ok(..)` and a poisoned lock stays
+    /// poisoned for the life of the process (R-01 L6).
+    ///
+    /// So the poison is stepped over instead, exactly as
+    /// [`RateLimiter::lock`](crate::auth::RateLimiter) already does: the data
+    /// behind it is a `HashSet<String>` that no panic can leave half-written,
+    /// and reading it is strictly better than pretending it is empty.
     fn contains(&self, set: &RwLock<HashSet<String>>, fingerprint: &str) -> bool {
         set.read()
-            .map(|set| set.contains(fingerprint))
-            .unwrap_or(false)
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(fingerprint)
     }
 
     fn replace(&self, set: &RwLock<HashSet<String>>, values: Vec<String>) {
-        if let Ok(mut held) = set.write() {
-            *held = values.into_iter().collect();
-        }
+        *set.write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = values.into_iter().collect();
     }
 }
 

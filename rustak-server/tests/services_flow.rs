@@ -229,7 +229,18 @@ async fn until(what: &str, mut check: impl AsyncFnMut() -> bool) {
 
 #[actix_web::test]
 async fn a_sidecar_enrols_connects_registers_reports_and_hears_what_the_server_saw() {
-    let harness = Harness::start().await;
+    // `anon_group_default` on, which is the shipped default and is what the
+    // step-5 assertion below depends on. The feed is filtered by channel
+    // reachability — the rule `Hub::snapshot_for` applies to the client
+    // listing, so that a service account with no memberships is not handed
+    // every device in the installation (R-01 H3) — and this harness otherwise
+    // turns the default channel off, which would leave two accounts holding
+    // nothing at all unable to see each other here exactly as they would be
+    // unable to see each other on the stream.
+    let harness = Harness::start_with(|config| {
+        config.auth.anon_group_default = true;
+    })
+    .await;
     // The registry the server-event feed watches: the runtime installs this when
     // the listener binds, and this harness only does so for its mission variant.
     let _ = harness.context.install_live(Arc::new(harness.live.clone()));

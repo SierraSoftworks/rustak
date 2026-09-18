@@ -539,12 +539,27 @@ mod federation {
 
     /// The `state` cookie a `Set-Cookie` header carries.
     fn state_of(cookies: &[String]) -> String {
+        value_of(cookies, "state=").expect("the sign-in sets a state cookie")
+    }
+
+    /// The `__Host-` binding cookie a `Set-Cookie` header carries (R-01 M7).
+    fn binding_of(cookies: &[String]) -> String {
+        value_of(cookies, "__Host-rustak_login=")
+            .expect("the sign-in sets a __Host- binding cookie")
+    }
+
+    /// One `Set-Cookie` value, by name.
+    fn value_of(cookies: &[String], prefix: &str) -> Option<String> {
         cookies
             .iter()
-            .find_map(|cookie| cookie.strip_prefix("state="))
+            .find_map(|cookie| cookie.strip_prefix(prefix))
             .and_then(|rest| rest.split(';').next())
-            .expect("the sign-in sets a state cookie")
-            .to_string()
+            .map(str::to_string)
+    }
+
+    /// The `Cookie` header a browser holding both sign-in cookies would send.
+    fn browser_cookies(state: &str, binding: &str) -> String {
+        format!("state={state}; __Host-rustak_login={binding}")
     }
 
     /// Drives `/login/auth` and the provider, returning the callback query and
@@ -592,6 +607,7 @@ mod federation {
             (
                 format!("/login/redirect?{}", query.query().unwrap_or_default()),
                 state,
+                binding_of(&set),
             )
         }};
     }
@@ -610,13 +626,13 @@ mod federation {
         let server = server_with(Some(&provider)).await;
         let app = test::init_service(App::new().configure(server.app())).await;
 
-        let (callback, state) = through_the_provider!(&app, "/login/auth");
+        let (callback, state, binding) = through_the_provider!(&app, "/login/auth");
 
         let response = test::call_service(
             &app,
             test::TestRequest::get()
                 .uri(&callback)
-                .insert_header(("cookie", format!("state={state}")))
+                .insert_header(("cookie", browser_cookies(&state, &binding)))
                 .to_request(),
         )
         .await;
@@ -664,12 +680,17 @@ mod federation {
         let server = server_with(Some(&provider)).await;
         let app = test::init_service(App::new().configure(server.app())).await;
 
-        let (callback, state) = through_the_provider!(&app, "/login/auth");
+        let (callback, state, binding) = through_the_provider!(&app, "/login/auth");
 
         for cookie in [
             String::new(),
             "state=a-state-from-another-browser".to_string(),
             format!("state={state}x"),
+            // R-01 M7: the right `state` and no `__Host-` binding, which is
+            // exactly what a sibling origin that fixated the flow can produce.
+            format!("state={state}"),
+            browser_cookies(&state, "somebody-elses-binding"),
+            format!("__Host-rustak_login={binding}"),
         ] {
             let mut request = test::TestRequest::get().uri(&callback);
 
@@ -692,11 +713,11 @@ mod federation {
         let server = server_with(Some(&provider)).await;
         let app = test::init_service(App::new().configure(server.app())).await;
 
-        let (callback, state) = through_the_provider!(&app, "/login/auth");
+        let (callback, state, binding) = through_the_provider!(&app, "/login/auth");
         let request = || {
             test::TestRequest::get()
                 .uri(&callback)
-                .insert_header(("cookie", format!("state={state}")))
+                .insert_header(("cookie", browser_cookies(&state, &binding)))
                 .to_request()
         };
 
@@ -721,8 +742,8 @@ mod federation {
         let server = server_with(Some(&provider)).await;
         let app = test::init_service(App::new().configure(server.app())).await;
 
-        let (first, first_state) = through_the_provider!(&app, "/login/auth");
-        let (second, _) = through_the_provider!(&app, "/login/auth");
+        let (first, first_state, first_binding) = through_the_provider!(&app, "/login/auth");
+        let (second, _, _) = through_the_provider!(&app, "/login/auth");
 
         // The second flow's code, presented against the first flow's state and
         // cookie: the `state` check passes and the nonce check does not.
@@ -740,7 +761,7 @@ mod federation {
             &app,
             test::TestRequest::get()
                 .uri(&tampered)
-                .insert_header(("cookie", format!("state={first_state}")))
+                .insert_header(("cookie", browser_cookies(&first_state, &first_binding)))
                 .to_request(),
         )
         .await;
@@ -757,13 +778,14 @@ mod federation {
         let server = server_with(Some(&provider)).await;
         let app = test::init_service(App::new().configure(server.app())).await;
 
-        let (callback, state) = through_the_provider!(&app, &authorize_uri(CHALLENGE, REDIRECT));
+        let (callback, state, binding) =
+            through_the_provider!(&app, &authorize_uri(CHALLENGE, REDIRECT));
 
         let response = test::call_service(
             &app,
             test::TestRequest::get()
                 .uri(&callback)
-                .insert_header(("cookie", format!("state={state}")))
+                .insert_header(("cookie", browser_cookies(&state, &binding)))
                 .to_request(),
         )
         .await;
@@ -886,6 +908,103 @@ mod cookie_scope {
     }
 
     #[actix_web::test]
+    async fn a_session_cookie_never_reaches_a_marti_path_that_deletes() {
+        // R-01 M2. `SameSite=Lax` does attach the cookie to a cross-site
+        // top-level navigation, and `GET /Marti/sync/delete?PrimaryKey=1,2,…`
+        // takes a comma-separated list — so one link opened by a signed-in
+        // operator emptied enterprise sync. The verbs stay TAK-compatible;
+        // deleting just needs a credential a browser does not attach by itself.
+        let server = server_with(None).await;
+        let (_, session) = server.signed_in("ada", true).await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let stored: serde_json::Value = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::post()
+                .uri("/Marti/sync/upload?name=notes.txt")
+                .insert_header(("authorization", format!("Bearer {}", session.token)))
+                .insert_header(("content-type", "text/plain"))
+                .set_payload("do not delete me")
+                .to_request(),
+        )
+        .await;
+        let hash = stored["Hash"].as_str().expect("an upload").to_string();
+        let survives = || {
+            test::TestRequest::get()
+                .uri(&format!("/Marti/sync/content?hash={hash}"))
+                .insert_header(("authorization", format!("Bearer {}", session.token)))
+                .to_request()
+        };
+
+        // The link an attacker's page would open in the operator's browser.
+        let linked = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!("/Marti/sync/delete?hash={hash}"))
+                .insert_header(("cookie", format!("access_token_0={}", session.token)))
+                .to_request(),
+        )
+        .await;
+
+        assert_ne!(linked.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            test::call_service(&app, survives()).await.status(),
+            StatusCode::OK,
+            "an ambient cookie must not be able to delete anything",
+        );
+
+        // The same request with an explicit header is still served: ATAK and
+        // CloudTAK both send one, so nothing in `compat/` regresses.
+        let allowed = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!("/Marti/sync/delete?hash={hash}"))
+                .insert_header(("authorization", format!("Bearer {}", session.token)))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(allowed.status(), StatusCode::OK);
+        assert_eq!(
+            test::call_service(&app, survives()).await.status(),
+            StatusCode::NOT_FOUND,
+            "the TAK-compatible verb still works with a credential a browser does not attach",
+        );
+    }
+
+    #[actix_web::test]
+    async fn a_cross_site_logout_link_does_not_end_the_accounts_other_sessions() {
+        // The related, lower-impact half of M2: `GET /logout` is a top-level
+        // navigation any site can link to, so it ends the session that was
+        // presented and leaves the account's other devices alone. `POST` — same
+        // site by construction — still signs out everywhere.
+        let server = server_with(None).await;
+        let (_, first) = server.signed_in("ada", false).await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let response = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/logout")
+                .insert_header(("cookie", format!("access_token_0={}", first.token)))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(
+            rustak_server::auth::tokens::rotate(
+                &server.context,
+                &first.refresh_token.clone().unwrap(),
+                None,
+            )
+            .await
+            .is_ok(),
+            "a link must not be able to end every session an account holds",
+        );
+    }
+
+    #[actix_web::test]
     async fn a_cookie_that_is_not_one_of_our_tokens_establishes_nobody() {
         let server = server_with(None).await;
         let app = test::init_service(App::new().configure(server.app())).await;
@@ -946,6 +1065,193 @@ mod cookie_scope {
             body,
             serde_json::json!(false),
             "the token has to stop working, not just leave the browser",
+        );
+    }
+}
+
+/// The scope claim as a ceiling, and the credential `/oauth/authorize` accepts.
+///
+/// R-01 H1 and H2. Both were live: a token deliberately minted narrow carried
+/// everything its account could do, and two extra requests turned a
+/// password-grant access token into a 30-day administrative refresh family.
+mod scope_ceiling {
+    use super::*;
+
+    /// Signs `ada` in as an administrator and mints a token for her whose only
+    /// granted scope is `api` — what the password grant issues.
+    async fn narrow_token_for_an_administrator(server: &TestServer) -> String {
+        let user = server.user("ada", true).await;
+
+        server
+            .jwt()
+            .unwrap()
+            .issue(&user.username, "api", None, None)
+            .unwrap()
+            .0
+    }
+
+    #[actix_web::test]
+    async fn a_token_without_the_admin_scope_is_refused_by_the_admin_api() {
+        let server = server_with(None).await;
+        let token = narrow_token_for_an_administrator(&server).await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        for path in ["/api/v1/users", "/api/v1/clients", "/api/v1/services"] {
+            let response = test::call_service(
+                &app,
+                test::TestRequest::get()
+                    .uri(path)
+                    .insert_header(("authorization", format!("Bearer {token}")))
+                    .to_request(),
+            )
+            .await;
+
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "{path} answered a token that was never granted the admin scope",
+            );
+        }
+    }
+
+    #[actix_web::test]
+    async fn the_same_account_still_administers_with_a_token_that_was_granted_it() {
+        // The other half of the assertion above: the refusal has to come from
+        // the scope rather than from something else going wrong.
+        let server = server_with(None).await;
+        let (_, session) = server.signed_in("grace", true).await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let response = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/v1/users")
+                .insert_header(("authorization", format!("Bearer {}", session.token)))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[actix_web::test]
+    async fn a_bearer_header_mints_no_authorization_code() {
+        // R-01 H2. An authorization code is exchanged for a session with a
+        // refresh family that outlives the credential that asked for it; only a
+        // browser session — a cookie — has anything to upgrade.
+        let server = server_with(None).await;
+        let (_, session) = server.signed_in("ada", true).await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let response = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&authorize_uri(CHALLENGE, REDIRECT))
+                .insert_header(("authorization", format!("Bearer {}", session.token)))
+                .to_request(),
+        )
+        .await;
+
+        let location = location(&response);
+
+        assert!(
+            param(&location, "code").is_none(),
+            "a header-authenticated caller was handed a code: {location}",
+        );
+        assert_eq!(
+            param(&location, "error").as_deref(),
+            Some("access_denied"),
+            "{location}",
+        );
+    }
+
+    #[actix_web::test]
+    async fn the_same_session_as_a_cookie_still_mints_one() {
+        let server = server_with(None).await;
+        let (_, session) = server.signed_in("ada", true).await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let response = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&authorize_uri(CHALLENGE, REDIRECT))
+                .insert_header(("cookie", format!("access_token_0={}", session.token)))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert!(param(&location(&response), "code").is_some());
+    }
+
+    #[actix_web::test]
+    async fn a_code_minted_for_an_ordinary_session_stays_ordinary() {
+        // The ceiling recorded on the code, which M6 used to let the first
+        // refresh widen back to `api admin`.
+        let server = server_with(None).await;
+        let user = server.user("ada", true).await;
+        let token = server
+            .jwt()
+            .unwrap()
+            .issue(&user.username, "api", None, None)
+            .unwrap()
+            .0;
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let response = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&authorize_uri(CHALLENGE, REDIRECT))
+                .insert_header(("cookie", format!("access_token_0={token}")))
+                .to_request(),
+        )
+        .await;
+
+        let code = param(&location(&response), "code").expect("a code for a signed-in browser");
+
+        let granted: serde_json::Value = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::post()
+                .uri("/oauth/token")
+                .insert_header(("content-type", "application/x-www-form-urlencoded"))
+                .set_payload(token_form(&[
+                    ("grant_type", "authorization_code"),
+                    ("code", &code),
+                    ("client_id", CLIENT),
+                    ("redirect_uri", REDIRECT),
+                    ("code_verifier", VERIFIER),
+                ]))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(granted["scope"], "api", "{granted}");
+
+        let renewed: serde_json::Value = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::post()
+                .uri("/oauth/token")
+                .insert_header(("content-type", "application/x-www-form-urlencoded"))
+                .set_payload(token_form(&[
+                    ("grant_type", "refresh_token"),
+                    (
+                        "refresh_token",
+                        granted["refresh_token"].as_str().expect("a refresh token"),
+                    ),
+                ]))
+                .to_request(),
+        )
+        .await;
+
+        let claims = server
+            .jwt()
+            .unwrap()
+            .verify(renewed["access_token"].as_str().expect("a token"))
+            .unwrap();
+
+        assert_eq!(
+            claims.scope, "api",
+            "a refresh must not widen the scope its family was capped at",
         );
     }
 }

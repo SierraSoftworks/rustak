@@ -287,6 +287,60 @@ impl<'a> CredentialsRepo<'a> {
             .await
     }
 
+    /// Claims a one-time credential: counts the use **and** spends it, in one
+    /// conditional write, reporting whether this caller is the one that got it.
+    ///
+    /// The consumption *is* the gate. Checking usability in one read and
+    /// spending it in a later write let two concurrent `signClient/v2` posts
+    /// with the same enrolment token both pass and both receive a certificate
+    /// (R-01 M3) — the window being one argon2 verification plus a signature.
+    /// Here the `WHERE` clause does the checking, so exactly one caller changes
+    /// a row.
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::System`] error if the write fails.
+    pub async fn claim_single_use(&self, id: CredentialId) -> Result<bool, Error> {
+        let claimed = self
+            .db
+            .write(move |tx| {
+                let now = Timestamp::now();
+
+                tx.execute(
+                    "UPDATE credentials                      SET uses = uses + 1, last_used_at = ?2, revoked_at = ?2                      WHERE id = ?1 AND revoked_at IS NULL                        AND (max_uses IS NULL OR uses < max_uses)",
+                    rusqlite::params![id.get(), now],
+                )
+            })
+            .await?;
+
+        Ok(claimed > 0)
+    }
+
+    /// Puts back a claim whose issuance then failed.
+    ///
+    /// The compensating half of [`claim_single_use`](Self::claim_single_use):
+    /// a token spent for a certificate that was never signed is one somebody
+    /// cannot enrol with and cannot get back. Conditional on the row still
+    /// being in the state the claim left it, so a release racing anything else
+    /// changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::System`] error if the write fails.
+    pub async fn release_single_use(&self, id: CredentialId) -> Result<bool, Error> {
+        let released = self
+            .db
+            .write(move |tx| {
+                tx.execute(
+                    "UPDATE credentials SET uses = uses - 1, revoked_at = NULL                      WHERE id = ?1 AND revoked_at IS NOT NULL AND uses > 0",
+                    rusqlite::params![id.get()],
+                )
+            })
+            .await?;
+
+        Ok(released > 0)
+    }
+
     /// Revokes a credential, reporting whether it was live.
     ///
     /// # Errors

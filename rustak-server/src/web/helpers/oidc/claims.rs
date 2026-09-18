@@ -65,11 +65,22 @@ pub fn identity_from_claims(
     // `sub` is the last resort rather than the default: it is usually an opaque
     // identifier, and an account name is something people have to recognise,
     // type into a client and see in the audit log.
+    //
+    // The fall-through applies **only** while `username_claim` is at its
+    // default. An operator who deliberately pointed it at a verified, immutable
+    // claim — `email`, `upn`, `oid` — got a silent downgrade to
+    // `preferred_username` for any principal whose chosen claim was absent, and
+    // at Entra ID, Keycloak and others that claim is self-service editable: a
+    // way to steer yourself onto a name an ACL is written over (R-01 M15). A
+    // configured claim that is missing is a refusal.
     let claim = &oidc.username_claim;
-    let raw = string_claim(claims, claim)
-        .or_else(|| string_claim(claims, FALLBACK_USERNAME_CLAIM))
-        .or_else(|| string_claim(claims, "sub"))
-        .ok_or_else(|| missing_username(claim))?;
+    let raw = match string_claim(claims, claim) {
+        Some(name) => name,
+        None if claim == FALLBACK_USERNAME_CLAIM => {
+            string_claim(claims, "sub").ok_or_else(|| missing_username(claim))?
+        }
+        None => return Err(missing_username(claim)),
+    };
 
     let username = Username::parse(&raw).map_err(|err| {
         human_errors::user(
@@ -197,20 +208,40 @@ mod tests {
     }
 
     #[test]
-    fn a_configured_claim_that_is_absent_falls_back_before_it_fails() {
+    fn a_configured_claim_that_is_absent_is_a_refusal_rather_than_a_downgrade() {
+        // R-01 M15. An operator who points `username_claim` at a verified,
+        // immutable claim must not be silently downgraded to
+        // `preferred_username`, which is self-service editable at Entra ID and
+        // Keycloak — and is therefore a way to steer yourself onto whatever
+        // name `user_acl`/`admin_acl` is written over.
         let oidc = OidcConfig {
             username_claim: "upn".to_string(),
             ..oidc()
         };
 
-        let identity = identity_from_claims(
+        let refused = identity_from_claims(
             &oidc,
             "https://id.example.com",
             &claims(serde_json::json!({ "sub": "s", "preferred_username": "ada" })),
         )
+        .unwrap_err();
+
+        assert!(refused.is(human_errors::Kind::User), "{refused:?}");
+        assert!(refused.description().contains("upn"), "{refused}");
+    }
+
+    #[test]
+    fn the_default_claim_still_falls_through_to_the_subject() {
+        // The fall-through is what makes a provider that sends only `sub`
+        // usable at all, and nobody configured anything narrower here.
+        let identity = identity_from_claims(
+            &oidc(),
+            "https://id.example.com",
+            &claims(serde_json::json!({ "sub": "opaque-subject" })),
+        )
         .unwrap();
 
-        assert_eq!(identity.username.as_str(), "ada");
+        assert_eq!(identity.username.as_str(), "opaque-subject");
     }
 
     #[test]

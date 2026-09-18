@@ -194,6 +194,26 @@ impl<'a> ServicesRepo<'a> {
             .await
     }
 
+    /// The registration an account holds, if it holds one.
+    ///
+    /// `idx_services_user` is UNIQUE on `user_id`, so there is at most one.
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::System`] error if the read fails.
+    pub async fn get_by_user(&self, user_id: UserId) -> Result<Option<ServiceRow>, Error> {
+        self.db
+            .read(move |c| {
+                c.query_one(
+                    &format!("SELECT {COLUMNS} FROM services WHERE user_id = ?1"),
+                    [user_id.get()],
+                    ServiceRow::from_row,
+                )
+                .optional()
+            })
+            .await
+    }
+
     /// Every registered service, by name.
     ///
     /// # Errors

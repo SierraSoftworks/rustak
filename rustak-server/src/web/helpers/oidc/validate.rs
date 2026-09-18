@@ -70,6 +70,26 @@ fn needs_jwks_refresh(keys: &jsonwebtoken::jwk::JwkSet, token: &str) -> bool {
     }
 }
 
+/// The signature algorithms an ID token may be signed with.
+///
+/// An allow-list rather than a deny-list. Refusing HS256/384/512 and then
+/// building `Validation::new(header.alg)` left the token choosing from every
+/// other algorithm `jsonwebtoken` supports, which is the shape of the classic
+/// algorithm-confusion bug even where this particular instance of it is closed
+/// by `DecodingKey::from_jwk` carrying a key family (R-01 L9). `auth::jwt` gets
+/// this right twice for our own tokens and this now matches it.
+const ACCEPTED_ALGORITHMS: &[jsonwebtoken::Algorithm] = &[
+    jsonwebtoken::Algorithm::RS256,
+    jsonwebtoken::Algorithm::RS384,
+    jsonwebtoken::Algorithm::RS512,
+    jsonwebtoken::Algorithm::PS256,
+    jsonwebtoken::Algorithm::PS384,
+    jsonwebtoken::Algorithm::PS512,
+    jsonwebtoken::Algorithm::ES256,
+    jsonwebtoken::Algorithm::ES384,
+    jsonwebtoken::Algorithm::EdDSA,
+];
+
 /// The part of validation that fetches nothing, so it can be tested on its own.
 fn verify_token(
     client_id: &str,
@@ -82,18 +102,13 @@ fn verify_token(
         ADVICE_SIGN_IN,
     )?;
 
-    if matches!(
-        header.alg,
-        jsonwebtoken::Algorithm::HS256
-            | jsonwebtoken::Algorithm::HS384
-            | jsonwebtoken::Algorithm::HS512
-    ) {
-        warn!(algorithm = ?header.alg, "Refused an ID token signed with a symmetric algorithm.");
+    if !ACCEPTED_ALGORITHMS.contains(&header.alg) {
+        warn!(algorithm = ?header.alg, "Refused an ID token signed with an algorithm we do not accept.");
 
         return Err(human_errors::user(
             "Your identity provider's token was signed with an algorithm we do not accept.",
             &[
-                "An identity provider must sign its ID tokens with an asymmetric algorithm, such as RS256.",
+                "An identity provider must sign its ID tokens with one of RS256/384/512, PS256/384/512, ES256/384 or EdDSA.",
             ],
         ));
     }
@@ -134,7 +149,44 @@ fn verify_token(
         ADVICE_SIGN_IN,
     )?;
 
+    require_authorized_party(&data.claims, client_id)?;
+
     Ok(data.claims)
+}
+
+/// OIDC Core §3.1.3.7 steps 4 and 5: a multi-audience token needs `azp`.
+///
+/// `jsonwebtoken`'s `set_audience` is satisfied when `aud` merely *contains* our
+/// client id, so a token minted for another client at the same provider that
+/// happened to request our audience was accepted (R-01 L8). A single-audience
+/// token needs no `azp`; one with several must name us as the authorized party.
+fn require_authorized_party(
+    claims: &serde_json::Map<String, serde_json::Value>,
+    client_id: &str,
+) -> Result<(), Error> {
+    let several = claims
+        .get("aud")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|audiences| audiences.len() > 1);
+
+    if !several {
+        return Ok(());
+    }
+
+    match claims.get("azp").and_then(serde_json::Value::as_str) {
+        Some(azp) if azp == client_id => Ok(()),
+        azp => {
+            warn!(
+                authorized_party = ?azp,
+                "Refused an ID token issued for several audiences without naming us as the authorized party.",
+            );
+
+            Err(human_errors::user(
+                "Your identity provider's token was issued for a different application.",
+                ADVICE_SIGN_IN,
+            ))
+        }
+    }
 }
 
 /// Binds an ID token to the flow that asked for it.

@@ -81,6 +81,23 @@ pub trait KeyValueStore {
         key: impl Into<Cow<'static, str>> + Send,
     ) -> Result<(), Error>;
 
+    /// Reads a value **and** deletes it, in one write transaction.
+    ///
+    /// This is what a one-shot token needs and what a `get` followed by a
+    /// `remove` is not: reads are served from a pool while writes go through a
+    /// single writer, so two concurrent claims of the same handle both saw the
+    /// row before either delete landed and both proceeded (R-01 M13). Exactly
+    /// one caller gets [`Some`]; every other gets [`None`].
+    ///
+    /// The one-shot property is the *delete*, not the value, so a caller that
+    /// then finds the record expired still consumed it — which is what makes a
+    /// replayed callback useless even inside the window a sweep has not covered.
+    async fn take<T: DeserializeOwned + Send + 'static>(
+        &self,
+        partition: impl Into<Cow<'static, str>> + Send,
+        key: impl Into<Cow<'static, str>> + Send,
+    ) -> Result<Option<T>, Error>;
+
     /// Every partition holding at least one value.
     async fn partitions(&self) -> Result<Vec<String>, Error>;
 
@@ -204,6 +221,25 @@ impl KeyValueStore for Database {
         Ok(())
     }
 
+    #[instrument("db.kv.take", skip_all, err(Display))]
+    async fn take<T: DeserializeOwned + Send + 'static>(
+        &self,
+        partition: impl Into<Cow<'static, str>> + Send,
+        key: impl Into<Cow<'static, str>> + Send,
+    ) -> Result<Option<T>, Error> {
+        let (partition, key) = (partition.into().into_owned(), key.into().into_owned());
+
+        self.write(move |tx| {
+            tx.query_one(
+                "DELETE FROM kv WHERE partition = ?1 AND key = ?2 RETURNING value",
+                (partition, key),
+                |row| super::row::json_col(row, 0),
+            )
+            .optional()
+        })
+        .await
+    }
+
     #[instrument("db.kv.partitions", skip_all, err(Display))]
     async fn partitions(&self) -> Result<Vec<String>, Error> {
         self.read(|c| {
@@ -306,6 +342,34 @@ mod tests {
 
         assert_eq!(db.partitions().await.unwrap(), vec!["a", "b"]);
         assert_eq!(db.scan::<Watermark>().await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_value_can_be_claimed_exactly_once() {
+        // R-01 M13. Reads come from a pool and writes from the single writer,
+        // so a `get` and a later `remove` let two concurrent claims of the same
+        // one-shot handle both succeed. The delete has to *be* the read.
+        let db = store().await;
+        db.set("pki", "once", Watermark { seen: 1 }).await.unwrap();
+
+        let (first, second) = tokio::join!(
+            db.take::<Watermark>("pki", "once"),
+            db.take::<Watermark>("pki", "once"),
+        );
+        let (first, second) = (first.unwrap(), second.unwrap());
+
+        assert!(
+            first.is_some() != second.is_some(),
+            "exactly one claim wins: {first:?} / {second:?}",
+        );
+        assert_eq!(db.get::<Watermark>("pki", "once").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn claiming_a_key_that_is_not_set_answers_nothing() {
+        let db = store().await;
+
+        assert_eq!(db.take::<Watermark>("pki", "never").await.unwrap(), None);
     }
 
     #[tokio::test]

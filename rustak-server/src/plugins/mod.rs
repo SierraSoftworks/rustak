@@ -13,6 +13,7 @@
 //! | [`registry`] | What is registered, under whose account, and with what configuration |
 //! | [`health`] | Heartbeats, and deciding that one is overdue |
 //! | [`events`] | The `broadcast` bus behind `GET /api/v1/events` |
+//! | [`visibility`] | Who each published event may be shown to |
 //!
 //! The HTTP layer over all four is `web::api::services` and `web::api::events`.
 //!
@@ -38,7 +39,9 @@ pub mod auth;
 pub mod events;
 pub mod health;
 pub mod registry;
+pub mod visibility;
 
 pub use auth::Caller;
-pub use events::ServerEvents;
+pub use events::{PublishedEvent, ServerEvents};
 pub use registry::RegistryError;
+pub use visibility::{Audience, Subscriber};

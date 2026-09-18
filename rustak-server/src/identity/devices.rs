@@ -25,9 +25,25 @@ use crate::db::{
 
 /// Records a connection, creating the device the first time we see it.
 ///
+/// # A uid belongs to the account that first enrolled it
+///
+/// A device uid is not a secret: it is the `uid` attribute of every CoT event
+/// that device sends on a shared channel, and `GET /Marti/api/clientEndPoints`
+/// lists it. This used to write the row unconditionally, so anybody could enrol
+/// with somebody else's `clientUid` and take the row over — and with it the
+/// `device_group_state` that `cert::effective_for_device` intersects the
+/// owner's channels against, which meant switching another account's device
+/// dark through `PUT /Marti/api/groups/active` (R-01 M4).
+///
+/// So the binding is permanent until an administrator breaks it, which
+/// `DELETE /api/v1/devices/{uid}` is: forget the row, and the next enrolment
+/// claims the uid afresh.
+///
 /// # Errors
 ///
-/// A [`human_errors::Kind::System`] error if the write fails.
+/// A [`human_errors::Kind::User`] error when the uid belongs to a different
+/// account, and a [`human_errors::Kind::System`] error if a read or write
+/// fails.
 #[instrument("identity.devices.seen", skip_all, fields(device = %uid), err(Display))]
 pub async fn upsert_seen(
     db: &Database,
@@ -37,25 +53,35 @@ pub async fn upsert_seen(
 ) -> Result<DeviceRow, Error> {
     let existing = db.devices().get_by_uid(uid).await?;
 
-    let row = db.devices().seen(uid, user_id, seen).await?;
-
-    match existing {
+    match &existing {
         Some(previous) if previous.user_id != user_id => {
-            // A uid that moved between accounts is worth a line: it is either a
-            // device handed over deliberately, or a client that has picked
-            // somebody else's identifier.
             warn!(
                 device = %uid,
-                from = %previous.user_id,
-                to = %user_id,
-                "A device uid changed hands.",
+                owner = %previous.user_id,
+                claimed_by = %user_id,
+                "Refused a device uid that belongs to a different account.",
             );
+
+            return Err(taken());
         }
         Some(_) => {}
         None => info!(device = %uid, "Saw a device for the first time."),
     }
 
-    Ok(row)
+    db.devices().seen(uid, user_id, seen).await
+}
+
+/// The one thing a caller naming somebody else's device is ever told.
+///
+/// Deliberately does not name the owner: the uid is public, so the answer must
+/// not turn it into a way of asking who holds it.
+fn taken() -> Error {
+    human_errors::user(
+        "That device identifier is registered to a different account.",
+        &[
+            "Use the identifier this device already enrols with, or ask an administrator to release the old registration.",
+        ],
+    )
 }
 
 /// Every device, most recently seen first.
@@ -322,10 +348,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_uid_that_changes_hands_is_recorded_rather_than_refused() {
-        // Either a device handed over deliberately or a client claiming
-        // somebody else's identifier; both are things an operator should be
-        // able to see in the log, and neither is ours to decide here.
+    async fn a_uid_belongs_to_the_account_that_first_enrolled_it() {
+        // R-01 M4. A device uid is in every CoT event that device sends and in
+        // `GET /Marti/api/clientEndPoints`, so anybody can name somebody
+        // else's. Taking the row over takes its `device_group_state` with it,
+        // which is what `cert::effective_for_device` narrows the owner's
+        // channels against — so bob could switch alice's device dark.
         let (db, alice) = fixture().await;
         let bob = db
             .users()
@@ -336,11 +364,45 @@ mod tests {
         upsert_seen(&db, &uid("ANDROID-1"), alice, atak())
             .await
             .unwrap();
-        let moved = upsert_seen(&db, &uid("ANDROID-1"), bob.id, DeviceSeen::default())
+
+        let refused = upsert_seen(&db, &uid("ANDROID-1"), bob.id, DeviceSeen::default())
+            .await
+            .unwrap_err();
+
+        assert!(refused.is(human_errors::Kind::User), "{refused:?}");
+        assert!(
+            !refused.description().contains("alice"),
+            "the refusal must not answer who holds the uid: {refused}",
+        );
+        assert_eq!(
+            get(&db, &uid("ANDROID-1")).await.unwrap().unwrap().user_id,
+            alice,
+            "the row stays with the account that first enrolled it",
+        );
+    }
+
+    #[tokio::test]
+    async fn an_administrator_releasing_the_row_lets_the_uid_be_claimed_again() {
+        // The escape hatch behind `DELETE /api/v1/devices/{uid}`: a device
+        // genuinely handed over is re-enrolled after an administrator forgets
+        // the old registration.
+        let (db, alice) = fixture().await;
+        let bob = db
+            .users()
+            .create(NewUser::person(Username::parse("bob").unwrap()))
             .await
             .unwrap();
 
-        assert_eq!(moved.user_id, bob.id);
+        let row = upsert_seen(&db, &uid("ANDROID-1"), alice, atak())
+            .await
+            .unwrap();
+        delete(&db, row.id).await.unwrap();
+
+        let claimed = upsert_seen(&db, &uid("ANDROID-1"), bob.id, DeviceSeen::default())
+            .await
+            .unwrap();
+
+        assert_eq!(claimed.user_id, bob.id);
     }
 
     #[tokio::test]

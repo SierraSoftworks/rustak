@@ -173,7 +173,7 @@ mod tests {
 
         let published = context.events().since(0);
         assert_eq!(published.len(), 1);
-        assert_eq!(published[0].name(), "service.status");
+        assert_eq!(published[0].event.name(), "service.status");
     }
 
     #[tokio::test]

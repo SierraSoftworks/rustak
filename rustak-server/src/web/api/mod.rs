@@ -67,6 +67,16 @@ pub use extract::{Administrative, Authenticated, Identity};
 /// The version prefix every route here sits under.
 pub const API_ROOT: &str = "/api/v1";
 
+/// The largest JSON body any `/api/v1` route will read.
+///
+/// No `JsonConfig` was installed anywhere in the crate, so actix's 2 MiB
+/// default applied to the attacker-supplied `credential` blob that
+/// `finish_registration` base64-decodes and CBOR-parses (R-01 L16) and to the
+/// unbounded `message` a service heartbeat carries (R-01 M12). Nothing this API
+/// accepts as JSON is remotely this large — the biggest is a device profile —
+/// and bulk content arrives as multipart on the Marti surface instead.
+const JSON_LIMIT: usize = 256 * 1024;
+
 /// Registers every `/api/v1` route.
 pub fn configure() -> actix_web::Scope<
     impl actix_web::dev::ServiceFactory<
@@ -77,7 +87,7 @@ pub fn configure() -> actix_web::Scope<
         InitError = (),
     >,
 > {
-    public(web::scope(API_ROOT)).service(
+    public(web::scope(API_ROOT).app_data(web::JsonConfig::default().limit(JSON_LIMIT))).service(
         web::scope("")
             .wrap(from_fn(middleware::api_auth))
             .route("/me", web::get().to(me::me))

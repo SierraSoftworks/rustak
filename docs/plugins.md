@@ -343,9 +343,12 @@ without anybody restarting it.
 
 ### Two credentials
 
-A service token authenticates `/api/v1/services/*` and nothing else; the client
-certificate authenticates everything (and the control API too, so a sidecar that
-has enrolled needs no token at all). The token exists for the case where the
+A service token authenticates `/api/v1/services/*` and `GET /api/v1/events`, and
+nothing else; the client certificate authenticates everything (and the control
+API too, so a sidecar that has enrolled needs no token at all). Both are bounded
+by the same things every other credential is: the account must not be disabled,
+`[auth] user_acl` must allow the request, and a registration an administrator
+has switched off stops authenticating. The token exists for the case where the
 plugin has no certificate **yet** — which is also what `rustak_client::enroll`
 is for:
 

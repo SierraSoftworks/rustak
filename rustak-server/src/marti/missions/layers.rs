@@ -16,12 +16,12 @@ use actix_web::web;
 use crate::marti::{CiQuery, MissionRef, response, response::kind};
 use crate::missions::layers::{MissionLayer, MissionLayerJson, NewLayer};
 use crate::missions::model::Mission;
-use crate::missions::roles::{Permission, require};
+use crate::missions::roles::Permission;
 use crate::prelude::*;
 use crate::stream::ChangeKind;
 
 use super::super::error::{MartiError, MartiResult};
-use super::MissionCtx;
+use super::{MissionCtx, allowed};
 
 /// `GET {n}/layers` — the tree, with what is filed under each node.
 ///
@@ -287,15 +287,7 @@ async fn announce(
 
 /// The mission, once the caller is known to be allowed to read it.
 async fn readable(ctx: &MissionCtx, reference: &MissionRef) -> Result<Mission, MartiError> {
-    let mission = ctx.service.resolve(reference).await?;
-    let role = ctx
-        .service
-        .role_for_request(&mission, &ctx.who, ctx.claims())
-        .await?;
-
-    require(role, Permission::Read)?;
-
-    Ok(mission)
+    allowed(ctx, reference, Permission::Read).await
 }
 
 /// The mission, once the caller is known to be allowed to write to it.
@@ -303,13 +295,5 @@ pub(super) async fn writable(
     ctx: &MissionCtx,
     reference: &MissionRef,
 ) -> Result<Mission, MartiError> {
-    let mission = ctx.service.resolve(reference).await?;
-    let role = ctx
-        .service
-        .role_for_request(&mission, &ctx.who, ctx.claims())
-        .await?;
-
-    require(role, Permission::Write)?;
-
-    Ok(mission)
+    allowed(ctx, reference, Permission::Write).await
 }

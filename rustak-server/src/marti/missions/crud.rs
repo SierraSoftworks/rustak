@@ -30,7 +30,7 @@ use crate::missions::roles::{Permission, require};
 use crate::prelude::*;
 
 use super::super::error::{MartiError, MartiResult};
-use super::MissionCtx;
+use super::{MissionCtx, allowed, resolved};
 
 /// The shape a client that can read an emptied body says it speaks.
 const STRIPPED_FROM_API_VERSION: u32 = 3;
@@ -93,9 +93,13 @@ pub async fn count(ctx: MissionCtx, query: CiQuery) -> MartiResult {
 /// `API_VERSION` older than 3.
 #[instrument("marti.missions.get", skip_all)]
 pub async fn get(ctx: MissionCtx, reference: MissionRef, query: CiQuery) -> MartiResult {
-    let mission = ctx.service.resolve(&reference).await?;
+    let (mission, held) = resolved(&ctx, &reference).await?;
     let presented = query.get("password").filter(|value| !value.is_empty());
 
+    // The one mission route that does not go straight through `allowed`: a
+    // caller with no read role gets a stripped `200` rather than a `403` when
+    // it speaks `API_VERSION >= 3` (`compat/missions.md` §5), so the refusal
+    // has to be inspected rather than propagated.
     let (token, role) = match presented {
         Some(password) => (
             Some(ctx.service.access_token(&mission, password).await?),
@@ -103,12 +107,7 @@ pub async fn get(ctx: MissionCtx, reference: MissionRef, query: CiQuery) -> Mart
                 mission.default_role,
             )),
         ),
-        None => (
-            None,
-            ctx.service
-                .role_for_request(&mission, &ctx.who, ctx.claims())
-                .await?,
-        ),
+        None => (None, held),
     };
 
     let readable = require(role, Permission::Read);
@@ -201,7 +200,7 @@ pub async fn create(
 /// [`MartiError::Forbidden`] without `MISSION_DELETE`.
 #[instrument("marti.missions.delete", skip_all)]
 pub async fn delete(ctx: MissionCtx, reference: MissionRef, query: CiQuery) -> MartiResult {
-    let mission = ctx.service.resolve(&reference).await?;
+    let mission = allowed(&ctx, &reference, Permission::Delete).await?;
 
     remove(&ctx, mission, &query).await
 }
@@ -218,20 +217,13 @@ pub async fn delete_by_guid(ctx: MissionCtx, query: CiQuery) -> MartiResult {
         .get("guid")
         .and_then(|guid| Uuid::parse_str(guid.trim_matches(['{', '}'])).ok())
         .ok_or_else(|| MartiError::InvalidRequest("Invalid mission guid in request".to_string()))?;
-    let mission = ctx.service.resolve(&MissionRef::Guid(guid)).await?;
+    let mission = allowed(&ctx, &MissionRef::Guid(guid), Permission::Delete).await?;
 
     remove(&ctx, mission, &query).await
 }
 
-/// The body of both delete spellings.
+/// The body of both delete spellings, once `MISSION_DELETE` is established.
 async fn remove(ctx: &MissionCtx, mission: Mission, query: &CiQuery) -> MartiResult {
-    let role = ctx
-        .service
-        .role_for_request(&mission, &ctx.who, ctx.claims())
-        .await?;
-
-    require(role, Permission::Delete)?;
-
     let deleted = ctx
         .service
         .delete(

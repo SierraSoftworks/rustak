@@ -72,6 +72,14 @@ impl CsrEncoding {
     }
 }
 
+/// The weakest elliptic curve a signing request may use.
+///
+/// Not configurable, deliberately: `csr_min_rsa_bits` exists because RSA key
+/// sizes are a spectrum an installation may reasonably move along, while the
+/// curves in use are two — P-256 and P-384 — and everything below them is
+/// broken rather than merely old.
+const MIN_ECDSA_BITS: u32 = 256;
+
 /// The public key a request carries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CsrKey {
@@ -381,6 +389,19 @@ impl CsrPolicy {
                 &["Generate a new key of the required size on the device and enrol again."],
             )),
             CsrKey::Rsa { .. } => Ok(()),
+            // The same floor the RSA arm has, and for the same reason. Any
+            // curve used to pass once `csr_allow_ecdsa` was on, so a P-192 or a
+            // secp112r1 request was policy-clean and failed later in rcgen as an
+            // unhelpful `500` (R-01 L5). P-256 and P-384 are the two curves this
+            // authority issues over, and the two every TAK client generates.
+            CsrKey::Ecdsa { bits } if self.allow_ecdsa && (*bits as u32) < MIN_ECDSA_BITS => {
+                Err(human_errors::user(
+                    format!(
+                        "That certificate signing request uses a P-{bits} key, and this server requires at least P-{MIN_ECDSA_BITS}."
+                    ),
+                    &["Generate a new P-256 or P-384 key on the device and enrol again."],
+                ))
+            }
             CsrKey::Ecdsa { .. } if self.allow_ecdsa => Ok(()),
             CsrKey::Ecdsa { .. } => Err(human_errors::user(
                 "This server does not accept elliptic-curve certificate signing requests.",
@@ -623,6 +644,29 @@ mod tests {
         assert!(matches!(parsed.key, CsrKey::Ecdsa { bits: 256 }));
         assert!(CsrPolicy::default().validate(&parsed, &alice()).is_ok());
         assert!(refusing.validate(&parsed, &alice()).is_err());
+    }
+
+    #[test]
+    fn a_curve_below_the_floor_is_refused_the_way_a_short_rsa_key_is() {
+        // R-01 L5. `csr_allow_ecdsa` used to accept *any* curve, so a P-192 or
+        // a secp112r1 request was policy-clean and failed later in rcgen as an
+        // unhelpful `500`. The key is swapped rather than generated because
+        // rcgen will not produce a broken curve — which is the point.
+        let mut parsed = parse_csr(&request("alice", KeyType::EcdsaP256)).unwrap();
+
+        assert!(CsrPolicy::default().validate(&parsed, &alice()).is_ok());
+
+        for bits in [112, 192, 224] {
+            parsed.key = CsrKey::Ecdsa { bits };
+
+            assert!(
+                CsrPolicy::default().validate(&parsed, &alice()).is_err(),
+                "P-{bits} is not a curve to certify",
+            );
+        }
+
+        parsed.key = CsrKey::Ecdsa { bits: 384 };
+        assert!(CsrPolicy::default().validate(&parsed, &alice()).is_ok());
     }
 
     #[test]

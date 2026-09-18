@@ -21,24 +21,49 @@
 //! straight back at us finds nothing even in the window before a sweep would
 //! have taken it away.
 //!
+//! # The second binding, and why the cookie alone was not one
+//!
+//! `sha256(cookie) == state` binds the callback to *a* browser, and the
+//! server-side record is keyed by that same digest — so the two are one control
+//! wearing two hats, not two controls. A `state` cookie has no `__Host-` prefix
+//! (TAK clients expect that exact name), so any HTTPS origin under the same
+//! registrable domain can write one for this host and fixate a sign-in: the
+//! attacker starts a flow, plants their `state` in the victim's browser, and
+//! lures them to the callback, which then signs the victim's browser in as the
+//! *attacker* (R-01 M7).
+//!
+//! So there is a second cookie, [`BINDING_COOKIE`], which is `__Host-`-prefixed
+//! and therefore cannot be written by any other origin at all. Its value is 256
+//! bits of fresh randomness; only its digest is stored in [`PendingAuth`], and
+//! a callback that does not carry the matching cookie is refused. The `state`
+//! cookie keeps its TAK-compatible name and meaning; this is the binding an
+//! attacker cannot transplant.
+//!
 //! # Where it is kept
 //!
-//! The `auth-state` key/value partition, beside the passkey ceremonies: it is
-//! small, opaque, owned by exactly one component and read back whole, which is
-//! design 01 §4.4's test for what belongs in the key/value store rather than in
-//! a table of its own.
+//! Its own `auth-login` key/value partition: small, opaque, owned by exactly
+//! one component and read back whole, which is design 01 §4.4's test. Its own
+//! rather than shared with the passkey ceremonies and the setup tokens, because
+//! a `list` over a partition deserialises every row into one type and one row of
+//! another shape aborted the whole sweep (R-01 M8).
 
 use base64::Engine as _;
 use chrono::{DateTime, Duration, Utc};
 use rand::Rng as _;
 use sha2::{Digest as _, Sha256};
 
-use crate::auth::setup::AUTH_STATE_PARTITION;
 use crate::db::Database;
 use crate::prelude::*;
 
+/// The key/value partition a half-finished sign-in lives in.
+pub const PENDING_PARTITION: &str = "auth-login";
+
 /// The cookie the browser carries between the two halves of the flow.
 pub const STATE_COOKIE: &str = "state";
+
+/// The second, independent binding: `__Host-`-prefixed, so no other origin —
+/// not even a sibling subdomain — can write it for this host.
+pub const BINDING_COOKIE: &str = "__Host-rustak_login";
 
 /// How long a half-finished sign-in may stand.
 ///
@@ -98,6 +123,15 @@ pub struct PendingAuth {
     /// repeat exactly.
     pub redirect_uri: String,
 
+    /// The digest of the [`BINDING_COOKIE`] value this flow was started with.
+    ///
+    /// The digest rather than the value, for the same reason a refresh token is
+    /// stored as one: a reader of the database learns nothing they could
+    /// present. Empty means "no binding was recorded", which is refused — a
+    /// record written by an older build is not a flow worth completing.
+    #[serde(default)]
+    pub binding: String,
+
     /// When this stops being claimable.
     pub expires_at: DateTime<Utc>,
 }
@@ -111,6 +145,7 @@ impl std::fmt::Debug for PendingAuth {
             .field("verifier", &"***")
             .field("nonce", &"***")
             .field("redirect_uri", &self.redirect_uri)
+            .field("binding", &"***")
             .field("expires_at", &self.expires_at)
             .finish()
     }
@@ -127,6 +162,26 @@ pub fn new_state() -> String {
 /// A fresh nonce, for the provider's ID token to echo.
 pub fn new_nonce() -> String {
     new_state()
+}
+
+/// A fresh value for the [`BINDING_COOKIE`].
+pub fn new_binding() -> String {
+    new_state()
+}
+
+/// Whether a callback carries the `__Host-` binding this flow was started with.
+///
+/// Fails closed on an empty value on either side: an absent cookie and a record
+/// written before this control existed are both "not the browser that started
+/// it".
+pub fn matches_binding(cookie: Option<&str>, recorded: &str) -> bool {
+    let Some(cookie) = cookie else {
+        return false;
+    };
+
+    !cookie.is_empty()
+        && !recorded.is_empty()
+        && super::constant_time_eq(&state_hash(cookie), recorded)
 }
 
 /// The value sent to the provider, and the key the pending sign-in is stored
@@ -150,7 +205,7 @@ pub fn matches_state(cookie: &str, returned: &str) -> bool {
 ///
 /// A [`human_errors::Kind::System`] error when the record cannot be written.
 pub async fn begin(db: &Database, state: &str, pending: PendingAuth) -> Result<(), Error> {
-    db.set(AUTH_STATE_PARTITION, key(&state_hash(state)), pending)
+    db.set(PENDING_PARTITION, key(&state_hash(state)), pending)
         .await
 }
 
@@ -166,16 +221,15 @@ pub async fn begin(db: &Database, state: &str, pending: PendingAuth) -> Result<(
 /// expired — the two are not distinguished — and a
 /// [`human_errors::Kind::System`] error when a read or write fails.
 pub async fn claim(db: &Database, state_hash: &str) -> Result<PendingAuth, Error> {
-    let key = key(state_hash);
-
+    // The read *is* the delete, in one write transaction: a `get` and a later
+    // `remove` let two concurrent callbacks carrying the same state both
+    // observe the record and both proceed (R-01 M13).
     let Some(pending) = db
-        .get::<PendingAuth>(AUTH_STATE_PARTITION, key.clone())
+        .take::<PendingAuth>(PENDING_PARTITION, key(state_hash))
         .await?
     else {
         return Err(expired());
     };
-
-    db.remove(AUTH_STATE_PARTITION, key).await?;
 
     if pending.expires_at <= Utc::now() {
         return Err(expired());
@@ -196,12 +250,12 @@ pub fn expiry() -> DateTime<Utc> {
 /// A [`human_errors::Kind::System`] error if a read or write fails.
 pub async fn sweep(db: &Database) -> Result<usize, Error> {
     let now = Utc::now();
-    let stored: Vec<(String, PendingAuth)> = db.list(AUTH_STATE_PARTITION).await?;
+    let stored: Vec<(String, PendingAuth)> = db.list(PENDING_PARTITION).await?;
     let mut removed = 0;
 
     for (key, pending) in stored {
         if key.starts_with(PENDING_PREFIX) && pending.expires_at <= now {
-            db.remove(AUTH_STATE_PARTITION, key).await?;
+            db.remove(PENDING_PARTITION, key).await?;
             removed += 1;
         }
     }
@@ -232,9 +286,13 @@ mod tests {
             verifier: "a-verifier".to_string(),
             nonce: "a-nonce".to_string(),
             redirect_uri: "https://tak.example.com/login/redirect".to_string(),
+            binding: state_hash(BINDING),
             expires_at: expiry(),
         }
     }
+
+    /// The `__Host-` binding every pending record here is written with.
+    const BINDING: &str = "the-browsers-binding";
 
     #[test]
     fn the_value_sent_to_the_provider_is_the_digest_of_the_cookie() {
@@ -268,6 +326,44 @@ mod tests {
     fn two_flows_never_share_a_state() {
         assert_ne!(new_state(), new_state());
         assert_ne!(new_nonce(), new_nonce());
+        assert_ne!(new_binding(), new_binding());
+    }
+
+    #[test]
+    fn a_callback_without_this_browsers_host_binding_is_refused() {
+        // R-01 M7. The `state` cookie has no `__Host-` prefix, so a sibling
+        // origin can write one for this host and fixate a sign-in; this is the
+        // binding it cannot write, and the check has to fail closed on every
+        // way of not having it.
+        let recorded = state_hash(BINDING);
+
+        assert!(matches_binding(Some(BINDING), &recorded));
+        assert!(!matches_binding(Some("somebody-elses-binding"), &recorded));
+        assert!(!matches_binding(None, &recorded));
+        assert!(!matches_binding(Some(""), &recorded));
+        assert!(
+            !matches_binding(Some(BINDING), ""),
+            "a record written before the binding existed is not one to complete",
+        );
+        assert!(
+            !matches_binding(Some(&recorded), &recorded),
+            "the cookie holds the value, not its digest",
+        );
+    }
+
+    #[tokio::test]
+    async fn two_callbacks_racing_on_one_state_cannot_both_win() {
+        // R-01 M13. `get` reads from a pool while `remove` goes through the
+        // single writer, so both used to observe the record before either
+        // delete landed.
+        let db = Database::open_in_memory().await.unwrap();
+        let state = new_state();
+        begin(&db, &state, pending()).await.unwrap();
+
+        let hash = state_hash(&state);
+        let (first, second) = tokio::join!(claim(&db, &hash), claim(&db, &hash));
+
+        assert!(first.is_ok() != second.is_ok());
     }
 
     #[tokio::test]

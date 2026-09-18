@@ -112,6 +112,7 @@ pub async fn begin_federation(
     let callback = format!("{base_url}{CALLBACK_PATH}");
     let secret = state::new_state();
     let nonce = state::new_nonce();
+    let binding = state::new_binding();
     let proof = pkce::pkce_pair();
 
     let recorded = state::begin(
@@ -122,6 +123,9 @@ pub async fn begin_federation(
             verifier: proof.verifier,
             nonce: nonce.clone(),
             redirect_uri: callback.clone(),
+            // The digest, never the value: what is stored has to be useless to
+            // a reader of the database.
+            binding: state::state_hash(&binding),
             expires_at: state::expiry(),
         },
     )
@@ -152,10 +156,17 @@ pub async fn begin_federation(
 
     let mut response = redirect(url.as_str());
 
-    if let Ok(value) =
-        actix_web::http::header::HeaderValue::from_str(&cookies::state_cookie(&secret))
-    {
-        response.headers_mut().append(SET_COOKIE, value);
+    // Two cookies, two different jobs. `state` is the name and the rule TAK
+    // clients expect; `__Host-rustak_login` is the binding a sibling origin
+    // cannot write, and therefore cannot transplant into somebody else's
+    // browser (R-01 M7).
+    for cookie in [
+        cookies::state_cookie(&secret),
+        cookies::binding_cookie(&binding),
+    ] {
+        if let Ok(value) = actix_web::http::header::HeaderValue::from_str(&cookie) {
+            response.headers_mut().append(SET_COOKIE, value);
+        }
     }
 
     response
@@ -201,6 +212,18 @@ pub async fn login_redirect(
             return session::callback_refused(&request);
         }
     };
+
+    // The second binding, checked after the record is spent so that a wrong
+    // guess still consumes the pending sign-in rather than letting it be
+    // retried. A sibling origin can write `state`; it cannot write a
+    // `__Host-`-prefixed cookie for this host at all (R-01 M7).
+    let binding = cookies::cookie_value(request.headers(), state::BINDING_COOKIE);
+
+    if !state::matches_binding(binding.as_deref(), &pending.binding) {
+        warn!("Refused a callback that did not carry this browser's sign-in binding.");
+
+        return session::callback_refused(&request);
+    }
 
     match sign_in(context.get_ref(), &request, &pending, code).await {
         Ok((user, is_admin)) => {
@@ -330,10 +353,10 @@ async fn complete(
         }
     }
 
-    if let Ok(header) =
-        actix_web::http::header::HeaderValue::from_str(&cookies::clear_state_cookie())
-    {
-        response.headers_mut().append(SET_COOKIE, header);
+    for value in cookies::clear_state_cookie() {
+        if let Ok(header) = actix_web::http::header::HeaderValue::from_str(&value) {
+            response.headers_mut().append(SET_COOKIE, header);
+        }
     }
 
     response

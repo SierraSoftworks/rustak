@@ -253,8 +253,17 @@ async fn password_grant(
         return Ok(unavailable());
     };
 
-    let scope = tokens::scope_for(verified.user.is_effective_admin());
-    let issued = jwt.issue(&verified.user.username, &scope, None, None);
+    // Deliberately narrow, and never `admin`, whoever the account is. A client
+    // password is the one reusable secret rustak issues and it is configured
+    // into a TAK client rather than typed by a person at a sign-in page, so a
+    // token minted from it stands for "this device may use the TAK surface",
+    // not for everything its owner may do. `users::principal` treats the scope
+    // as a ceiling, so this is what keeps a stolen client password out of the
+    // administrative API (R-01 H1/H2). CloudTAK reads no `scope` from this
+    // response and `compat/oauth.md` §1 pins the body's three fields, so
+    // nothing on the wire changes.
+    let scope = tokens::SCOPE_API;
+    let issued = jwt.issue(&verified.user.username, scope, None, None);
 
     let (token, claims) = match issued {
         Ok(pair) => pair,
@@ -368,8 +377,7 @@ async fn code_grant(context: &AppContext, form: &TokenForm) -> MartiResult {
     // handed the administrative scope their code still remembers. The recorded
     // scope is not simply trusted — it is the *ceiling*, so a code minted for an
     // ordinary session cannot become an administrative one either.
-    let is_admin =
-        user.is_effective_admin() && redemption.scope.split(' ').any(|scope| scope == "admin");
+    let is_admin = user.is_effective_admin() && tokens::grants_admin(&redemption.scope);
     let scope = tokens::scope_for(is_admin);
     let session = match tokens::issue_session(context, &user, is_admin, Some(client_id)).await {
         Ok(session) => session,

@@ -364,3 +364,56 @@ async fn a_certificate_from_another_authority_never_reaches_the_application() {
 
     harness.stop().await;
 }
+
+#[tokio::test]
+async fn switching_an_account_off_ends_the_session_it_already_had() {
+    // R-01 H5. The stream resolves its principal once, at the TLS handshake,
+    // and makes no database call thereafter — so disabling an account, which is
+    // the control an operator reaches for when a device is lost, used to leave
+    // that device receiving every reachable peer's position and injecting CoT
+    // until its TCP connection happened to drop. Nothing here revokes a
+    // certificate: the disable alone has to end it.
+    //
+    // `start_with_missions` because it is the harness variant that installs the
+    // registry on the context, which is what `sessions::end_all` reaches for —
+    // the real runtime installs it unconditionally (`stream::mod`).
+    let harness = Harness::start_with_missions().await;
+    let alice = harness
+        .enroll("alice", "UID-ALICE", &[("blue", BOTH)])
+        .await;
+
+    let mut alpha = harness.eud(&alice, "ALPHA").await;
+    harness.await_connected(1).await;
+    alpha.send_sa(51.5, -0.12).await.unwrap();
+
+    let user = harness
+        .context
+        .db()
+        .users()
+        .get_by_username(&alice.username)
+        .await
+        .unwrap()
+        .expect("the account under test");
+
+    harness
+        .context
+        .db()
+        .users()
+        .set_disabled(user.id, true)
+        .await
+        .expect("the account is switched off");
+
+    let closed = rustak_server::identity::sessions::end_all(&harness.context, &user).await;
+
+    assert_eq!(closed, 1, "the open connection is what had to be closed");
+
+    let ended = alpha.expect(|_| true, EXPECT).await;
+
+    assert!(
+        ended.is_err(),
+        "a disabled account's connection should end, not carry on: {ended:?}",
+    );
+    assert_eq!(harness.live.connected(), 0);
+
+    harness.stop().await;
+}

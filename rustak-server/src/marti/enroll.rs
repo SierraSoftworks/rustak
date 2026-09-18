@@ -8,18 +8,25 @@
 //!
 //! # The order matters
 //!
-//! Parse, check the common name, record the device, sign and record, and only
-//! then spend a one-time token. A token spent before the certificate exists is
-//! one somebody cannot enrol with and cannot get back; a certificate issued
-//! before its row is written is one nothing can revoke — which is why
-//! [`crate::pki::Pki::enroll`] writes the row itself rather than leaving it to
-//! a caller who might not.
+//! Parse, check the common name, **claim** a one-time token, record the device,
+//! sign and record — and put the claim back if the signing then failed.
+//!
+//! Spending afterwards was the obvious order and the wrong one: usability was
+//! checked in one read and the spend was a later, unconditional write, so two
+//! concurrent posts of the same enrolment token both passed and both received a
+//! certificate, and a spend that failed left the token live (R-01 M3). The
+//! consumption is now the gate — one conditional `UPDATE` that reports whether
+//! this caller is the one that got it — and the compensating release is what
+//! keeps a token spent for a certificate that was never signed from being lost.
+//! A certificate issued before its row is written is one nothing can revoke,
+//! which is why [`crate::pki::Pki::enroll`] writes the row itself rather than
+//! leaving it to a caller who might not.
 
 use actix_web::HttpRequest;
 use rustak_core::identity::AuthMethod;
 
 use crate::auth::resolve::Resolved;
-use crate::db::repos::DeviceSeen;
+use crate::db::repos::{CredentialRow, DeviceSeen};
 use crate::identity::secret_cache::VerifiedSecretCache;
 use crate::identity::{credentials, devices};
 use crate::pki::{Enrollment, IssuedCert, IssuedVia, Pki, parse_csr};
@@ -83,13 +90,21 @@ pub(super) async fn issue(
         }
     }
 
-    let device_id = match query.client_uid.as_deref().map(DeviceUid::from_storage) {
-        Some(uid) => device(request, context, resolved, &uid).await,
-        None => None,
-    };
+    // Before anything is signed: the claim is what decides whether this caller
+    // gets a certificate at all.
+    let claimed = claim(context, resolved).await?;
 
-    let issued = pki
-        .enroll(
+    // One fallible block, so that *every* way of failing after the claim — a
+    // device uid that is somebody else's, a signature that will not be made —
+    // goes through the release below rather than only the ones a `?` here
+    // happened to cover.
+    let issued: Result<IssuedCert, MartiError> = async {
+        let device_id = match query.client_uid.as_deref().map(DeviceUid::from_storage) {
+            Some(uid) => device(request, context, resolved, &uid).await?,
+            None => None,
+        };
+
+        pki.enroll(
             db,
             Enrollment {
                 username: &resolved.user.username,
@@ -103,24 +118,38 @@ pub(super) async fn issue(
             },
         )
         .await
-        .map_err(|err| enrolment_failed(context, &err))?;
+        .map_err(|err| enrolment_failed(context, &err))
+    }
+    .await;
 
-    spend(context, resolved).await;
+    match issued {
+        Ok(issued) => {
+            record_reusable_use(context, resolved).await;
 
-    Ok(issued)
+            Ok(issued)
+        }
+        Err(refusal) => {
+            release(context, claimed.as_ref()).await;
+
+            Err(refusal)
+        }
+    }
 }
 
 /// Records the device the certificate belongs to.
 ///
-/// A failure here is logged rather than fatal: the certificate is still the
-/// caller's and refusing to issue it because a descriptive row would not write
+/// A `clientUid` that belongs to a **different** account is a `403` and stops
+/// the enrolment: the uid is public, and letting it change hands hands the
+/// original owner's per-device channel state to whoever asked last (R-01 M4).
+/// Any other failure is logged rather than fatal — the certificate is still the
+/// caller's, and refusing to issue it because a descriptive row would not write
 /// would be the wrong trade.
 async fn device(
     request: &HttpRequest,
     context: &AppContext,
     resolved: &Resolved,
     uid: &DeviceUid,
-) -> Option<DeviceId> {
+) -> Result<Option<DeviceId>, MartiError> {
     let seen = DeviceSeen {
         // The version string, when there is one, is the client's own — recorded
         // as description, never trusted.
@@ -133,11 +162,14 @@ async fn device(
     };
 
     match devices::upsert_seen(context.db(), uid, resolved.user.id, seen).await {
-        Ok(row) => Some(row.id),
+        Ok(row) => Ok(Some(row.id)),
+        Err(err) if err.is(human_errors::Kind::User) => {
+            Err(MartiError::Forbidden(err.description()))
+        }
         Err(err) => {
             warn!(error = %err, device = %uid, "Could not record the device that enrolled.");
 
-            None
+            Ok(None)
         }
     }
 }
@@ -155,11 +187,70 @@ fn credential_for(principal: &rustak_core::identity::Principal) -> Option<Creden
     }
 }
 
-/// Spends a one-time enrolment token, now that it has bought something.
+/// Spends a one-time enrolment token, before it has bought anything.
 ///
-/// Anything other than a Basic credential has nothing to spend, and
-/// [`credentials::record_use`] ignores a consuming call against a reusable one.
-async fn spend(context: &AppContext, resolved: &Resolved) {
+/// Answers the row that was claimed, so a failed issuance can put it back.
+/// Anything other than a Basic credential has nothing to claim, and a reusable
+/// one is recorded after the fact by [`record_reusable_use`] instead.
+///
+/// # Errors
+///
+/// [`MartiError::Forbidden`] when the token has already been spent — including
+/// by the request racing this one — and [`MartiError::Internal`] when the write
+/// fails, which fails closed rather than issuing against a token we could not
+/// consume.
+async fn claim(
+    context: &AppContext,
+    resolved: &Resolved,
+) -> Result<Option<CredentialRow>, MartiError> {
+    let Some(id) = credential_of(resolved) else {
+        return Ok(None);
+    };
+
+    let db = context.db();
+
+    let row = match db.credentials().get(id).await {
+        Ok(Some(row)) if row.kind.is_single_use() => row,
+        Ok(_) => return Ok(None),
+        Err(err) => return Err(internal_error(context, &err)),
+    };
+
+    match credentials::claim_single_use(db, &row, VerifiedSecretCache::shared()).await {
+        Ok(true) => Ok(Some(row)),
+        Ok(false) => {
+            warn!(credential = %id, "Refused an enrolment against a token that was already spent.");
+
+            Err(MartiError::Forbidden(
+                "that enrolment token has already been used".to_string(),
+            ))
+        }
+        Err(err) => Err(internal_error(context, &err)),
+    }
+}
+
+/// Puts a claim back when the issuance it was made for failed.
+async fn release(context: &AppContext, claimed: Option<&CredentialRow>) {
+    let Some(row) = claimed else {
+        return;
+    };
+
+    if let Err(err) =
+        credentials::release_single_use(context.db(), row, VerifiedSecretCache::shared()).await
+    {
+        warn!(
+            error = %err,
+            credential = %row.id,
+            "Could not put back an enrolment token whose certificate was never issued.",
+        );
+    }
+}
+
+/// Records the use of a **reusable** credential after it has bought something.
+///
+/// A client password is reusable by design, so recording its use is what lets
+/// an administrator see it being used rather than what stops it being used
+/// again.
+async fn record_reusable_use(context: &AppContext, resolved: &Resolved) {
     let Some(id) = credential_of(resolved) else {
         return;
     };
@@ -167,11 +258,11 @@ async fn spend(context: &AppContext, resolved: &Resolved) {
     let db = context.db();
 
     match db.credentials().get(id).await {
-        Ok(Some(row)) if row.kind.is_single_use() => {
-            let cache = VerifiedSecretCache::shared();
-
-            if let Err(err) = credentials::record_use(db, &row, true, cache).await {
-                warn!(error = %err, "Could not spend the enrolment token a certificate was issued against.");
+        Ok(Some(row)) if !row.kind.is_single_use() => {
+            if let Err(err) =
+                credentials::record_use(db, &row, false, VerifiedSecretCache::shared()).await
+            {
+                debug!(error = %err, "Could not record the use of an enrolment credential.");
             }
         }
         Ok(_) => {}

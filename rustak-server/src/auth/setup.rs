@@ -6,8 +6,11 @@
 //! the server's own filesystem holds.
 //!
 //! - The **setup token** is written to `[auth] setup_token_file` with mode
-//!   `0600` on the first start of an installation with no administrator, and
-//!   logged once. It authorises exactly one thing: creating that administrator.
+//!   `0600` on the first start of an installation with no administrator. Its
+//!   *path* is logged; the token itself deliberately never is, because a log
+//!   line is the one place a one-time secret is most likely to be read by
+//!   somebody who should not have it. It authorises exactly one thing: creating
+//!   that administrator.
 //! - The **registration token** is handed back by that call and authorises
 //!   exactly one more: registering the new administrator's first passkey. It
 //!   lives for minutes, in the database, and is spent on use.
@@ -26,8 +29,19 @@ use sha2::{Digest as _, Sha256};
 use crate::db::Database;
 use crate::prelude::*;
 
-/// The key/value partition the short-lived authentication state lives in.
+/// The key/value partition the first-run setup token lives in.
+///
+/// One partition per record shape. Four incompatible shapes shared `auth-state`
+/// and a `list` over it deserialises every row into one type, so a single row of
+/// another shape aborted the whole listing — which is what quietly killed both
+/// expiry sweeps from an installation's first boot until its wizard finished
+/// (R-01 M8). The setup token keeps the original name so that an installation
+/// upgraded mid-wizard does not lose the token somebody is halfway through
+/// typing.
 pub const AUTH_STATE_PARTITION: &str = "auth-state";
+
+/// The key/value partition a passkey registration token lives in.
+pub const REGISTRATION_PARTITION: &str = "auth-registration";
 
 /// The key the setup token's record lives under.
 const SETUP_TOKEN_KEY: &str = "setup-token";
@@ -201,7 +215,7 @@ pub async fn issue_registration(db: &Database, user_id: UserId) -> Result<String
     let token = random_token();
 
     db.set(
-        AUTH_STATE_PARTITION,
+        REGISTRATION_PARTITION,
         format!("{REGISTRATION_PREFIX}{}", digest(&token)),
         RegistrationRecord {
             user_id,
@@ -225,14 +239,16 @@ pub async fn issue_registration(db: &Database, user_id: UserId) -> Result<String
 pub async fn claim_registration(db: &Database, presented: &str) -> Result<UserId, Error> {
     let key = format!("{REGISTRATION_PREFIX}{}", digest(presented));
 
+    // The read *is* the delete. This token is what `register_finish` turns into
+    // an administrator session, so two parallel posts of it used to register two
+    // passkeys against the first administrator's account off one token
+    // (R-01 M13).
     let Some(record) = db
-        .get::<RegistrationRecord>(AUTH_STATE_PARTITION, key.clone())
+        .take::<RegistrationRecord>(REGISTRATION_PARTITION, key)
         .await?
     else {
         return Err(registration_refused());
     };
-
-    db.remove(AUTH_STATE_PARTITION, key).await?;
 
     if record.expires_at <= Utc::now() {
         return Err(registration_refused());

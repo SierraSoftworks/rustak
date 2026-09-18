@@ -190,6 +190,12 @@ impl Passkeys {
         &self.rp_id
     }
 
+    /// The relying-party identifier as a string, for pinning it in a stored
+    /// ceremony (R-01 M10).
+    pub fn rp_id_name(&self) -> &str {
+        &self.host
+    }
+
     /// Names this server in the options a browser is about to show somebody.
     ///
     /// `webauthn_rp` serialises `rp.name` as the relying-party *identifier*,

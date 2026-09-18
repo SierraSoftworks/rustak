@@ -11,11 +11,26 @@
 //!
 //! # The order, and why
 //!
-//! Certificate, then service token, then access token — strongest first, the
-//! same order [`resolve_principal`](crate::auth::resolve::resolve_principal)
-//! uses. A sidecar that has enrolled presents a certificate that cannot be
-//! replayed out of a log; one that has not yet enrolled has only the token it was
-//! configured with, which is exactly the case the token exists for.
+//! An explicit credential first — service token, then access token — and the
+//! client certificate only when the `Authorization` header established nobody.
+//! That is the opposite of
+//! [`resolve_principal`](crate::auth::resolve::resolve_principal)'s order, and
+//! deliberately so: on the TAK surface a certificate is the strongest thing a
+//! caller can present, but this is the *control* API, where a header is a
+//! deliberate act and a certificate is ambient. `/api/v1` is mounted only on
+//! the public listener today, where no certificate is captured at all — but if
+//! it were ever mounted on the mTLS listener, certificate-first would mean any
+//! EUD's certificate silently outranking an administrator's bearer token
+//! (R-01 M5). A sidecar that has enrolled and sends no header still resolves as
+//! its certificate, which is the case that order was written for.
+//!
+//! # What a service token is bounded by
+//!
+//! The same things every other credential is: the account must not be disabled,
+//! `[auth] user_acl` must allow the request, the registration must not have been
+//! switched off, and `max_uses` must not be spent. Each of those used to be
+//! skipped here because the arm returned before `bearer` — which is where three
+//! of the four live (R-01 M5, M11, L7).
 //!
 //! # Why the token is not rate limited
 //!
@@ -31,8 +46,9 @@ use rustak_api::{CredentialKind, UserKind};
 use rustak_core::identity::{AuthMethod, lookup_hint, verify_blocking};
 use rustak_core::prelude::*;
 
+use crate::auth::acl::{AuthRequestFilter, evaluate};
 use crate::auth::resolve::{AuthFailure, RequestFacts, Resolved, bearer};
-use crate::db::repos::{CredentialRow, ServiceRow};
+use crate::db::repos::{CredentialRow, ServiceRow, UserRow};
 use crate::identity::users;
 use crate::pki::PeerCertificate;
 use crate::prelude::*;
@@ -111,20 +127,6 @@ impl Caller {
 /// not match; [`AuthFailure::Unavailable`] when a read fails.
 #[instrument("plugins.auth", skip_all, err(Debug))]
 pub async fn caller(context: &AppContext, request: &HttpRequest) -> Result<Caller, AuthFailure> {
-    if let Some(peer) = request.conn_data::<PeerCertificate>() {
-        let identity = crate::auth::cert::client_cert(context, peer).await?;
-
-        return Ok(Caller { identity });
-    }
-
-    let Some(token) = crate::web::api::middleware::bearer_token(request.headers()) else {
-        return Err(AuthFailure::Rejected);
-    };
-
-    if let Some(identity) = service_token(context, token).await? {
-        return Ok(Caller { identity });
-    }
-
     let config = context.config();
     let facts = RequestFacts {
         method: request.method().as_str(),
@@ -138,9 +140,32 @@ pub async fn caller(context: &AppContext, request: &HttpRequest) -> Result<Calle
         headers: request.headers(),
     };
 
-    bearer(context, token, &facts)
-        .await
-        .map(|identity| Caller { identity })
+    if let Some(token) = crate::web::api::middleware::bearer_token(request.headers()) {
+        if let Some(identity) = service_token(context, token, &facts).await? {
+            return Ok(Caller { identity });
+        }
+
+        match bearer(context, token, &facts).await {
+            Ok(identity) => return Ok(Caller { identity }),
+            // A header that established nobody is not the end of it when a
+            // certificate is also on the connection: the same header carries
+            // mission tokens, and refusing here would break a call that never
+            // claimed to be a control-API credential.
+            Err(AuthFailure::Unavailable(err)) => return Err(AuthFailure::Unavailable(err)),
+            Err(failure) if request.conn_data::<PeerCertificate>().is_none() => {
+                return Err(failure);
+            }
+            Err(failure) => debug!(reason = ?failure, "A bearer token established no identity."),
+        }
+    }
+
+    let Some(peer) = request.conn_data::<PeerCertificate>() else {
+        return Err(AuthFailure::Rejected);
+    };
+
+    let identity = crate::auth::cert::client_cert(context, peer).await?;
+
+    Ok(Caller { identity })
 }
 
 /// Resolves a service token, or answers that the secret was not one.
@@ -156,6 +181,7 @@ pub async fn caller(context: &AppContext, request: &HttpRequest) -> Result<Calle
 async fn service_token(
     context: &AppContext,
     secret: &str,
+    facts: &RequestFacts<'_>,
 ) -> Result<Option<Resolved>, AuthFailure> {
     let db = context.db();
     let candidates = db.credentials().find_by_hint(&lookup_hint(secret)).await?;
@@ -179,6 +205,33 @@ async fn service_token(
             return Err(AuthFailure::Rejected);
         }
 
+        // A registration an operator switched off is refused here rather than
+        // at each endpoint: `enabled = 0` was a fail-open kill switch that
+        // nothing read, which is worse than no switch at all (R-01 M11). A
+        // service that has not registered yet has no row and is unaffected —
+        // registering is the one thing it still has to be able to do.
+        if let Some(registration) = db.services().get_by_user(user.id).await?
+            && !registration.enabled
+        {
+            debug!(service = %registration.name, "Refused a token for a service that is switched off.");
+
+            return Err(AuthFailure::Forbidden(
+                "That service has been switched off by an administrator.",
+            ));
+        }
+
+        allowed_by_acl(context, &user, facts)?;
+
+        // The only thing that moves `uses` and `last_used_at`, and therefore
+        // the only thing that makes `max_uses` mean anything for a service
+        // token; `usable` above reads what this wrote (R-01 L7). Not consuming:
+        // a service token is reusable by design.
+        if let Err(err) =
+            crate::identity::credentials::record_use(db, &candidate, false, cache()).await
+        {
+            debug!(error = %err, "Could not record the use of a service token.");
+        }
+
         let via = AuthMethod::Basic {
             credential_id: candidate.id,
             kind: candidate.kind,
@@ -193,6 +246,62 @@ async fn service_token(
     }
 
     Ok(None)
+}
+
+/// The cache a recorded use has to be consistent with.
+fn cache() -> &'static crate::identity::VerifiedSecretCache {
+    crate::identity::VerifiedSecretCache::shared()
+}
+
+/// Applies `[auth] user_acl` to a service-token request.
+///
+/// `bearer` evaluates it for every other credential and this arm returned
+/// before reaching it, so an operator who wrote `user_acl = 'client_ip in
+/// 10.0.0.0/8'` had it enforced on all of `/api/v1` *except* the two routes a
+/// program calls (R-01 M5).
+///
+/// # Errors
+///
+/// [`AuthFailure::Forbidden`] when a configured expression refuses the request.
+fn allowed_by_acl(
+    context: &AppContext,
+    user: &UserRow,
+    facts: &RequestFacts<'_>,
+) -> Result<(), AuthFailure> {
+    let config = context.config();
+
+    if config.auth.user_acl.is_none() {
+        return Ok(());
+    }
+
+    let outcome = evaluate(
+        &config.auth,
+        &AuthRequestFilter {
+            method: facts.method,
+            path: facts.path,
+            client_ip: facts.client_ip.clone(),
+            headers: facts.headers,
+            // A service token carries no provider claims, exactly as our own
+            // access tokens do not.
+            claims: None,
+            username: user.username.as_str(),
+            source: user.source.as_str(),
+        },
+    );
+
+    if outcome.allowed {
+        return Ok(());
+    }
+
+    info!(
+        username = %user.username,
+        path = facts.path,
+        "An access-control expression refused a service token."
+    );
+
+    Err(AuthFailure::Forbidden(
+        "Your account is not permitted to use this.",
+    ))
 }
 
 /// Whether a matched credential is still one we would accept.
@@ -349,5 +458,133 @@ mod tests {
             weather.require_admin(),
             Err(AuthFailure::Forbidden(_))
         ));
+    }
+
+    #[actix_web::test]
+    async fn a_service_token_is_refused_where_user_acl_refuses_the_request() {
+        // R-01 M5. `user_acl` is evaluated inside `bearer`, and this arm
+        // returned before reaching it — so an operator who wrote
+        // `user_acl = 'client_ip in 10.0.0.0/8'` had it enforced on all of
+        // `/api/v1` *except* the two routes a program calls.
+        let server = TestServer::start_with(|config| {
+            config.auth.user_acl = Some(filt_rs::Filter::new(r#"username == "nobody""#).unwrap());
+        })
+        .await;
+        let context = server.context.clone();
+        let (_, token) = service(&context, "weather").await;
+
+        let refused = caller(&context, &with_bearer(&token)).await;
+
+        assert!(
+            matches!(refused, Err(AuthFailure::Forbidden(_))),
+            "{refused:?}",
+        );
+    }
+
+    #[actix_web::test]
+    async fn a_service_token_still_works_where_the_expression_allows_it() {
+        let server = TestServer::start_with(|config| {
+            config.auth.user_acl = Some(filt_rs::Filter::new("true").unwrap());
+        })
+        .await;
+        let context = server.context.clone();
+        let (_, token) = service(&context, "weather").await;
+
+        assert!(caller(&context, &with_bearer(&token)).await.is_ok());
+    }
+
+    #[actix_web::test]
+    async fn a_service_an_operator_switched_off_stops_authenticating() {
+        // R-01 M11. `services.enabled` was a fail-open kill switch that nothing
+        // read: a service marked `enabled = 0` went on registering,
+        // heartbeating, reading its configuration and opening the event feed.
+        let server = TestServer::start().await;
+        let context = server.context.clone();
+        let (user, token) = service(&context, "weather").await;
+
+        let registration = context
+            .db()
+            .services()
+            .get_by_user(user.id)
+            .await
+            .unwrap()
+            .expect("the registration under test");
+
+        assert!(caller(&context, &with_bearer(&token)).await.is_ok());
+
+        context
+            .db()
+            .services()
+            .set_enabled(registration.id, false)
+            .await
+            .unwrap();
+
+        let refused = caller(&context, &with_bearer(&token)).await;
+
+        assert!(
+            matches!(refused, Err(AuthFailure::Forbidden(_))),
+            "{refused:?}",
+        );
+    }
+
+    #[actix_web::test]
+    async fn a_service_token_minted_for_one_use_works_once() {
+        // R-01 L7. `usable` checks `uses < max_uses` and nothing in this module
+        // moved `uses`, so `max_uses` was dead and `last_used_at` was always
+        // null — an operator could not tell a live sidecar from a leaked
+        // dormant token.
+        let server = TestServer::start().await;
+        let context = server.context.clone();
+        let username = Username::parse("svc.once").unwrap();
+        let user = context
+            .db()
+            .users()
+            .create(NewUser::service(username.clone()))
+            .await
+            .unwrap();
+
+        let minted = mint(
+            context.db(),
+            &context.config().auth,
+            &user,
+            MintRequest {
+                max_uses: Some(1),
+                ..MintRequest::new(CredentialKind::ServiceToken, "One shot", &username)
+            },
+        )
+        .await
+        .unwrap();
+        let token = minted.secret.expose().to_string();
+
+        assert!(caller(&context, &with_bearer(&token)).await.is_ok());
+
+        let refused = caller(&context, &with_bearer(&token)).await;
+
+        assert!(matches!(refused, Err(AuthFailure::Rejected)), "{refused:?}");
+
+        let held = context
+            .db()
+            .credentials()
+            .list_for_user(user.id, true)
+            .await
+            .unwrap();
+
+        assert_eq!(held[0].uses, 1);
+        assert!(held[0].last_used_at.is_some(), "a live token says so");
+    }
+
+    #[actix_web::test]
+    async fn an_explicit_header_outranks_an_ambient_certificate() {
+        // R-01 M5, the related half: `/api/v1` is mounted only on the public
+        // listener today, where no certificate is captured — but the order has
+        // to be right before that changes, or any EUD's certificate would
+        // silently outrank an administrator's bearer token on the control API.
+        let server = started().await;
+        let context = server.context.clone();
+        let (user, token) = service(&context, "weather").await;
+
+        let resolved = caller(&context, &with_bearer(&token)).await.unwrap();
+
+        assert_eq!(resolved.username(), &user.username);
     }
 }

@@ -12,11 +12,11 @@ use actix_web::web;
 use crate::marti::{CiQuery, MissionRef, response, response::kind};
 use crate::missions::model::CopyParams;
 use crate::missions::render::Render;
-use crate::missions::roles::{Permission, Role, require};
+use crate::missions::roles::{Permission, Role};
 use crate::prelude::*;
 
 use super::super::error::{MartiError, MartiResult};
-use super::MissionCtx;
+use super::{MissionCtx, allowed};
 
 /// One connected subscriber, as `{n}/contacts` reports them.
 #[derive(Debug, Clone, Serialize)]
@@ -40,13 +40,7 @@ pub struct MissionContact {
 /// [`MartiError::Validation`] for a copy name we will not accept.
 #[instrument("marti.missions.copy", skip_all)]
 pub async fn copy(ctx: MissionCtx, reference: MissionRef, query: CiQuery) -> MartiResult {
-    let mission = ctx.service.resolve(&reference).await?;
-    let role = ctx
-        .service
-        .role_for_request(&mission, &ctx.who, ctx.claims())
-        .await?;
-
-    require(role, Permission::Read)?;
+    let mission = allowed(&ctx, &reference, Permission::Read).await?;
 
     let default_role =
         match query.get("defaultRole") {
@@ -249,15 +243,7 @@ async fn readable(
     ctx: &MissionCtx,
     reference: &MissionRef,
 ) -> Result<crate::missions::Mission, MartiError> {
-    let mission = ctx.service.resolve(reference).await?;
-    let role = ctx
-        .service
-        .role_for_request(&mission, &ctx.who, ctx.claims())
-        .await?;
-
-    require(role, Permission::Read)?;
-
-    Ok(mission)
+    allowed(ctx, reference, Permission::Read).await
 }
 
 /// The same, once the caller may write to it.
@@ -265,13 +251,5 @@ async fn writable(
     ctx: &MissionCtx,
     reference: &MissionRef,
 ) -> Result<crate::missions::Mission, MartiError> {
-    let mission = ctx.service.resolve(reference).await?;
-    let role = ctx
-        .service
-        .role_for_request(&mission, &ctx.who, ctx.claims())
-        .await?;
-
-    require(role, Permission::Write)?;
-
-    Ok(mission)
+    allowed(ctx, reference, Permission::Write).await
 }

@@ -449,3 +449,48 @@ async fn a_token_from_the_password_grant_is_one_the_marti_surface_accepts() {
 
     assert_eq!(response.status().as_u16(), 200);
 }
+
+#[actix_web::test]
+async fn a_password_grant_never_issues_an_administrative_token() {
+    // R-01 H1. The client password is the one reusable secret rustak issues and
+    // it lives in a TAK client's configuration file, so a token minted from it
+    // stands for "this device may use the TAK surface" rather than for
+    // everything its owner may do — whoever its owner is.
+    let server = TestServer::start().await;
+    let password = with_password(&server, "ada", true).await;
+    let app = test::init_service(App::new().configure(server.app())).await;
+
+    let body: serde_json::Value = test::call_and_read_body_json(
+        &app,
+        grant(form(&[
+            ("grant_type", "password"),
+            ("username", "ada"),
+            ("password", &password),
+        ]))
+        .to_request(),
+    )
+    .await;
+
+    let token = body["access_token"].as_str().expect("an access token");
+    let claims = server.jwt().unwrap().verify(token).unwrap();
+
+    assert_eq!(claims.scope, "api", "{}", claims.scope);
+
+    let refused = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/users")
+            .insert_header((
+                actix_web::http::header::AUTHORIZATION,
+                format!("Bearer {token}"),
+            ))
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(
+        refused.status().as_u16(),
+        403,
+        "a client password must not be an administrator session",
+    );
+}

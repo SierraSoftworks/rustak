@@ -27,11 +27,21 @@
 //!
 //! `SameSite=Lax` is what makes that trade survivable: the cookie is not sent
 //! on a cross-site `POST` or `fetch` at all, only on a top-level navigation.
+//!
+//! # The gap Lax leaves, and the paths it costs
+//!
+//! Lax *does* attach the cookie to a cross-site top-level **navigation**, and
+//! the TAK surface has state-changing `GET`s — `GET /Marti/sync/delete`, which
+//! takes a comma-separated list of primary keys, so one `<a href>` opened by a
+//! signed-in operator could empty enterprise sync (R-01 M2). Rather than change
+//! the verbs TAK clients use, those paths are simply not ones a cookie may
+//! authenticate: ATAK and CloudTAK both send an `Authorization` header, so
+//! nothing in `compat/` depends on the cookie reaching a write.
 
 use actix_web::cookie::{Cookie, SameSite, time::Duration as CookieDuration};
 use actix_web::http::header::HeaderMap;
 
-use super::state::STATE_COOKIE;
+use super::state::{BINDING_COOKIE, STATE_COOKIE};
 
 /// The prefix of every chunk of a stored access token.
 pub const ACCESS_PREFIX: &str = "access_token_";
@@ -62,8 +72,20 @@ const COOKIE_PREFIXES: &[&str] = &["/login", "/Marti", "/files/api"];
 /// all.
 const COOKIE_PATHS: &[&str] = &["/logout", "/token/access", "/oauth/authorize"];
 
+/// The paths a cookie may **never** authenticate, whatever the method.
+///
+/// Every one of these changes state and is reachable by `GET`, which is the
+/// combination `SameSite=Lax` does not defend against. Listed as exact paths
+/// and prefixes rather than inferred from the method, because the method is
+/// precisely what is wrong about them.
+const MUTATING_PATHS: &[&str] = &["/Marti/sync/delete", "/Marti/api/repeater/remove"];
+
 /// Whether a cookie may be read as a credential for this path.
 pub fn cookies_allowed(path: &str) -> bool {
+    if mutates(path) {
+        return false;
+    }
+
     if COOKIE_PATHS.contains(&path) {
         return true;
     }
@@ -72,6 +94,16 @@ pub fn cookies_allowed(path: &str) -> bool {
         path == *prefix
             || path
                 .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
+}
+
+/// Whether this path is one of the state-changing `GET`s.
+fn mutates(path: &str) -> bool {
+    MUTATING_PATHS.iter().any(|mutating| {
+        path == *mutating
+            || path
+                .strip_prefix(mutating)
                 .is_some_and(|rest| rest.starts_with('/'))
     })
 }
@@ -114,13 +146,33 @@ pub fn state_cookie(state: &str) -> String {
     cookie.to_string()
 }
 
-/// The `Set-Cookie` value that removes the `state` cookie.
+/// The `Set-Cookie` value that stores the `__Host-` sign-in binding.
+///
+/// `__Host-` is not decoration: the prefix is what makes a browser refuse the
+/// cookie unless it is `Secure`, has `Path=/` and carries **no** `Domain`, and
+/// that last part is the whole point — a sibling subdomain can write a `state`
+/// cookie for this host and cannot write this one (R-01 M7).
+pub fn binding_cookie(binding: &str) -> String {
+    let mut cookie = Cookie::new(BINDING_COOKIE, binding.to_string());
+
+    cookie.set_http_only(true);
+    cookie.set_secure(true);
+    cookie.set_same_site(SameSite::Lax);
+    cookie.set_path("/");
+
+    cookie.to_string()
+}
+
+/// The `Set-Cookie` values that remove the sign-in cookies.
 ///
 /// Set the moment a callback is consumed — successfully or not — so that a
 /// browser is never left holding a value some later callback could be matched
 /// against.
-pub fn clear_state_cookie() -> String {
-    expire(STATE_COOKIE, STATE_PATH)
+pub fn clear_state_cookie() -> Vec<String> {
+    vec![
+        expire(STATE_COOKIE, STATE_PATH),
+        expire(BINDING_COOKIE, "/"),
+    ]
 }
 
 /// The `Set-Cookie` values that remove every cookie this module sets.
@@ -141,7 +193,7 @@ pub fn clearing_cookies(headers: &HeaderMap) -> Vec<String> {
 
     let mut cleared: Vec<String> = names.iter().map(|name| expire(name, "/")).collect();
 
-    cleared.push(expire(STATE_COOKIE, STATE_PATH));
+    cleared.extend(clear_state_cookie());
     cleared
 }
 
@@ -253,6 +305,52 @@ mod tests {
         ] {
             assert!(!cookies_allowed(path), "{path}");
         }
+    }
+
+    #[test]
+    fn a_cookie_never_authenticates_a_marti_path_that_deletes() {
+        // R-01 M2. `SameSite=Lax` blocks a cross-site POST and a cross-site
+        // fetch — and *attaches* the cookie to a cross-site top-level
+        // navigation, which is what `GET /Marti/sync/delete?PrimaryKey=1,2,…`
+        // is one link away from. One `<a href>` opened by a signed-in operator
+        // emptied enterprise sync.
+        for path in ["/Marti/sync/delete", "/Marti/api/repeater/remove/ANDROID-1"] {
+            assert!(!cookies_allowed(path), "{path}");
+        }
+
+        assert!(
+            cookies_allowed("/Marti/sync/search"),
+            "the reads a browser-based TAK client makes are unaffected",
+        );
+    }
+
+    #[test]
+    fn the_binding_cookie_carries_the_attributes_its_prefix_requires() {
+        // `__Host-` is refused by the browser unless the cookie is `Secure`,
+        // has `Path=/` and names no `Domain` — which is exactly the property
+        // that stops a sibling subdomain writing it (R-01 M7).
+        let cookie = binding_cookie("a-binding");
+
+        assert!(
+            cookie.starts_with("__Host-rustak_login=a-binding"),
+            "{cookie}"
+        );
+        assert!(cookie.contains("Secure"), "{cookie}");
+        assert!(cookie.contains("HttpOnly"), "{cookie}");
+        assert!(cookie.contains("Path=/"), "{cookie}");
+        assert!(!cookie.contains("Domain"), "{cookie}");
+    }
+
+    #[test]
+    fn signing_out_clears_the_binding_as_well_as_the_state() {
+        let cleared = clearing_cookies(&with_cookies(&[("access_token_0", "t")]));
+
+        assert!(
+            cleared
+                .iter()
+                .any(|cookie| cookie.starts_with("__Host-rustak_login=")),
+            "{cleared:?}",
+        );
     }
 
     #[test]

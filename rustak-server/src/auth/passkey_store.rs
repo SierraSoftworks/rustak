@@ -45,7 +45,12 @@ use crate::db::{
     repos::{NewPasskey, PasskeyRow},
 };
 
-use super::setup::AUTH_STATE_PARTITION;
+/// The key/value partition a half-finished ceremony lives in.
+///
+/// Its own, rather than shared with the setup tokens and the pending sign-ins:
+/// a `list` over a partition deserialises every row into one type, so one row
+/// of another shape aborted the sweep below entirely (R-01 M8).
+pub const CEREMONY_PARTITION: &str = "auth-ceremony";
 
 /// How many bytes the user handle an authenticator stores is made of.
 pub const USER_HANDLE_LEN: usize = 16;
@@ -106,6 +111,16 @@ pub struct Ceremony {
     pub kind: CeremonyKind,
     /// The library's own ceremony state, base64url of its binary encoding.
     pub state: String,
+    /// The relying-party identifier this ceremony was started under.
+    ///
+    /// Recorded so that the finish can refuse a ceremony started under one host
+    /// name and completed under another: the `Passkeys` verifier is rebuilt per
+    /// request, and where no base URL is configured it was derived from the
+    /// caller-supplied `Host` header — so the caller supplied the value the
+    /// origin check compared against (R-01 M10). Empty only in a record written
+    /// by an older build, which the finish refuses.
+    #[serde(default)]
+    pub rp_id: String,
     /// When it stops being valid.
     pub expires_at: DateTime<Utc>,
 }
@@ -115,15 +130,21 @@ pub struct Ceremony {
 /// # Errors
 ///
 /// A [`human_errors::Kind::System`] error when the state cannot be stored.
-pub async fn begin(db: &Database, kind: CeremonyKind, state: &[u8]) -> Result<String, Error> {
+pub async fn begin(
+    db: &Database,
+    kind: CeremonyKind,
+    rp_id: &str,
+    state: &[u8],
+) -> Result<String, Error> {
     let handle = handle();
 
     db.set(
-        AUTH_STATE_PARTITION,
+        CEREMONY_PARTITION,
         format!("{CEREMONY_PREFIX}{handle}"),
         Ceremony {
             kind,
             state: B64.encode(state),
+            rp_id: rp_id.to_string(),
             expires_at: Utc::now() + Duration::minutes(CEREMONY_TTL_MINUTES),
         },
     )
@@ -146,20 +167,37 @@ pub async fn begin(db: &Database, kind: CeremonyKind, state: &[u8]) -> Result<St
 pub async fn claim(db: &Database, handle: &str) -> Result<Ceremony, Error> {
     let key = format!("{CEREMONY_PREFIX}{handle}");
 
-    let Some(ceremony) = db
-        .get::<Ceremony>(AUTH_STATE_PARTITION, key.clone())
-        .await?
-    else {
+    // The read *is* the delete, in one write transaction: N parallel posts of a
+    // captured `{challenge_id, credential}` pair used to yield N sessions
+    // (R-01 M13).
+    let Some(ceremony) = db.take::<Ceremony>(CEREMONY_PARTITION, key).await? else {
         return Err(expired());
     };
-
-    db.remove(AUTH_STATE_PARTITION, key).await?;
 
     if ceremony.expires_at <= Utc::now() {
         return Err(expired());
     }
 
     Ok(ceremony)
+}
+
+/// Refuses a ceremony that is being finished under a different relying party.
+///
+/// # Errors
+///
+/// A [`human_errors::Kind::User`] error — the same one an unknown handle gets,
+/// so the mismatch is not an oracle for which host names this server answers on.
+pub fn require_rp_id(ceremony: &Ceremony, rp_id: &str) -> Result<(), Error> {
+    if !ceremony.rp_id.is_empty() && ceremony.rp_id == rp_id {
+        return Ok(());
+    }
+
+    warn!(
+        expected = %ceremony.rp_id,
+        "Refused a passkey ceremony finished under a different relying party."
+    );
+
+    Err(expired())
 }
 
 /// The library state a claimed ceremony was stored with.
@@ -180,12 +218,12 @@ pub fn state_of(ceremony: &Ceremony) -> Result<Vec<u8>, Error> {
 /// A [`human_errors::Kind::System`] error if a read or write fails.
 pub async fn sweep(db: &Database) -> Result<usize, Error> {
     let now = Utc::now();
-    let stored: Vec<(String, Ceremony)> = db.list(AUTH_STATE_PARTITION).await?;
+    let stored: Vec<(String, Ceremony)> = db.list(CEREMONY_PARTITION).await?;
     let mut removed = 0;
 
     for (key, ceremony) in stored {
         if key.starts_with(CEREMONY_PREFIX) && ceremony.expires_at <= now {
-            db.remove(AUTH_STATE_PARTITION, key).await?;
+            db.remove(CEREMONY_PARTITION, key).await?;
             removed += 1;
         }
     }
@@ -344,6 +382,9 @@ fn unreadable(what: &str) -> Error {
 mod tests {
     use super::*;
 
+    /// The relying party every ceremony here is started under.
+    const RP: &str = "tak.example.com";
+
     async fn database() -> Database {
         Database::open_in_memory().await.unwrap()
     }
@@ -351,11 +392,14 @@ mod tests {
     #[tokio::test]
     async fn a_ceremony_is_good_for_exactly_one_attempt() {
         let db = database().await;
-        let handle = begin(&db, CeremonyKind::Discover, b"state").await.unwrap();
+        let handle = begin(&db, CeremonyKind::Discover, RP, b"state")
+            .await
+            .unwrap();
 
         let claimed = claim(&db, &handle).await.unwrap();
         assert!(matches!(claimed.kind, CeremonyKind::Discover));
         assert_eq!(state_of(&claimed).unwrap(), b"state");
+        assert!(require_rp_id(&claimed, RP).is_ok());
 
         assert!(
             claim(&db, &handle).await.is_err(),
@@ -369,18 +413,18 @@ mod tests {
 
         let unknown = claim(&db, "not-a-handle").await.unwrap_err();
 
-        let handle = begin(&db, CeremonyKind::Discover, b"").await.unwrap();
+        let handle = begin(&db, CeremonyKind::Discover, RP, b"").await.unwrap();
 
         // Reach past the API to age it, which is the only thing a test can do
         // about a five-minute window.
         let key = format!("{CEREMONY_PREFIX}{handle}");
         let mut stored: Ceremony = db
-            .get(AUTH_STATE_PARTITION, key.clone())
+            .get(CEREMONY_PARTITION, key.clone())
             .await
             .unwrap()
             .unwrap();
         stored.expires_at = Utc::now() - Duration::seconds(1);
-        db.set(AUTH_STATE_PARTITION, key, stored).await.unwrap();
+        db.set(CEREMONY_PARTITION, key, stored).await.unwrap();
 
         let expired = claim(&db, &handle).await.unwrap_err();
 
@@ -390,20 +434,92 @@ mod tests {
     #[tokio::test]
     async fn sweeping_takes_away_the_ceremonies_nobody_finished() {
         let db = database().await;
-        let live = begin(&db, CeremonyKind::Discover, b"").await.unwrap();
-        let stale = begin(&db, CeremonyKind::Discover, b"").await.unwrap();
+        let live = begin(&db, CeremonyKind::Discover, RP, b"").await.unwrap();
+        let stale = begin(&db, CeremonyKind::Discover, RP, b"").await.unwrap();
 
         let key = format!("{CEREMONY_PREFIX}{stale}");
         let mut stored: Ceremony = db
-            .get(AUTH_STATE_PARTITION, key.clone())
+            .get(CEREMONY_PARTITION, key.clone())
             .await
             .unwrap()
             .unwrap();
         stored.expires_at = Utc::now() - Duration::seconds(1);
-        db.set(AUTH_STATE_PARTITION, key, stored).await.unwrap();
+        db.set(CEREMONY_PARTITION, key, stored).await.unwrap();
 
         assert_eq!(sweep(&db).await.unwrap(), 1);
         assert!(claim(&db, &live).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_sweep_is_not_stopped_by_a_record_of_another_shape() {
+        // R-01 M8. Four incompatible shapes shared one partition and `list`
+        // deserialises every row into one type, so a single `setup-token` row —
+        // written on the first start of every installation — aborted this sweep
+        // from first boot until the wizard finished. Each family now has its
+        // own partition; a stray row in another one must not be seen here.
+        let db = database().await;
+        let stale = begin(&db, CeremonyKind::Discover, RP, b"").await.unwrap();
+
+        db.set(
+            crate::auth::setup::AUTH_STATE_PARTITION,
+            "setup-token".to_string(),
+            serde_json::json!({ "hash": "x", "created_at": Utc::now() }),
+        )
+        .await
+        .unwrap();
+
+        let key = format!("{CEREMONY_PREFIX}{stale}");
+        let mut stored: Ceremony = db
+            .get(CEREMONY_PARTITION, key.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        stored.expires_at = Utc::now() - Duration::seconds(1);
+        db.set(CEREMONY_PARTITION, key, stored).await.unwrap();
+
+        assert_eq!(sweep(&db).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_ceremony_cannot_be_finished_under_another_relying_party() {
+        // R-01 M10. The verifier is rebuilt per request, so without the pin a
+        // ceremony started under one host name could be completed under
+        // another.
+        let db = database().await;
+        let handle = begin(&db, CeremonyKind::Discover, RP, b"").await.unwrap();
+
+        let claimed = claim(&db, &handle).await.unwrap();
+
+        assert!(require_rp_id(&claimed, "evil.example.net").is_err());
+        assert!(
+            require_rp_id(
+                &Ceremony {
+                    kind: CeremonyKind::Discover,
+                    state: String::new(),
+                    rp_id: String::new(),
+                    expires_at: Utc::now() + Duration::minutes(1),
+                },
+                RP,
+            )
+            .is_err(),
+            "a record written before the pin existed is not a flow to complete",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_ceremony_can_be_claimed_by_exactly_one_of_two_racing_callers() {
+        // R-01 M13. `get` reads from a pool and `remove` goes through the
+        // single writer, so two parallel posts of the same handle both used to
+        // see the record and both proceed.
+        let db = database().await;
+        let handle = begin(&db, CeremonyKind::Discover, RP, b"").await.unwrap();
+
+        let (first, second) = tokio::join!(claim(&db, &handle), claim(&db, &handle));
+
+        assert!(
+            first.is_ok() != second.is_ok(),
+            "a challenge must be claimable once",
+        );
     }
 
     #[test]

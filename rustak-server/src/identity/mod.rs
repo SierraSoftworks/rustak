@@ -17,7 +17,10 @@
 //! [`devices`] is what has connected, and
 //! [`credentials`] is what it connected with — minted, recorded and taken back
 //! there, checked in [`verify`], with [`secret_cache`] keeping a re-presented
-//! secret from costing an argon2 hash every time.
+//! secret from costing an argon2 hash every time. [`sessions`] is the other
+//! direction: ending what an account already has open, which taking a
+//! credential or an account away has to do as well as refusing the next
+//! request.
 
 pub mod active;
 pub mod credentials;
@@ -25,6 +28,7 @@ pub mod devices;
 pub mod groups;
 pub mod members;
 pub mod secret_cache;
+pub mod sessions;
 pub mod settings;
 pub mod users;
 pub mod verify;

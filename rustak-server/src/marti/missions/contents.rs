@@ -15,12 +15,12 @@ use actix_web::web;
 use crate::marti::{CiQuery, MissionRef, response, response::kind};
 use crate::missions::model::KeywordTarget;
 use crate::missions::render::Render;
-use crate::missions::roles::{Permission, require};
+use crate::missions::roles::Permission;
 use crate::missions::{Mission, MissionContentBody};
 use crate::prelude::*;
 
 use super::super::error::{MartiError, MartiResult};
-use super::MissionCtx;
+use super::{MissionCtx, allowed};
 
 /// `PUT {n}/contents` — file map items and resources under a mission.
 ///
@@ -231,14 +231,7 @@ pub async fn content_keywords(
 /// [`MartiError::Forbidden`] without `MISSION_READ`.
 #[instrument("marti.missions.archive", skip_all)]
 pub async fn archive(ctx: MissionCtx, reference: MissionRef) -> MartiResult {
-    let mission = ctx.service.resolve(&reference).await?;
-    let role = ctx
-        .service
-        .role_for_request(&mission, &ctx.who, ctx.claims())
-        .await?;
-
-    require(role, Permission::Read)?;
-
+    let mission = allowed(&ctx, &reference, Permission::Read).await?;
     let host = ctx.service.archive_host();
     let zip = ctx.service.archive(&mission, &host).await?;
     let filename = crate::missions::MissionService::archive_filename(&mission);
@@ -257,15 +250,7 @@ pub async fn archive(ctx: MissionCtx, reference: MissionRef) -> MartiResult {
 
 /// The mission this request names, once the caller may write to it.
 async fn writable(ctx: &MissionCtx, reference: &MissionRef) -> Result<Mission, MartiError> {
-    let mission = ctx.service.resolve(reference).await?;
-    let role = ctx
-        .service
-        .role_for_request(&mission, &ctx.who, ctx.claims())
-        .await?;
-
-    require(role, Permission::Write)?;
-
-    Ok(mission)
+    allowed(ctx, reference, Permission::Write).await
 }
 
 /// The mission payload every route in this file answers with.
