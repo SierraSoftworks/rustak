@@ -379,7 +379,7 @@ name = "enroll-basic"
 summary = "..."
 requires = ["enrollment", "stream", "clientEndPoints"]
 timeout_seconds = 210          # the outer limit on a container
-min_runtime_seconds = 90       # below this, the assertions prove nothing
+min_runtime_seconds = 90       # the LONGEST EUD; below it, nothing is proved
 
 [config.stream]                # merged over the launcher's defaults
 negotiation = "accept"
@@ -416,6 +416,14 @@ Two rules the scenarios follow:
 - **Assert on a positive marker, not only on the absence of an error.** A run
   that never connected has no `Interface Error` either.
 - **Ordered means ordered.** `log` is a sequence; use `log_any` when it is not.
+  `log_any` still requires *every* pattern in it — it relaxes the order, not the
+  count. There is no "one of these will do" expectation, and a scenario that
+  wants one is asserting on something it does not control.
+- **`min_runtime_seconds` is the scenario's clock, not each EUD's.** It is
+  checked against the EUD that ran longest, so a scenario may script one EUD to
+  quit early on purpose (`chat-direct`'s BRAVO) without being read as a run that
+  was cut short. An EUD that died before its script finished is caught by the
+  timeout kill and by its own expectations instead.
 
 Known traps, and what was done about them:
 

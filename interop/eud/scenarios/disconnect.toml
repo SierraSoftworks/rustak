@@ -27,10 +27,17 @@ script = [
   "quit",
 ]
 
+# `Contact Removed`, not `Interface Down`: `remiface:0` takes the interface out
+# of the stack rather than bringing it down, so no `Interface Down` is ever
+# logged — not at `remiface` and not at `quit` either, because by then there is
+# no interface left to take down. What the removal *does* produce is the
+# contact list emptying, which is the client-side evidence that the stream this
+# scenario is about really went away. (The first run asserted `Interface Down`
+# and failed here while the server half passed.)
 [euds.expect]
 log = [
   "Completed status for enrollment \\d+, adding stream connection",
-  "Interface Down",
+  "Contact Removed",
 ]
 log_absent = ["Interface Error"]
 
@@ -49,7 +56,12 @@ script = [
 
 [euds.expect]
 log = ["Completed status for enrollment \\d+, adding stream connection"]
-log_any = ["Contact Added", "Contact Removed"]
+# `log_any` is "in any order", not "any one of" — so asking for `Contact
+# Removed` here asked BRAVO to have aged ALPHA out of its contact list within
+# the 30 s it stays up after ALPHA leaves, which is `commotest`'s own staleness
+# timer and nothing this scenario controls. What proves the server told BRAVO is
+# the `t-x-d-d` below, which carries ALPHA's uid in a `<link>`.
+log_any = ["Contact Added"]
 log_absent = ["Interface Error"]
 xml_present = [
   { uid = "EUD-GONE-ALPHA", type = "a-f-G-U-C" },

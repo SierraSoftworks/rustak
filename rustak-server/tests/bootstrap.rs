@@ -33,16 +33,23 @@ use rustak_api::{AdminCreated, Me, PasskeyChallenge, SetupStatus, TokenResponse}
 use rustak_core::config::ListenAddr;
 use rustak_core::runtime::Shutdown;
 use rustak_core::telemetry::Session;
-use rustak_server::config::{Config, TlsMode};
+use rustak_server::config::{Config, KeyType, TlsMode};
 use rustak_server::testing::SoftAuthenticator;
 use tokio::task::JoinHandle;
 
 /// How long a test waits for the listener to come up.
 ///
-/// Generous, because a first start generates an RSA certificate authority and
-/// a signing key, which on a loaded CI runner is seconds rather than
-/// milliseconds.
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+/// Generous, because a first start still mints one RSA-2048 token-signing key
+/// (`auth::jwt` is RS256 and has no seam a test can reach), and on CI that
+/// happens under `-Cinstrument-coverage` on two vCPUs with another test in this
+/// file doing the same thing on the other one. Thirty seconds was not enough
+/// for that and cost two failures on run 35376447445; the certificate authority
+/// and the server certificate no longer contribute, see [`start`].
+///
+/// A start-up that *fails* no longer waits this out — [`start`] races the
+/// server task and reports its error — so this bounds only the honest slow
+/// case.
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How long a cancelled server is given to return, per design 01 §8 step 12.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -158,13 +165,23 @@ async fn start(tls: bool) -> Running {
         if tls { "https" } else { "http" }
     ));
 
+    // P-256 rather than the shipped RSA-2048 default. This suite is about the
+    // wiring — an authority that did not exist a second ago, a certificate
+    // issued from it, a client that trusts it — and not about the key
+    // algorithm, which `pki::ca` and `pki::keys` pin directly (`the shipped
+    // default` asserts `Rsa2048` there). Under `-Cinstrument-coverage` the two
+    // RSA generations a first start would do here are most of the start-up, and
+    // `pki::testing::TestAuthority` has been P-256 for the same reason since
+    // M0-21.
+    config.pki.key_type = KeyType::EcdsaP256;
+
     if tls {
         config.web.public.tls.mode = TlsMode::Internal;
         config.web.public.allow_insecure_http = false;
     }
 
     let shutdown = Shutdown::new();
-    let handle = tokio::spawn(rustak_server::run(
+    let mut handle = tokio::spawn(rustak_server::run(
         config.clone(),
         session(),
         shutdown.clone(),
@@ -176,8 +193,14 @@ async fn start(tls: bool) -> Running {
         .clone()
         .expect("the base URL just configured");
 
-    let client = client(tls, config.server.data_dir.as_path(), address).await;
-    await_listener(&client, &base).await;
+    let client = ready(
+        tls,
+        config.server.data_dir.as_path(),
+        address,
+        &base,
+        &mut handle,
+    )
+    .await;
 
     Running {
         shutdown,
@@ -186,6 +209,45 @@ async fn start(tls: bool) -> Running {
         base,
         data_dir,
         config,
+    }
+}
+
+/// The client, once the server it talks to is answering.
+///
+/// The wait is raced against the server task itself, because `run` returning
+/// before its listener is up means start-up *failed* — and the error it
+/// returned is the only thing worth reading. Without the race the two waits
+/// below simply expire, and every start-up failure in this file looks the same
+/// ("was never written", "the listener never came up") whatever actually went
+/// wrong: a migration that would not apply, a database that would not open, a
+/// port already taken. That cost a diagnosis on run 35376447445.
+///
+/// # Panics
+///
+/// If the server stops, returns or panics before the listener answers.
+async fn ready(
+    tls: bool,
+    data_dir: &Path,
+    address: SocketAddr,
+    base: &str,
+    server: &mut JoinHandle<Result<(), human_errors::Error>>,
+) -> reqwest::Client {
+    tokio::select! {
+        // Biased so that a server which has already failed is reported as such
+        // rather than losing a coin toss to one more poll of a dead socket.
+        biased;
+
+        stopped = &mut *server => match stopped {
+            Ok(Err(err)) => panic!("the server stopped while starting up: {err}"),
+            Ok(Ok(())) => panic!("the server returned before its listener came up"),
+            Err(err) => panic!("the server task panicked: {err}"),
+        },
+
+        client = async {
+            let client = client(tls, data_dir, address).await;
+            await_listener(&client, base).await;
+            client
+        } => client,
     }
 }
 

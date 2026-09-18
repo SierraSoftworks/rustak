@@ -276,13 +276,26 @@ export function checkAudit(expect: ServerExpectations, trail: string): string[] 
     .map((pattern) => `/api/v1/audit has nothing matching /${pattern}/.`);
 }
 
-/** Whether the EUDs ran long enough for the scenario's assertions to mean anything. */
+/**
+ * Whether the scenario ran long enough for its assertions to mean anything.
+ *
+ * Measured against the EUD that ran *longest*, because that is the scenario's
+ * own wall clock. The shortest is the wrong number: a scenario may script one
+ * EUD to leave early on purpose — `chat-direct`'s BRAVO quits at T+35 so that
+ * ALPHA can speak into the gap at T+50 — and reading that deliberate departure
+ * as a run cut short fails the scenario for doing exactly what it was written
+ * to do.
+ *
+ * Nothing is lost by it: an EUD that died before its script finished is caught
+ * by `timedOut` (the runner killed it) and by its own `log`/`xml` expectations,
+ * both of which are per EUD.
+ */
 export function checkRuntime(scenario: Scenario, artefacts: readonly EudArtefacts[]): string[] {
-  const shortest = Math.min(...artefacts.map((entry) => entry.ranForSeconds));
+  const longest = Math.max(...artefacts.map((entry) => entry.ranForSeconds));
 
-  return shortest + 1 < scenario.minRuntimeSeconds
+  return longest + 1 < scenario.minRuntimeSeconds
     ? [
-        `the EUDs ran for ${shortest.toFixed(0)}s, short of the ${scenario.minRuntimeSeconds}s this scenario needs to prove anything.`,
+        `the scenario ran for ${longest.toFixed(0)}s, short of the ${scenario.minRuntimeSeconds}s it needs to prove anything.`,
       ]
     : [];
 }

@@ -188,7 +188,30 @@ is a gate.
 - **`security_audit.yml`** — `rustsec/audit-check@v2.0.0` nightly, plus (a
   deviation from automate, per design 01 §7.3) on every push to `main` that
   touches `Cargo.lock` or `rustak-ui/Cargo.lock`, so a vulnerable dependency
-  bump is caught the same day rather than up to 24 hours later.
+  bump is caught the same day rather than up to 24 hours later. **It is red
+  today, and has been on every run so far** — see below.
+
+### The security audit is failing on two advisories that cannot be fixed here
+
+Both are real, both are known, and neither has a version to move to:
+
+- **`RUSTSEC-2023-0071` — `rsa 0.9.10`, the Marvin timing attack.** The advisory
+  carries `patched = []` deliberately and states that both the latest stable
+  (`0.9.10`) and the latest prerelease (`0.10.0-rc.18`) are still affected.
+  rustak signs tokens and issues certificates with this crate.
+- **`RUSTSEC-2026-0258` — `h2 0.3.27`, unbounded empty DATA frames.** Patched in
+  `0.4.16`, a different major line. `cargo tree -i h2@0.3.27` gives exactly one
+  path: `actix-http 3.13.6` → `actix-web 4.15.0` (plus `actix-multipart` and
+  `actix-ws`). actix-web 4 pins `h2 ^0.3`, so leaving it behind is an actix major
+  upgrade rather than a dependency bump.
+
+A job that can only be red reports nothing — a genuinely new advisory would land
+in a run that was already failing — so this needs a decision rather than
+watching. The two shapes it can take are an `ignore` list naming **those two ids
+only** (either the action's `ignore:` input or `.cargo/audit.toml`, which keeps
+the rationale in the repository), which leaves any new advisory failing the job;
+or accepting that this workflow is a report rather than a gate, and saying so
+here. It is written up in `.claude/plan/status/CI-01-ci-steward.md` §S3.
 - **`.github/dependabot.yml`** — daily `cargo` updates for the root workspace
   and, separately, for `rustak-ui` (excluded from the workspace, so it needs
   its own entry), daily `github-actions` updates, and daily `npm` updates for

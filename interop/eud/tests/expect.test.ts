@@ -148,6 +148,15 @@ test("a run that was cut short cannot prove what the scenario claims", () => {
   assert.match(failures[0], /short of the 90s/);
 });
 
+test("an EUD scripted to leave early does not make the scenario a short run", () => {
+  // `chat-direct`'s shape: one EUD quits half way through on purpose so the
+  // other can speak into the gap. The scenario's clock is the longest run.
+  assert.deepEqual(
+    checkRuntime(scenario, [artefacts({ ranForSeconds: 35 }), artefacts({ ranForSeconds: 96 })]),
+    [],
+  );
+});
+
 test("the server half reports both directions", () => {
   assert.deepEqual(checkClientEndpoints(scenario.expect, ["ALPHA"]), []);
 
