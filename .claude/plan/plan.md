@@ -1,7 +1,8 @@
 # rustak — a lightweight Rust-native TAK server
 
-> Status: APPROVED 2026-09-18 (implementation in progress). Research verified against source; four file-level designs completed
-> (saved as artefacts, see "Design artefacts"). Implementation is orchestrated per "Implementation strategy".
+> Status: IN PROGRESS (2026-09-18). M0 and M1 landed; M2 landed except groups/contacts (M2-06), identity API gaps (M2-08)
+> and the EUD scenario runner (M2-09), all in flight; M3 (M3-01 files, M3-02 profiles) in flight; M4 briefs written.
+> Per-brief results live in `.claude/plan/status/`; the nightly commoncommo interop image builds green.
 
 ## Context
 
