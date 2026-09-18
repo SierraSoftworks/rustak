@@ -335,6 +335,24 @@ Day to day, signing in to the admin UI is either:
   server, one from an authenticator that ignored `residentKey`, or one
   registered before this behaviour changed. A username with no passkey and a
   username that does not exist are refused identically.
+
+  The supported signature algorithms are **ES256** (`-7`), **RS256** (`-257`)
+  and **EdDSA** (`-8`); a credential offering anything else is refused at
+  registration rather than stored and found wanting later. A signature counter
+  that fails to move forward is refused — but only once it has moved at all,
+  because an authenticator that does not implement the counter reports zero
+  for ever and refusing those would lock out every such device.
+
+  > **Upgrading from a build before the pure-Rust WebAuthn change**: passkeys
+  > registered by an earlier version cannot be read by this one. The table and
+  > its columns are unchanged, but the stored public key is now in the new
+  > verifier's own encoding rather than the old library's. An affected sign-in
+  > is refused the way every other unusable passkey is, and the log says the
+  > credential "may have been written by a different version of rustak". The
+  > cure is to sign in by another route — an identity provider, or another
+  > administrator — and register the passkey again; an installation whose only
+  > administrator has only such a passkey has to delete the `passkeys` rows by
+  > hand and run the first-run wizard again.
 - **OIDC** — federated sign-in to an external identity provider, configured
   under `[auth.oidc]`. Group membership comes from the provider's claims;
   users mint their own per-device enrollment tokens and (opt-in) client

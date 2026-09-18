@@ -423,7 +423,8 @@ mod tests {
     use rustak_api::{PasskeyChallenge, PasskeySummary, TokenResponse};
 
     use super::*;
-    use crate::testing::context::{TEST_ORIGIN, bearer};
+    use crate::testing::authenticator::Algorithm;
+    use crate::testing::context::{TEST_HOST, TEST_ORIGIN, bearer};
     use crate::testing::{SoftAuthenticator, TestServer};
 
     /// The app, the authenticator and a signed-in account.
@@ -531,6 +532,96 @@ mod tests {
 
         let claims = server.jwt().unwrap().verify(&signed_in.token).unwrap();
         assert_eq!(claims.sub, "ada");
+    }
+
+    #[actix_web::test]
+    async fn a_registration_asks_for_a_credential_the_authenticator_will_keep() {
+        // The sign-in prompt has no username field, so it can only run a
+        // discoverable ceremony — and a credential the authenticator did not
+        // store cannot answer one. This is the assertion that the passkey
+        // profile survives to the wire, whatever builds the options.
+        let server = TestServer::start().await;
+        let (_, session) = server.signed_in("ada", false).await;
+        let (app, _) = ceremony!(server);
+
+        let started = challenge!(
+            app,
+            "/api/v1/auth/passkey/register/start",
+            serde_json::json!({ "label": "Phone" }),
+            &session
+        );
+
+        let selection = &started.options["authenticatorSelection"];
+        assert_eq!(selection["residentKey"], "required");
+        assert_eq!(selection["requireResidentKey"], true);
+        assert_eq!(selection["userVerification"], "required");
+    }
+
+    #[actix_web::test]
+    async fn the_options_a_browser_is_handed_are_the_ones_the_ui_knows_how_to_read() {
+        // The UI decodes `challenge`, `user.id` and every credential
+        // descriptor's `id` from base64url and hands the rest to
+        // `navigator.credentials` untouched, so these field names and encodings
+        // are the contract between the two halves.
+        let server = TestServer::start().await;
+        let (_, session) = server.signed_in("ada", false).await;
+        let (app, authenticator) = ceremony!(server);
+
+        register!(app, authenticator, &session, "Phone");
+
+        let started = challenge!(
+            app,
+            "/api/v1/auth/passkey/register/start",
+            serde_json::json!({ "label": "Second" }),
+            &session
+        );
+        let options = &started.options;
+
+        assert_eq!(options["rp"]["id"], TEST_HOST);
+        assert_eq!(
+            options["rp"]["name"], "rustak",
+            "the installation's own name is what the prompt has room for",
+        );
+        assert_eq!(options["attestation"], "none");
+        assert_eq!(options["user"]["name"], "ada");
+
+        for encoded in [&options["challenge"], &options["user"]["id"]] {
+            assert!(
+                base64::Engine::decode(
+                    &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                    encoded.as_str().expect("a base64url string"),
+                )
+                .is_ok(),
+            );
+        }
+
+        let excluded = options["excludeCredentials"]
+            .as_array()
+            .expect("the passkey already registered is excluded");
+        assert_eq!(excluded.len(), 1);
+        assert!(
+            base64::Engine::decode(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                excluded[0]["id"].as_str().expect("a base64url string"),
+            )
+            .is_ok(),
+        );
+
+        // And the sign-in half, which lists nothing at all.
+        let started = challenge!(
+            app,
+            "/api/v1/auth/passkey/login/start",
+            serde_json::json!({})
+        );
+
+        assert_eq!(started.options["rpId"], TEST_HOST);
+        assert_eq!(started.options["userVerification"], "required");
+        assert!(
+            started.options["allowCredentials"]
+                .as_array()
+                .is_none_or(|list| list.is_empty()),
+            "a discoverable ceremony names nobody",
+        );
     }
 
     #[actix_web::test]
@@ -994,5 +1085,508 @@ mod tests {
         .await;
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// Registers a passkey with a particular authenticator and signs in with
+    /// it, returning what the sign-in answered.
+    macro_rules! sign_in {
+        ($app:expr, $registrant:expr, $asserter:expr, $session:expr) => {{
+            let registered = register!($app, $registrant, $session, "Phone");
+            assert_eq!(registered.status(), StatusCode::OK);
+
+            let started = challenge!(
+                $app,
+                "/api/v1/auth/passkey/login/start",
+                serde_json::json!({ "username": "ada" })
+            );
+
+            let assertion = $asserter.get(&started.options);
+
+            test::call_service(
+                &$app,
+                test::TestRequest::post()
+                    .uri("/api/v1/auth/passkey/login/finish")
+                    .set_json(serde_json::json!({
+                        "challenge_id": started.challenge_id,
+                        "credential": assertion,
+                    }))
+                    .to_request(),
+            )
+            .await
+        }};
+    }
+
+    #[actix_web::test]
+    async fn every_algorithm_the_registration_offers_can_actually_sign_somebody_in() {
+        // An allow-list nothing exercises is an allow-list nobody knows works.
+        // The registration options name ES256, RS256 and EdDSA, so all three
+        // have to survive a whole ceremony, not just appear in a list.
+        for algorithm in [Algorithm::Es256, Algorithm::Rs256, Algorithm::Ed25519] {
+            let server = TestServer::start().await;
+            let (_, session) = server.signed_in("ada", false).await;
+            let app = test::init_service(App::new().configure(server.app())).await;
+            let authenticator = SoftAuthenticator::new(TEST_ORIGIN).signing_with(algorithm);
+
+            assert_eq!(
+                sign_in!(app, authenticator, authenticator, &session).status(),
+                StatusCode::OK,
+                "{algorithm:?} is offered at registration, so it has to work",
+            );
+        }
+    }
+
+    #[actix_web::test]
+    async fn a_credential_using_an_algorithm_we_never_offered_is_refused() {
+        // The key material is a real P-256 key; the only thing wrong with it is
+        // the COSE identifier. Accepting it would mean the list of algorithms
+        // the options advertise is decoration rather than a decision.
+        let server = TestServer::start().await;
+        let (_, session) = server.signed_in("ada", false).await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+        let authenticator =
+            SoftAuthenticator::new(TEST_ORIGIN).signing_with(Algorithm::Unsupported);
+
+        let registered = register!(app, authenticator, &session, "Phone");
+
+        assert_eq!(registered.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[actix_web::test]
+    async fn a_registration_run_from_somewhere_else_is_refused() {
+        // Registration is bound to the origin and the relying party exactly as
+        // sign-in is. A credential accepted from a page somewhere else would be
+        // a credential somebody else's site chose.
+        let server = TestServer::start().await;
+        let (_, session) = server.signed_in("ada", false).await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+        let honest = SoftAuthenticator::new(TEST_ORIGIN);
+
+        for liar in [
+            honest.at_origin("https://phishing.example.com"),
+            honest.at_rp_id("phishing.example.com"),
+            honest.without_user_verification(),
+            honest.without_user_presence(),
+        ] {
+            assert_eq!(
+                register!(app, liar, &session, "Phone").status(),
+                StatusCode::BAD_REQUEST,
+            );
+        }
+
+        // The positive control, so that the four refusals above are the lie
+        // rather than anything else about this server.
+        assert_eq!(
+            register!(app, honest, &session, "Phone").status(),
+            StatusCode::OK,
+        );
+    }
+
+    #[actix_web::test]
+    async fn an_assertion_whose_two_identifiers_disagree_is_refused() {
+        // The row to verify against is selected by `rawId`, while the verifier
+        // is handed the assertion's own `id`. If those could disagree, the
+        // caller would choose which credential the signature is checked with.
+        let server = TestServer::start().await;
+        let (_, ada) = server.signed_in("ada", false).await;
+        let (_, grace) = server.signed_in("grace", false).await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let hers = SoftAuthenticator::new(TEST_ORIGIN);
+        let his = SoftAuthenticator::new(TEST_ORIGIN);
+        register!(app, hers, &ada, "Hers");
+        register!(app, his, &grace, "His");
+
+        let started = challenge!(
+            app,
+            "/api/v1/auth/passkey/login/start",
+            serde_json::json!({ "username": "ada" })
+        );
+
+        // `grace`'s signature, presented under `ada`'s credential identifier.
+        let mut assertion = his.get(&serde_json::json!({
+            "challenge": started.options["challenge"].clone(),
+        }));
+        let hers_id = hers.get(&serde_json::json!({
+            "challenge": started.options["challenge"].clone(),
+        }))["rawId"]
+            .clone();
+        assertion["rawId"] = hers_id;
+
+        let response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/v1/auth/passkey/login/finish")
+                .set_json(serde_json::json!({
+                    "challenge_id": started.challenge_id,
+                    "credential": assertion,
+                }))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[actix_web::test]
+    async fn a_ceremony_labelled_as_the_other_one_is_refused() {
+        // `type` in the client data is what stops an assertion being replayed
+        // as a registration and the other way round; it is signed over, so it
+        // cannot be corrected on the way past either.
+        let server = TestServer::start().await;
+        let (_, session) = server.signed_in("ada", false).await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+        let honest = SoftAuthenticator::new(TEST_ORIGIN);
+
+        assert_eq!(
+            register!(app, honest.mislabelling_the_ceremony(), &session, "Phone").status(),
+            StatusCode::BAD_REQUEST,
+        );
+
+        assert_eq!(
+            sign_in!(app, honest, honest.mislabelling_the_ceremony(), &session).status(),
+            StatusCode::UNAUTHORIZED,
+        );
+    }
+
+    #[actix_web::test]
+    async fn a_ceremony_run_inside_somebody_elses_frame_is_refused() {
+        // Nothing here is ever meant to be completed from a nested browsing
+        // context, so `crossOrigin: true` is a ceremony the person may not have
+        // understood they were completing.
+        let server = TestServer::start().await;
+        let (_, session) = server.signed_in("ada", false).await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+        let honest = SoftAuthenticator::new(TEST_ORIGIN);
+
+        assert_eq!(
+            register!(app, honest.in_a_frame(), &session, "Phone").status(),
+            StatusCode::BAD_REQUEST,
+        );
+
+        assert_eq!(
+            sign_in!(app, honest, honest.in_a_frame(), &session).status(),
+            StatusCode::UNAUTHORIZED,
+        );
+    }
+
+    #[actix_web::test]
+    async fn a_registration_for_a_challenge_nobody_issued_is_refused() {
+        let server = TestServer::start().await;
+        let (_, session) = server.signed_in("ada", false).await;
+        let (app, authenticator) = ceremony!(server);
+
+        let started = challenge!(
+            app,
+            "/api/v1/auth/passkey/register/start",
+            serde_json::json!({ "label": "Phone" }),
+            &session
+        );
+
+        // A well-formed ceremony over a challenge of the caller's own choosing.
+        let credential = authenticator.create(&serde_json::json!({
+            "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+            "user": started.options["user"].clone(),
+        }));
+
+        let response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/v1/auth/passkey/register/finish")
+                .insert_header(("authorization", bearer(&session)))
+                .set_json(serde_json::json!({
+                    "challenge_id": started.challenge_id,
+                    "credential": credential,
+                }))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[actix_web::test]
+    async fn an_assertion_signed_over_another_relying_party_is_refused() {
+        // The origin in the client data is ours; only the relying-party
+        // identifier hashed into the authenticator data is somebody else's.
+        // That is the half of the binding a browser does not police, so it is
+        // the half this server has to.
+        let server = TestServer::start().await;
+        let (_, session) = server.signed_in("ada", false).await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+        let authenticator = SoftAuthenticator::new(TEST_ORIGIN);
+
+        assert_eq!(
+            sign_in!(
+                app,
+                authenticator,
+                authenticator.at_rp_id("phishing.example.com"),
+                &session
+            )
+            .status(),
+            StatusCode::UNAUTHORIZED,
+        );
+    }
+
+    #[actix_web::test]
+    async fn an_assertion_nobody_verified_is_refused() {
+        // The credential was registered with `userVerification: "required"`, so
+        // an assertion the authenticator did not verify a user for is a weaker
+        // proof than the one the credential promises.
+        let server = TestServer::start().await;
+        let (_, session) = server.signed_in("ada", false).await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+        let authenticator = SoftAuthenticator::new(TEST_ORIGIN);
+
+        assert_eq!(
+            sign_in!(
+                app,
+                authenticator,
+                authenticator.without_user_verification(),
+                &session
+            )
+            .status(),
+            StatusCode::UNAUTHORIZED,
+        );
+    }
+
+    #[actix_web::test]
+    async fn an_assertion_nobody_was_present_for_is_refused() {
+        // User presence is the one flag every ceremony requires, whatever else
+        // is asked for: it is what makes the assertion a deliberate act.
+        let server = TestServer::start().await;
+        let (_, session) = server.signed_in("ada", false).await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+        let authenticator = SoftAuthenticator::new(TEST_ORIGIN);
+
+        assert_eq!(
+            sign_in!(
+                app,
+                authenticator,
+                authenticator.without_user_presence(),
+                &session
+            )
+            .status(),
+            StatusCode::UNAUTHORIZED,
+        );
+    }
+
+    #[actix_web::test]
+    async fn an_assertion_whose_signature_covers_something_else_is_refused() {
+        // Everything about this assertion is well formed — the origin, the
+        // relying party, the flags, the counter and the challenge. Only the
+        // signature is over different bytes, which is the whole of the attack.
+        let server = TestServer::start().await;
+        let (_, session) = server.signed_in("ada", false).await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+        let authenticator = SoftAuthenticator::new(TEST_ORIGIN);
+
+        assert_eq!(
+            sign_in!(
+                app,
+                authenticator,
+                authenticator.with_tampered_signature(),
+                &session
+            )
+            .status(),
+            StatusCode::UNAUTHORIZED,
+        );
+    }
+
+    #[actix_web::test]
+    async fn an_assertion_for_a_challenge_nobody_issued_is_refused() {
+        // The challenge is the whole of what makes an assertion fresh, so an
+        // assertion over one this server never sent has to be refused whatever
+        // else about it verifies.
+        let server = TestServer::start().await;
+        let (_, session) = server.signed_in("ada", false).await;
+        let (app, authenticator) = ceremony!(server);
+
+        register!(app, authenticator, &session, "Phone");
+
+        let started = challenge!(
+            app,
+            "/api/v1/auth/passkey/login/start",
+            serde_json::json!({ "username": "ada" })
+        );
+
+        // A well-formed ceremony, run against a challenge of the caller's own
+        // choosing rather than the one the handle was issued for.
+        let assertion = authenticator.get(&serde_json::json!({
+            "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        }));
+
+        let response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/v1/auth/passkey/login/finish")
+                .set_json(serde_json::json!({
+                    "challenge_id": started.challenge_id,
+                    "credential": assertion,
+                }))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[actix_web::test]
+    async fn a_registration_handle_cannot_be_spent_on_a_sign_in() {
+        // A handle carries which ceremony it was started for, and the two
+        // verifiers check different things. Letting a caller choose which one
+        // runs would be letting them choose which checks apply.
+        let server = TestServer::start().await;
+        let (_, session) = server.signed_in("ada", false).await;
+        let (app, authenticator) = ceremony!(server);
+
+        register!(app, authenticator, &session, "Phone");
+
+        let started = challenge!(
+            app,
+            "/api/v1/auth/passkey/register/start",
+            serde_json::json!({ "label": "Second" }),
+            &session
+        );
+
+        let assertion = authenticator.get(&started.options);
+
+        let response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/v1/auth/passkey/login/finish")
+                .set_json(serde_json::json!({
+                    "challenge_id": started.challenge_id,
+                    "credential": assertion,
+                }))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[actix_web::test]
+    async fn a_sign_in_handle_issued_for_one_account_cannot_sign_in_another() {
+        // The named ceremony lists exactly one account's credentials. An
+        // assertion from somebody else's authenticator is refused before any
+        // signature is looked at, because the handle already said who this was
+        // meant to be.
+        let server = TestServer::start().await;
+        let (_, ada) = server.signed_in("ada", false).await;
+        let (_, grace) = server.signed_in("grace", false).await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let hers = SoftAuthenticator::new(TEST_ORIGIN);
+        let his = SoftAuthenticator::new(TEST_ORIGIN);
+        register!(app, hers, &ada, "Hers");
+        register!(app, his, &grace, "His");
+
+        let started = challenge!(
+            app,
+            "/api/v1/auth/passkey/login/start",
+            serde_json::json!({ "username": "ada" })
+        );
+
+        // `grace`'s authenticator answers a challenge issued for `ada`, with a
+        // perfectly valid assertion of its own credential.
+        let assertion = his.get(&serde_json::json!({
+            "challenge": started.options["challenge"].clone(),
+        }));
+
+        let response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/v1/auth/passkey/login/finish")
+                .set_json(serde_json::json!({
+                    "challenge_id": started.challenge_id,
+                    "credential": assertion,
+                }))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[actix_web::test]
+    async fn the_same_passkey_cannot_be_registered_twice() {
+        // A credential registered to two accounts would let whoever holds it
+        // sign in as either.
+        let server = TestServer::start().await;
+        let (_, ada) = server.signed_in("ada", false).await;
+        let (_, grace) = server.signed_in("grace", false).await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+        let authenticator = SoftAuthenticator::new(TEST_ORIGIN);
+
+        assert_eq!(
+            register!(app, authenticator, &ada, "Phone").status(),
+            StatusCode::OK,
+        );
+
+        // The same authenticator registers a *new* credential each time, so the
+        // collision has to be manufactured: replay the first credential into a
+        // second account's ceremony.
+        let started = challenge!(
+            app,
+            "/api/v1/auth/passkey/register/start",
+            serde_json::json!({ "label": "Phone" }),
+            &grace
+        );
+        let credential = authenticator.create(&started.options);
+
+        let first = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/v1/auth/passkey/register/finish")
+                .insert_header(("authorization", bearer(&grace)))
+                .set_json(serde_json::json!({
+                    "challenge_id": started.challenge_id,
+                    "credential": credential.clone(),
+                }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::OK);
+
+        let started = challenge!(
+            app,
+            "/api/v1/auth/passkey/register/start",
+            serde_json::json!({ "label": "Phone" }),
+            &ada
+        );
+        let mut replayed = credential;
+        replayed["response"]["clientDataJSON"] = serde_json::Value::String(base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            serde_json::to_vec(&serde_json::json!({
+                "type": "webauthn.create",
+                "challenge": started.options["challenge"],
+                "origin": TEST_ORIGIN,
+                "crossOrigin": false,
+            }))
+            .unwrap(),
+        ));
+
+        let second = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/v1/auth/passkey/register/finish")
+                .insert_header(("authorization", bearer(&ada)))
+                .set_json(serde_json::json!({
+                    "challenge_id": started.challenge_id,
+                    "credential": replayed,
+                }))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(
+            second.status(),
+            StatusCode::BAD_REQUEST,
+            "a credential registered to two accounts would sign in as either",
+        );
+        assert!(
+            String::from_utf8_lossy(&test::read_body(second).await).contains("already registered"),
+            "and it has to be refused for that reason rather than incidentally",
+        );
     }
 }
