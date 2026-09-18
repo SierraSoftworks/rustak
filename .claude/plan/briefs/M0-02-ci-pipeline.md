@@ -1,0 +1,19 @@
+# M0-02 — CI/CD pipeline (port from automate)
+
+**Goal:** first-class GitHub Actions from day one, mirroring `../automate/.github/workflows/*` and its packaging files, adapted to the multi-crate/multi-binary layout in `design/01-foundations-storage-ci.md` §7.3 (job graph, matrices, Docker, tap) and the plan's interop additions. This brief runs in parallel with M0-01 (workspace skeleton) — assume the crates `rustak-server` (bin `rustak`) and `rustak-plugin-example` exist by the time CI runs, but do not create or edit any crate files.
+
+**Read first:** `.claude/plan/plan.md` (CI/CD & releases; Verification → Interop suites in CI), `.claude/plan/conventions.md`, `design/01-foundations-storage-ci.md` §7 (all), `research/01-automate-architecture.md` §1 (workflow summary), and every file under `../automate/.github/`, `../automate/Cross.toml`, `../automate/Dockerfile`, `../automate/e2e/{package.json,playwright.config.ts,scripts/start-agent.mjs,tests/helpers.ts,README.md}`. Never read `../automate/.env` (named pipe).
+
+**Files you own (create only these):**
+- `.github/workflows/rust.yml` — jobs exactly per design §7.3: `deduplicate` → `version` (rewrites the single `^version =` line of the root `Cargo.toml` `[workspace.package]`), `lint` (fmt, clippy `--workspace --all-targets -D warnings`, `scripts/check-file-length.sh`, `cargo doc -D warnings`), `test` (coverage → grcov → codecov), `ui` (trunk pinned to the current stable, debug bundle for e2e + release bundle), `e2e` (Playwright), `build` matrix (crate × target, artifact names `<bin>-<os>-<arch>`), `ci` aggregator, `docker-build`/`docker-publish` (per crate, multi-arch to `ghcr.io/sierrasoftworks/<bin>`, on `main` pushes + releases), `tap` (release only, formula `rustak`), release assets upload. Add placeholder jobs `interop-node-tak` (PR, `if: false` until M2 with a comment) and `interop-cloudtak`/`interop-eud` in `nightly.yml` (schedule + `workflow_dispatch`, `if: false` placeholders with comments). **No `protoc` installation anywhere.**
+- `.github/workflows/changelog.yml`, `.github/workflows/security_audit.yml`, `.github/release-drafter.yml`, `.github/dependabot.yml` (cargo `/`, cargo `/rustak-ui`, github-actions, npm `/e2e`; groups per design §7.3).
+- `Cross.toml` (per design §7.3 — minimal; add the cmake pre-build for aarch64-musl only as a commented fallback).
+- `rustak-server/Dockerfile` and `rustak-plugin-example/Dockerfile` exactly as design §7.3.
+- `e2e/` harness skeleton: `package.json`, `tsconfig.json`, `playwright.config.ts`, `scripts/start-server.mjs` (port 18446, config per design §7.1 — with `[web.public.tls] mode = "none"` and `allow_insecure_http = true`, no `[stream.tcp]`), `tests/helpers.ts`, `tests/smoke.spec.ts` (robots.txt + app start only), `README.md` documenting the traps from automate's e2e README. Do not `npm install`.
+- `docs/ci.md` — one page: job graph, how releases/tags flow, required secrets/vars (`CODECOV_TOKEN`, `GITHUB_TOKEN` scopes for ghcr, tap token name used by automate), how to run each check locally.
+
+**Do not touch:** any `rustak-*/` file other than the two Dockerfiles, root `Cargo.toml`, `scripts/`, `.claude/**` except your status file. Do not commit, push or run `but`/`git` write commands.
+
+**Exit checks:** `actionlint` if available (`brew install actionlint` is allowed) or careful review; `node --check e2e/scripts/start-server.mjs`; every referenced action pinned to the same major versions automate uses (or newer if automate's are deprecated — note it); YAML parses (`python3 -c 'import yaml,sys;[yaml.safe_load(open(f)) for f in sys.argv[1:]]' .github/workflows/*.yml`).
+
+**Status file:** `.claude/plan/status/M0-02-ci-pipeline.md` — what you created, deviations from automate and why, secrets/vars the user must configure in the GitHub repo, anything left open.
