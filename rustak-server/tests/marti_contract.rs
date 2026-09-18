@@ -64,6 +64,59 @@ const CONTRACT: &[(&str, &str, u16, &str)] = &[
         501,
         "application/json",
     ),
+    // Channels, contacts and subscriptions: every one of them needs a
+    // credential, so an unauthenticated probe asserts the refusal shape rather
+    // than the payload. The payloads are asserted in `tests/marti_channels.rs`
+    // against a real listener with real clients on it.
+    ("GET", "/Marti/api/groups/all", 401, "application/json"),
+    ("PUT", "/Marti/api/groups/active", 401, "application/json"),
+    (
+        "PUT",
+        "/Marti/api/groups/activebits",
+        401,
+        "application/json",
+    ),
+    (
+        "GET",
+        "/Marti/api/groups/groupCacheEnabled",
+        200,
+        "application/json",
+    ),
+    ("GET", "/Marti/api/groups/user", 401, "application/json"),
+    ("GET", "/Marti/api/groups/Blue/IN", 401, "application/json"),
+    ("GET", "/Marti/api/users/all", 401, "application/json"),
+    ("GET", "/Marti/api/contacts/all", 401, "application/json"),
+    ("GET", "/Marti/api/clientEndPoints", 401, "application/json"),
+    (
+        "GET",
+        "/Marti/api/subscriptions/all",
+        401,
+        "application/json",
+    ),
+    (
+        "GET",
+        "/Marti/api/subscription/UID-A",
+        401,
+        "application/json",
+    ),
+    (
+        "POST",
+        "/Marti/api/subscriptions/incognito/UID-A",
+        401,
+        "application/json",
+    ),
+    (
+        "DELETE",
+        "/Marti/api/subscriptions/delete/UID-A",
+        401,
+        "application/json",
+    ),
+    (
+        "PUT",
+        "/Marti/api/subscriptions/UID-A/filter",
+        401,
+        "application/json",
+    ),
     ("GET", "/Marti/GetTime", 200, "text/plain"),
     ("POST", "/Marti/ErrorLog", 200, "text/plain"),
     ("GET", "/Marti/vcm", 200, "application/xml"),

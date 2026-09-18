@@ -40,14 +40,23 @@
 //! canonicalising redirect, and [`headers::marti_headers`] replaces any `3xx`
 //! that reaches it with a `500` and a log line.
 
+pub mod channels;
+pub mod contacts;
 pub mod enroll;
 pub mod error;
 pub mod extract;
+pub mod files;
+pub mod groups;
 pub mod headers;
 pub mod oauth;
 pub mod principal;
+pub mod profiles;
 pub mod response;
 pub mod stubs;
+pub mod subscriptions;
+pub mod sync;
+pub mod sync_metadata;
+pub mod sync_read;
 pub mod time;
 pub mod tls;
 pub mod util;
@@ -93,6 +102,7 @@ pub fn services(role: ListenerRole) -> impl FnOnce(&mut web::ServiceConfig) + Cl
                     .wrap(from_fn(headers::marti_headers))
                     .configure(api_routes)
                     .configure(servlet_routes)
+                    .configure(sync::routes)
                     .default_service(web::to(unmatched)),
             )
             .service(
@@ -127,17 +137,19 @@ fn api_routes(config: &mut web::ServiceConfig) {
             .route("/tls/config", web::get().to(tls::config))
             .route("/tls/signClient/v2", web::post().to(tls::sign_client_v2))
             .route("/tls/signClient", web::post().to(tls::sign_client_v1))
-            .route(
-                "/tls/profile/enrollment",
-                web::get().to(tls::enrollment_profile),
-            )
-            .route(
-                "/device/profile/connection",
-                web::get().to(tls::connection_profile),
-            )
+            // Device profiles (M3-02), whose own registration order puts the
+            // literal `device/profile` children ahead of the `{name}` that
+            // would otherwise swallow them.
+            .configure(profiles::routes)
             .route("/util/user/roles", web::get().to(util::roles))
             .route("/util/isAdmin", web::get().to(version::is_admin))
             .route("/home", web::get().to(util::home))
+            .configure(channel_routes)
+            // Enterprise Sync (M3-01): the metadata routes register their two
+            // literal children before the `{field}` that would swallow them,
+            // and the file manager its `metadata` literals before `{hash}`.
+            .configure(sync_metadata::routes)
+            .configure(files::routes)
             .configure(stub_routes)
             // Its own, rather than the application's: a nested scope inherits
             // the *App*'s default service, which is the single-page shell, and
@@ -145,6 +157,49 @@ fn api_routes(config: &mut web::ServiceConfig) {
             // `200` that node-tak would parse as a payload.
             .default_service(web::to(unmatched)),
     );
+}
+
+/// Channels, contacts and subscriptions, all under `/Marti/api`.
+///
+/// Every literal is registered before the parameterised shape that would also
+/// match it: `/groups/all` and the four other one-segment children come first,
+/// and `/subscriptions/incognito/{uid}` before `/subscriptions/{uid}/filter`,
+/// which would otherwise claim a subscription called `incognito`.
+fn channel_routes(config: &mut web::ServiceConfig) {
+    config
+        .route("/groups/all", web::get().to(groups::all))
+        .route("/groups/active", web::put().to(groups::set_active))
+        .route("/groups/activebits", web::put().to(groups::set_active_bits))
+        .route(
+            "/groups/groupCacheEnabled",
+            web::get().to(groups::cache_enabled),
+        )
+        .route("/groups/user", web::get().to(groups::for_user))
+        .route("/groups/{name}/{direction}", web::get().to(groups::one))
+        .route("/users/all", web::get().to(groups::users_all))
+        .route("/contacts/all", web::get().to(contacts::all))
+        .route(
+            "/clientEndPoints",
+            web::get().to(contacts::client_endpoints),
+        )
+        .route("/subscriptions/all", web::get().to(subscriptions::all))
+        .route(
+            "/subscriptions/incognito/{uid}",
+            web::post().to(subscriptions::incognito),
+        )
+        .route(
+            "/subscriptions/delete/{uid}",
+            web::delete().to(subscriptions::delete),
+        )
+        .route(
+            "/subscriptions/{uid}/filter",
+            web::put().to(subscriptions::filter),
+        )
+        .route(
+            "/subscriptions/{uid}/filter",
+            web::delete().to(subscriptions::filter),
+        )
+        .route("/subscription/{uid}", web::get().to(subscriptions::one));
 }
 
 /// The feature stubs, all under `/Marti/api`.
@@ -227,6 +282,15 @@ const PATHS: &[&str] = &[
     "/Marti/api/util/user/roles",
     "/Marti/api/util/isAdmin",
     "/Marti/api/home",
+    "/Marti/api/groups/all",
+    "/Marti/api/groups/active",
+    "/Marti/api/groups/activebits",
+    "/Marti/api/groups/groupCacheEnabled",
+    "/Marti/api/groups/user",
+    "/Marti/api/users/all",
+    "/Marti/api/contacts/all",
+    "/Marti/api/clientEndPoints",
+    "/Marti/api/subscriptions/all",
     "/Marti/api/video",
     "/Marti/api/injectors/cot/uid",
     "/Marti/api/repeater/list",
@@ -241,6 +305,15 @@ const PATHS: &[&str] = &[
     "/Marti/LatestKML",
     "/Marti/TracksKML",
     "/Marti/sync/missioncreate",
+    "/Marti/sync/upload",
+    "/Marti/sync/search",
+    "/Marti/sync/content",
+    "/Marti/sync/missionupload",
+    "/Marti/sync/missionquery",
+    "/Marti/sync/delete",
+    "/Marti/api/sync/search",
+    "/Marti/api/files/metadata",
+    "/Marti/api/files/metadata/count",
     "/files/api/config",
 ];
 
@@ -253,7 +326,21 @@ const PARAMETERISED: &[&str] = &[
     "/Marti/api/video/",
     "/Marti/api/injectors/cot/uid/",
     "/Marti/api/repeater/remove/",
+    "/Marti/api/subscription/",
+    "/Marti/api/subscriptions/incognito/",
+    "/Marti/api/subscriptions/delete/",
+    "/Marti/api/files/",
 ];
+
+/// The paths that are a prefix, one path parameter, then a literal tail.
+const PARAMETERISED_TAIL: &[(&str, &str)] = &[
+    ("/Marti/api/missions/", "/kml"),
+    ("/Marti/api/subscriptions/", "/filter"),
+    ("/Marti/api/files/", "/metadata"),
+];
+
+/// The paths that are a prefix and exactly two path parameters.
+const PARAMETERISED_PAIR: &[&str] = &["/Marti/api/groups/", "/Marti/api/sync/metadata/"];
 
 /// Whether some method serves this exact path.
 fn serves_path(path: &str) -> bool {
@@ -268,10 +355,35 @@ fn serves_path(path: &str) -> bool {
         return true;
     }
 
-    // `/Marti/api/missions/{name}/kml`, the one two-segment shape.
-    path.strip_prefix("/Marti/api/missions/")
-        .and_then(|rest| rest.strip_suffix("/kml"))
+    if PARAMETERISED_TAIL
+        .iter()
+        .any(|(prefix, tail)| is_one_segment_before(path, prefix, tail))
+    {
+        return true;
+    }
+
+    PARAMETERISED_PAIR
+        .iter()
+        .any(|prefix| is_two_segments_under(path, prefix))
+}
+
+/// Whether `path` is `prefix`, one non-empty segment, then `tail`.
+fn is_one_segment_before(path: &str, prefix: &str, tail: &str) -> bool {
+    path.strip_prefix(prefix)
+        .and_then(|rest| rest.strip_suffix(tail))
         .is_some_and(|name| !name.is_empty() && !name.contains('/'))
+}
+
+/// Whether `path` is `prefix` followed by exactly two non-empty segments.
+fn is_two_segments_under(path: &str, prefix: &str) -> bool {
+    let Some(rest) = path.strip_prefix(prefix) else {
+        return false;
+    };
+
+    match rest.split_once('/') {
+        Some((first, second)) => !first.is_empty() && !second.is_empty() && !second.contains('/'),
+        None => false,
+    }
 }
 
 /// Whether `path` is `prefix` followed by exactly one non-empty segment.
@@ -507,12 +619,31 @@ mod tests {
         }
 
         for path in [
+            "/Marti/api/groups/all",
+            "/Marti/api/groups/active",
+            "/Marti/api/groups/Blue/IN",
+            "/Marti/api/contacts/all",
+            "/Marti/api/clientEndPoints",
+            "/Marti/api/subscription/UID-A",
+            "/Marti/api/subscriptions/all",
+            "/Marti/api/subscriptions/incognito/UID-A",
+            "/Marti/api/subscriptions/delete/UID-A",
+            "/Marti/api/subscriptions/UID-A/filter",
+        ] {
+            assert!(serves_path(path), "{path}");
+        }
+
+        for path in [
             "/Marti/api/nothing-here",
             "/Marti/api/videos",
             "/Marti/api/video/a/b",
             "/Marti/api/version/",
             "/Marti/api/missions/Alpha",
             "/Marti/api/missions//kml",
+            "/Marti/api/groups/Blue/IN/extra",
+            "/Marti/api/groups//IN",
+            "/Marti/api/subscriptions//filter",
+            "/Marti/api/subscriptions/UID-A/filters",
         ] {
             assert!(!serves_path(path), "{path}");
         }

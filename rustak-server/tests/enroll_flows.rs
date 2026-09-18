@@ -619,22 +619,56 @@ async fn the_enrolment_endpoints_refuse_without_a_credential_and_say_how_to_retr
 
 #[actix_web::test]
 async fn the_profile_endpoints_answer_no_content_until_they_have_something_to_send() {
+    // M3-02 took these routes over from the 204 stubs. The connection fetch
+    // still answers 204 when an installation has configured no profiles, which
+    // is what this test has always been about; what changed is that both routes
+    // now identify the caller, require the `clientUid` ATAK always sends, and
+    // that enrolment always has one generated file to send.
     let harness = harness().await;
+    let (_, session) = harness.server.signed_in("ada", false).await;
+    let token = rustak_server::testing::context::bearer(&session);
     let app = test::init_service(App::new().configure(harness.app())).await;
 
-    for uri in [
-        "/Marti/api/tls/profile/enrollment?clientUid=ANDROID-1",
-        "/Marti/api/device/profile/connection",
-    ] {
-        let response =
-            test::call_service(&app, test::TestRequest::get().uri(uri).to_request()).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/Marti/api/device/profile/connection?clientUid=ANDROID-1&syncSecago=-1")
+            .insert_header((AUTHORIZATION, token.clone()))
+            .to_request(),
+    )
+    .await;
 
-        assert_eq!(
-            response.status().as_u16(),
-            204,
-            "{uri}: ATAK reads 'nothing for you' and carries on to the stream",
-        );
-    }
+    assert_eq!(
+        response.status().as_u16(),
+        204,
+        "ATAK reads 'nothing for you' and carries on to the stream",
+    );
+
+    // The enrolment profile is the exception: it always carries the generated
+    // `rustak-enrollment.pref`, because that is the only thing that turns on
+    // the client preference every later connection profile depends on.
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/Marti/api/tls/profile/enrollment?clientUid=ANDROID-1")
+            .insert_header((AUTHORIZATION, token.clone()))
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(response.status().as_u16(), 200);
+
+    // And a request with no credential is refused rather than answered with an
+    // empty profile, because these carry an account's own settings.
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/Marti/api/tls/profile/enrollment?clientUid=ANDROID-1")
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(response.status().as_u16(), 401);
 
     harness.stop().await;
 }
