@@ -1,0 +1,17 @@
+<svg viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="rustak logo concept 04">
+  <defs>
+    <linearGradient id="t04ink" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#484B51"/><stop offset="1" stop-color="#2C2E33"/></linearGradient>
+    <linearGradient id="t04paper" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F7F7F7"/><stop offset="1" stop-color="#E2E2E2"/></linearGradient>
+    <linearGradient id="t04rust" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F2643F"/><stop offset="1" stop-color="#E5401C"/></linearGradient>
+    <clipPath id="t04clipA"><path d="M48,40 H208 V130 C208,180 172,214 128,228 C84,214 48,180 48,130 Z"/></clipPath>
+    <clipPath id="t04clipB"><path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z"/></clipPath>
+    <clipPath id="t04clipC"><path d="M128,28 L208,62 V142 L128,228 L48,142 V62 Z"/></clipPath>
+    <filter id="t04soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="3.6"/></filter>
+  </defs>
+  
+    <g clip-path="url(#t04clipB)">
+      <rect x="0" y="0" width="256" height="256" fill="#2C2E33"/>
+      <path d="M0,256 L256,0 V256 Z" fill="#E5401C"/>
+    </g>
+    <g transform="translate(128,132) scale(0.66)"><path d="M0,-22 C36,-52 74,-70 100,-64 L84,-50 L90,-38 L70,-30 L76,-18 L54,-12 L58,0 L36,2 L38,12 L18,12 L18,26 L26,50 L14,46 L8,58 L0,50 L-8,58 L-14,46 L-26,50 L-18,26 L-18,12 L-38,12 L-36,2 L-58,0 L-54,-12 L-76,-18 L-70,-30 L-90,-38 L-84,-50 L-100,-64 C-74,-70 -36,-52 0,-22 Z M0,-58 C11,-58 19,-48 19,-36 C19,-26 15,-18 8,-14 L0,-2 L-8,-14 C-15,-18 -19,-26 -19,-36 C-19,-48 -11,-58 0,-58 Z" fill="#FFFFFF" /></g>
+</svg>

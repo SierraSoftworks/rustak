@@ -1,0 +1,14 @@
+<svg viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="rustak logo concept 10">
+  <defs>
+    <linearGradient id="t10ink" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#484B51"/><stop offset="1" stop-color="#2C2E33"/></linearGradient>
+    <linearGradient id="t10paper" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F7F7F7"/><stop offset="1" stop-color="#E2E2E2"/></linearGradient>
+    <linearGradient id="t10rust" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F2643F"/><stop offset="1" stop-color="#E5401C"/></linearGradient>
+    <clipPath id="t10clipA"><path d="M48,40 H208 V130 C208,180 172,214 128,228 C84,214 48,180 48,130 Z"/></clipPath>
+    <clipPath id="t10clipB"><path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z"/></clipPath>
+    <clipPath id="t10clipC"><path d="M128,28 L208,62 V142 L128,228 L48,142 V62 Z"/></clipPath>
+    <filter id="t10soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="3.6"/></filter>
+  </defs>
+  
+    <path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z" fill="#2C2E33"/>
+    <path d="M72,92 L128,74 L184,92" fill="none" stroke="#F2643F" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/><path d="M72,128 L128,110 L184,128" fill="none" stroke="#E5401C" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/><path d="M72,164 L128,146 L184,164" fill="none" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

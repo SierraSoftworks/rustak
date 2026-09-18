@@ -1,0 +1,296 @@
+<svg viewBox="0 0 1548 1248" width="1548" height="1248" xmlns="http://www.w3.org/2000/svg" font-family="'Inter','Helvetica Neue',Arial,sans-serif">
+<rect width="1548" height="1248" fill="#EDEDEF"/>
+<text x="24" y="44" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="26" font-weight="700" fill="#2C2E33" text-anchor="start" letter-spacing="0" >rustak — logo concept board (round 1)</text>
+<g transform="translate(24,84)">
+<rect x="8" y="8" width="284" height="364" rx="14" fill="#FFFFFF"/>
+<svg x="22.0" y="24" width="256" height="256" viewBox="0 0 256 256"><defs>
+    <linearGradient id="t01ink" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#484B51"/><stop offset="1" stop-color="#2C2E33"/></linearGradient>
+    <linearGradient id="t01paper" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F7F7F7"/><stop offset="1" stop-color="#E2E2E2"/></linearGradient>
+    <linearGradient id="t01rust" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F2643F"/><stop offset="1" stop-color="#E5401C"/></linearGradient>
+    <clipPath id="t01clipA"><path d="M48,40 H208 V130 C208,180 172,214 128,228 C84,214 48,180 48,130 Z"/></clipPath>
+    <clipPath id="t01clipB"><path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z"/></clipPath>
+    <clipPath id="t01clipC"><path d="M128,28 L208,62 V142 L128,228 L48,142 V62 Z"/></clipPath>
+    <filter id="t01soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="3.6"/></filter>
+  </defs>
+    <path d="M48,40 H208 V130 C208,180 172,214 128,228 C84,214 48,180 48,130 Z" fill="#2C2E33" stroke="#FFFFFF" stroke-width="10" stroke-linejoin="round"/>
+    <path d="M48,40 H208 V130 C208,180 172,214 128,228 C84,214 48,180 48,130 Z" fill="none" stroke="#2C2E33" stroke-width="4" stroke-linejoin="round" transform="translate(128,128) scale(1.085) translate(-128,-128)"/>
+    <g transform="translate(128,104) scale(0.72)"><path d="M0,-22 C36,-52 74,-70 100,-64 L84,-50 L90,-38 L70,-30 L76,-18 L54,-12 L58,0 L36,2 L38,12 L18,12 L18,26 L26,50 L14,46 L8,58 L0,50 L-8,58 L-14,46 L-26,50 L-18,26 L-18,12 L-38,12 L-36,2 L-58,0 L-54,-12 L-76,-18 L-70,-30 L-90,-38 L-84,-50 L-100,-64 C-74,-70 -36,-52 0,-22 Z M0,-58 C11,-58 19,-48 19,-36 C19,-26 15,-18 8,-14 L0,-2 L-8,-14 C-15,-18 -19,-26 -19,-36 C-19,-48 -11,-58 0,-58 Z" fill="#FFFFFF" /><path d="M-8,-16 C-4,-20 4,-20 8,-16 L0,-2 Z" fill="#E5401C"/></g>
+    <g clip-path="url(#t01clipA)"><rect x="40" y="150" width="176" height="42" fill="#E5401C"/></g>
+    <text x="128" y="182" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="30" font-weight="800" fill="#FFFFFF" text-anchor="middle" letter-spacing="2" >RUSTAK</text></svg>
+<text x="24" y="314" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="17" font-weight="700" fill="#2C2E33" text-anchor="start" letter-spacing="0" >01  Heraldic homage</text>
+<text x="24" y="336" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >TAK's double-rim heater shield, white</text>
+<text x="24" y="354" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >eagle, rust name band</text>
+</g>
+<g transform="translate(324,84)">
+<rect x="8" y="8" width="284" height="364" rx="14" fill="#FFFFFF"/>
+<svg x="22.0" y="24" width="256" height="256" viewBox="0 0 256 256"><defs>
+    <linearGradient id="t02ink" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#484B51"/><stop offset="1" stop-color="#2C2E33"/></linearGradient>
+    <linearGradient id="t02paper" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F7F7F7"/><stop offset="1" stop-color="#E2E2E2"/></linearGradient>
+    <linearGradient id="t02rust" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F2643F"/><stop offset="1" stop-color="#E5401C"/></linearGradient>
+    <clipPath id="t02clipA"><path d="M48,40 H208 V130 C208,180 172,214 128,228 C84,214 48,180 48,130 Z"/></clipPath>
+    <clipPath id="t02clipB"><path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z"/></clipPath>
+    <clipPath id="t02clipC"><path d="M128,28 L208,62 V142 L128,228 L48,142 V62 Z"/></clipPath>
+    <filter id="t02soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="3.6"/></filter>
+  </defs>
+    <circle cx="128" cy="132" r="104" fill="none" stroke="#E5401C" stroke-width="16" stroke-dasharray="13 8.9"/>
+    <circle cx="128" cy="132" r="94" fill="none" stroke="#E5401C" stroke-width="10"/>
+    <g transform="translate(128,132) scale(0.62) translate(-128,-128)">
+      <path d="M48,40 H208 V130 C208,180 172,214 128,228 C84,214 48,180 48,130 Z" fill="#2C2E33" stroke="#FFFFFF" stroke-width="12" stroke-linejoin="round"/>
+      <g transform="translate(128,132) scale(0.86)"><path d="M0,-22 C36,-52 74,-70 100,-64 L84,-50 L90,-38 L70,-30 L76,-18 L54,-12 L58,0 L36,2 L38,12 L18,12 L18,26 L26,50 L14,46 L8,58 L0,50 L-8,58 L-14,46 L-26,50 L-18,26 L-18,12 L-38,12 L-36,2 L-58,0 L-54,-12 L-76,-18 L-70,-30 L-90,-38 L-84,-50 L-100,-64 C-74,-70 -36,-52 0,-22 Z M0,-58 C11,-58 19,-48 19,-36 C19,-26 15,-18 8,-14 L0,-2 L-8,-14 C-15,-18 -19,-26 -19,-36 C-19,-48 -11,-58 0,-58 Z" fill="#FFFFFF" /><path d="M-8,-16 C-4,-20 4,-20 8,-16 L0,-2 Z" fill="#E5401C"/></g>
+    </g></svg>
+<text x="24" y="314" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="17" font-weight="700" fill="#2C2E33" text-anchor="start" letter-spacing="0" >02  Rust gear</text>
+<text x="24" y="336" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >Shield set inside Rust's gear ring</text>
+</g>
+<g transform="translate(624,84)">
+<rect x="8" y="8" width="284" height="364" rx="14" fill="#FFFFFF"/>
+<svg x="22.0" y="24" width="256" height="256" viewBox="0 0 256 256"><defs>
+    <linearGradient id="t03ink" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#484B51"/><stop offset="1" stop-color="#2C2E33"/></linearGradient>
+    <linearGradient id="t03paper" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F7F7F7"/><stop offset="1" stop-color="#E2E2E2"/></linearGradient>
+    <linearGradient id="t03rust" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F2643F"/><stop offset="1" stop-color="#E5401C"/></linearGradient>
+    <clipPath id="t03clipA"><path d="M48,40 H208 V130 C208,180 172,214 128,228 C84,214 48,180 48,130 Z"/></clipPath>
+    <clipPath id="t03clipB"><path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z"/></clipPath>
+    <clipPath id="t03clipC"><path d="M128,28 L208,62 V142 L128,228 L48,142 V62 Z"/></clipPath>
+    <filter id="t03soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="3.6"/></filter>
+  </defs>
+    <path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z" fill="#E5401C"/>
+    <g transform="translate(128,132) scale(0.66)"><path d="M0,-22 C36,-52 74,-70 100,-64 L84,-50 L90,-38 L70,-30 L76,-18 L54,-12 L58,0 L36,2 L38,12 L18,12 L18,26 L26,50 L14,46 L8,58 L0,50 L-8,58 L-14,46 L-26,50 L-18,26 L-18,12 L-38,12 L-36,2 L-58,0 L-54,-12 L-76,-18 L-70,-30 L-90,-38 L-84,-50 L-100,-64 C-74,-70 -36,-52 0,-22 Z M0,-58 C11,-58 19,-48 19,-36 C19,-26 15,-18 8,-14 L0,-2 L-8,-14 C-15,-18 -19,-26 -19,-36 C-19,-48 -11,-58 0,-58 Z" fill="#FFFFFF" /></g></svg>
+<text x="24" y="314" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="17" font-weight="700" fill="#2C2E33" text-anchor="start" letter-spacing="0" >03  Flat minimal</text>
+<text x="24" y="336" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >Single rust shield, single white</text>
+<text x="24" y="354" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >eagle, nothing else</text>
+</g>
+<g transform="translate(924,84)">
+<rect x="8" y="8" width="284" height="364" rx="14" fill="#FFFFFF"/>
+<svg x="22.0" y="24" width="256" height="256" viewBox="0 0 256 256"><defs>
+    <linearGradient id="t04ink" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#484B51"/><stop offset="1" stop-color="#2C2E33"/></linearGradient>
+    <linearGradient id="t04paper" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F7F7F7"/><stop offset="1" stop-color="#E2E2E2"/></linearGradient>
+    <linearGradient id="t04rust" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F2643F"/><stop offset="1" stop-color="#E5401C"/></linearGradient>
+    <clipPath id="t04clipA"><path d="M48,40 H208 V130 C208,180 172,214 128,228 C84,214 48,180 48,130 Z"/></clipPath>
+    <clipPath id="t04clipB"><path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z"/></clipPath>
+    <clipPath id="t04clipC"><path d="M128,28 L208,62 V142 L128,228 L48,142 V62 Z"/></clipPath>
+    <filter id="t04soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="3.6"/></filter>
+  </defs>
+    <g clip-path="url(#t04clipB)">
+      <rect x="0" y="0" width="256" height="256" fill="#2C2E33"/>
+      <path d="M0,256 L256,0 V256 Z" fill="#E5401C"/>
+    </g>
+    <g transform="translate(128,132) scale(0.66)"><path d="M0,-22 C36,-52 74,-70 100,-64 L84,-50 L90,-38 L70,-30 L76,-18 L54,-12 L58,0 L36,2 L38,12 L18,12 L18,26 L26,50 L14,46 L8,58 L0,50 L-8,58 L-14,46 L-26,50 L-18,26 L-18,12 L-38,12 L-36,2 L-58,0 L-54,-12 L-76,-18 L-70,-30 L-90,-38 L-84,-50 L-100,-64 C-74,-70 -36,-52 0,-22 Z M0,-58 C11,-58 19,-48 19,-36 C19,-26 15,-18 8,-14 L0,-2 L-8,-14 C-15,-18 -19,-26 -19,-36 C-19,-48 -11,-58 0,-58 Z" fill="#FFFFFF" /></g></svg>
+<text x="24" y="314" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="17" font-weight="700" fill="#2C2E33" text-anchor="start" letter-spacing="0" >04  Party per bend</text>
+<text x="24" y="336" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >Heraldic diagonal split, ink and rust</text>
+</g>
+<g transform="translate(1224,84)">
+<rect x="8" y="8" width="284" height="364" rx="14" fill="#FFFFFF"/>
+<svg x="22.0" y="24" width="256" height="256" viewBox="0 0 256 256"><defs>
+    <linearGradient id="t05ink" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#484B51"/><stop offset="1" stop-color="#2C2E33"/></linearGradient>
+    <linearGradient id="t05paper" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F7F7F7"/><stop offset="1" stop-color="#E2E2E2"/></linearGradient>
+    <linearGradient id="t05rust" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F2643F"/><stop offset="1" stop-color="#E5401C"/></linearGradient>
+    <clipPath id="t05clipA"><path d="M48,40 H208 V130 C208,180 172,214 128,228 C84,214 48,180 48,130 Z"/></clipPath>
+    <clipPath id="t05clipB"><path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z"/></clipPath>
+    <clipPath id="t05clipC"><path d="M128,28 L208,62 V142 L128,228 L48,142 V62 Z"/></clipPath>
+    <filter id="t05soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="3.6"/></filter>
+  </defs>
+    <path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z" fill="none" stroke="#2C2E33" stroke-width="9" stroke-linejoin="round"/>
+    <g transform="translate(128,128) scale(1.05)">
+      <path d="M0,-56 C24,-56 42,-44 46,-26 L48,-6 L40,4 C40,16 32,26 20,32 L12,36 L0,58 L-12,36 L-20,32 C-32,26 -40,16 -40,4 L-48,-6 L-46,-26 C-42,-44 -24,-56 0,-56 Z" fill="none" stroke="#E5401C" stroke-width="7" stroke-linejoin="round"/>
+      <path d="M-15,28 C-8,20 8,20 15,28 L0,58 Z" fill="#E5401C"/>
+      <path d="M-42,-12 L-6,-2 L-36,6 Z M42,-12 L6,-2 L36,6 Z" fill="#E5401C"/>
+    </g></svg>
+<text x="24" y="314" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="17" font-weight="700" fill="#2C2E33" text-anchor="start" letter-spacing="0" >05  Monoline</text>
+<text x="24" y="336" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >Outline-only, works as a favicon or on</text>
+<text x="24" y="354" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >dark</text>
+</g>
+<g transform="translate(24,464)">
+<rect x="8" y="8" width="284" height="364" rx="14" fill="#FFFFFF"/>
+<svg x="22.0" y="24" width="256" height="256" viewBox="0 0 256 256"><defs>
+    <linearGradient id="t06ink" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#484B51"/><stop offset="1" stop-color="#2C2E33"/></linearGradient>
+    <linearGradient id="t06paper" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F7F7F7"/><stop offset="1" stop-color="#E2E2E2"/></linearGradient>
+    <linearGradient id="t06rust" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F2643F"/><stop offset="1" stop-color="#E5401C"/></linearGradient>
+    <clipPath id="t06clipA"><path d="M48,40 H208 V130 C208,180 172,214 128,228 C84,214 48,180 48,130 Z"/></clipPath>
+    <clipPath id="t06clipB"><path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z"/></clipPath>
+    <clipPath id="t06clipC"><path d="M128,28 L208,62 V142 L128,228 L48,142 V62 Z"/></clipPath>
+    <filter id="t06soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="3.6"/></filter>
+  </defs>
+    <path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z" fill="url(#t06paper)" stroke="url(#t06ink)" stroke-width="15" stroke-linejoin="round"/>
+    <g transform="translate(122,120) scale(0.6)"><path d="M0,-22 C36,-52 74,-70 100,-64 L84,-50 L90,-38 L70,-30 L76,-18 L54,-12 L58,0 L36,2 L38,12 L18,12 L18,26 L26,50 L14,46 L8,58 L0,50 L-8,58 L-14,46 L-26,50 L-18,26 L-18,12 L-38,12 L-36,2 L-58,0 L-54,-12 L-76,-18 L-70,-30 L-90,-38 L-84,-50 L-100,-64 C-74,-70 -36,-52 0,-22 Z M0,-58 C11,-58 19,-48 19,-36 C19,-26 15,-18 8,-14 L0,-2 L-8,-14 C-15,-18 -19,-26 -19,-36 C-19,-48 -11,-58 0,-58 Z" fill="#2C2E33" /><path d="M-8,-16 C-4,-20 4,-20 8,-16 L0,-2 Z" fill="#E5401C"/></g>
+    <g transform="translate(196,178)">
+      <g transform="rotate(45)"><rect x="-38" y="-32" width="76" height="76" rx="17" fill="#000" opacity="0.22" filter="url(#t06soft)"/></g>
+      <g transform="rotate(45)"><rect x="-38" y="-38" width="76" height="76" rx="17" fill="url(#t06rust)" stroke="#FFFFFF" stroke-width="9"/></g>
+      <text x="0" y="15" font-family="'SF Mono','JetBrains Mono',Menlo,Consolas,monospace" font-size="42" font-weight="800" fill="#FFFFFF" text-anchor="middle" letter-spacing="0" >R</text>
+    </g></svg>
+<text x="24" y="314" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="17" font-weight="700" fill="#2C2E33" text-anchor="start" letter-spacing="0" >06  mail-backup sibling</text>
+<text x="24" y="336" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >Paper shield + dark frame + rust</text>
+<text x="24" y="354" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >diamond badge, same family</text>
+</g>
+<g transform="translate(324,464)">
+<rect x="8" y="8" width="284" height="364" rx="14" fill="#FFFFFF"/>
+<svg x="22.0" y="24" width="256" height="256" viewBox="0 0 256 256"><defs>
+    <linearGradient id="t07ink" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#484B51"/><stop offset="1" stop-color="#2C2E33"/></linearGradient>
+    <linearGradient id="t07paper" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F7F7F7"/><stop offset="1" stop-color="#E2E2E2"/></linearGradient>
+    <linearGradient id="t07rust" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F2643F"/><stop offset="1" stop-color="#E5401C"/></linearGradient>
+    <clipPath id="t07clipA"><path d="M48,40 H208 V130 C208,180 172,214 128,228 C84,214 48,180 48,130 Z"/></clipPath>
+    <clipPath id="t07clipB"><path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z"/></clipPath>
+    <clipPath id="t07clipC"><path d="M128,28 L208,62 V142 L128,228 L48,142 V62 Z"/></clipPath>
+    <filter id="t07soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="3.6"/></filter>
+  </defs>
+    <path d="M48,40 H208 V130 C208,180 172,214 128,228 C84,214 48,180 48,130 Z" fill="#2C2E33" stroke="#FFFFFF" stroke-width="8" stroke-linejoin="round"/>
+    <path d="M48,40 H208 V130 C208,180 172,214 128,228 C84,214 48,180 48,130 Z" fill="none" stroke="#2C2E33" stroke-width="3" transform="translate(128,128) scale(1.07) translate(-128,-128)"/>
+    <g transform="translate(128,130) scale(1.1)"><path d="M0,-56 C24,-56 42,-44 46,-26 L48,-6 L40,4 C40,16 32,26 20,32 L12,36 L0,58 L-12,36 L-20,32 C-32,26 -40,16 -40,4 L-48,-6 L-46,-26 C-42,-44 -24,-56 0,-56 Z" fill="#FFFFFF"/><path d="M-15,28 C-8,20 8,20 15,28 L0,58 Z" fill="#E5401C"/><path d="M-42,-12 L-6,-2 L-36,6 Z M42,-12 L6,-2 L36,6 Z" fill="#2C2E33"/></g></svg>
+<text x="24" y="314" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="17" font-weight="700" fill="#2C2E33" text-anchor="start" letter-spacing="0" >07  Eagle head</text>
+<text x="24" y="336" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >Front-facing head fills the shield,</text>
+<text x="24" y="354" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >rust beak</text>
+</g>
+<g transform="translate(624,464)">
+<rect x="8" y="8" width="284" height="364" rx="14" fill="#FFFFFF"/>
+<svg x="22.0" y="24" width="256" height="256" viewBox="0 0 256 256"><defs>
+    <linearGradient id="t08ink" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#484B51"/><stop offset="1" stop-color="#2C2E33"/></linearGradient>
+    <linearGradient id="t08paper" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F7F7F7"/><stop offset="1" stop-color="#E2E2E2"/></linearGradient>
+    <linearGradient id="t08rust" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F2643F"/><stop offset="1" stop-color="#E5401C"/></linearGradient>
+    <clipPath id="t08clipA"><path d="M48,40 H208 V130 C208,180 172,214 128,228 C84,214 48,180 48,130 Z"/></clipPath>
+    <clipPath id="t08clipB"><path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z"/></clipPath>
+    <clipPath id="t08clipC"><path d="M128,28 L208,62 V142 L128,228 L48,142 V62 Z"/></clipPath>
+    <filter id="t08soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="3.6"/></filter>
+  </defs>
+    <path d="M128,236 C68,176 44,146 44,110 A84,84 0 0 1 212,110 C212,146 188,176 128,236 Z" fill="#E5401C"/>
+    <circle cx="128" cy="112" r="58" fill="#FFFFFF"/>
+    <g transform="translate(128,116) scale(0.5)"><path d="M0,-22 C36,-52 74,-70 100,-64 L84,-50 L90,-38 L70,-30 L76,-18 L54,-12 L58,0 L36,2 L38,12 L18,12 L18,26 L26,50 L14,46 L8,58 L0,50 L-8,58 L-14,46 L-26,50 L-18,26 L-18,12 L-38,12 L-36,2 L-58,0 L-54,-12 L-76,-18 L-70,-30 L-90,-38 L-84,-50 L-100,-64 C-74,-70 -36,-52 0,-22 Z M0,-58 C11,-58 19,-48 19,-36 C19,-26 15,-18 8,-14 L0,-2 L-8,-14 C-15,-18 -19,-26 -19,-36 C-19,-48 -11,-58 0,-58 Z" fill="#E5401C" /><path d="M-8,-16 C-4,-20 4,-20 8,-16 L0,-2 Z" fill="#2C2E33"/></g></svg>
+<text x="24" y="314" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="17" font-weight="700" fill="#2C2E33" text-anchor="start" letter-spacing="0" >08  Map pin</text>
+<text x="24" y="336" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >Shield tapered into a location pin</text>
+<text x="24" y="354" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >(situational awareness)</text>
+</g>
+<g transform="translate(924,464)">
+<rect x="8" y="8" width="284" height="364" rx="14" fill="#FFFFFF"/>
+<svg x="22.0" y="24" width="256" height="256" viewBox="0 0 256 256"><defs>
+    <linearGradient id="t09ink" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#484B51"/><stop offset="1" stop-color="#2C2E33"/></linearGradient>
+    <linearGradient id="t09paper" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F7F7F7"/><stop offset="1" stop-color="#E2E2E2"/></linearGradient>
+    <linearGradient id="t09rust" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F2643F"/><stop offset="1" stop-color="#E5401C"/></linearGradient>
+    <clipPath id="t09clipA"><path d="M48,40 H208 V130 C208,180 172,214 128,228 C84,214 48,180 48,130 Z"/></clipPath>
+    <clipPath id="t09clipB"><path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z"/></clipPath>
+    <clipPath id="t09clipC"><path d="M128,28 L208,62 V142 L128,228 L48,142 V62 Z"/></clipPath>
+    <filter id="t09soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="3.6"/></filter>
+  </defs>
+    <path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z" fill="#2C2E33"/>
+    <g fill="none" stroke="#FFFFFF" stroke-width="3" opacity="0.9">
+      <circle cx="128" cy="126" r="58"/><circle cx="128" cy="126" r="30" stroke-width="2" opacity="0.6"/>
+      <path d="M128,52 V78 M128,174 V200 M54,126 H80 M176,126 H202"/>
+    </g>
+    <g transform="translate(128,128) scale(0.58)"><path d="M0,-22 C36,-52 74,-70 100,-64 L84,-50 L90,-38 L70,-30 L76,-18 L54,-12 L58,0 L36,2 L38,12 L18,12 L18,26 L26,50 L14,46 L8,58 L0,50 L-8,58 L-14,46 L-26,50 L-18,26 L-18,12 L-38,12 L-36,2 L-58,0 L-54,-12 L-76,-18 L-70,-30 L-90,-38 L-84,-50 L-100,-64 C-74,-70 -36,-52 0,-22 Z M0,-58 C11,-58 19,-48 19,-36 C19,-26 15,-18 8,-14 L0,-2 L-8,-14 C-15,-18 -19,-26 -19,-36 C-19,-48 -11,-58 0,-58 Z" fill="#E5401C" /><path d="M-8,-16 C-4,-20 4,-20 8,-16 L0,-2 Z" fill="#2C2E33"/></g></svg>
+<text x="24" y="314" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="17" font-weight="700" fill="#2C2E33" text-anchor="start" letter-spacing="0" >09  Reticle</text>
+<text x="24" y="336" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >Rust eagle over a white reticle on ink</text>
+</g>
+<g transform="translate(1224,464)">
+<rect x="8" y="8" width="284" height="364" rx="14" fill="#FFFFFF"/>
+<svg x="22.0" y="24" width="256" height="256" viewBox="0 0 256 256"><defs>
+    <linearGradient id="t10ink" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#484B51"/><stop offset="1" stop-color="#2C2E33"/></linearGradient>
+    <linearGradient id="t10paper" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F7F7F7"/><stop offset="1" stop-color="#E2E2E2"/></linearGradient>
+    <linearGradient id="t10rust" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F2643F"/><stop offset="1" stop-color="#E5401C"/></linearGradient>
+    <clipPath id="t10clipA"><path d="M48,40 H208 V130 C208,180 172,214 128,228 C84,214 48,180 48,130 Z"/></clipPath>
+    <clipPath id="t10clipB"><path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z"/></clipPath>
+    <clipPath id="t10clipC"><path d="M128,28 L208,62 V142 L128,228 L48,142 V62 Z"/></clipPath>
+    <filter id="t10soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="3.6"/></filter>
+  </defs>
+    <path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z" fill="#2C2E33"/>
+    <path d="M72,92 L128,74 L184,92" fill="none" stroke="#F2643F" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/><path d="M72,128 L128,110 L184,128" fill="none" stroke="#E5401C" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/><path d="M72,164 L128,146 L184,164" fill="none" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/></svg>
+<text x="24" y="314" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="17" font-weight="700" fill="#2C2E33" text-anchor="start" letter-spacing="0" >10  Chevron wings</text>
+<text x="24" y="336" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >Abstract three-bar wings, rust to</text>
+<text x="24" y="354" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >white</text>
+</g>
+<g transform="translate(24,844)">
+<rect x="8" y="8" width="284" height="364" rx="14" fill="#FFFFFF"/>
+<svg x="22.0" y="24" width="256" height="256" viewBox="0 0 256 256"><defs>
+    <linearGradient id="t11ink" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#484B51"/><stop offset="1" stop-color="#2C2E33"/></linearGradient>
+    <linearGradient id="t11paper" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F7F7F7"/><stop offset="1" stop-color="#E2E2E2"/></linearGradient>
+    <linearGradient id="t11rust" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F2643F"/><stop offset="1" stop-color="#E5401C"/></linearGradient>
+    <clipPath id="t11clipA"><path d="M48,40 H208 V130 C208,180 172,214 128,228 C84,214 48,180 48,130 Z"/></clipPath>
+    <clipPath id="t11clipB"><path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z"/></clipPath>
+    <clipPath id="t11clipC"><path d="M128,28 L208,62 V142 L128,228 L48,142 V62 Z"/></clipPath>
+    <filter id="t11soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="3.6"/></filter>
+  </defs>
+    <path d="M48,40 H208 V130 C208,180 172,214 128,228 C84,214 48,180 48,130 Z" fill="#E5401C"/>
+    <text x="112" y="192" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="150" font-weight="900" fill="#FFFFFF" text-anchor="middle" letter-spacing="0" >R</text>
+    <g transform="translate(134,98) scale(0.62)"><path d="M0,-22 C36,-52 74,-70 100,-64 L84,-50 L90,-38 L70,-30 L76,-18 L54,-12 L58,0 L36,2 L38,12 L18,12 L10,4 Z" fill="#FFFFFF"/></g></svg>
+<text x="24" y="314" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="17" font-weight="700" fill="#2C2E33" text-anchor="start" letter-spacing="0" >11  R monogram</text>
+<text x="24" y="336" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >Bold R with a wing sweeping off the</text>
+<text x="24" y="354" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >top</text>
+</g>
+<g transform="translate(324,844)">
+<rect x="8" y="8" width="284" height="364" rx="14" fill="#FFFFFF"/>
+<svg x="22.0" y="24" width="256" height="256" viewBox="0 0 256 256"><defs>
+    <linearGradient id="t12ink" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#484B51"/><stop offset="1" stop-color="#2C2E33"/></linearGradient>
+    <linearGradient id="t12paper" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F7F7F7"/><stop offset="1" stop-color="#E2E2E2"/></linearGradient>
+    <linearGradient id="t12rust" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F2643F"/><stop offset="1" stop-color="#E5401C"/></linearGradient>
+    <clipPath id="t12clipA"><path d="M48,40 H208 V130 C208,180 172,214 128,228 C84,214 48,180 48,130 Z"/></clipPath>
+    <clipPath id="t12clipB"><path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z"/></clipPath>
+    <clipPath id="t12clipC"><path d="M128,28 L208,62 V142 L128,228 L48,142 V62 Z"/></clipPath>
+    <filter id="t12soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="3.6"/></filter>
+  </defs>
+    <path d="M128,28 L208,62 V142 L128,228 L48,142 V62 Z" fill="#2C2E33"/>
+    <path d="M128,28 L208,62 L128,96 L48,62 Z" fill="#E5401C"/>
+    <path d="M48,62 L128,96 V228 L48,142 Z" fill="#484B51"/>
+    <g transform="translate(128,158) scale(0.6)"><path d="M0,-22 C36,-52 74,-70 100,-64 L84,-50 L90,-38 L70,-30 L76,-18 L54,-12 L58,0 L36,2 L38,12 L18,12 L18,26 L26,50 L14,46 L8,58 L0,50 L-8,58 L-14,46 L-26,50 L-18,26 L-18,12 L-38,12 L-36,2 L-58,0 L-54,-12 L-76,-18 L-70,-30 L-90,-38 L-84,-50 L-100,-64 C-74,-70 -36,-52 0,-22 Z M0,-58 C11,-58 19,-48 19,-36 C19,-26 15,-18 8,-14 L0,-2 L-8,-14 C-15,-18 -19,-26 -19,-36 C-19,-48 -11,-58 0,-58 Z" fill="#FFFFFF" /><path d="M-8,-16 C-4,-20 4,-20 8,-16 L0,-2 Z" fill="#E5401C"/></g></svg>
+<text x="24" y="314" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="17" font-weight="700" fill="#2C2E33" text-anchor="start" letter-spacing="0" >12  Faceted hex</text>
+<text x="24" y="336" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >Angular shield with a rust cap and</text>
+<text x="24" y="354" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >shaded facets</text>
+</g>
+<g transform="translate(624,844)">
+<rect x="8" y="8" width="284" height="364" rx="14" fill="#FFFFFF"/>
+<svg x="22.0" y="24" width="256" height="256" viewBox="0 0 256 256"><defs>
+    <linearGradient id="t13ink" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#484B51"/><stop offset="1" stop-color="#2C2E33"/></linearGradient>
+    <linearGradient id="t13paper" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F7F7F7"/><stop offset="1" stop-color="#E2E2E2"/></linearGradient>
+    <linearGradient id="t13rust" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F2643F"/><stop offset="1" stop-color="#E5401C"/></linearGradient>
+    <clipPath id="t13clipA"><path d="M48,40 H208 V130 C208,180 172,214 128,228 C84,214 48,180 48,130 Z"/></clipPath>
+    <clipPath id="t13clipB"><path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z"/></clipPath>
+    <clipPath id="t13clipC"><path d="M128,28 L208,62 V142 L128,228 L48,142 V62 Z"/></clipPath>
+    <filter id="t13soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="3.6"/></filter>
+  </defs>
+    <path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z" fill="url(#t13paper)" stroke="#2C2E33" stroke-width="12" stroke-linejoin="round"/>
+    <g transform="translate(128,106) scale(0.6)"><path d="M0,-22 C36,-52 74,-70 100,-64 L84,-50 L90,-38 L70,-30 L76,-18 L54,-12 L58,0 L36,2 L38,12 L18,12 L18,26 L26,50 L14,46 L8,58 L0,50 L-8,58 L-14,46 L-26,50 L-18,26 L-18,12 L-38,12 L-36,2 L-58,0 L-54,-12 L-76,-18 L-70,-30 L-90,-38 L-84,-50 L-100,-64 C-74,-70 -36,-52 0,-22 Z M0,-58 C11,-58 19,-48 19,-36 C19,-26 15,-18 8,-14 L0,-2 L-8,-14 C-15,-18 -19,-26 -19,-36 C-19,-48 -11,-58 0,-58 Z" fill="#2C2E33" /><path d="M-8,-16 C-4,-20 4,-20 8,-16 L0,-2 Z" fill="#E5401C"/></g>
+    <path d="M30,160 L44,182 L30,204 H56 V160 Z" fill="#B7301A"/>
+    <path d="M226,160 L212,182 L226,204 H200 V160 Z" fill="#B7301A"/>
+    <rect x="46" y="154" width="164" height="46" fill="#E5401C"/>
+    <path d="M46,200 L56,210 V200 Z M210,200 L200,210 V200 Z" fill="#8A2312"/>
+    <text x="128" y="188" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="30" font-weight="800" fill="#FFFFFF" text-anchor="middle" letter-spacing="3" >RUSTAK</text></svg>
+<text x="24" y="314" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="17" font-weight="700" fill="#2C2E33" text-anchor="start" letter-spacing="0" >13  Ribbon banner</text>
+<text x="24" y="336" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >Paper shield with an overhanging rust</text>
+<text x="24" y="354" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >ribbon</text>
+</g>
+<g transform="translate(924,844)">
+<rect x="8" y="8" width="284" height="364" rx="14" fill="#FFFFFF"/>
+<svg x="22.0" y="24" width="256" height="256" viewBox="0 0 256 256"><defs>
+    <linearGradient id="t14ink" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#484B51"/><stop offset="1" stop-color="#2C2E33"/></linearGradient>
+    <linearGradient id="t14paper" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F7F7F7"/><stop offset="1" stop-color="#E2E2E2"/></linearGradient>
+    <linearGradient id="t14rust" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F2643F"/><stop offset="1" stop-color="#E5401C"/></linearGradient>
+    <clipPath id="t14clipA"><path d="M48,40 H208 V130 C208,180 172,214 128,228 C84,214 48,180 48,130 Z"/></clipPath>
+    <clipPath id="t14clipB"><path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z"/></clipPath>
+    <clipPath id="t14clipC"><path d="M128,28 L208,62 V142 L128,228 L48,142 V62 Z"/></clipPath>
+    <filter id="t14soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="3.6"/></filter>
+  </defs>
+    <path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z" fill="#2C2E33"/>
+    <g transform="translate(128,132) rotate(28) scale(0.95)">
+      <path d="M0,-78 C34,-46 40,10 8,66 L0,74 L-8,66 C-40,10 -34,-46 0,-78 Z" fill="#E5401C"/>
+      <path d="M0,-70 L0,74" stroke="#2C2E33" stroke-width="5" stroke-linecap="round"/>
+      <g stroke="#2C2E33" stroke-width="5" stroke-linecap="round"><path d="M-30,-4 L-6,-24 M-26,20 L-6,2 M28,-6 L4,-28 M22,26 L4,6"/></g>
+    </g></svg>
+<text x="24" y="314" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="17" font-weight="700" fill="#2C2E33" text-anchor="start" letter-spacing="0" >14  Feather</text>
+<text x="24" y="336" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >Single rust feather on ink, eagle by</text>
+<text x="24" y="354" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >metonymy</text>
+</g>
+<g transform="translate(1224,844)">
+<rect x="8" y="8" width="284" height="364" rx="14" fill="#FFFFFF"/>
+<svg x="22.0" y="24" width="256" height="256" viewBox="0 0 256 256"><defs>
+    <linearGradient id="t15ink" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#484B51"/><stop offset="1" stop-color="#2C2E33"/></linearGradient>
+    <linearGradient id="t15paper" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F7F7F7"/><stop offset="1" stop-color="#E2E2E2"/></linearGradient>
+    <linearGradient id="t15rust" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F2643F"/><stop offset="1" stop-color="#E5401C"/></linearGradient>
+    <clipPath id="t15clipA"><path d="M48,40 H208 V130 C208,180 172,214 128,228 C84,214 48,180 48,130 Z"/></clipPath>
+    <clipPath id="t15clipB"><path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z"/></clipPath>
+    <clipPath id="t15clipC"><path d="M128,28 L208,62 V142 L128,228 L48,142 V62 Z"/></clipPath>
+    <filter id="t15soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="3.6"/></filter>
+  </defs>
+    <g transform="translate(128,112) scale(1.0)"><path d="M0,-22 C36,-52 74,-70 100,-64 L84,-50 L90,-38 L70,-30 L76,-18 L54,-12 L58,0 L36,2 L38,12 L18,12 L18,26 L26,50 L14,46 L8,58 L0,50 L-8,58 L-14,46 L-26,50 L-18,26 L-18,12 L-38,12 L-36,2 L-58,0 L-54,-12 L-76,-18 L-70,-30 L-90,-38 L-84,-50 L-100,-64 C-74,-70 -36,-52 0,-22 Z M0,-58 C11,-58 19,-48 19,-36 C19,-26 15,-18 8,-14 L0,-2 L-8,-14 C-15,-18 -19,-26 -19,-36 C-19,-48 -11,-58 0,-58 Z" fill="#2C2E33" /><path d="M-8,-16 C-4,-20 4,-20 8,-16 L0,-2 Z" fill="#E5401C"/></g>
+    <g transform="translate(128,152) scale(0.36) translate(-128,-128)">
+      <path d="M64,36 H192 Q200,36 200,44 V128 Q200,192 128,226 Q56,192 56,128 V44 Q56,36 64,36 Z" fill="#E5401C" stroke="#FFFFFF" stroke-width="20" stroke-linejoin="round"/>
+      <g clip-path="url(#t15clipB)"><path d="M56,36 H200 V96 H56 Z" fill="#2C2E33"/></g>
+    </g></svg>
+<text x="24" y="314" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="17" font-weight="700" fill="#2C2E33" text-anchor="start" letter-spacing="0" >15  Great seal</text>
+<text x="24" y="336" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >Ink eagle carries a small rust shield</text>
+<text x="24" y="354" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="400" fill="#6B6E75" text-anchor="start" letter-spacing="0" >as its chest</text>
+</g>
+</svg>
