@@ -5,12 +5,191 @@ what remains. Brief: `.claude/plan/briefs/CI-01-ci-steward.md`.
 
 ---
 
+## 2026-09-18 — nightly 35379867680: **cancelled at the 90-minute timeout**, and why
+
+Dispatched at 18:23 on `1e5e1c3`; killed by its own `timeout-minutes: 90` at
+19:53. It was **not** a slow run — the runner *died* at 18:31:44, nine minutes
+in, and the job then sat for 82 minutes with nothing happening.
+
+**What the run proved before it died:**
+
+- `[eud] surfaces missing: (none)` — `certificateRevocation` now answers, so
+  `enroll-revoked` ran for the very first time.
+- **`disconnect` ✔ — F1 works.** The scenario passes.
+- **`chat-direct` ✖ with one failure instead of two — F1 works.** It now reports
+  only `[alpha] commo-xml.txt has no event with type=b-t-f-s`, the real standing
+  gap; the spurious `the EUDs ran for 37s, short of the 60s` is gone.
+- `enroll-basic` ✔.
+- `mp-upload`, `mp-download`, `negotiate-refused`, `negotiate-silent` and
+  `two-eud-routing` never ran — the process was gone by then.
+
+### The failure chain
+
+```
+Error: DELETE /api/v1/credentials/1 answered 404: {"error":"That credential has already gone."}
+    at revokeEud (interop/eud/src/session.ts:221:11)
+    at async <anonymous> (interop/eud/src/execute.ts:77:9)
+Node.js v24.20.0
+…
+2026-09-18T19:53:40Z Terminate orphan process: pid (13061) (rustak)
+```
+
+Three defects, one behind the other. All three are in `interop/**` and mine.
+
+**1. `enroll-revoked` revokes the wrong thing.** M2-09 §5.2 recorded the
+deviation — the runner revokes the *credential* rather than the certificate,
+"switching to a per-certificate revoke is one function in `src/session.ts`" — and
+the first real run shows the deviation does not work. The credential is a
+**one-time enrolment token**: by the time the EUD is connected and there is
+something worth revoking, the token has been spent, so
+`DELETE /api/v1/credentials/{id}` finds nothing to revoke and answers `404`.
+(The server is behaving correctly. `credentials::remove` returns `404` when
+`credentials::revoke` reports `false`, which is the right answer to "revoke this
+already-spent token".) **Fixed:** `revokeEud` now lists
+`GET /api/v1/certificates?username=…&state=active&kind=client` and calls
+`POST /api/v1/certificates/{id}/revoke` with `reason: "device_lost"` — the
+endpoint the scenario's `certificateRevocation` surface is *named* for, which
+M2-08 landed.
+
+**2. A rejected promise nobody was watching killed the runner.** `execute.ts`
+builds the revocation promises at line 73 — where an `async` body starts running
+at once — and does not `await Promise.all(revocations)` until line 106, after
+every container has exited. So `revokeEud`'s rejection spent ~50 s as an
+unhandled rejection, which node treats as fatal. That skipped the `finally` that
+calls `session.stop()`. **Fixed:** a failed revocation is recorded in `failures`
+— it *is* a scenario failure — so the promise never rejects and the scenario
+reports it properly.
+
+**3. The orphaned server held the job's stdout open for 82 minutes.** This is
+the one that turned a nine-minute failure into a ninety-minute one.
+`interop/shared/src/launch.ts` spawns rustak with
+`stdio: ["ignore", "inherit", "inherit"]`, which is what makes the server log
+readable in the job output — and means a runner that dies without calling
+`stop()` leaves the child holding that pipe. The CI step pipes through `tee`,
+`tee` never sees EOF, the step never returns. The runner's cleanup even names it:
+`Terminate orphan process: pid (13061) (rustak)`. **Fixed:** the launcher now
+registers a `process.on("exit")` handler that `SIGKILL`s the child, removed again
+by `stop()` on the normal path. `exit` fires for a clean exit, an uncaught
+exception and an unhandled rejection alike, and `kill` is synchronous, which is
+all such a handler may be. This also protects `interop/node-tak`, which uses the
+same launcher.
+
+### Files changed (landed-ready)
+
+- `interop/eud/src/session.ts` — `revokeEud` switched to the per-certificate
+  endpoint.
+- `interop/eud/src/execute.ts` — revocation failures recorded, not thrown.
+- `interop/shared/src/launch.ts` — the child dies with the runner.
+
+Verified: `interop/eud` typecheck clean, **42/42** unit tests; `interop/node-tak`
+typecheck clean, **25/25** (and note those are 25 *passing* now — the three
+`TODO(M4)` mission-API skips M2-09 §5.7 recorded have started running and pass,
+since M4 landed).
+
+**I have not re-dispatched the nightly.** These fixes are not on `main` yet, and
+a dispatch before they land would reproduce the identical 90-minute hang and burn
+a runner for nothing. Ready to dispatch the moment they are in.
+
+**Note on the timeout.** `timeout-minutes: 90` is correct as an upper bound and I
+am not proposing to change it — but this job's real envelope is ~15 minutes
+(13m20s for all nine scenarios on the first run), so a tighter bound would have
+surfaced this in a quarter of the time. Worth considering once the suite's
+runtime is settled.
+
+---
+
+## 2026-09-18 — run 35379830824 (`1e5e1c3`): green, second in a row
+
+`docs: Add the HTTP/2 authority and p256 bump brief`. Every job succeeded; the
+only non-success in the run is `Update Homebrew Tap`, correctly skipped because
+this is not a release. So `main` has now been green twice consecutively, which
+is what makes 35379781633 a fix rather than a lucky run.
+
+No pushes to `main` since. Nothing further queued at 18:46 UTC.
+
+---
+
+## 2026-09-18 — run 35379781633 (`973117a`): **`main` is green, every job**
+
+The first fully green `rust.yml` run. All 25 jobs succeeded — `Lint`, `Test`,
+`Build UI`, `e2e`, `interop-node-tak`, all ten `build` matrix jobs, all four
+`docker-build`, both `docker-publish`, and the `ci` aggregator; `tap` correctly
+skipped (not a release). Coverage uploaded through `codecov-action@v7.0.0`.
+
+`tests/bootstrap.rs`: **3 passed, 0 failed, finished in 30.81 s.**
+
+That number is the whole story of F2. The old `STARTUP_TIMEOUT` was 30 s and the
+suite needs **30.81 s** on this runner even after the P-256 change removed two of
+the three RSA-2048 generations — so it was failing by under a second of margin,
+and neither half of the fix would have been enough alone. The suite now has the
+120 s budget against ~31 s of real work, and a start-up that *fails* no longer
+burns any of it.
+
+`Test` took **13m13s** against its 30-minute timeout (was 12m06s before these
+three tests started passing rather than timing out at 30 s each — the increase is
+the work they now actually do).
+
+**Slow spots:** nothing near 15 minutes. `Test` 13m13s, then
+`windows-amd64-rustak` 7m37s, `linux-arm64-rustak` 6m33s, `darwin-amd64-rustak`
+6m09s, `darwin-arm64-rustak` 6m05s, `linux-amd64-rustak` 5m51s. No cuts proposed.
+
+**The two runs this closes out.** 35377781744 (`5429eeb`) and 35377904509
+(`ce0998d`) both finished red while F2 was being written, and both failed on
+`bootstrap` and nothing else — `error: 1 target failed: -p rustak-server --test
+bootstrap`, `1 passed; 2 failed` in each. So every red `main` run today traced to
+that one file, with no second cause behind it. They predate the fix and are not
+being re-run.
+
+---
+
+## 2026-09-18 — F1 and F2 landed; nightly re-dispatched
+
+The coordinator landed all six files as `973117a` ("test: Report server start-up
+errors in the bootstrap suite and fix two EUD scenario expectations"). Verified
+byte-identical to what I wrote — `rustak-server/tests/bootstrap.rs`,
+`interop/eud/{src/expect.ts,tests/expect.test.ts,scenarios/disconnect.toml,README.md}`
+and `docs/ci.md`.
+
+**Watching two runs:**
+
+- `rust.yml` **35379781633** (`973117a`) — the landing itself, and the first run
+  that should get a green `Test` job. **35379830824** (`1e5e1c3`, the M3-05 brief)
+  is right behind it.
+- `nightly.yml` **35379867680** — dispatched by hand with
+  `gh workflow run nightly.yml --ref main` at 18:23 on `1e5e1c3`, so that the
+  `disconnect` fix and the `chat-direct` runtime fix get exercised now rather than
+  at 04:00, and so that `enroll-revoked` runs for the first time (the
+  `certificateRevocation` surface it probes, `/api/v1/certificates`, landed with
+  M2-08 *after* the sha the first nightly used). Expected steady state after
+  these fixes: **7 passed, 2 failed** — `chat-direct`'s `b-t-f-s` bounce half
+  (waiting on `M1-08-chat-bounce`) and `mp-download`'s URL (now M3-05, below) —
+  or 8 passed if `enroll-revoked` is clean.
+
+**Handed off, no longer mine:**
+
+- The HTTP/2 `:authority` finding in
+  `CI-01-2026-09-18-mission-package-url.md` is now brief **M3-05**, with an agent
+  on it. That brief also carries the `p256` 0.14 bump, i.e. the
+  `to_encoded_point` → `to_sec1_point` one-liner at
+  `rustak-server/src/testing/authenticator/keys.rs:97` that Dependabot #3 needs.
+  I will re-check `mp-download` and PR #3 once it lands.
+
+**With the user, and not to be acted on by me:**
+
+- The `security_audit.yml` ignore list (§S3). `docs/ci.md` now states the
+  position factually; no workflow or `.cargo/audit.toml` change has been made.
+- Posting the §S4 review findings as comments on Dependabot PRs #1–#3. The
+  findings stay in this file until the user says otherwise. Nothing is merged or
+  pushed.
+
+---
+
 ## Standing state of CI (2026-09-18, 19:15 UTC+?)
 
 | Workflow | On `main` | Verdict |
 |---|---|---|
-| `rust.yml` | **red** — `Test` fails on `tests/bootstrap.rs` (2 of 3) | **fix ready and verified**, §F2; everything else in the run is green |
-| `nightly.yml` `interop-eud` | **red** — 5 passed, 1 skipped, 3 failed | one known-expected failure, one harness bug (fixed below), one server bug (written up) |
+| `rust.yml` | **green** on `973117a` and again on `1e5e1c3` | fixed by §F2; `bootstrap.rs` 3 passed in 30.81 s |
+| `nightly.yml` `interop-eud` | **cancelled at its 90-minute timeout** on the re-dispatch | three harness defects, all three fixed below and awaiting a landing; `disconnect` and `chat-direct` confirmed fixed before it died |
 | `security_audit.yml` | **red, and has never been green** (8 of 8 recorded runs failed) | two advisories, neither fixable from this repository today — needs a decision, §S3 |
 | `changelog.yml` | green | — |
 

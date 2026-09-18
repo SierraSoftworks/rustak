@@ -200,26 +200,54 @@ async function enrol(
 }
 
 /**
- * Revokes what one EUD enrolled with, while it is connected.
+ * Revokes the certificate one EUD enrolled with, while it is connected.
  *
- * The credential is the lever: rustak documents revoking one as revoking the
- * certificates issued with it, and its revocation hook closes the live stream
- * session by fingerprint. When M2-08 serves `POST /api/v1/certificates/{id}/
- * revoke`, this is the single place to switch over to it.
+ * Revoking the *credential* was the original lever (M2-09 §5.2) and it does not
+ * work for these scenarios: the credential is a **one-time** enrolment token, so
+ * by the time the EUD is connected and there is something worth revoking, the
+ * token has been spent. `DELETE /api/v1/credentials/{id}` then answers
+ * `404 That credential has already gone` — which is what happened on run
+ * 35379867680, the first time this scenario ever ran.
+ *
+ * `POST /api/v1/certificates/{id}/revoke` is the endpoint this scenario's
+ * `certificateRevocation` surface is named for; M2-08 landed it. The
+ * certificate is found by the account it was issued to, filtered to the active
+ * client one, because the listing also carries the CA and the server's own.
  */
 export async function revokeEud(session: ScenarioSession, id: string): Promise<void> {
   const account = session.accounts.get(id);
 
   if (account === undefined) throw new Error(`no account for EUD '${id}'`);
 
-  const response = await session.client.request(`/api/v1/credentials/${account.credentialId}`, {
-    method: "DELETE",
+  const query = `username=${encodeURIComponent(account.username)}&state=active&kind=client`;
+  const listing = await session.client.request(`/api/v1/certificates?${query}`, {
     token: session.admin.token,
+  });
+
+  if (listing.status < 200 || listing.status >= 300) {
+    throw new Error(`GET /api/v1/certificates answered ${listing.status}: ${listing.body}`);
+  }
+
+  const certificates = JSON.parse(listing.body) as { id: number; subject_cn: string }[];
+  const certificate = certificates[0];
+
+  if (certificate === undefined) {
+    throw new Error(
+      `no active client certificate for '${account.username}' to revoke; the listing was ${listing.body}`,
+    );
+  }
+
+  const response = await session.client.request(`/api/v1/certificates/${certificate.id}/revoke`, {
+    method: "POST",
+    token: session.admin.token,
+    // `device_lost` is one of the reasons a caller may name; `credential_revoked`
+    // and `user_disabled` are the server's own to set.
+    body: { reason: "device_lost" },
   });
 
   if (response.status < 200 || response.status >= 300) {
     throw new Error(
-      `DELETE /api/v1/credentials/${account.credentialId} answered ${response.status}: ${response.body}`,
+      `POST /api/v1/certificates/${certificate.id}/revoke answered ${response.status}: ${response.body}`,
     );
   }
 }

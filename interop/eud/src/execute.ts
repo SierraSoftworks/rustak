@@ -70,12 +70,29 @@ export async function executeScenario(
     const seen = new Set<string>();
     const sampling = sample(session, seen);
 
+    // These start running the moment they are created and are not awaited until
+    // every container has exited, so a revocation that throws would spend
+    // minutes as a rejected promise nobody is watching — and node kills the
+    // process for that, taking the `finally` below with it and orphaning the
+    // server, which then holds the job's stdout open until the 90-minute
+    // timeout. That is what happened to the whole run on 35379867680. A failed
+    // revocation is a scenario failure, so it is recorded as one here and this
+    // promise never rejects.
     const revocations = scenario.euds
       .filter((eud) => eud.revokeAfterSeconds !== undefined)
       .map(async (eud) => {
         await sleep((eud.revokeAfterSeconds ?? 0) * 1_000);
-        await revokeEud(session, eud.id);
-        notes.push(`[${eud.id}] revoked at T+${eud.revokeAfterSeconds}s`);
+
+        try {
+          await revokeEud(session, eud.id);
+          notes.push(`[${eud.id}] revoked at T+${eud.revokeAfterSeconds}s`);
+        } catch (error) {
+          failures.push(
+            `[${eud.id}] revoking at T+${eud.revokeAfterSeconds}s failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
       });
 
     const runs = await Promise.all(

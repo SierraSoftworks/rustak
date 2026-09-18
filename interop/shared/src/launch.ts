@@ -305,6 +305,21 @@ export async function startServer(options: LaunchOptions): Promise<RunningServer
 
   let stopped = false;
 
+  // The child inherits this process's stdout and stderr, which is what makes a
+  // scenario's server log readable in the job output — and also means that a
+  // runner which dies without calling `stop()` leaves it holding that pipe
+  // open. In CI the step is piped through `tee`, so `tee` never sees EOF, the
+  // step never returns, and the job sits there until its timeout: 82 wasted
+  // minutes on run 35379867680, after an unhandled rejection killed the runner
+  // mid-scenario. `exit` fires for a normal exit, an uncaught exception and an
+  // unhandled rejection alike, and `kill` is synchronous, which is all a
+  // handler is allowed to be here.
+  const onExit = () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  };
+
+  process.on("exit", onExit);
+
   return {
     child,
     directory,
@@ -318,6 +333,7 @@ export async function startServer(options: LaunchOptions): Promise<RunningServer
     stop() {
       if (stopped) return;
       stopped = true;
+      process.removeListener("exit", onExit);
 
       if (child.exitCode === null && child.signalCode === null) {
         child.kill("SIGTERM");
