@@ -149,6 +149,8 @@ behaviour are out of scope for now.
 
 - [`docs/deployment.md`](docs/deployment.md) — configuring, running and backing up a server.
 - [`docs/interop.md`](docs/interop.md) — the automated compatibility suites and how to run them.
+- [`docs/compat/`](docs/compat/) — manual compatibility checklists for ATAK, WinTAK, iTAK and
+  CloudTAK: what a person checks by hand for a release, because CI can't run a real client's UI.
 - [`docs/plugins.md`](docs/plugins.md) — writing a sidecar with `rustak-client`.
 - [`docs/ci.md`](docs/ci.md) — the CI/CD pipeline and how to reproduce every check locally.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — workspace layout, conventions and how to propose a change.

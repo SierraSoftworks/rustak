@@ -15,7 +15,9 @@ the compatibility contract in `.claude/plan/plan.md` → Appendix A.
 `commoncommo` does not implement the Marti HTTP surfaces (device profiles,
 channels, the mission API), and node-tak does not implement ATAK's TLS and
 negotiation behaviour. Neither covers the ATAK UI, which stays a manual
-checklist.
+checklist — see [`docs/compat/atak.md`](compat/atak.md), and its WinTAK,
+iTAK and CloudTAK counterparts in the same directory, for what a person
+checks by hand before a release.
 
 `interop/node-tak` runs with one command and no fixtures: `npm test` starts a
 throwaway rustak with an internal CA in a scratch directory, walks it through
