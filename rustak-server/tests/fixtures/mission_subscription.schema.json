@@ -1,0 +1,14 @@
+{
+  "$comment": "Transcribed from @tak-ps/node-tak lib/api/mission.ts `MissionSubscriber`. CloudTAK stores `token` from this object and replays it on every later mission call.",
+  "title": "MissionSubscription",
+  "type": "object",
+  "required": ["clientUid", "username", "createTime", "role"],
+  "properties": {
+    "token": { "type": "string" },
+    "clientUid": { "type": "string" },
+    "username": { "type": "string" },
+    "createTime": { "type": "string" },
+    "role": { "$ref": "role" },
+    "mission": { "type": "object" }
+  }
+}

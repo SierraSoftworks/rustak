@@ -1,0 +1,24 @@
+{
+  "$comment": "Transcribed from @tak-ps/node-tak lib/api/mission.ts `MissionChange`.",
+  "title": "MissionChange",
+  "type": "object",
+  "required": [
+    "isFederatedChange",
+    "type",
+    "missionName",
+    "timestamp",
+    "serverTime"
+  ],
+  "properties": {
+    "isFederatedChange": { "type": "boolean" },
+    "type": { "type": "string" },
+    "missionName": { "type": "string" },
+    "missionGuid": { "type": "string" },
+    "timestamp": { "type": "string" },
+    "serverTime": { "type": "string" },
+    "creatorUid": { "type": "string" },
+    "contentUid": { "type": "string" },
+    "details": { "type": "object" },
+    "contentResource": { "type": "object" }
+  }
+}

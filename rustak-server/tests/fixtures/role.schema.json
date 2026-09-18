@@ -1,0 +1,17 @@
+{
+  "$comment": "Transcribed from @tak-ps/node-tak lib/api/mission.ts `MissionRole`. `type` is an enum of the three role names; `permissions` is a list of the eight MISSION_* strings.",
+  "title": "role",
+  "type": "object",
+  "required": ["type", "permissions"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": [
+        "MISSION_OWNER",
+        "MISSION_SUBSCRIBER",
+        "MISSION_READONLY_SUBSCRIBER"
+      ]
+    },
+    "permissions": { "type": "array", "items": { "type": "string" } }
+  }
+}

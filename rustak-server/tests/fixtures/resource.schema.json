@@ -1,0 +1,24 @@
+{
+  "$comment": "Transcribed from @tak-ps/node-tak lib/api/mission.ts `MissionContent`, which is what a mission's `contents[].data` and a change's `contentResource` carry. Only `hash` is required there, because a REMOVE_CONTENT change carries nothing else.",
+  "title": "Resource",
+  "type": "object",
+  "required": ["hash"],
+  "properties": {
+    "keywords": { "type": "array", "items": { "type": "string" } },
+    "name": { "type": "string" },
+    "hash": { "type": "string" },
+    "submissionTime": { "type": "string" },
+    "uid": { "type": "string" },
+    "size": { "type": "integer" },
+    "creatorUid": { "type": "string" },
+    "mimeType": { "type": "string" },
+    "submitter": { "type": "string" },
+    "expiration": { "type": "integer" },
+    "filename": { "type": "string" },
+    "tool": { "type": "string" },
+    "groups": { "type": "array", "items": { "type": "string" } },
+    "latitude": { "type": "number" },
+    "longitude": { "type": "number" },
+    "altitude": { "type": "number" }
+  }
+}

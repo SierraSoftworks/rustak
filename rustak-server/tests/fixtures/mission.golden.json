@@ -1,0 +1,37 @@
+{
+  "name": "Alpha Team",
+  "description": "the golden mission",
+  "boundingPolygon": [],
+  "tool": "public",
+  "keywords": [],
+  "creatorUid": "ANDROID-owner",
+  "createTime": "<createTime>",
+  "expiration": -1,
+  "uids": [],
+  "contents": [],
+  "groups": ["__ANON__"],
+  "externalData": [],
+  "mapLayers": [],
+  "feeds": [],
+  "passwordProtected": false,
+  "inviteOnly": false,
+  "defaultRole": {
+    "type": "MISSION_SUBSCRIBER",
+    "permissions": ["MISSION_READ", "MISSION_WRITE"]
+  },
+  "token": "<token>",
+  "ownerRole": {
+    "type": "MISSION_OWNER",
+    "permissions": [
+      "MISSION_READ",
+      "MISSION_WRITE",
+      "MISSION_DELETE",
+      "MISSION_SET_ROLE",
+      "MISSION_SET_PASSWORD",
+      "MISSION_UPDATE_GROUPS",
+      "MISSION_MANAGE_FEEDS",
+      "MISSION_MANAGE_LAYERS"
+    ]
+  },
+  "guid": "<guid>"
+}

@@ -329,6 +329,22 @@ CloudTAK's mission-feature rendering depends on this returning valid XML even fo
   delete-and-recreate any layer whose `type` isn't `UID` — expect occasional churn on
   `PUT/DELETE …/layers`, not a sign of a client bug.
 
+## 16. Where rustak deliberately differs (M4-01)
+
+Each of these is a decision, not a gap; the wire shape a client sees is
+unchanged unless the row says otherwise.
+
+| Area | TAK Server | rustak | Why |
+|---|---|---|---|
+| Mission password hash | BCrypt, cost 10 (§9) | **argon2id**, the same parameters as every other stored secret | The hash never leaves the server: a client sends the password, we answer with a token we minted, and nothing federates or compares it. There is no parity to keep, and a second hashing algorithm is a second thing to review. |
+| Mission-token secret | the bytes of the server's RSA key, used as an HMAC secret | a dedicated 32-byte secret, generated once and sealed in the `SecretStore` under `mission-token-hmac` | Key reuse across two algorithms means a weakness in either reaches both, and our RSA key rotates on a schedule that has nothing to do with missions (§10 already says this; it is now implemented). |
+| `Bearer` prefix | case-sensitive `"Bearer "` exactly (§10) | `Bearer `, `bearer ` **and** a bare token with no prefix | ETL clients send all three, and refusing two of them buys nothing: the token is verified either way. |
+| Mission identity in a token | `MISSION_NAME` must match, case-sensitively (§10) | `MISSION_NAME` **or** `MISSION_GUID` matches | A rename would otherwise invalidate every token already issued for the mission. Still narrower than "any mission": one of the two has to name *this* mission. |
+| Role without a token | the token is the only way to hold a role beyond the default | the caller's **own subscription** also grants its role, matched by device uid or account name | A client that creates a mission over an ordinary session can then manage it without replaying the token it was handed. It grants nothing a token would not — the subscription was created for that account in the first place — and the most permissive of several subscriptions wins. |
+| `DELETE …/subscription?disconnectOnly=true` | keeps the row and stops delivery | deletes the row either way | There is no "subscribed but receiving nothing" state here, and a row that lies about itself is worse than one that is gone. Documented in §9's terms: the client re-subscribes on its next reconnect regardless. |
+| `mission_contents` key | `(mission_id, resource_hash)` | `(mission_id, resource_id)`, joined to `resources` | A hash is not unique — the same photograph attached to two items is two resource rows over one blob — so detaching by hash detaches every row holding it, which is what "remove that file" means. |
+| Invitation tokens | matched against the whole stored JWT | matched against the stored `token_jti` | The `jti` is unique per token and is already indexed; the whole JWT is stored alongside it (`mission_invitations.token`, migration `0010`) for clients that replay it verbatim. |
+
 ## Gotchas
 
 - `201` (create, with `token`) vs `200` (update, no `token`) is load-bearing — get this wrong and
