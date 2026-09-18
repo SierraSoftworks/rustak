@@ -3,33 +3,6 @@
 How to configure, run, and back up a rustak server: as a single binary, as a
 Docker container, and as a systemd service.
 
-> **Status.** This document describes the deployment shape rustak is built
-> for, which is already real in the configuration schema, the `--check`
-> validator, the Dockerfile and the CI pipeline that builds it. It is **not**
-> yet a description of a server you can bring up end to end: the process
-> start-up that opens the database, brings up the listeners and runs the job
-> host (`rustak-server/src/{main.rs,lib.rs,runtime.rs}`) has no status file
-> under `.claude/plan/status/` yet, and today `rustak --config config.toml`
-> (without `--check`) exits immediately with "this build has no run loop
-> yet". Treat the walkthroughs below as the target, not a claim that they
-> currently work — the sections most affected are called out inline.
->
-> Within the config this document walks through, some sections describe
-> features that land in later milestones rather than M0:
-> - **The CoT stream listener (`:8089`) is planned — M1.** `[stream.tls]`
->   parses and validates, but nothing binds it yet.
-> - **The Marti API and ATAK/CloudTAK enrollment (`/Marti/**`,
->   `/Marti/api/tls/*`) are planned — M2 through M4.** The listener table
->   below names the port each will use; none of those routes exist yet.
->
-> What *is* verified, end to end, by an automated test suite today: the
-> configuration schema and `--check` (`.claude/plan/status/M0-06-server-config.md`),
-> the SQLite/crypto/content-store/CA/JWT foundations
-> (`M0-07`, `M0-08`, `M0-10`), and — reachable only in-process by the test
-> suite, not yet by a running binary — the admin web server, `/api/v1`, OIDC
-> and passkey sign-in, and the setup wizard API
-> (`.claude/plan/status/M0-11-web-api-auth.md`).
-
 ## The binary and the config file
 
 rustak is one binary (`rustak`) plus one TOML file. There is no separate
@@ -410,6 +383,29 @@ systemctl daemon-reload
 systemctl enable --now rustak
 ```
 
+## Logging and telemetry
+
+rustak logs to stdout through [tracing-batteries](https://github.com/SierraSoftworks/tracing-batteries-rs),
+which reads these environment variables:
+
+| Variable | Effect |
+|---|---|
+| `LOG_LEVEL` | `error`, `warn`, `info` (default), `debug` or `trace`. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | When set, traces (and logs) are exported over OTLP as well as printed. |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http-binary` (default), `http-json` or `grpc`. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Extra headers for the collector, e.g. `X-API-KEY=...`. |
+| `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | Standard OpenTelemetry sampling knobs. |
+| `OTEL_RESOURCE_ATTRIBUTES` | Extra resource attributes on every span. |
+| `RUSTAK_SENTRY_DSN` | Sentry error reporting; unset means off. |
+
+What gets logged at `info`: start-up and shutdown, listener binds, CoT stream
+connections opening and closing, enrolment and credential events, and the
+handler-level events some HTTP routes emit (rendered inside their request
+span, so they carry the route and the caller). Nothing is logged per CoT
+message relayed, and there is no per-request access log: every HTTP request
+becomes a span, which reaches an OTLP collector when one is configured and is
+otherwise not printed. Set `LOG_LEVEL=warn` for a quiet stdout.
+
 ## Stopping cleanly
 
 `SIGTERM` (or Ctrl-C) stops rustak in two bounded steps, and an orchestrator
@@ -601,6 +597,24 @@ nothing else — that is what keeps the admin API free of any cross-site request
 forgery surface. Every cookie is `HttpOnly`, `Secure`, `SameSite=Lax` and
 `Path=/`; the short-lived `state` cookie is scoped to `/login`.
 
+They are also never accepted on the handful of TAK paths that **change state
+over a `GET`** — `/Marti/sync/delete` and `/Marti/api/repeater/remove/*`.
+`SameSite=Lax` blocks a cross-site `POST` and a cross-site `fetch`, but it does
+attach the cookie to a cross-site *top-level navigation*, so without this one
+link opened by a signed-in operator could empty enterprise sync. The verbs stay
+exactly what TAK clients send; deleting simply needs a credential a browser does
+not attach by itself, and ATAK and CloudTAK both send an `Authorization` header.
+For the same reason `GET /logout` ends only the session that was presented,
+while `POST /logout` ends every session on the account.
+
+Beside the `state` cookie the sign-in flow sets a second, `__Host-`-prefixed
+one. `state` keeps the name and the `sha256(cookie) == state` rule TAK clients
+expect, and a name without that prefix can be written for your host by **any**
+HTTPS origin under the same registrable domain — a compromised
+`anything.example.com` is enough. The `__Host-` cookie cannot be, so it is the
+binding that actually says "this browser started this sign-in". Nothing needs
+configuring; it is mentioned because it will show up in a browser's cookie jar.
+
 `Secure` is set unconditionally, so this flow needs TLS. That is not a
 restriction in practice — `[web.public]` refuses to serve plaintext unless an
 operator says so twice — but a development instance running with
@@ -614,6 +628,57 @@ grant. So none of this section is on CloudTAK's path yet. It is implemented to
 TAK Server's contract so that when CloudTAK does ship an OIDC client, it works
 against rustak unchanged — no rustak-specific branch, no configuration beyond
 registering the client above. See `.claude/plan/compat/oauth.md` §4.
+
+## Security notes worth knowing about
+
+None of these is a setting you have to change; they are the trades rustak makes
+and the two levers that move them.
+
+**`[auth] allow_access_token_retrieval` (default `true`).**
+`GET /token/access` hands a cookie-authenticated caller its own bearer token,
+which is what a WebTAK-style page needs and what CloudTAK's browser client uses.
+The cost is that any script execution on your own origin turns into token
+exfiltration despite `HttpOnly`. It is not reachable cross-site — a top-level
+navigation cannot read the body and `SameSite=Lax` blocks subresource requests —
+so the default is defensible; set it to `false` if nothing you serve needs it.
+
+**A token's scope is a ceiling.** Every session carries `api`, and one issued to
+somebody who administers the installation also carries `admin`; the
+administrative API requires **both** the account to be an administrator and the
+token to carry that scope. Two consequences an operator will notice: a token
+minted by the `/oauth/token` **password grant is never administrative**,
+whoever holds the client password, and promoting somebody to administrator takes
+effect at their **next sign-in** rather than on the next refresh of the session
+they already have. Demotion, disabling and channel changes are immediate in both
+directions.
+
+**Switching an account off ends what it already has open.**
+`PATCH /api/v1/users/{u} {"disabled": true}` revokes its refresh tokens, closes
+its live `:8089` stream connections and ends its open `GET /api/v1/events`
+responses. Revoking a credential does the same for the sessions that credential
+bought. An open event feed also re-checks its credential every sixty seconds, so
+a change made anywhere else takes effect within a minute.
+
+**Passkeys are bound to one host name.** The relying party is derived from
+`[server] base_url`, or from the first entry of `[server] domains` — and from
+nothing else. A server reached under a second name cannot run a passkey ceremony
+under it, and an installation that has configured neither cannot run one at all:
+the request's own `Host` header is deliberately not a fallback, because that
+would let the caller choose the identity the credential is pinned to. Configure
+one of the two before walking the first-run wizard.
+
+**A device identifier belongs to the account that first enrolled it.** Device
+uids are public — they are in every CoT event and in
+`GET /Marti/api/clientEndPoints` — so an enrolment naming a uid another account
+holds is refused with a `403`. To hand a device over, remove the old
+registration first: `DELETE /api/v1/devices/{uid}`, which is administrative over
+anybody else's.
+
+**`anon_group_default = true` (default) outranks a channel removal.** Every
+authenticated principal is in `__ANON__` in both directions whatever their
+memberships say, which is what lets a client that has joined no channel still be
+seen. Taking every channel away therefore does **not** isolate an account; set
+`anon_group_default = false`, or disable the account.
 
 ## Backup
 
