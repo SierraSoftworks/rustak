@@ -161,7 +161,7 @@ raw `0xBF`-prefixed bytes would corrupt its control-character stripping. Verifie
   03 §4.3). Ping shape (type `t-x-c-t`, no detail):
   ```xml
   <event version="2.0" uid="{device-uid}-ping" type="t-x-c-t" how="m-g" time="{t}" start="{t}" stale="{t+10s}">
-    <point lat="0.0" lon="0.0" hae="0.0" ce="999999" le="999999"/>
+    <point lat="0.0" lon="0.0" hae="0.0" ce="9999999" le="9999999"/>
   </event>
   ```
 - Server reply, sent **directly to the pinging connection only** (not broadcast, no flow tag, no
