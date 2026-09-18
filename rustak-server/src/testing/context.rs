@@ -8,7 +8,6 @@
 use std::sync::Arc;
 
 use rustak_api::{TokenResponse, UserKind};
-use rustak_core::prelude::*;
 
 use crate::auth::{JwtIssuer, tokens};
 use crate::config::Config;
