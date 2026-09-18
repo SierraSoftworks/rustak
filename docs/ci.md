@@ -49,7 +49,10 @@ deduplicate ──┬─ version ───────────────�
   that had stopped finishing at all ran until it was cancelled by hand. The
   numbers are deliberately loose: a cold cache is the slow case and none of
   these should come near them, so a job that *does* hit its timeout is a bug
-  report rather than a number to raise.
+  report rather than a number to raise. Loose is not unbounded, though: the
+  nightly `interop-eud` job carried 90 minutes against a ~15-minute envelope,
+  and when a crashed runner left an orphaned server holding the step's stdout
+  open the job sat idle for 82 of them before anyone was told. It is 30 now.
 - **`ui`** installs `trunk` pinned to **0.21.14** (`cargo binstall trunk@0.21.14`;
   0.22 was still beta at the time this pipeline was written — bump the pin
   deliberately, not via dependabot, which cannot see cargo-binstall installs).

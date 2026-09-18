@@ -130,7 +130,15 @@ jobs:
     name: "Interop: EUD harness"
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 4 * * *'
-    timeout-minutes: 90
+    # Thirty, not ninety. The envelope is ~15 minutes — nine scenarios took
+    # 13m20s on the first full run — and the build and image pull in front of
+    # them are a few more. Ninety was a guess made before anything had run, and
+    # on 35379867680 it cost 82 idle minutes: the runner died nine minutes in and
+    # an orphaned server held the step's stdout open, so the job sat until the
+    # bound expired. That orphan is fixed in `interop/shared/src/launch.ts`, but
+    # a bound this loose is no longer telling anybody anything. A job that hits
+    # thirty is a bug report, which is the point of the number.
+    timeout-minutes: 30
 
     permissions:
       contents: read
