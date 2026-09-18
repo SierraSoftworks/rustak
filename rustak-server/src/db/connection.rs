@@ -261,7 +261,13 @@ impl Database {
             .or_system_err(ADVICE_DB_ERROR)
     }
 
-    /// Truncates the log, lets SQLite update its statistics, and closes.
+    /// Lets SQLite update its statistics, truncates the log, and closes.
+    ///
+    /// The statistics come **first**. `PRAGMA optimize` runs `ANALYZE`, which is
+    /// a write — so a `TRUNCATE` checkpoint before it leaves the log empty for
+    /// exactly as long as it takes the next statement to fill it up again, and
+    /// the data directory a stopped server leaves behind still has a
+    /// `-wal` file in it.
     ///
     /// # Errors
     ///
@@ -271,16 +277,24 @@ impl Database {
     /// usefully do about it.
     #[instrument("db.close", skip(self), err(Display))]
     pub async fn close(self) -> Result<(), Error> {
-        self.checkpoint(Checkpoint::Truncate).await?;
+        let Self { writer, readers } = self;
 
-        self.writer
+        writer
             .call(|c| c.execute_batch("PRAGMA optimize"))
             .await
             .or_system_err(ADVICE_DB_ERROR)?;
 
-        drop(self.readers);
+        // The readers go before the checkpoint, not after: `TRUNCATE` waits for
+        // every other connection to be done with the log, and an idle reader
+        // still holding its snapshot is one it would wait out.
+        drop(readers);
 
-        if let Ok(writer) = Arc::try_unwrap(self.writer)
+        writer
+            .call(move |c| c.execute_batch(Checkpoint::Truncate.as_sql()))
+            .await
+            .or_system_err(ADVICE_DB_ERROR)?;
+
+        if let Ok(writer) = Arc::try_unwrap(writer)
             && let Err(err) = writer.close().await
         {
             warn!(error = %err, "The database connection did not close cleanly.");

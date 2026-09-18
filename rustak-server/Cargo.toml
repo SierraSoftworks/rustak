@@ -33,6 +33,7 @@ rustak-api = { workspace = true }
 rustak-core = { workspace = true }
 rustak-cot = { workspace = true }
 actix-web = { workspace = true }
+actix-tls = { workspace = true }
 actix-ws = { workspace = true }
 actix-multipart = { workspace = true }
 tokio = { workspace = true }

@@ -20,6 +20,19 @@
 //! automate's `main.rs` performs, for the same reason. Two seconds is long
 //! enough for tasks that have already been told to stop and short enough that a
 //! leaked clone does not hold the process open.
+//!
+//! # Debug builds still log
+//!
+//! `tracing-batteries` disables every battery in a debug build, so that a
+//! developer's `cargo run` cannot report into production telemetry. That is the
+//! right default for a desktop tool and the wrong one for a daemon, because the
+//! gate covers the stdout writer too: `cargo run -p rustak-server` would start,
+//! serve requests and print nothing at all, which is indistinguishable from a
+//! server that never started. [`bootstrap`] therefore asks for
+//! `with_debug_builds`, which turns the batteries the binary actually attached
+//! back on and attaches none of its own — [`TelemetryOptions::from_env`] adds
+//! Sentry only when a DSN is configured, and analytics never, so a debug build
+//! with neither still reports nowhere.
 
 use std::sync::Arc;
 
@@ -103,6 +116,9 @@ pub fn bootstrap(
     options: TelemetryOptions,
 ) -> Arc<Session> {
     let mut session = Session::new(app, version)
+        // See "Debug builds still log" above: without this a `cargo run` build
+        // says nothing at all.
+        .with_debug_builds()
         .with_battery(tracing_batteries::OpenTelemetry::new("").with_stdout(options.stdout));
 
     if let Some(dsn) = options.sentry_dsn.as_deref() {
@@ -190,6 +206,26 @@ mod tests {
         let options = TelemetryOptions::from_env().without_stdout();
 
         assert!(!options.stdout);
+    }
+
+    #[test]
+    fn a_debug_build_still_writes_the_lines_an_operator_reads() {
+        // The failure this guards against is silent: without `with_debug_builds`
+        // a `cargo run` server starts, serves requests and prints nothing, which
+        // looks exactly like one that never started. Asserted through the
+        // `Testing` battery so that no exporter is constructed here.
+        let ours = Session::new("rustak-core-test", "0.0.0-test")
+            .with_debug_builds()
+            .with_battery(tracing_batteries::Testing);
+        let without =
+            Session::new("rustak-core-test", "0.0.0-test").with_battery(tracing_batteries::Testing);
+
+        assert!(ours.enable().load(std::sync::atomic::Ordering::Relaxed));
+        assert_eq!(
+            without.enable().load(std::sync::atomic::Ordering::Relaxed),
+            !cfg!(debug_assertions),
+            "the default this overrides is 'off in a debug build'",
+        );
     }
 
     #[tokio::test]

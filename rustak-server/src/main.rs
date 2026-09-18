@@ -1,10 +1,18 @@
 //! `rustak` — the server binary.
 //!
 //! This file is deliberately thin: it parses arguments, loads the environment
-//! file and the configuration, and hands off. The start-up sequence proper —
-//! telemetry, the shutdown signal, the listeners and the job host — is wired up
-//! in `rustak_server::run` by the bootstrap brief, and this file will call it
-//! rather than growing one of its own.
+//! file and the configuration, brings telemetry and the shutdown signal up, and
+//! hands off to [`rustak_server::run`]. Everything the server *is* lives in the
+//! library, so an integration test can start the same server in-process.
+//!
+//! # The order start-up happens in
+//!
+//! The environment file first, because `${{ env.X }}` in the configuration is
+//! substituted from whatever it puts in place. Then telemetry, *before* the
+//! configuration is read, because the most common start-up failure is the
+//! configuration file and a server that only gets tracing once the file has
+//! parsed cannot report the parse failure through it. Then the signal handler,
+//! then the run loop.
 //!
 //! # `--check`
 //!
@@ -18,6 +26,8 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use rustak_core::errors::report_and_exit;
+use rustak_core::runtime::Shutdown;
+use rustak_core::telemetry::{self, TelemetryOptions};
 use rustak_server::config::Config;
 
 /// The command line.
@@ -50,11 +60,7 @@ struct Args {
 }
 
 #[tokio::main]
-#[allow(clippy::print_stdout)]
 async fn main() {
-    // `--check` is the one thing here that reports success, and it reports it
-    // on stdout so that a pipeline can capture it; everything else this binary
-    // says goes through tracing once telemetry is up.
     let args = Args::parse();
 
     // The environment file first: a `${{ env.X }}` expression in the
@@ -63,6 +69,45 @@ async fn main() {
         report_and_exit(&err, None).await;
     }
 
+    if args.check {
+        check(&args).await;
+        return;
+    }
+
+    // Telemetry before the configuration, for the reason in the module
+    // documentation. From here on every failure is reported through the
+    // session, which is flushed before the process exits.
+    let session = telemetry::bootstrap(
+        "rustak",
+        env!("CARGO_PKG_VERSION"),
+        TelemetryOptions::from_env(),
+    );
+
+    let config = match Config::load(&args.config) {
+        Ok(config) => config,
+        Err(err) => report_and_exit(&err, Some(session)).await,
+    };
+
+    let shutdown = Shutdown::new();
+    shutdown.listen_for_signals();
+
+    if let Err(err) = rustak_server::run(config, session.clone(), shutdown).await {
+        report_and_exit(&err, Some(session)).await;
+    }
+
+    // Last, and after everything holding a clone of it has stopped: the flush
+    // needs sole ownership of the session, which is why `run` takes a clone
+    // rather than the session itself.
+    telemetry::shutdown(session).await;
+}
+
+/// `--check`: validate the file and say what it would do.
+///
+/// Reports on stdout rather than through tracing, because a pipeline capturing
+/// the answer should not have to parse log lines to find it — and because
+/// telemetry is deliberately not up.
+#[allow(clippy::print_stdout)]
+async fn check(args: &Args) {
     let config = match Config::load(&args.config) {
         Ok(config) => config,
         // No telemetry session to flush: a configuration we could not read is
@@ -70,30 +115,18 @@ async fn main() {
         Err(err) => report_and_exit(&err, None).await,
     };
 
-    if args.check {
-        println!(
-            "{} is valid: {} would listen on {}, with data in {}.",
-            args.config.display(),
-            config.server.name,
-            config
-                .web
-                .public
-                .listen
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", "),
-            config.server.data_dir.display(),
-        );
-        return;
-    }
-
-    // The run loop lands in the bootstrap brief (design 01 §3.4): telemetry
-    // bootstrap, `Shutdown::listen_for_signals`, `rustak_server::run`, and the
-    // telemetry flush that has to outlive it.
-    eprintln!(
-        "rustak {}: the configuration loaded, but this build has no run loop yet. \
-         Use --check to validate a configuration file.",
-        env!("CARGO_PKG_VERSION"),
+    println!(
+        "{} is valid: {} would listen on {}, with data in {}.",
+        args.config.display(),
+        config.server.name,
+        config
+            .web
+            .public
+            .listen
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", "),
+        config.server.data_dir.display(),
     );
 }

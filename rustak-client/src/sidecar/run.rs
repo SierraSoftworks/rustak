@@ -120,19 +120,10 @@ pub async fn run_with<S: Sidecar>(sidecar: S, args: Args) {
     }
 
     // Telemetry before the configuration, because the most common start-up
-    // failure *is* the configuration file.
+    // failure *is* the configuration file. `bootstrap` is also what keeps a
+    // debug build's log lines flowing — see `rustak_core::telemetry` — so a
+    // plugin author running `cargo run` can see their own heartbeats.
     let session = telemetry::bootstrap(S::NAME, S::VERSION, TelemetryOptions::from_env());
-
-    // `tracing-batteries` disables every battery — the stdout writer included —
-    // in a debug build, so that a developer's `cargo run` cannot report into
-    // production telemetry. For a daemon whose log lines *are* its output that
-    // is the wrong trade: a plugin author running `cargo run` has to be able to
-    // see their own heartbeats. Turning the session on affects nothing else,
-    // because `TelemetryOptions::from_env` attaches Sentry only when a DSN is
-    // configured and analytics never; a release build is already enabled.
-    session
-        .enable()
-        .store(true, std::sync::atomic::Ordering::Relaxed);
 
     let shutdown = Shutdown::new();
     shutdown.listen_for_signals();
