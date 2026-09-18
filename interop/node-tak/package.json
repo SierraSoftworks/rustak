@@ -1,0 +1,24 @@
+{
+  "name": "rustak-interop-node-tak",
+  "version": "0.0.0",
+  "private": true,
+  "description": "CloudTAK-library contract suite: drives rustak with @tak-ps/node-tak and @tak-ps/node-cot, the libraries CloudTAK itself uses.",
+  "type": "module",
+  "engines": {
+    "node": ">= 24"
+  },
+  "scripts": {
+    "test": "tsx src/run.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tak-ps/node-cot": "^14.52.2",
+    "@tak-ps/node-tak": "^12.30.0",
+    "@tak-ps/xml-js": "^2.0.4"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3"
+  }
+}

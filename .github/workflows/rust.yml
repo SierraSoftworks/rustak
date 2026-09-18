@@ -293,19 +293,81 @@ jobs:
           path: e2e/playwright-report
           retention-days: 7
 
-  # Placeholder: the node-tak contract suite (design 01 / plan.md "Interop in
-  # CI") lands in M2, once enrollment, groups and Marti version/config exist for
-  # it to exercise. `if: false` keeps this a visible, always-skipped entry in
-  # the job graph rather than silent scope-creep on a future PR. Flip to a real
-  # `needs: [e2e]` job (checkout interop/node-tak, `npm ci`, run against a
-  # server built with a test CA) when M2 lands, per plan.md's interop table.
+  # The CloudTAK-library contract suite: drives rustak with the very libraries
+  # CloudTAK depends on (`@tak-ps/node-tak`, `@tak-ps/node-cot`). See
+  # interop/node-tak/README.md.
+  #
+  # TODO(M2-03): this is still `if: false`. The suite runs, bootstraps a server
+  # and reports every scenario it cannot run yet as a *skip* naming the brief
+  # that will serve it, so today it would pass with four scenarios green and the
+  # rest skipped — a green job that proves almost nothing about Marti. What
+  # flips it is M2-03 landing `/oauth/token` and `/Marti/api/tls/*`: at that
+  # point login and enrollment become real gates and this job earns its place in
+  # the required set. Replace `if: false` with the same condition the other jobs
+  # carry:
+  #
+  #     if: github.event_name != 'pull_request' || needs.deduplicate.outputs.cache-hit != 'true'
+  #
+  # and fold INTEROP_NODE_TAK_RESULT back into the `ci` job's loop below, per
+  # the comment there.
   interop-node-tak:
     name: "Interop: node-tak"
     runs-on: ubuntu-latest
-    needs: deduplicate
+
+    needs:
+      - deduplicate
+      - ui
+
     if: false
+
+    permissions:
+      contents: read
+
     steps:
-      - run: echo "Placeholder until M2 — see plan.md 'Interop in CI'."
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Setup Cache
+        uses: Swatinem/rust-cache@v2
+
+      # The release bundle, unlike e2e's: nothing here drives the admin UI, so
+      # the `?demo` fixtures a debug bundle carries are dead weight. The UI is
+      # still embedded into the server by `include_dir!` at compile time, so it
+      # has to be in place before `cargo build`.
+      - name: Fetch release UI bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: ui-dist
+          path: rustak-ui/dist
+
+      - name: cargo build
+        run: cargo build -p rustak-server
+
+      # Node 24 rather than e2e's 22: CloudTAK's own API declares
+      # `"node": ">= 24"`, and the point of this suite is to run its libraries
+      # the way it runs them.
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: interop/node-tak/package-lock.json
+
+      - name: Install dependencies
+        working-directory: interop/node-tak
+        run: npm ci
+
+      - name: Typecheck the suite
+        working-directory: interop/node-tak
+        run: npm run typecheck
+
+      # Starts its own throwaway server in a scratch directory, bootstraps it
+      # through /api/v1 and removes everything on the way out.
+      - name: Run the node-tak contract suite
+        working-directory: interop/node-tak
+        run: npm test
 
   build:
     name: ${{ matrix.os }}-${{ matrix.arch }}-${{ matrix.crate.bin }}

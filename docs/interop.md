@@ -17,6 +17,21 @@ channels, the mission API), and node-tak does not implement ATAK's TLS and
 negotiation behaviour. Neither covers the ATAK UI, which stays a manual
 checklist.
 
+`interop/node-tak` runs with one command and no fixtures: `npm test` starts a
+throwaway rustak with an internal CA in a scratch directory, walks it through
+`/api/v1` to an administrator and a client password (registering a passkey with
+a software authenticator on the way, because that is the only route to a bearer
+token from a cold start), puts the CA it generated into `NODE_EXTRA_CA_CERTS`
+the way a CloudTAK operator must, and then drives the result with node-tak
+itself. Because rustak's Marti surface arrives one brief at a time, the runner
+**probes** which endpoints exist and skips each scenario it cannot run with a
+reason naming the brief that will serve it — `TODO(M2-03): POST /oauth/token is
+not served yet` — so the suite reports the gap instead of hiding it, and a
+scenario starts running the moment its milestone lands without anybody editing
+a skip list. The CI job stays `if: false` until M2-03 makes login and enrollment
+real gates; see [`interop/node-tak/README.md`](../interop/node-tak/README.md)
+for the wire details it asserts and the one gap it cannot close yet.
+
 ## The EUD harness (`interop/eud`)
 
 The one suite that needs a build rather than a package install.

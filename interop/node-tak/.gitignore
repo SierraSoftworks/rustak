@@ -1,0 +1,8 @@
+# The dependencies are installed rather than authored. `package-lock.json` is
+# deliberately *not* here: CI installs from it with `npm ci`, so it is the only
+# thing that makes a run reproducible.
+node_modules/
+
+# Nothing else is written inside this directory — the server, its database, its
+# certificate authority and the session file all live in a scratch directory
+# under the system temporary directory, which the runner removes on exit.
