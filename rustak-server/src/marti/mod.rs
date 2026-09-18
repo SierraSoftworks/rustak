@@ -48,6 +48,7 @@ pub mod extract;
 pub mod files;
 pub mod groups;
 pub mod headers;
+pub mod login;
 pub mod missions;
 pub mod oauth;
 pub mod principal;
@@ -98,6 +99,11 @@ pub fn services(role: ListenerRole) -> impl FnOnce(&mut web::ServiceConfig) + Cl
     move |config| {
         config
             .app_data(web::Data::new(role))
+            // Before every scope below: the sign-in flow redirects, so it may
+            // not sit inside a scope whose middleware turns a `3xx` into a
+            // `500`, and `/oauth/authorize` has to be matched before the
+            // `/oauth` scope claims the prefix. See `login` for both.
+            .configure(login::routes(role))
             .service(
                 web::scope(MARTI_ROOT)
                     .wrap(from_fn(headers::marti_headers))

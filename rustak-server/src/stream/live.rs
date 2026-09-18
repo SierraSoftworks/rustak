@@ -25,7 +25,80 @@ use super::hub::Hub;
 use super::metrics::StreamMetrics;
 use super::notify::{self, Notifier};
 use super::router::Router;
-use super::subscription::{ClientEndpoint, ConnId};
+use super::subscription::{ClientEndpoint, ConnId, Subscription};
+
+/// A connection joining or leaving, as a [`ConnectionWatcher`] hears about it.
+///
+/// Owned rather than a borrowed [`Subscription`], so that the hub can announce
+/// a registration *after* it has taken ownership of one, and so that a watcher
+/// cannot hold a connection alive by keeping what it was handed.
+#[derive(Debug, Clone)]
+pub enum ConnectionChange {
+    /// A connection authenticated and was registered.
+    Joined(ConnectionSummary),
+
+    /// A connection was unregistered, whatever ended it.
+    Left(ConnectionSummary),
+}
+
+impl ConnectionChange {
+    /// The connection this is about.
+    pub fn connection(&self) -> &ConnectionSummary {
+        match self {
+            Self::Joined(connection) | Self::Left(connection) => connection,
+        }
+    }
+}
+
+/// The little of a connection a watcher is told about.
+#[derive(Debug, Clone)]
+pub struct ConnectionSummary {
+    /// Its identifier.
+    pub id: ConnId,
+
+    /// The account it authenticated as.
+    pub username: Username,
+
+    /// The uid it calls itself, once it has said — which is never, for a
+    /// connection that joined and left without sending anything.
+    pub client_uid: Option<String>,
+
+    /// The callsign it reports, once it has said.
+    pub callsign: Option<String>,
+}
+
+impl ConnectionSummary {
+    /// What a registered connection looks like to a watcher.
+    pub(super) fn of(subscription: &Subscription) -> Self {
+        Self {
+            id: subscription.id,
+            username: subscription.principal.username.clone(),
+            client_uid: subscription.client_uid.clone(),
+            callsign: subscription.callsign.clone(),
+        }
+    }
+}
+
+/// Something told about every connection that joins or leaves.
+///
+/// A newtype rather than a bare `Arc<dyn Fn…>` so that [`Hub`] keeps its
+/// derived `Debug`: a closure has none, and a registry that could not be
+/// printed would be a worse trade than one line of formatting here.
+#[derive(Clone)]
+pub struct ConnectionWatcher(pub(super) Arc<dyn Fn(&ConnectionChange) + Send + Sync>);
+
+impl ConnectionWatcher {
+    /// Wraps a function to be told about every change.
+    pub fn new(watcher: impl Fn(&ConnectionChange) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(watcher))
+    }
+}
+
+impl std::fmt::Debug for ConnectionWatcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ConnectionWatcher")
+    }
+}
 
 /// Everything that is connected, as the rest of the server sees it.
 #[derive(Clone, Debug)]
@@ -163,6 +236,18 @@ impl LiveState {
     /// Sends one message to one connection.
     pub fn send_to_conn(&self, id: ConnId, event: Event) -> bool {
         self.hub.send_to_conn(id, event)
+    }
+
+    /// Registers something to be told when a connection joins or leaves.
+    ///
+    /// This is the seam the server-event feed hangs off:
+    /// [`AppContext::install_live`](crate::services::AppContext::install_live)
+    /// registers one watcher, which turns every change into a `client.connected`
+    /// or `client.disconnected` event on `GET /api/v1/events`. Nothing in this
+    /// module knows what that feed is, which is the point of a watcher rather
+    /// than a call.
+    pub fn watch_connections(&self, watcher: ConnectionWatcher) {
+        self.hub.watch(watcher);
     }
 }
 

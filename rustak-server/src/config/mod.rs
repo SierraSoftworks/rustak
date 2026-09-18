@@ -56,7 +56,7 @@ use human_errors::Error;
 use serde::{Deserialize, Serialize};
 
 pub use acme::{AcmeChallenge, AcmeConfig, AcmeDirectory};
-pub use auth::{AuthConfig, RateLimitConfig};
+pub use auth::{AuthConfig, OAuthClient, OAuthServerConfig, RateLimitConfig};
 pub use marti::MartiConfig;
 pub use oidc::OidcConfig;
 pub use pki::{KeyType, PkiConfig};

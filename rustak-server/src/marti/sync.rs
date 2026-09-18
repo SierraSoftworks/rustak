@@ -200,18 +200,22 @@ async fn read_body(
     payload: web::Payload,
     context: &AppContext,
 ) -> Result<(Ingested, Option<String>, Option<String>), MartiError> {
-    let limit = u64::from(context.config().marti.upload_size_limit_mb) * 1_000_000;
+    // The resolved ceiling rather than the configuration value, so that a limit
+    // an operator set from the admin UI is the one actually enforced — and the
+    // one `/files/api/config` told the client about.
+    let limit_mb = crate::files::limits::limit_mb(&context.config(), context.db()).await?;
+    let limit = u64::from(limit_mb) * 1_000_000;
 
     if let Some(claimed) = claimed_length(request)
         && claimed > limit
     {
-        return Err(too_large(context.config().marti.upload_size_limit_mb));
+        return Err(too_large(limit_mb));
     }
 
     let store = context.content()?;
 
     if !is_multipart(request) {
-        let stored = files_ingest(&store, payload.map_err(io_error), limit, context).await?;
+        let stored = files_ingest(&store, payload.map_err(io_error), limit, limit_mb).await?;
 
         return Ok((stored, None, None));
     }
@@ -225,7 +229,7 @@ async fn read_body(
 
     let filename = upload::part_filename(&field);
     let part_type = upload::part_content_type(&field);
-    let stored = files_ingest(&store, field.map_err(io_error), limit, context).await?;
+    let stored = files_ingest(&store, field.map_err(io_error), limit, limit_mb).await?;
 
     Ok((stored, filename, part_type))
 }
@@ -235,14 +239,14 @@ async fn files_ingest<S>(
     store: &crate::services::ContentStore,
     body: S,
     limit: u64,
-    context: &AppContext,
+    limit_mb: u32,
 ) -> Result<Ingested, MartiError>
 where
     S: futures::Stream<Item = Result<actix_web::web::Bytes, std::io::Error>> + Unpin,
 {
     match crate::files::ingest(store, body, limit).await {
         Ok(stored) => Ok(stored),
-        Err(IngestError::TooLarge) => Err(too_large(context.config().marti.upload_size_limit_mb)),
+        Err(IngestError::TooLarge) => Err(too_large(limit_mb)),
         Err(IngestError::Empty) => Err(MartiError::InvalidRequest(
             "HTTP request body has no content.".to_string(),
         )),

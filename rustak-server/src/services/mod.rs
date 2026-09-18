@@ -58,6 +58,7 @@ use crate::{
     config::Config,
     crypto::SecretStore,
     db::{AuditStore, Cache, Database, KeyValueStore, Queue},
+    plugins::ServerEvents,
 };
 
 pub use late::{Late, Pending};
@@ -117,6 +118,7 @@ pub struct AppContext {
     jwt: Late<JwtKeys>,
     pki: Late<PkiAuthority>,
     live: Late<LiveConnections>,
+    events: ServerEvents,
     session: Arc<Session>,
     http_client: reqwest::Client,
     shutdown: Shutdown,
@@ -158,6 +160,7 @@ impl AppContext {
             jwt: Late::new("the token signing keys"),
             pki: Late::new("the certificate authority"),
             live: Late::new("the live stream connections"),
+            events: ServerEvents::new(),
             session,
             http_client,
             shutdown,
@@ -226,6 +229,8 @@ impl AppContext {
     /// A [`Kind::System`](human_errors::Kind::System) error if it has already
     /// been installed.
     pub fn install_live(&self, live: Arc<LiveConnections>) -> Result<(), Error> {
+        self.events.watch(&live);
+
         self.live.install(live)
     }
 
@@ -273,6 +278,7 @@ impl std::fmt::Debug for AppContext {
             .field("jwt", &self.jwt)
             .field("pki", &self.pki)
             .field("live", &self.live)
+            .field("events", &self.events)
             .field("shutdown", &self.shutdown)
             .field("started_at", &self.started_at)
             .finish_non_exhaustive()
@@ -352,6 +358,19 @@ pub trait Services {
 
     /// The audit log.
     fn audit(&self) -> impl AuditStore + Clone + Send + Sync + 'static;
+
+    /// The server-event bus behind `GET /api/v1/events`.
+    ///
+    /// On the trait rather than an inherent method — unlike
+    /// [`pki`](AppContext::pki) and [`live`](AppContext::live) — because the
+    /// hooks that feed it are in domain modules written against `&impl
+    /// Services` (`files::upload::audit`, `identity::members`), and a hook that
+    /// had to take an `AppContext` would be a plumbing change at every call
+    /// site rather than one line.
+    ///
+    /// Always present, and never fails: a bus with no subscribers is the
+    /// ordinary case.
+    fn events(&self) -> &ServerEvents;
 }
 
 impl Services for AppContext {
@@ -401,6 +420,10 @@ impl Services for AppContext {
 
     fn audit(&self) -> impl AuditStore + Clone + Send + Sync + 'static {
         self.db.clone()
+    }
+
+    fn events(&self) -> &ServerEvents {
+        &self.events
     }
 }
 
@@ -456,6 +479,10 @@ impl<S: Services + ?Sized> Services for &S {
 
     fn audit(&self) -> impl AuditStore + Clone + Send + Sync + 'static {
         (*self).audit()
+    }
+
+    fn events(&self) -> &ServerEvents {
+        (*self).events()
     }
 }
 

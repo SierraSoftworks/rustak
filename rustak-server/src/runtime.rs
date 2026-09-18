@@ -404,12 +404,29 @@ async fn housekeeping(context: AppContext) -> Result<(), Error> {
     Ok(())
 }
 
-/// Deletes passkey ceremonies nobody came back to finish.
+/// Deletes half-finished ceremonies and flows nobody came back to.
+///
+/// Housekeeping rather than correctness: an expired passkey ceremony, an
+/// abandoned sign-in and a code nobody redeemed are each refused on their own
+/// merits whether or not they have been swept. What this stops is the tables
+/// growing without limit on a server people keep closing tabs on.
 async fn sweep_ceremonies(context: &AppContext) {
     match crate::auth::passkey_store::sweep(context.db()).await {
         Ok(0) => {}
         Ok(removed) => debug!(removed, "Swept expired passkey ceremonies."),
         Err(err) => warn!(error = %err, "Could not sweep expired passkey ceremonies."),
+    }
+
+    match crate::auth::oauth_server::state::sweep(context.db()).await {
+        Ok(0) => {}
+        Ok(removed) => debug!(removed, "Swept abandoned sign-ins."),
+        Err(err) => warn!(error = %err, "Could not sweep abandoned sign-ins."),
+    }
+
+    match crate::auth::oauth_server::codes::prune(context.db(), chrono::Utc::now()).await {
+        Ok(0) => {}
+        Ok(removed) => debug!(removed, "Pruned expired authorization codes."),
+        Err(err) => warn!(error = %err, "Could not prune expired authorization codes."),
     }
 }
 

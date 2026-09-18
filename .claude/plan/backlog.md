@@ -4,7 +4,10 @@ Items too small for a brief of their own, or waiting for a milestone. Remove a l
 
 - **The e2e launcher does not wait for the server it stopped.** `e2e/scripts/start-server.mjs` answers `SIGTERM` by killing the child, removing the scratch directory and calling `process.exit(130)` at once, so the server checkpoints into a directory that has already gone. Playwright's `gracefulShutdown` is now 15 s (M2-11 item 5), which only helps once the launcher awaits the child's exit before cleaning up. (`e2e/scripts/start-server.mjs`.) Found by M2-11.
 - **GeoChat bounce (`b-t-f-s`)** — brief `M1-08-chat-bounce.md` exists; launch when `stream/router.rs` is free.
-- **ACME for the public listener** — config (`[acme]`) and the `acme_*` tables exist; no implementation brief yet (design 03 §ACME). Milestone M2 exit item.
+- **`[web.public] plain_bind` is parsed and validated but never bound** — an `http-01` ACME deployment, and the `80 → 443` redirect design 03 §3 describes, both want a plaintext listener on it serving `pki::acme::http01_routes` and `301`ing everything else. (`web/server.rs`, `runtime.rs`.) Found by M2-10.
+- **The ACME resolver and the `http-01` token map are process-wide statics** — both become ordinary handles once `services/mod.rs` can take a `Late<AcmeState>` slot. (`services/mod.rs`, `pki/acme/{mod,challenge}.rs`.) Found by M2-10.
+- **No admin-UI panel for TLS** — `GET /api/v1/settings/tls` and `POST /api/v1/settings/tls/renew` exist and `TlsStatus::needs_attention()` is there for the banner; nothing in `rustak-ui` reads them, so a failed renewal is visible only in the audit log and the API. Found by M2-10.
+- **Wildcard ACME names pass `--check` but no challenge rustak implements can validate one** — a wildcard needs `dns-01`. Either implement it or refuse a wildcard at `--check`. (`config/acme.rs`, `pki/acme/order.rs`.) Found by M2-10.
 - **OAuth2 authorize flow and `/login/*` OIDC federation** for CloudTAK SSO — M5 (design 03 M5.1–M5.5).
 - **`interop/cloudtak` compose nightly** — M4 gate (plan → Verification).
 - **Config-package UI** — the server has `POST /api/v1/config-packages` (M3-02); the admin UI has no page for it yet, nor for packages/profiles/clients/CoT browser (design 04 §8.3).

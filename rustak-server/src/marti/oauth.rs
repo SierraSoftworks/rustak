@@ -36,6 +36,7 @@ use actix_web::http::header::RETRY_AFTER;
 use actix_web::{HttpRequest, HttpResponse, web};
 use std::sync::Arc;
 
+use crate::auth::oauth_server::codes::{self, CodeError};
 use crate::auth::{RateLimiter, tokens};
 use crate::identity::secret_cache::VerifiedSecretCache;
 use crate::identity::verify::{Purpose, VerifyError, verify};
@@ -59,7 +60,7 @@ const ANONYMOUS_SUBJECT: &str = "oauth-token";
 /// They are tolerated rather than rejected — see [`token`].
 #[derive(Debug, Clone, Deserialize)]
 pub struct TokenForm {
-    /// `password` or `refresh_token`.
+    /// `password`, `refresh_token` or `authorization_code`.
     pub grant_type: String,
 
     #[serde(default)]
@@ -70,6 +71,28 @@ pub struct TokenForm {
 
     #[serde(default)]
     pub refresh_token: Option<String>,
+
+    /// The `authorization_code` grant: the code from `/oauth/authorize`.
+    #[serde(default)]
+    pub code: Option<String>,
+
+    /// The `authorization_code` grant: the URI the code was delivered to,
+    /// repeated so it can be compared with the one it was issued for.
+    #[serde(default)]
+    pub redirect_uri: Option<String>,
+
+    /// The `authorization_code` grant: the proof-key verifier whose `S256`
+    /// hash was registered when the code was issued.
+    #[serde(default)]
+    pub code_verifier: Option<String>,
+
+    /// The `authorization_code` grant: which registered client is asking.
+    ///
+    /// Read for that grant alone. The password grant ignores it, because
+    /// neither verified client sends one and TAK Server ignores it when they
+    /// do (`compat/oauth.md` §1).
+    #[serde(default)]
+    pub client_id: Option<String>,
 }
 
 /// `POST /oauth/token`.
@@ -102,13 +125,14 @@ pub async fn token(
     match form.grant_type.as_str() {
         "password" => password_grant(&request, &context, limiter, &form).await,
         "refresh_token" => refresh_grant(&context, &form).await,
+        "authorization_code" => code_grant(&context, &form).await,
         other => {
             debug!(grant = %other, "Refused a grant type this endpoint does not serve.");
 
             Ok(oauth_error(
                 StatusCode::BAD_REQUEST,
                 "unsupported_grant_type",
-                "This server supports the password and refresh_token grants.",
+                "This server supports the password, refresh_token and authorization_code grants.",
             ))
         }
     }
@@ -282,6 +306,103 @@ async fn refresh_grant(context: &AppContext, form: &TokenForm) -> MartiResult {
             Ok(bad_credentials())
         }
     }
+}
+
+/// `grant_type=authorization_code`: redeeming a code from `/oauth/authorize`.
+///
+/// The three bindings the code carries — the client, the redirect URI and the
+/// proof-key challenge — are checked by
+/// [`codes::redeem`](crate::auth::oauth_server::codes::redeem), inside the same
+/// transaction that spends the code, so a wrong guess cannot burn the code a
+/// browser is about to present and two simultaneous redemptions cannot both
+/// win. Every refusal is the same `invalid_grant`, whichever binding failed.
+async fn code_grant(context: &AppContext, form: &TokenForm) -> MartiResult {
+    let (Some(code), Some(redirect_uri), Some(verifier), Some(client_id)) = (
+        form.code.as_deref(),
+        form.redirect_uri.as_deref(),
+        form.code_verifier.as_deref(),
+        form.client_id.as_deref(),
+    ) else {
+        return Ok(oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "An authorization_code grant needs a code, a redirect_uri, a code_verifier and a client_id.",
+        ));
+    };
+
+    // Checked before the code is looked at, so that a client removed from the
+    // configuration cannot redeem a code issued while it was still registered.
+    if context.config().auth.oauth.client(client_id).is_none() {
+        debug!(client = %client_id, "Refused a code grant from an unregistered client.");
+
+        return Ok(invalid_grant());
+    }
+
+    let redemption =
+        match codes::redeem(context.db(), code, client_id, redirect_uri, verifier).await {
+            Ok(redemption) => redemption,
+            Err(CodeError::Unavailable(err)) => {
+                error!(error = %err, "Could not redeem an authorization code.");
+                context.session().record_human_error(&err);
+
+                return Ok(unavailable());
+            }
+            Err(CodeError::Invalid) => {
+                debug!(client = %client_id, "Refused an authorization code.");
+
+                return Ok(invalid_grant());
+            }
+        };
+
+    let Ok(Some(user)) = context.db().users().get(redemption.user_id).await else {
+        return Ok(invalid_grant());
+    };
+
+    if user.disabled {
+        return Ok(invalid_grant());
+    }
+
+    // Derived from the account now rather than from the scope recorded when
+    // the code was issued, exactly as `tokens::rotate` does: a code stands for
+    // up to ten minutes, and somebody demoted inside that window must not be
+    // handed the administrative scope their code still remembers. The recorded
+    // scope is not simply trusted — it is the *ceiling*, so a code minted for an
+    // ordinary session cannot become an administrative one either.
+    let is_admin =
+        user.is_effective_admin() && redemption.scope.split(' ').any(|scope| scope == "admin");
+    let scope = tokens::scope_for(is_admin);
+    let session = match tokens::issue_session(context, &user, is_admin, Some(client_id)).await {
+        Ok(session) => session,
+        Err(err) => {
+            error!(error = %err, "Could not issue a session for an authorization code.");
+            context.session().record_human_error(&err);
+
+            return Ok(unavailable());
+        }
+    };
+
+    info!(
+        client = %client_id,
+        username = %user.username,
+        "Exchanged an authorization code for a session.",
+    );
+
+    Ok(granted(serde_json::json!({
+        "access_token": session.token,
+        "token_type": TOKEN_TYPE,
+        "expires_in": session.expires_in,
+        "refresh_token": session.refresh_token,
+        "scope": scope,
+    })))
+}
+
+/// The one refusal a code grant ever gets, whichever binding failed.
+fn invalid_grant() -> HttpResponse {
+    oauth_error(
+        StatusCode::BAD_REQUEST,
+        "invalid_grant",
+        "That authorization code was not accepted.",
+    )
 }
 
 /// How long an access token has left, in whole seconds.

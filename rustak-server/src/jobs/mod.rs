@@ -48,14 +48,19 @@
 //! first, and why a run that fails is one missed run rather than the end of the
 //! schedule. [`AuditPruneJob`] and [`WalCheckpointJob`] are both of this shape.
 
+pub mod acme_renew;
 pub mod audit_prune;
 pub mod host;
 pub mod job;
 pub mod mission_expiry;
 pub mod retention;
 pub mod runnable;
+pub mod service_health;
 pub mod wal_checkpoint;
 
+pub use acme_renew::{
+    ACME_RENEW_FORCED_KEY, ACME_RENEW_PARTITION, AcmeRenewJob, AcmeRenewTask, RENEW_INTERVAL,
+};
 pub use audit_prune::{AUDIT_PRUNE_PARTITION, AuditPruneJob, AuditPruneTask, PRUNE_INTERVAL};
 pub use host::JobHost;
 pub use job::{DEFAULT_JOB_TIMEOUT, Job, JobContext};
@@ -64,4 +69,7 @@ pub use mission_expiry::{
 };
 pub use retention::{COT_RETENTION_PARTITION, CotRetentionJob, CotRetentionTask, SWEEP_INTERVAL};
 pub use runnable::{JobRegistration, JobRunnable};
+pub use service_health::{
+    SERVICE_HEALTH_INTERVAL, SERVICE_HEALTH_PARTITION, ServiceHealthJob, ServiceHealthTask,
+};
 pub use wal_checkpoint::{WAL_CHECKPOINT_PARTITION, WalCheckpointJob, WalCheckpointTask};

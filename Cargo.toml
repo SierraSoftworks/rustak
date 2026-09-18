@@ -38,6 +38,9 @@ actix-ws = "0.4.0"
 actix-multipart = "0.8.2"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "form", "multipart", "stream", "http2", "charset"] }
 url = "2.5.8"
+# `instant-acme` speaks `http::Request`/`http::Response` and `bytes::Bytes` in its
+# `HttpClient` trait, which `pki::acme::transport` implements over reqwest.
+http = "1.5.0"
 
 # ---- tls / pki ----
 rustls = { version = "0.23.45", default-features = false, features = ["aws_lc_rs", "logging", "std", "tls12"] }
@@ -88,7 +91,7 @@ webauthn_rp = { version = "0.3.0", features = ["custom", "serde_relaxed", "seria
 # The software authenticator the tests plug in signs with all three algorithms the
 # registration options offer, so that the allow-list is exercised rather than asserted.
 # Both are already in the tree through `webauthn_rp`.
-p256 = { version = "0.13.2", default-features = false, features = ["ecdsa", "std"] }
+p256 = { version = "0.14.0", default-features = false, features = ["ecdsa", "std"] }
 ed25519-dalek = { version = "2.2.0", default-features = false, features = ["rand_core", "std"] }
 ciborium = "0.2.2"
 bitvec = "1.1.1"

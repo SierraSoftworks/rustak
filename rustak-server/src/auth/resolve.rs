@@ -12,6 +12,13 @@
 //! that cannot be replayed from a log, so a request carrying both a certificate
 //! and a header is answered as the certificate.
 //!
+//! A fourth credential arrives by the same door: the `access_token_N` cookies
+//! the `/login/*` flow sets. They are read through [`bearer`] like any other
+//! token of ours, but only on the paths
+//! [`cookies_allowed`](crate::auth::oauth_server::cookies_allowed) permits and
+//! only when the `Authorization` header carried nothing — an explicit
+//! credential always beats an ambient one.
+//!
 //! [`bearer`] itself is written against [`Services`] and plain request facts
 //! rather than against an actix request, so it can be exercised without a
 //! server and reused by the listeners that are not actix at all.
@@ -311,6 +318,27 @@ pub async fn resolve_principal<S: Services>(
             Ok(resolved) => return Ok(resolved),
             Err(AuthFailure::Unavailable(err)) => return Err(AuthFailure::Unavailable(err)),
             Err(failure) => debug!(reason = ?failure, "A bearer token established no identity."),
+        }
+    }
+
+    // Only where `cookies_allowed` says so — the sign-in endpoints and the TAK
+    // surface, never `/api/v1` — and only when the header carried nothing, so
+    // that an explicit credential always wins over an ambient one.
+    if policy.bearer
+        && crate::auth::oauth_server::cookies_allowed(request.path())
+        && let Some(token) = crate::auth::oauth_server::access_token_from_cookies(request.headers())
+    {
+        let facts = RequestFacts {
+            method: request.method().as_str(),
+            path: request.path(),
+            client_ip: address.map(|ip| ip.to_string()),
+            headers: request.headers(),
+        };
+
+        match bearer(services, &token, &facts).await {
+            Ok(resolved) => return Ok(resolved),
+            Err(AuthFailure::Unavailable(err)) => return Err(AuthFailure::Unavailable(err)),
+            Err(failure) => debug!(reason = ?failure, "A session cookie established no identity."),
         }
     }
 

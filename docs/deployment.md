@@ -16,9 +16,6 @@ Docker container, and as a systemd service.
 >
 > Within the config this document walks through, some sections describe
 > features that land in later milestones rather than M0:
-> - **ACME (`[acme]`, `[web.public.tls] mode = "acme"`) is planned — M2.**
->   Setting it today is refused with a `Kind::User` error explaining that ACME
->   is not available yet (verified in `.claude/plan/status/M0-11-web-api-auth.md`).
 > - **The CoT stream listener (`:8089`) is planned — M1.** `[stream.tls]`
 >   parses and validates, but nothing binds it yet.
 > - **The Marti API and ATAK/CloudTAK enrollment (`/Marti/**`,
@@ -89,7 +86,7 @@ for the full comment on every key.
   `webtak` role. `listen` defaults to `[":8446"]`; add `":443"` for browsers
   that will not be told a port number, and for ACME's `tls-alpn-01`
   challenge. `tls.mode` is `internal` (rustak's own CA — see **TLS modes**
-  below), `files`, `acme` (**planned — M2**), or `none` (refused unless
+  below), `files`, `acme` (see **ACME certificates** below), or `none` (refused unless
   `allow_insecure_http = true`, which is meant for development and the e2e
   suite, not a real deployment — it serves credentials, tokens and
   certificate enrollment in the clear).
@@ -116,10 +113,11 @@ for the full comment on every key.
   (`name_entries` / `organization`), key type, validities, and
   `require_known_cert` (on by default, so deleting a certificate's record
   stops it working immediately, not just at its next renewal).
-- **`[acme]`** — **planned — M2.** The config keys exist and validate today
-  (directory, contact, challenge type, `accept_tos`), but setting
-  `[web.public.tls] mode = "acme"` is refused with an explanatory error until
-  M2 lands.
+- **`[acme]`** — where a publicly trusted certificate for `[web.public]` is
+  ordered from, how control of the names is proved, and how long before expiry
+  it is replaced. Used only when `[web.public.tls] mode = "acme"`; the two
+  switches must agree, and `--check` refuses a file where they do not. See
+  **ACME certificates** below.
 - **`[retention]`** — how long CoT history, audit log entries and archived
   missions are kept, as an age, a row/entry cap, or both.
 
@@ -141,8 +139,109 @@ for the full comment on every key.
 |---|---|---|
 | `internal` (default) | rustak's own CA, reissued automatically when the covered names, the CA, or the renewal window change | Nothing external. Browsers will not trust it until the CA (`<data_dir>/pki/ca.crt`) is installed, and devices get it automatically through enrollment. This is the LAN-only story. |
 | `files` | `cert_file` / `key_file`, PEM, reloaded when they change | A certificate from somewhere else (a public CA, your own PKI). |
-| `acme` | Ordered from an ACME authority (Let's Encrypt by default) | **Planned — M2.** Public DNS for the domain, and either `:443` bound (`tls-alpn-01`) or a plaintext `plain_bind` on `:80` (`http-01`). |
+| `acme` | Ordered from an ACME authority (Let's Encrypt by default), renewed automatically and swapped in without a restart | Public DNS for every name, and either `:443` bound (`tls-alpn-01`) or port 80 reaching the public listener (`http-01`). |
 | `none` | Nothing — plaintext HTTP | `allow_insecure_http = true` as a second, deliberate statement. Development and the e2e suite only. |
+
+## ACME certificates
+
+`[web.public.tls] mode = "acme"` plus `[acme] enabled = true` makes rustak
+obtain the public listener's certificate from a certificate authority and keep
+it current. Nothing else changes: the Marti and stream listeners still present
+certificates from rustak's own CA, because their clients are devices rustak
+enrolled and handed a truststore to.
+
+```toml
+[server]
+domains = ["tak.example.com"]        # what the certificate is ordered for
+
+[web.public]
+listen = ["0.0.0.0:443", "0.0.0.0:8446"]
+
+[web.public.tls]
+mode = "acme"
+
+[acme]
+enabled = true
+directory = "letsencrypt"            # or "letsencrypt-staging", or a URL
+contact = "ops@example.com"          # where expiry warnings go
+accept_tos = true                    # rustak will not agree on your behalf
+challenge = "tls-alpn-01"
+renew_before = "30d"
+```
+
+### What happens, and when
+
+1. **First start.** The listener binds with a certificate from rustak's own CA
+   so that it is answering at all — the first order cannot be validated until
+   it is. A browser will warn for as long as that takes. The log says so.
+2. **The order.** The renewal job runs immediately at start-up and hourly
+   afterwards. It registers an account the first time (the account key is
+   sealed in the database, and is backed up with it — see **Backups**), places
+   an order, answers the challenge, and downloads the chain.
+3. **The swap.** The issued key and chain are sealed into `acme_certificates`
+   and installed into the listener's certificate resolver. Existing
+   connections keep the certificate they negotiated with; every new handshake
+   gets the new one. **There is no restart.**
+4. **Renewal.** Every hour the job compares the expiry against `renew_before`
+   and orders again when it is inside it. A failed order is retried after an
+   hour, then four, then daily, so a name whose DNS is not ready yet cannot
+   spend the account's rate-limit allowance.
+
+### Which port has to be open
+
+| `challenge` | Answered on | What must be true |
+|---|---|---|
+| `tls-alpn-01` (default) | port **443**, inside the TLS handshake | `":443"` is in `[web.public] listen`. Needs no plaintext port. |
+| `http-01` | port **80**, over plaintext HTTP, at `/.well-known/acme-challenge/{token}` | Port 80 reaches the public listener. rustak serves that path on every `[web.public]` binding; it does **not** yet bind `[web.public] plain_bind` itself, so an `http-01` deployment needs a proxy forwarding `:80` to a `[web.public] listen` address, or `":80"` in that list. |
+
+`--check` refuses a combination that could never complete — `tls-alpn-01` with
+nothing on 443, `http-01` with no plaintext port — and refuses a name no public
+authority could issue for, such as `tak.lan`, `localhost` or an IP address.
+Binding a port below 1024 needs `CAP_NET_BIND_SERVICE` (the systemd unit below
+grants it) or a proxy in front.
+
+### Watching it, and asking for a renewal
+
+- `GET /api/v1/settings/tls` (administrator) — where the certificate came
+  from, what it covers, when it expires, when it will be renewed, and, if the
+  last order failed, how many attempts have failed and what the authority
+  said.
+- `POST /api/v1/settings/tls/renew` (administrator) — queue an order now,
+  ignoring the schedule and the back-off. Answers `202` with the status as it
+  stands; poll the `GET` to watch it change. Repeated calls collapse onto one
+  queued order, because every one of them spends real rate limit.
+- The audit log carries `acme.issued` and `acme.renew.failed` under the `pki`
+  category.
+
+### Manual check against staging before production
+
+Let's Encrypt's production rate limits are unforgiving (five failed
+validations per account per hour, and a weekly cap per registered domain), and
+they are not something a test suite may exercise. The automated suite drives
+the real `instant-acme` client against a mock directory
+(`rustak-server/tests/acme_directory.rs`); the following is the checklist for
+the one thing it cannot prove — that a real authority can reach this server.
+
+Run it on the machine that will be production, against a **staging** directory,
+before the first production order:
+
+1. Point the public DNS records for every name in `[acme] domains` at the host.
+2. Set `directory = "letsencrypt-staging"`, `accept_tos = true`, and a real
+   `contact`. Run `rustak --config config.toml --check`; it must pass.
+3. Start rustak. The log should say the listener bound with an internally
+   issued certificate, then, within a minute, that a certificate was issued.
+4. `curl -s https://tak.example.com/api/v1/health` from **outside** the
+   network. It fails on trust — staging's roots are not in any trust store —
+   and `openssl s_client -connect tak.example.com:443 -servername
+   tak.example.com </dev/null 2>/dev/null | openssl x509 -noout -issuer
+   -subject -dates` must show a `(STAGING)` issuer and your names.
+5. Check `GET /api/v1/settings/tls`: `state` is `valid`, `domains` is what you
+   asked for, `renews_at` is about 60 days out for a 90-day certificate.
+6. `POST /api/v1/settings/tls/renew`, wait a minute, and confirm `not_after`
+   moved. This proves the swap works without a restart.
+7. Only then change `directory` to `"letsencrypt"`, delete the staging row —
+   `DELETE FROM acme_certificates;` with the server stopped — and restart. The
+   account rows are per directory, so the staging account is left alone.
 
 ## Running it
 
@@ -429,6 +528,92 @@ including a cloned-authenticator counter check, and every setup-wizard gating
 rule — see `.claude/plan/status/M0-11-web-api-auth.md`. What is not yet
 proven is reaching it through an actually-running `rustak` process (the
 bootstrap gap called out at the top of this document).
+
+## Browser single sign-on (`/login/*` and `/oauth/authorize`)
+
+Beside the admin UI's own popup sign-in, rustak serves the browser flow TAK
+clients expect, in TAK Server's own shapes. Two audiences use it:
+
+- **A WebTAK-style page** sends somebody to `GET /login/auth`, rustak sends
+  them to the identity provider configured under `[auth.oidc]`, and they come
+  back with a session in TAK's chunked `access_token_0`, `access_token_1`, …
+  cookies. `GET /token/access` then hands the page that token to present
+  elsewhere (turn it off with `[auth] allow_access_token_retrieval = false`).
+- **An OAuth2 client of its own** — anything that wants rustak to *be* its
+  identity provider — uses `GET /oauth/authorize` and
+  `POST /oauth/token` with `grant_type=authorization_code`.
+
+### Registering a client
+
+Nothing may use the authorization-code flow until it is registered:
+
+```toml
+[auth.oauth]
+clients = [
+  { id = "webtak", redirect_uris = ["https://tak.example.com/login/redirect.html"] },
+]
+```
+
+`redirect_uris` are compared **byte for byte**, never as a prefix, so each one
+has to be exactly what the client sends — including its query string, if it has
+one. A URI that is not absolute, carries a fragment, or would carry a code over
+plain `http://` to anything but a loopback host is refused when the
+configuration loads, not when somebody tries to sign in.
+
+Every client **must** send `code_challenge` with `code_challenge_method=S256`;
+a request without one is refused, and `plain` is never accepted. The code is
+single-use, expires in ten minutes, and is bound to the client, the redirect URI
+and that proof key — so a code lifted from an address bar, a `Referer` or a
+proxy log buys nothing.
+
+`public = true` (the default) says the client keeps no secret, which is every
+browser and mobile client. It is recorded but not yet acted on: rustak accepts
+no client secret, so proof key for code exchange is required whatever it says,
+and `public = false` changes nothing today. It exists so that adding client
+authentication later is not a change to the shape of your config file.
+
+There is no consent screen. Every client here was registered in this server's
+own configuration file by an operator, which makes them all first-party.
+
+### The endpoints
+
+| Path | What it does |
+|---|---|
+| `GET /oauth/authorize` | `response_type=code` only. Issues a code to a signed-in browser, or sends one that is not signed in through `[auth.oidc]` first. |
+| `POST /oauth/token` | `grant_type=authorization_code`, beside the existing `password` and `refresh_token` grants. Needs `code`, `redirect_uri`, `client_id` and `code_verifier`. |
+| `GET /login/auth` | Starts a sign-in with no OAuth2 client behind it. `?returnTo=/some/path` — a path on this site only. |
+| `GET /login/redirect` | Where the identity provider returns the browser. |
+| `GET /login/authserver` | The sign-in button's name (`[auth.oidc] display_name`), or `404` when no provider is configured. |
+| `GET /login/.well-known/openid-configuration` | The **upstream** provider's `authorization_endpoint` and `token_endpoint`, in TAK Server's bare shape. Not rustak's own discovery document. |
+| `GET /token/access` | The caller's own access token. |
+| `GET\|POST /logout` | Revokes the session and clears its cookies. `204`. |
+
+All of them are served on `[web.public]` only — never on the mutually
+authenticated `[web.marti]` listener, where a device already holds a stronger
+credential than any cookie and a browser has no business.
+
+### Where a cookie counts as a credential
+
+`access_token_N` cookies authenticate `/login/*`, `/logout`, `/token/access`,
+`/oauth/authorize` and the TAK surface (`/Marti/**`, `/files/api/**`). They are
+**never** accepted on `/api/v1`, which reads the `Authorization` header and
+nothing else — that is what keeps the admin API free of any cross-site request
+forgery surface. Every cookie is `HttpOnly`, `Secure`, `SameSite=Lax` and
+`Path=/`; the short-lived `state` cookie is scoped to `/login`.
+
+`Secure` is set unconditionally, so this flow needs TLS. That is not a
+restriction in practice — `[web.public]` refuses to serve plaintext unless an
+operator says so twice — but a development instance running with
+`allow_insecure_http` will find that browsers drop the cookies.
+
+### CloudTAK today
+
+CloudTAK 13.90 has **no OIDC back end**: its login form always posts a username
+and password, which its server turns into rustak's `/oauth/token` password
+grant. So none of this section is on CloudTAK's path yet. It is implemented to
+TAK Server's contract so that when CloudTAK does ship an OIDC client, it works
+against rustak unchanged — no rustak-specific branch, no configuration beyond
+registering the client above. See `.claude/plan/compat/oauth.md` §4.
 
 ## Backup
 

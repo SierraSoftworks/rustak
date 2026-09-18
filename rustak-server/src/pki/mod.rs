@@ -10,6 +10,7 @@
 //!
 //! | File | What it answers |
 //! |---|---|
+//! | [`acme`] | a publicly trusted certificate for the browser-facing listener |
 //! | [`keys`] | generating and reloading the private keys we own |
 //! | [`ca`] | the root authority: creation, storage, reload, export |
 //! | [`csr`] | reading a signing request in any form a client sends one |
@@ -21,8 +22,9 @@
 //! | [`tls`] | the rustls configurations the three listeners are built from |
 //! | [`facade`] | [`Pki`], which ties enrolment and revocation together |
 //!
-//! ACME — a publicly trusted certificate for the browser-facing listener — is
-//! separate and arrives with its own brief; nothing here depends on it.
+//! [`acme`] stands apart from the rest: it is the one certificate this server
+//! does not issue. Nothing else here depends on it, and it depends on the rest
+//! only for [`keys`] and for [`tls`]'s resolver.
 //!
 //! # We choose the subject, the client chooses the key
 //!
@@ -34,6 +36,7 @@
 //! naming somebody else, and the common name is exactly what the stream and
 //! Marti listeners resolve to a user.
 
+pub mod acme;
 pub mod ca;
 pub mod csr;
 pub mod facade;
@@ -47,6 +50,7 @@ pub mod server_cert;
 pub mod testing;
 pub mod tls;
 
+pub use acme::{CertState, http01_routes};
 pub use ca::{CaMaterial, ca_certificate_path, load_or_create_root_ca};
 pub use csr::{CsrEncoding, CsrKey, CsrPolicy, ParsedCsr, parse_csr};
 pub use facade::{Enrollment, IssuedVia, Pki};

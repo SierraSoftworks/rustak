@@ -33,14 +33,18 @@
 pub mod audit;
 pub mod auth;
 pub mod certificate;
+pub mod client;
 pub mod config_package;
+pub mod cot;
 pub mod credential;
 pub mod device;
 pub mod error;
+pub mod event;
 pub mod group;
 pub mod health;
 pub mod identity;
 pub mod mission;
+pub mod package;
 pub mod passkey;
 pub mod profile;
 pub mod service;
@@ -56,13 +60,19 @@ pub use certificate::{
     Certificate, CertificateKind, CertificateSource, CertificateState, RevocationReason,
     RevokeCertificateRequest,
 };
+pub use client::{ClientHistoryEntry, ConnectedClient, IncognitoRequest};
 pub use config_package::{ConfigPackageRequest, ConfigPackageVariant};
+pub use cot::{CotDetail, CotSummary};
 pub use credential::{
     CreateCredentialRequest, Credential, CredentialCreated, CredentialKind, ENROLL_URL,
     EnrollTemplate,
 };
 pub use device::Device;
 pub use error::ApiErrorBody;
+pub use event::{
+    ChannelEvent, ClientEvent, MissionEvent, PackageEvent, ServerEvent, ServerEventPayload,
+    ServiceEvent,
+};
 pub use group::{
     ActiveGroup, CreateGroupRequest, Group, GroupMember, GroupMembership, GroupPatch, GroupSource,
     MembershipSource,
@@ -77,6 +87,7 @@ pub use mission::{
     MissionChangeKind, MissionChangeSummary, MissionDetail, MissionLayerSummary, MissionRoleKind,
     MissionRoleUpdate, MissionSubscriptionSummary, MissionSummary, UidDetails,
 };
+pub use package::{PackageSummary, PackageUpdate};
 pub use passkey::{
     PasskeyChallenge, PasskeyLoginFinish, PasskeyLoginStart, PasskeyRegistrationFinish,
     PasskeyRegistrationStart, PasskeySummary,
@@ -88,7 +99,9 @@ pub use service::{
     Capability, CapabilityError, Heartbeat, ServiceDescriptor, ServiceEndpoints, ServiceState,
     ServiceStatus, ServiceSummary,
 };
-pub use settings::ServerSettings;
+pub use settings::{
+    FileSettings, MartiSettings, ServerSettings, TlsCertificateState, TlsSource, TlsStatus,
+};
 pub use setup::{
     AdminCreated, CaKeyType, CaSummary, CreateAdminRequest, InitCaRequest, ServerSettingsRequest,
     SetupStatus,

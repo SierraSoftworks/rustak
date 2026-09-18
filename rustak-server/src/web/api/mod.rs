@@ -7,6 +7,13 @@
 //! sign-in ceremonies themselves, and the first-run wizard. Everything else
 //! sits behind [`middleware::api_auth`].
 //!
+//! "Public" means *outside that gate*, not unauthenticated. `/services/*` and
+//! `/events` are mounted there as well, because a sidecar authenticates with a
+//! service token or a client certificate and the gate takes one of our own
+//! access tokens and nothing else. Those handlers resolve their caller
+//! themselves through [`crate::plugins::auth`], and the route-table test below
+//! asserts that none of them answers without a credential.
+//!
 //! The passkey ceremonies are public even for a registration by somebody who is
 //! signed in, because the same endpoint also serves the first administrator,
 //! who by definition is not. The handler resolves the bearer token itself and
@@ -23,10 +30,13 @@
 pub mod audit;
 pub mod auth;
 pub mod certificates;
+pub mod clients;
 pub mod config_packages;
+pub mod cot;
 pub mod credentials;
 pub mod devices;
 pub mod error;
+pub mod events;
 pub mod extract;
 pub mod groups;
 pub mod health;
@@ -34,9 +44,12 @@ pub mod me;
 pub mod middleware;
 pub mod missions;
 pub mod missions_view;
+pub mod packages;
+pub mod packages_upload;
 pub mod passkey;
 pub mod profile_files;
 pub mod profiles;
+pub mod services;
 pub mod settings;
 pub mod setup;
 pub mod subject;
@@ -108,6 +121,11 @@ pub fn configure() -> actix_web::Scope<
             )
             .route("/audit", web::get().to(audit::list))
             .route("/settings", web::get().to(settings::get))
+            .route("/settings/files", web::get().to(settings::files))
+            .route("/settings/files", web::put().to(settings::put_files))
+            .route("/settings/marti", web::get().to(settings::marti))
+            .route("/settings/tls", web::get().to(settings::tls))
+            .route("/settings/tls/renew", web::post().to(settings::renew_tls))
             .route("/setup/server", web::post().to(setup::server))
             .route("/setup/ca", web::get().to(setup::get_ca))
             .route("/setup/ca", web::post().to(setup::ca))
@@ -117,7 +135,13 @@ pub fn configure() -> actix_web::Scope<
             // `{id}` that would otherwise swallow it.
             .configure(missions::routes)
             .configure(profiles::routes)
-            .configure(config_packages::routes),
+            .configure(config_packages::routes)
+            // Stored files, live connections and relayed CoT, each registering
+            // its literal segments ahead of the `{hash}`/`{uid}` that would
+            // otherwise swallow them.
+            .configure(packages::routes)
+            .configure(clients::routes)
+            .configure(cot::routes),
     )
 }
 
@@ -161,6 +185,13 @@ where
         )
         .route("/setup/status", web::get().to(setup::status))
         .route("/setup/admin", web::post().to(setup::admin))
+        // The control API and the server-event feed: mounted here because they
+        // accept a service token or a client certificate, which the session gate
+        // below would refuse. Every one of their handlers resolves its own
+        // caller through `plugins::auth` and answers `401` without one — see
+        // `services::routes`.
+        .configure(services::routes)
+        .configure(events::routes)
 }
 
 #[cfg(test)]
@@ -203,10 +234,37 @@ mod tests {
         ("POST", "/api/v1/certificates/1/revoke"),
         ("GET", "/api/v1/audit"),
         ("GET", "/api/v1/settings"),
+        ("GET", "/api/v1/settings/tls"),
+        ("POST", "/api/v1/settings/tls/renew"),
+        ("GET", "/api/v1/settings/files"),
+        ("PUT", "/api/v1/settings/files"),
+        ("GET", "/api/v1/settings/marti"),
+        ("GET", "/api/v1/packages"),
+        ("POST", "/api/v1/packages"),
+        ("GET", "/api/v1/packages/aa"),
+        ("PATCH", "/api/v1/packages/aa"),
+        ("DELETE", "/api/v1/packages/aa"),
+        ("GET", "/api/v1/packages/aa/content"),
+        ("GET", "/api/v1/clients"),
+        ("GET", "/api/v1/clients/history"),
+        ("DELETE", "/api/v1/clients/ANDROID-1"),
+        ("POST", "/api/v1/clients/ANDROID-1/incognito"),
+        ("GET", "/api/v1/cot"),
+        ("GET", "/api/v1/cot/ANDROID-1"),
+        ("DELETE", "/api/v1/cot/ANDROID-1"),
+        ("GET", "/api/v1/cot/ANDROID-1/history"),
         ("POST", "/api/v1/setup/server"),
         ("GET", "/api/v1/setup/ca"),
         ("POST", "/api/v1/setup/ca"),
         ("POST", "/api/v1/setup/complete"),
+        // Outside the gate, but not open: each of these resolves its own caller.
+        ("GET", "/api/v1/services"),
+        ("POST", "/api/v1/services/register"),
+        ("DELETE", "/api/v1/services/weather"),
+        ("POST", "/api/v1/services/weather/heartbeat"),
+        ("GET", "/api/v1/services/weather/config"),
+        ("PUT", "/api/v1/services/weather/config"),
+        ("GET", "/api/v1/events"),
     ];
 
     #[actix_web::test]

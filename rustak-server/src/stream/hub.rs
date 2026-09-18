@@ -32,6 +32,7 @@ use rustak_cot::codec::{EncodedEvent, Mode};
 
 use crate::prelude::*;
 
+use super::live::{ConnectionChange, ConnectionSummary, ConnectionWatcher};
 use super::registry::{Index, Registry};
 use super::subscription::{ClientEndpoint, ConnHandle, ConnId, SaUpdate, Subscription};
 
@@ -40,6 +41,7 @@ use super::subscription::{ClientEndpoint, ConnHandle, ConnId, SaUpdate, Subscrip
 pub struct Hub {
     inner: RwLock<Registry>,
     next_id: AtomicU64,
+    watchers: RwLock<Vec<ConnectionWatcher>>,
 }
 
 impl Hub {
@@ -53,13 +55,41 @@ impl Hub {
         ConnId(self.next_id.fetch_add(1, Ordering::Relaxed) + 1)
     }
 
+    /// Registers something to be told when a connection joins or leaves.
+    ///
+    /// Used by the server-event feed (`plugins::events`), which has to report
+    /// connections without this module having to know what a feed is. Watchers
+    /// are called on the connection's own task, outside the registry lock, so
+    /// one that blocks blocks that connection and nothing else — which is why
+    /// the only watcher we register does nothing but push onto a channel.
+    pub fn watch(&self, watcher: ConnectionWatcher) {
+        self.watchers.write().push(watcher);
+    }
+
+    /// Tells every watcher, with no lock of ours held.
+    fn announce(&self, change: &ConnectionChange) {
+        // Cloned — of `Arc`s — rather than iterated under the read lock, so a
+        // watcher that reaches back into the hub cannot deadlock against it.
+        let watchers = self.watchers.read().clone();
+
+        for watcher in &watchers {
+            (watcher.0)(change);
+        }
+    }
+
     /// Adds a connection.
     pub fn register(&self, subscription: Subscription) -> ConnId {
         let id = subscription.id;
-        let mut registry = self.inner.write();
+        let joined = ConnectionSummary::of(&subscription);
 
-        registry.index(&subscription);
-        registry.conns.insert(id, subscription);
+        {
+            let mut registry = self.inner.write();
+
+            registry.index(&subscription);
+            registry.conns.insert(id, subscription);
+        }
+
+        self.announce(&ConnectionChange::Joined(joined));
 
         id
     }
@@ -67,10 +97,18 @@ impl Hub {
     /// Removes a connection and hands back what it was, so the caller can send
     /// the disconnect notice its identity decides.
     pub fn unregister(&self, id: ConnId) -> Option<Subscription> {
-        let mut registry = self.inner.write();
-        let subscription = registry.conns.remove(&id)?;
+        let subscription = {
+            let mut registry = self.inner.write();
+            let subscription = registry.conns.remove(&id)?;
 
-        registry.unindex(&subscription);
+            registry.unindex(&subscription);
+
+            subscription
+        };
+
+        self.announce(&ConnectionChange::Left(ConnectionSummary::of(
+            &subscription,
+        )));
 
         Some(subscription)
     }

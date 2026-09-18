@@ -158,6 +158,8 @@ pub async fn channels_changed(
     username: &Username,
     originating_uid: Option<&str>,
 ) -> usize {
+    context.events().channel_changed(username);
+
     if !context.has_live() {
         return 0;
     }

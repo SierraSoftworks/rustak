@@ -52,6 +52,8 @@ futures = { workspace = true }
 futures-concurrency = { workspace = true }
 async-trait = { workspace = true }
 reqwest = { workspace = true }
+http = { workspace = true }
+bytes = { workspace = true }
 rustls = { workspace = true }
 tokio-rustls = { workspace = true }
 rustls-pki-types = { workspace = true }

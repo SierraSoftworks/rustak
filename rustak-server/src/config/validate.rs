@@ -25,14 +25,22 @@ const ADVICE_EXAMPLE: &[&str] = &[
 
 /// Advice for a `tls-alpn-01` challenge with no listener on port 443.
 const ADVICE_TLS_ALPN_01: &[&str] = &[
-    "Add \":443\" to `[web.public] listen`, or use `challenge = \"http-01\"` with `[web.public] plain_bind`.",
+    "Add \":443\" to `[web.public] listen`: the challenge is answered inside the TLS handshake, by that listener, on that port.",
+    "Or use `challenge = \"http-01\"` and make port 80 reach the public listener.",
     "Binding a port below 1024 needs CAP_NET_BIND_SERVICE, or a proxy that forwards it.",
 ];
 
 /// Advice for an `http-01` challenge with no plaintext listener.
 const ADVICE_HTTP_01: &[&str] = &[
-    "Set `[web.public] plain_bind = \":80\"`, or use `challenge = \"tls-alpn-01\"` with \":443\" in `[web.public] listen`.",
+    "Add \":80\" to `[web.public] listen`, or set `[web.public] plain_bind = \":80\"` and put a proxy in front that forwards it.",
+    "Or use `challenge = \"tls-alpn-01\"` with \":443\" in `[web.public] listen`, which needs no plaintext port at all.",
     "Binding a port below 1024 needs CAP_NET_BIND_SERVICE, or a proxy that forwards it.",
+];
+
+/// Advice for a name a public authority could never issue for.
+const ADVICE_PUBLIC_NAME: &[&str] = &[
+    "List the fully qualified names this server answers to on the public internet, for example `domains = [\"tak.example.com\"]`.",
+    "A private or made-up name cannot be validated by a public authority; use `[web.public.tls] mode = \"internal\"` for a LAN deployment.",
 ];
 
 /// Checks every cross-section rule, in the order an operator meets them.
@@ -42,6 +50,7 @@ pub(super) fn validate(config: &Config) -> Result<(), Error> {
     certificate_source(config)?;
     acme(config)?;
     credentials(config)?;
+    oauth_clients(config)?;
     pki(config)?;
     distinct_listeners(config)
 }
@@ -156,7 +165,29 @@ fn acme(config: &Config) -> Result<(), Error> {
         ));
     }
 
+    public_names(config)?;
     challenge_is_reachable(config)
+}
+
+/// Every name in an order has to be one a public authority could issue for.
+///
+/// Not a style rule: an order for `tak.lan` or for an address literal is
+/// refused by the authority *after* it has counted against the account's rate
+/// limit, and Let's Encrypt's failed-validation limit is five an hour.
+/// Catching it at `--check` costs nothing and saves an afternoon. The
+/// classification itself lives beside the section it belongs to; see
+/// [`AcmeConfig::unorderable`](super::AcmeConfig::unorderable).
+fn public_names(config: &Config) -> Result<(), Error> {
+    for name in config.acme.domains(&config.server) {
+        if let Some(reason) = super::AcmeConfig::unorderable(name) {
+            return Err(human_errors::user(
+                format!("`{name}` cannot be ordered from a certificate authority: {reason}"),
+                ADVICE_PUBLIC_NAME,
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 /// The ACME authority connects to one specific port; something has to answer.
@@ -202,6 +233,87 @@ fn credentials(config: &Config) -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+/// Every registered OAuth2 client has to name somewhere a code may be sent.
+///
+/// These are checked at load time rather than at the first authorization
+/// request because every one of them is a redirect target: a duplicate
+/// identifier means whichever entry happens to be first wins, a client with no
+/// redirect URI can never complete a sign-in, and a URI that is not an absolute
+/// `https` address is either unusable or — with a fragment, or over plain HTTP
+/// — a way to leak a code out of the browser.
+fn oauth_clients(config: &Config) -> Result<(), Error> {
+    let mut seen: Vec<&str> = Vec::new();
+
+    for client in &config.auth.oauth.clients {
+        if client.id.trim().is_empty() {
+            return Err(oauth_refusal(
+                "a client under `[auth.oauth] clients` has an empty `id`",
+            ));
+        }
+
+        if seen.contains(&client.id.as_str()) {
+            return Err(oauth_refusal(&format!(
+                "`[auth.oauth] clients` registers `{}` twice",
+                client.id
+            )));
+        }
+
+        seen.push(&client.id);
+
+        if client.redirect_uris.is_empty() {
+            return Err(oauth_refusal(&format!(
+                "the client `{}` has no `redirect_uris`, so a code could never be delivered to it",
+                client.id
+            )));
+        }
+
+        for uri in &client.redirect_uris {
+            redirect_uri(&client.id, uri)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// One registered redirect URI has to be one a browser could be sent to safely.
+fn redirect_uri(client: &str, uri: &str) -> Result<(), Error> {
+    let Ok(parsed) = url::Url::parse(uri) else {
+        return Err(oauth_refusal(&format!(
+            "the client `{client}` lists `{uri}`, which is not an absolute URI"
+        )));
+    };
+
+    if parsed.fragment().is_some() {
+        return Err(oauth_refusal(&format!(
+            "the client `{client}` lists `{uri}`, and a redirect URI may not carry a fragment"
+        )));
+    }
+
+    let loopback = matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+
+    // A native client is registered with a loopback address, which is why the
+    // scheme rule has an exception rather than being absolute; anything else
+    // carrying a code over plain HTTP puts it in a proxy log.
+    if parsed.scheme() != "https" && !(parsed.scheme() == "http" && loopback) {
+        return Err(oauth_refusal(&format!(
+            "the client `{client}` lists `{uri}`, which would carry an authorization code over plaintext"
+        )));
+    }
+
+    Ok(())
+}
+
+/// The one shape an `[auth.oauth]` refusal takes.
+fn oauth_refusal(what: &str) -> Error {
+    human_errors::user(
+        format!("`[auth.oauth]` is not usable as written: {what}."),
+        &[
+            "Each client is `{ id = \"...\", redirect_uris = [\"https://...\"], public = true }`, with the URIs written out in full.",
+            "A redirect URI is compared byte for byte, so it has to be exactly the one the client sends.",
+        ],
+    )
 }
 
 /// The certificate authority has to be able to issue what it is asked for.
@@ -418,6 +530,61 @@ mod tests {
     }
 
     #[test]
+    fn a_name_no_public_authority_could_issue_for_is_refused_before_the_order() {
+        // Each of these costs a failed-validation slot against Let's Encrypt's
+        // five-an-hour limit if it is discovered at run time instead.
+        for name in [
+            "tak.lan",
+            "tak.local",
+            "rustak.internal",
+            "tak.home.arpa",
+            "localhost",
+            "192.168.1.10",
+            "*.tak.lan",
+        ] {
+            let message = refusal(&format!(
+                r#"
+                [server]
+                domains = ["{name}"]
+                [web.public]
+                listen = [":443"]
+                [web.public.tls]
+                mode = "acme"
+                [acme]
+                enabled = true
+                accept_tos = true
+                "#,
+            ));
+
+            assert!(
+                message.contains(name) || message.contains(&name.to_ascii_lowercase()),
+                "the refusal has to name the name: {message}",
+            );
+        }
+    }
+
+    #[test]
+    fn an_ordinary_public_name_and_a_wildcard_over_one_are_accepted() {
+        for name in ["tak.example.com", "TAK.example.com.", "*.example.com"] {
+            parse(&format!(
+                r#"
+                [server]
+                domains = ["{name}"]
+                [web.public]
+                listen = [":443"]
+                [web.public.tls]
+                mode = "acme"
+                [acme]
+                enabled = true
+                accept_tos = true
+                "#,
+            ))
+            .validate()
+            .unwrap_or_else(|err| panic!("{name} should be orderable: {err}"));
+        }
+    }
+
+    #[test]
     fn tls_alpn_needs_port_443_bound() {
         // The authority connects to 443 and completes the challenge in the
         // handshake; an installation on 8446 alone can never be validated.
@@ -492,6 +659,49 @@ mod tests {
     fn a_credential_lifetime_of_zero_is_refused() {
         let message = refusal("[auth]\nenrollment_token_ttl = \"0s\"\n");
         assert!(message.contains("enrollment_token_ttl"), "{message}");
+    }
+
+    /// `[auth.oauth]` with one client whose redirect URIs are `uris`.
+    fn with_client(id: &str, uris: &str) -> String {
+        format!("[auth.oauth]\nclients = [{{ id = \"{id}\", redirect_uris = {uris} }}]\n")
+    }
+
+    #[test]
+    fn a_registered_client_needs_somewhere_to_send_a_code() {
+        let message = refusal(&with_client("app", "[]"));
+        assert!(message.contains("redirect_uris"), "{message}");
+    }
+
+    #[test]
+    fn a_client_identifier_cannot_be_registered_twice() {
+        // Otherwise whichever entry is first silently wins, and the redirect
+        // URIs of the other one are never honoured.
+        let message = refusal(
+            "[auth.oauth]\nclients = [\
+             { id = \"app\", redirect_uris = [\"https://a.example.com/cb\"] },\
+             { id = \"app\", redirect_uris = [\"https://b.example.com/cb\"] }]\n",
+        );
+
+        assert!(message.contains("twice"), "{message}");
+    }
+
+    #[test]
+    fn a_redirect_uri_that_would_leak_a_code_is_refused_at_load_time() {
+        for uris in [
+            r#"["http://app.example.com/cb"]"#,
+            r#"["/cb"]"#,
+            r#"["https://app.example.com/cb#fragment"]"#,
+        ] {
+            let message = refusal(&with_client("app", uris));
+            assert!(message.contains("[auth.oauth]"), "{uris}: {message}");
+        }
+    }
+
+    #[test]
+    fn a_loopback_client_may_use_plain_http_because_nothing_leaves_the_machine() {
+        let config = parse(&with_client("native", r#"["http://127.0.0.1:1234/cb"]"#));
+
+        assert_eq!(config.auth.oauth.clients.len(), 1);
     }
 
     #[test]

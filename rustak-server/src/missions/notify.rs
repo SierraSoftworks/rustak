@@ -66,6 +66,10 @@ impl MissionService {
     /// Answers how many connections it reached, which is `0` on an installation
     /// with no stream listener — that is a configuration, not a fault.
     pub fn notify(&self, notice: &MissionNotice) -> usize {
+        // The server-event feed hears about it whether or not anybody is
+        // connected: a sidecar watching `/api/v1/events` is not a stream client.
+        self.context.events().mission_changed(notice);
+
         if !self.context.has_live() {
             return 0;
         }

@@ -240,6 +240,8 @@ pub async fn audit(
             "tool": resource.tool,
         }));
 
+    services.events().package(action, resource);
+
     if let Some(actor) = actor {
         entry = entry.actor(actor);
     }

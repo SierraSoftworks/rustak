@@ -20,14 +20,21 @@
 //!
 //! The client-certificate arm ([`cert`]) and the Basic arm ([`basic`]), and the
 //! [`ListenerAuthPolicy`] that says which of the three a listener accepts.
-//! [`resolve::resolve_principal`] is the one function a listener calls; the
-//! `/login/*` federation is still to come.
+//! [`resolve::resolve_principal`] is the one function a listener calls.
+//!
+//! # What M5 added
+//!
+//! [`oauth_server`]: our own `/oauth/authorize`, the `/login/*` federation
+//! round trip TAK clients expect, and the `access_token_N` cookies that come
+//! out of it — scoped, by [`oauth_server::cookies_allowed`], to the sign-in
+//! endpoints and the Marti surface and never to `/api/v1`.
 
 pub mod acl;
 pub mod basic;
 pub mod cert;
 pub mod jwt;
 pub mod mission_token;
+pub mod oauth_server;
 pub mod passkey_store;
 pub mod passkeys;
 pub mod ratelimit;
@@ -40,6 +47,7 @@ pub use basic::{BasicCredential, basic_credential};
 pub use cert::client_cert;
 pub use jwt::{AccessClaims, JWT_HEADER_JSON, JwtIssuer};
 pub use mission_token::{MissionClaims, MissionTokens, TokenError, TokenType, mission_bearer};
+pub use oauth_server::{access_token_from_cookies, cookies_allowed};
 pub use passkeys::Passkeys;
 pub use ratelimit::RateLimiter;
 pub use resolve::{AuthFailure, BasicPolicy, ListenerAuthPolicy, Resolved, resolve_principal};

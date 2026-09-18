@@ -66,6 +66,11 @@ pub fn services(
             // with the single-page shell and a `200` — and a TAK client reads
             // that as a mission list.
             .configure(marti::services(marti::ListenerRole::Public))
+            // Ahead of the catch-all, which would otherwise answer the
+            // authority's validation request with the SPA shell and a `200` —
+            // which fails the order with no useful message. Always mounted,
+            // and a `404` unless an order is in flight.
+            .configure(crate::pki::acme::http01_routes)
             // Ahead of the catch-all, which would otherwise answer it with the
             // SPA shell — and a crawler handed HTML where it asked for
             // `robots.txt` reads that as "no rules".
