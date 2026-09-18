@@ -21,6 +21,19 @@
 //! A plugin that needs options of its own parses its own [`clap`] type and calls
 //! [`run_with`] with an [`Args`] it has filled in.
 //!
+//! # The loop
+//!
+//! One `select!` over three things: the shutdown signal, the tick interval, and
+//! the CoT stream. A tick or an inbound event becomes a call
+//! into the plugin, and whatever the plugin returns is written to the stream
+//! before the loop comes round again. A sidecar with no `[server] stream` has a
+//! link that is never ready, so it is the same loop with one branch that never
+//! fires.
+//!
+//! The connection is opened *before* [`Sidecar::start`], so an operator who got
+//! the connect string or the certificate paths wrong is told that rather than
+//! whatever the plugin's own start-up does about it.
+//!
 //! # Stopping
 //!
 //! `SIGINT`/`SIGTERM` cancels the [`Shutdown`] the context carries; the tick
@@ -32,14 +45,16 @@
 use std::path::PathBuf;
 
 use clap::{CommandFactory, FromArgMatches, Parser};
+use futures::StreamExt;
 use rustak_core::config;
 use rustak_core::errors::report_and_exit;
 use rustak_core::prelude::*;
 use rustak_core::runtime::with_grace;
 use rustak_core::telemetry::{self, TelemetryOptions};
+use rustak_cot::Event;
 use tracing::Instrument;
 
-use super::{Sidecar, SidecarConfig, SidecarContext};
+use super::{Link, Sidecar, SidecarConfig, SidecarContext, SidecarEvent};
 
 /// The command line every sidecar shares.
 #[derive(Clone, Debug, Parser)]
@@ -162,19 +177,24 @@ async fn serve<S: Sidecar>(mut sidecar: S, args: &Args, shutdown: Shutdown) -> R
     drive(&mut sidecar, context).await
 }
 
-/// Drives a sidecar: start, tick until shutdown, stop.
+/// Drives a sidecar: connect, start, tick and dispatch until shutdown, stop.
 ///
 /// This is the loop [`run`] ends in, and it is public because it is also how a
 /// plugin's own integration test exercises its implementation — build a
 /// [`SidecarContext`] with [`SidecarContext::from_config`], call this, and
-/// cancel the context's [`Shutdown`] to end it.
+/// cancel the context's [`Shutdown`] to end it. A context whose `[server]
+/// stream` is unset drives the plugin without opening a socket, which is what
+/// makes that test offline.
 ///
 /// # Errors
 ///
-/// Returns whatever the sidecar returned. Any error from
-/// [`start`](Sidecar::start) or [`tick`](Sidecar::tick) ends the loop, and
-/// [`stop`](Sidecar::stop) overrunning its grace period is reported as a
-/// [`human_errors::Kind::System`] error.
+/// Returns whatever the sidecar returned. A `[server] stream` that cannot be
+/// read, or a TLS endpoint without certificate material, fails before
+/// [`start`](Sidecar::start) is called; any error from the plugin's own methods
+/// ends the loop; and [`stop`](Sidecar::stop) overrunning its grace period is
+/// reported as a [`human_errors::Kind::System`] error. A connection that drops
+/// is *not* an error: it is reported to the plugin as
+/// [`SidecarEvent::Disconnected`] and reopened with backoff.
 pub async fn drive<S: Sidecar>(
     sidecar: &mut S,
     context: SidecarContext<S::Settings>,
@@ -182,6 +202,19 @@ pub async fn drive<S: Sidecar>(
     let span = context.span().clone();
 
     tick_until_shutdown(sidecar, context).instrument(span).await
+}
+
+/// What woke the harness loop, decided while the [`Link`] is still borrowed and
+/// acted on once it is not.
+///
+/// `tokio::select!` keeps every branch's future alive while it evaluates the
+/// handler, so a handler that both read from the link and wrote to it would not
+/// borrow-check. Naming the two cases instead keeps the loop one loop.
+enum Woken {
+    /// The tick interval came round.
+    Tick,
+    /// The CoT stream produced something.
+    Stream(SidecarEvent),
 }
 
 /// [`drive`], inside the context's span.
@@ -193,8 +226,12 @@ async fn tick_until_shutdown<S: Sidecar>(
     let interval = context.config().sidecar.tick();
     let grace = context.config().sidecar.shutdown_grace();
 
+    // Before `start`, so that a connect string or a certificate the operator
+    // got wrong is reported instead of the plugin's own start-up work.
+    let mut link = Link::open(&context)?;
+
     sidecar.start(context).await?;
-    tracing::info!(?interval, "The sidecar has started.");
+    tracing::info!(?interval, stream = ?link.endpoint(), "The sidecar has started.");
 
     let mut ticker = tokio::time::interval(interval);
     // A tick we were too busy to take is a tick to take late rather than one to
@@ -203,13 +240,28 @@ async fn tick_until_shutdown<S: Sidecar>(
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
-        tokio::select! {
+        let woken = tokio::select! {
             // Biased so that a sidecar being stopped never takes one more tick
             // because two branches happened to be ready at once.
             biased;
 
             () = shutdown.cancelled() => break,
-            _ = ticker.tick() => sidecar.tick().await?,
+            _ = ticker.tick() => Woken::Tick,
+            Some(event) = link.next() => Woken::Stream(event),
+        };
+
+        let published: Vec<Event> = match woken {
+            Woken::Tick => sidecar.tick().await?,
+            Woken::Stream(event) => sidecar.on_event(event).await?,
+        };
+
+        // Raced against the shutdown because a write into a connection that is
+        // reconnecting waits for it: Ctrl-C must not have to wait as well.
+        tokio::select! {
+            biased;
+
+            () = shutdown.cancelled() => break,
+            result = link.publish(published) => result?,
         }
     }
 
@@ -233,6 +285,11 @@ mod tests {
         stop_after: usize,
         fail_on_tick: bool,
         hang_on_stop: bool,
+        /// What every tick publishes, for the tests that watch the wire.
+        publishes: Vec<Event>,
+        /// Where every event this sidecar is handed is reported, for the tests
+        /// that assert on the sequence rather than the count.
+        seen: Option<tokio::sync::mpsc::UnboundedSender<SidecarEvent>>,
     }
 
     #[async_trait]
@@ -246,7 +303,7 @@ mod tests {
             Ok(())
         }
 
-        async fn tick(&mut self) -> Result<(), Error> {
+        async fn tick(&mut self) -> Result<Vec<Event>, Error> {
             self.ticks += 1;
 
             if self.fail_on_tick {
@@ -259,12 +316,17 @@ mod tests {
                 context.shutdown().cancel();
             }
 
-            Ok(())
+            Ok(self.publishes.clone())
         }
 
-        async fn on_event(&mut self, _event: SidecarEvent) -> Result<(), Error> {
+        async fn on_event(&mut self, event: SidecarEvent) -> Result<Vec<Event>, Error> {
             self.events += 1;
-            Ok(())
+
+            if let Some(seen) = &self.seen {
+                let _ = seen.send(event);
+            }
+
+            Ok(Vec::new())
         }
 
         async fn stop(&mut self) -> Result<(), Error> {
@@ -279,6 +341,14 @@ mod tests {
     }
 
     fn context(tick_ms: i64, grace_ms: i64) -> SidecarContext<NoSettings> {
+        context_for(tick_ms, grace_ms, None)
+    }
+
+    fn context_for(
+        tick_ms: i64,
+        grace_ms: i64,
+        stream: Option<String>,
+    ) -> SidecarContext<NoSettings> {
         let config = SidecarConfig {
             service: ServiceConfig {
                 name: ServiceName::parse("example").unwrap(),
@@ -289,7 +359,10 @@ mod tests {
                 key: None,
                 truststore: None,
             },
-            server: ServerConfig::default(),
+            server: ServerConfig {
+                stream,
+                ..ServerConfig::default()
+            },
             sidecar: crate::sidecar::HarnessConfig {
                 tick: chrono::Duration::milliseconds(tick_ms),
                 shutdown_grace: chrono::Duration::milliseconds(grace_ms),
@@ -385,6 +458,124 @@ mod tests {
 
         assert!(err.is(human_errors::Kind::System), "{err}");
         assert!(err.to_string().contains("the sidecar"), "{err}");
+    }
+
+    /// The full round trip: connect, negotiate, receive, publish, drop,
+    /// reconnect — against a real listener, because reconnection is the one
+    /// thing an in-memory duplex cannot be redialled to prove.
+    ///
+    /// Time is not paused here. Tokio's auto-advance races real socket
+    /// readiness, and the assertions are event-driven rather than timed: every
+    /// wait is for something to arrive, bounded by a timeout that only fires
+    /// when the test has genuinely failed. The one real wait is the reconnect's
+    /// [`MIN_BACKOFF`](crate::stream::MIN_BACKOFF) second.
+    #[tokio::test]
+    async fn the_harness_connects_receives_publishes_and_reconnects() {
+        use crate::stream::testing::Eud;
+        use rustak_cot::{CotTime, negotiate};
+        use std::time::Duration;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut peer = Eud::over(socket, "ANDROID-1", "BRAVO");
+
+            // Offer TAK Protocol v1 and then refuse the request that comes
+            // back: the exchange that leaves a connection on XML, which is the
+            // one a CloudTAK-style server performs.
+            let now = CotTime::now();
+            let offer = negotiate::announce("NEG-1", "rustak-test", negotiate::API_VERSION, now);
+            peer.send(offer).await.unwrap();
+            peer.send(negotiate::response("NEG-1", false, now))
+                .await
+                .unwrap();
+            peer.send_sa(51.5074, -0.1278).await.unwrap();
+
+            let published = peer
+                .expect_uid("SERVICE-example", Duration::from_secs(5))
+                .await
+                .expect("the sidecar's tick should reach the wire");
+
+            // Dropping the socket is what the sidecar has to survive.
+            drop(peer);
+
+            tokio::time::timeout(Duration::from_secs(10), listener.accept())
+                .await
+                .expect("the sidecar should dial again")
+                .unwrap();
+
+            published
+        });
+
+        let (seen, mut arrived) = tokio::sync::mpsc::unbounded_channel();
+        let context = context_for(50, 1_000, Some(format!("tcp://127.0.0.1:{port}")));
+        let shutdown = context.shutdown().clone();
+        let mut sidecar = Counter {
+            stop_after: usize::MAX,
+            seen: Some(seen),
+            publishes: vec![
+                Event::builder("a-f-G-U-C", "SERVICE-example")
+                    .point(48.85, 2.35)
+                    .build(),
+            ],
+            ..Counter::default()
+        };
+
+        let driving = tokio::spawn(async move {
+            let result = drive(&mut sidecar, context).await;
+
+            (result, sidecar)
+        });
+
+        let mut sequence: Vec<SidecarEvent> = Vec::new();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while let Some(event) = arrived.recv().await {
+                let reconnected = matches!(event, SidecarEvent::Connected { .. })
+                    && sequence
+                        .iter()
+                        .any(|seen| matches!(seen, SidecarEvent::Disconnected { .. }));
+
+                sequence.push(event);
+
+                if reconnected {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the sidecar never completed the cycle: {sequence:?}"));
+
+        shutdown.cancel();
+        let (result, sidecar) = driving.await.unwrap();
+        result.expect("a dropped connection is not a reason to stop the sidecar");
+        assert!(sidecar.stopped);
+
+        let published = server.await.unwrap();
+        assert_eq!(published.uid, "SERVICE-example");
+        assert_eq!(published.r#type, "a-f-G-U-C");
+
+        assert!(
+            matches!(sequence.first(), Some(SidecarEvent::Connected { endpoint }) if endpoint.contains(&port.to_string())),
+            "{sequence:?}",
+        );
+        assert!(
+            sequence
+                .iter()
+                .any(|event| matches!(event, SidecarEvent::Negotiated { protobuf: false })),
+            "{sequence:?}",
+        );
+        assert!(
+            sequence.iter().any(
+                |event| matches!(event, SidecarEvent::Cot(cot) if cot.uid == "ANDROID-1" && cot.callsign() == Some("BRAVO")),
+            ),
+            "{sequence:?}",
+        );
+        assert!(
+            matches!(sequence.last(), Some(SidecarEvent::Connected { .. })),
+            "{sequence:?}",
+        );
     }
 
     #[tokio::test]

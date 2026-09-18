@@ -66,6 +66,7 @@ pub struct Reconnecting {
     hook: Option<ConnectHook>,
     backoff: Duration,
     attempts: u64,
+    last_error: Option<String>,
     state: State,
 }
 
@@ -99,6 +100,7 @@ impl Reconnecting {
             hook: None,
             backoff: MIN_BACKOFF,
             attempts: 0,
+            last_error: None,
             state: State::Cold,
         }
     }
@@ -138,6 +140,17 @@ impl Reconnecting {
         self.backoff
     }
 
+    /// Why the last connection ended, or why the last attempt failed.
+    ///
+    /// The wrapper turns every failure into a retry, so this is the only way
+    /// for a caller to say *what* it is retrying — a sidecar reporting an
+    /// outage to its plugin, or a test asserting on the reason. `None` before
+    /// anything has gone wrong.
+    #[must_use]
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+
     /// Doubles the backoff, up to the ceiling, and returns what to wait.
     fn take_backoff(&mut self) -> Duration {
         let waiting = self.backoff;
@@ -149,6 +162,7 @@ impl Reconnecting {
     /// Ends the current connection and schedules the next attempt.
     fn drop_connection(&mut self, reason: &str) {
         let waiting = self.take_backoff();
+        self.last_error = Some(reason.to_string());
         tracing::warn!(
             reason,
             retry_in = ?waiting,

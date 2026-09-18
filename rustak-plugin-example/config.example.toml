@@ -37,8 +37,8 @@ name = "example"
 
 # The client certificate and private key this service opens the CoT stream with,
 # in PEM. Default: none — and neither half is usable without the other, so
-# setting one without the other is refused. The stream client that uses them
-# lands in M1.
+# setting one without the other is refused. Both are required as soon as
+# [server] stream names an "ssl://" endpoint, which every real deployment does.
 # certificate = "/etc/rustak/example.pem"
 # key = "/etc/rustak/example.key"
 
@@ -49,11 +49,14 @@ name = "example"
 
 [server]
 # Where the rustak server is. Every endpoint is optional: a plugin only needs
-# the ones it uses, and this one connects to none of them yet. They are
-# reported to the server on registration, which is what makes a misconfigured
-# sidecar diagnosable from the admin UI.
+# the ones it uses. They are reported to the server on registration, which is
+# what makes a misconfigured sidecar diagnosable from the admin UI.
 #
-# The CoT stream, as a TAK connect string. Default: none.
+# The CoT stream, as a TAK connect string. Default: none — and a sidecar
+# without one runs its ticks and opens no connection at all, which is what
+# makes this file usable offline. Set it (with the certificate and key above)
+# and the harness connects, reconnects with backoff, hands everything that
+# arrives to the plugin, and publishes what the plugin returns.
 # stream = "ssl://tak.example.com:8089"
 
 # The Marti API. Default: none.
@@ -83,3 +86,16 @@ shutdown_grace = "10s"
 #
 # What each heartbeat says.
 message = "The example sidecar is alive."
+
+# Where this sidecar reports itself, as decimal degrees. Default: 0, 0 — which
+# is in the Gulf of Guinea, so an unconfigured sidecar is obvious on the map
+# rather than plausible. A real plugin reports the position of whatever it is
+# tracking instead.
+lat = 51.5074
+lon = -0.1278
+
+# The <__group> this sidecar joins, and the role it reports within it. These are
+# what the colour and the icon on an operator's map come from.
+# Default: "Cyan", "Team Member".
+# team = "Cyan"
+# role = "Team Member"

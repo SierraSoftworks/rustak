@@ -12,11 +12,11 @@ visible in the admin UI — and a plugin can be written in any language that can
 open a TLS socket. `rustak-client` exists to make the Rust version of that a
 hundred lines rather than a thousand.
 
-> **Status (M0).** The harness in this document is real and runs today. The
-> clients it will drive are not: the CoT stream lands in M1, the Marti client in
-> M2, and the `/api/v1/services/*` control API in M6. The shapes they arrive
-> through — `Sidecar::on_event` and `SidecarEvent` — are already here, so a
-> plugin written now keeps compiling when they land.
+> **Status (M1).** The harness and the CoT stream are real and run today: a
+> plugin with a `[server] stream` connects, reconnects, receives and publishes.
+> The Marti client lands in M2 and the `/api/v1/services/*` control API in M6;
+> the shape they arrive through — `Sidecar::on_event` and `SidecarEvent` — is
+> already here, so a plugin written now keeps compiling when they land.
 
 ## The identity model
 
@@ -82,8 +82,9 @@ rarely grows.
 ### 2. Implement `Sidecar`
 
 ```rust
-use rustak_client::sidecar::{Sidecar, SidecarContext, async_trait, run};
+use rustak_client::sidecar::{Sidecar, SidecarContext, SidecarEvent, async_trait, run};
 use rustak_core::prelude::*;
+use rustak_cot::Event;
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -108,9 +109,16 @@ impl Sidecar for Adsb {
         Ok(())
     }
 
-    async fn tick(&mut self) -> Result<(), Error> {
-        // Poll the feed, publish CoT, report a heartbeat.
-        Ok(())
+    async fn tick(&mut self) -> Result<Vec<Event>, Error> {
+        // Poll the feed, and return the CoT the harness should publish.
+        Ok(Vec::new())
+    }
+
+    async fn on_event(&mut self, event: SidecarEvent) -> Result<Vec<Event>, Error> {
+        if let SidecarEvent::Cot(event) = event {
+            info!(uid = %event.uid, r#type = %event.r#type, "Something arrived.");
+        }
+        Ok(Vec::new())
     }
 }
 
@@ -120,31 +128,61 @@ async fn main() {
 }
 ```
 
-| Method | Called | Notes |
+| Method | Called | Returns |
 |---|---|---|
-| `start` | Once, after the configuration loads | The only method given the `SidecarContext`; keep it if you need it |
-| `tick` | On `[sidecar] tick`, starting immediately | Where periodic work goes |
-| `on_event` | For every `SidecarEvent` | Nothing produces events until M1 |
+| `start` | Once, after the configuration loads and the stream is opened | The only method given the `SidecarContext`; keep it if you need it |
+| `tick` | On `[sidecar] tick`, starting immediately | The events to publish |
+| `on_event` | For every `SidecarEvent` | The events to publish in reply |
 | `stop` | Once, after the shutdown signal | Bounded by `[sidecar] shutdown_grace` |
 
 **Returning an error from any of them stops the process** — the harness prints
 it, records it if it is ours rather than the operator's, and exits 1. A failure
 you expect to recover from (an upstream that is down, a heartbeat that did not
-go through) is one to log and swallow in the plugin, not one to return.
+go through) is one to log and swallow in the plugin, not one to return. A
+connection that drops is *not* one of these: it arrives as
+`SidecarEvent::Disconnected` and the harness reopens it.
 
 `SidecarEvent` is `#[non_exhaustive]`: match it with a `_` arm, and the variants
-M1 and M6 add are an additive change rather than a broken build.
+M2 and M6 add are an additive change rather than a broken build.
+
+### The CoT stream
+
+Set `[server] stream` and the harness opens it before `start`, reconnects with
+backoff when it drops, answers the keepalive and the `t-x-takp-*` protocol
+negotiation on your behalf, and hands you everything else:
+
+| Event | When | What a plugin usually does |
+|---|---|---|
+| `Connected { endpoint }` | Every successful connect, including reconnects | **Return its SA event.** A reopened connection is a new subscription: until you send one, the server has a uid with no callsign, no group and no position |
+| `Negotiated { protobuf }` | Once per connection, after `Connected` | Nothing. `false` is a server that does not offer TAK Protocol v1, refuses it, or never answers — all normal |
+| `Cot(event)` | Every event that arrives | The plugin's actual work |
+| `Disconnected { reason }` | Every drop | Count the outage, pause its own work |
+
+Control traffic never reaches a plugin: pings, pongs and the negotiation
+exchange are answered inside the client.
+
+**Publishing is a return value, not a socket.** `tick` and `on_event` return the
+`rustak_cot::Event`s to write, and the harness writes them in order. Nothing is
+published while the connection is down — the harness logs what it dropped rather
+than delivering a position report that is minutes stale — so a plugin that must
+not lose an event holds it and returns it again from the next `Connected`.
+
+A plugin with no `[server] stream` runs its ticks and opens no socket at all,
+which is what makes `--check` and an offline unit test work without a server.
 
 ### 3. Describe it in `config.example.toml`
 
 ```toml
 [service]
-name = "adsb"                       # → uid SERVICE-adsb
+name = "adsb"                       # → uid SERVICE-adsb, and the callsign
 capabilities = ["cot.publish"]
 # token = "${{ env.RUSTAK_SERVICE_TOKEN }}"
+certificate = "/etc/rustak/adsb.pem"    # required by an ssl:// stream
+key = "/etc/rustak/adsb.key"
+truststore = "/etc/rustak/truststore.pem"
 
 [server]
-# stream = "ssl://tak.example.com:8089"
+stream = "ssl://tak.example.com:8089"
 
 [sidecar]
 tick = "30s"                        # the first tick happens at start-up
@@ -153,6 +191,10 @@ shutdown_grace = "10s"
 [settings]                          # your own Sidecar::Settings
 # feed = "https://example.com/adsb"
 ```
+
+An `ssl://` endpoint needs all three of `certificate`, `key` and `truststore`,
+and the harness says which one is missing **at start-up** rather than letting it
+surface as a TLS alert on the first connection attempt.
 
 Put `#[serde(deny_unknown_fields)]` on your settings type — that is what turns a
 misspelled key into a start-up failure naming the key, rather than a setting
@@ -180,9 +222,10 @@ rustak-plugin-adsb --config plugin.toml [--env .env] [--check]
 - `--help` and `--version` report the plugin's own name and version.
 
 The start-up order is the one every rustak binary uses: environment file →
-telemetry → shutdown signal → configuration. Telemetry comes up before the
-configuration is read because the most common start-up failure *is* the
-configuration file.
+telemetry → shutdown signal → configuration → CoT stream → `start`. Telemetry
+comes up before the configuration is read because the most common start-up
+failure *is* the configuration file, and the stream is opened before `start`
+because the next most common one is the certificate paths.
 
 `SIGINT`/`SIGTERM` stops the sidecar: the tick loop ends, `stop` is given its
 grace period, telemetry is flushed, and the process exits 0. A second signal
@@ -205,6 +248,16 @@ drive(&mut sidecar, context).await?;
 
 A sidecar that cancels `ctx.shutdown()` from inside its own `tick` after *n*
 ticks gives a test that is about the sequence rather than about a wall clock.
+A configuration with no `[server] stream` drives the plugin without opening a
+socket, which is what keeps that test offline; most of what a plugin decides is
+in `on_event`, and calling it directly with a `SidecarEvent` you built is the
+cheapest test of all.
+
+For a test that wants the wire, `rustak_client::stream::testing::Eud` (behind
+the crate's `testing` feature) is a client that stands in for a device — or for
+a server, if you point the sidecar's `[server] stream` at a listener of your
+own. That is how `rustak-client`'s own harness test proves connect → receive →
+publish → drop → reconnect.
 
 ## The control API (M6)
 
@@ -219,8 +272,9 @@ routes, authenticated with the service token:
 | `GET /api/v1/events` | Server-event SSE feed: client connect/disconnect, mission changes, group changes, package uploads |
 
 The harness will call the first two for you — registration in `start`, a
-heartbeat on each `tick` — and deliver the feed to `on_event`. The DTOs already
-exist in `rustak_api::service`, so a plugin can be written against them today.
+heartbeat on each `tick` — and deliver the feed to `on_event` as further
+`SidecarEvent` variants. The DTOs already exist in `rustak_api::service`, so a
+plugin can be written against them today.
 
 ## See also
 

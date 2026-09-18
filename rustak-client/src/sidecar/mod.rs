@@ -36,47 +36,76 @@
 //! }
 //! ```
 //!
-//! # What M0 wires up, and what it does not
+//! # What the harness wires up, and what it does not
 //!
 //! The harness loads the configuration, brings telemetry up, builds the
 //! [`ServiceIdentity`] and the [`ServiceDescriptor`] the plugin will register
-//! with, calls [`Sidecar::start`], calls [`Sidecar::tick`] on an interval, and
-//! calls [`Sidecar::stop`] when the process is asked to stop.
+//! with, opens the CoT stream that `[server] stream` names, calls
+//! [`Sidecar::start`], calls [`Sidecar::tick`] on an interval, delivers
+//! everything the stream produces to [`Sidecar::on_event`], and calls
+//! [`Sidecar::stop`] when the process is asked to stop.
 //!
-//! It does **not** yet connect to anything: the CoT stream client lands in M1,
-//! the Marti client in M2 and the `/api/v1/services/*` control client in M6. The
-//! shapes those will arrive through are already here — [`Sidecar::on_event`] and
-//! [`SidecarEvent`] — so that a plugin written today keeps compiling when they
-//! do. [`SidecarEvent`] is `#[non_exhaustive]` for the same reason: match it
-//! with a `_` arm and new variants are additive.
+//! Publishing runs the other way: [`tick`](Sidecar::tick) and
+//! [`on_event`](Sidecar::on_event) *return* the [`Event`]s they want written,
+//! and the harness writes them. A plugin therefore never holds a socket, and
+//! never has to decide what to do about one that is reconnecting.
+//!
+//! The Marti client lands in M2 and the `/api/v1/services/*` control client in
+//! M6; the shape they will arrive through is already here.
+//! [`SidecarEvent`] is `#[non_exhaustive]`: match it with a `_` arm and new
+//! variants are an additive change rather than a broken build.
 //!
 //! See `docs/plugins.md` for the operator-facing version of all of this.
 
 pub mod config;
+mod link;
 pub mod run;
 
 use std::sync::Arc;
 
 use rustak_core::prelude::*;
 use rustak_core::service::{ServiceDescriptor, ServiceIdentity};
+use rustak_cot::Event;
 use tracing::Span;
 
 pub use async_trait::async_trait;
 pub use config::{HarnessConfig, NoSettings, ServerConfig, ServiceConfig, SidecarConfig};
 pub use run::{Args, drive, run, run_with};
 
+pub(crate) use link::Link;
+
 /// Something the sidecar harness noticed that a plugin may want to react to.
 ///
 /// Every variant is delivered to [`Sidecar::on_event`]. The enum is
 /// `#[non_exhaustive]`, so a plugin matches it with a `_` arm and keeps
-/// compiling as the stream, Marti and control clients land in later milestones.
+/// compiling as the Marti and control clients land in later milestones.
+///
+/// Control traffic — the keepalive ping and pong, and the `t-x-takp-*`
+/// negotiation exchange — never appears here. It is answered inside
+/// [`TakStream`](crate::stream::TakStream), because a plugin has no use for a
+/// pong and every plugin would otherwise have to remember to ignore one.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum SidecarEvent {
     /// The CoT stream connection came up, against the endpoint named.
+    ///
+    /// A reconnected client is a *new* subscription as far as the server is
+    /// concerned — no callsign, no latest position — so this is where a plugin
+    /// returns the situational-awareness event that says who it is.
     Connected {
         /// The connect string that was dialled, e.g. `ssl://tak.example.com:8089`.
         endpoint: String,
+    },
+
+    /// The connection settled on an encoding, once per connection and always
+    /// after [`Connected`](Self::Connected).
+    ///
+    /// `protobuf` is false for a server that does not offer TAK Protocol v1,
+    /// refuses the request, or never answers it — all of which leave the
+    /// connection speaking XML and working normally.
+    Negotiated {
+        /// Whether both directions switched to TAK Protocol v1.
+        protobuf: bool,
     },
 
     /// The CoT stream connection dropped. The harness reconnects with backoff;
@@ -86,15 +115,12 @@ pub enum SidecarEvent {
         reason: String,
     },
 
-    /// A message arrived on the CoT stream.
+    /// An event arrived on the CoT stream, already decoded from whichever
+    /// encoding the connection settled on.
     ///
-    /// Boxed because a TAK message is an order of magnitude larger than the
-    /// other variants and a plugin passes events around by value.
-    ///
-    /// M1 replaces this payload with the parsed CoT event model once
-    /// `rustak-cot` has one; the `_` arm a `#[non_exhaustive]` enum already
-    /// obliges you to write is what makes that a compatible change.
-    Cot(Box<rustak_cot::proto::TakMessage>),
+    /// Boxed because a CoT event is an order of magnitude larger than the other
+    /// variants and a plugin passes events around by value.
+    Cot(Box<Event>),
 }
 
 /// Everything the harness knows, handed to the plugin when it starts.
@@ -226,6 +252,15 @@ impl<S: std::fmt::Debug> std::fmt::Debug for SidecarContext<S> {
 /// does not is spared threading it through every call. Keeping it is a
 /// `self.context = Some(ctx)` in `start`.
 ///
+/// # Publishing is a return value, not a socket
+///
+/// [`tick`](Sidecar::tick) and [`on_event`](Sidecar::on_event) return the
+/// [`Event`]s they want written to the CoT stream, and the harness writes them
+/// in order. Nothing is published when the connection is down: the harness logs
+/// what it dropped rather than queueing a position report that would arrive
+/// minutes stale, and a plugin that must not lose an event holds it itself and
+/// returns it again from the next [`Connected`](SidecarEvent::Connected).
+///
 /// # Errors stop the sidecar
 ///
 /// Returning an error from any of these ends the process: the harness reports it
@@ -274,28 +309,31 @@ pub trait Sidecar: Send + 'static {
     /// [`start`](Sidecar::start) returns.
     ///
     /// This is where periodic work goes: polling a feed, publishing a position,
-    /// and (once M6 lands) reporting a heartbeat to the control API.
+    /// and (once M6 lands) reporting a heartbeat to the control API. Whatever
+    /// is returned is written to the CoT stream, in order.
     ///
     /// # Errors
     ///
     /// Returning an error stops the sidecar; see the
     /// [trait documentation](Sidecar).
-    async fn tick(&mut self) -> Result<(), Error> {
-        Ok(())
+    async fn tick(&mut self) -> Result<Vec<Event>, Error> {
+        Ok(Vec::new())
     }
 
-    /// Called for every [`SidecarEvent`] the harness observes.
+    /// Called for every [`SidecarEvent`] the harness observes, with whatever
+    /// the plugin wants published in reply.
     ///
-    /// Nothing produces events in M0 — the stream client lands in M1 — so the
-    /// default implementation is the right one until then.
+    /// Answering [`Connected`](SidecarEvent::Connected) with a
+    /// situational-awareness event is what gives a reconnected sidecar its
+    /// callsign back; see `docs/plugins.md`.
     ///
     /// # Errors
     ///
     /// Returning an error stops the sidecar; see the
     /// [trait documentation](Sidecar).
-    async fn on_event(&mut self, event: SidecarEvent) -> Result<(), Error> {
+    async fn on_event(&mut self, event: SidecarEvent) -> Result<Vec<Event>, Error> {
         tracing::debug!(?event, "Ignoring an event this sidecar does not handle.");
-        Ok(())
+        Ok(Vec::new())
     }
 
     /// Called once, after the shutdown signal and before the process exits.
