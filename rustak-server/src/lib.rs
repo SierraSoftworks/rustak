@@ -14,6 +14,7 @@ pub mod db;
 pub mod identity;
 pub mod jobs;
 pub mod pki;
+pub mod prelude;
 pub mod services;
 pub mod store;
 pub mod web;
