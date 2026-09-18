@@ -868,3 +868,92 @@ async fn a_multi_megabyte_upload_reaches_the_store_without_being_collected() {
         "every ingest renames its temporary file into place",
     );
 }
+
+/// A real HTTP/2 request, because `TestRequest` cannot make one.
+///
+/// `test::init_service` hands the handler a request actix built in process,
+/// which always has the HTTP/1 shape. The bug CI-01 found lives in the gap
+/// between that shape and the one an h2 client produces: there the authority
+/// arrives in the `:authority` pseudo-header, which actix puts on the request
+/// URI, and there is no `Host` header at all — so the server used to give up on
+/// deriving a URL and advertise `https://<[server] name>`, a display name, to a
+/// peer that then fetched 0 of 1052 bytes.
+///
+/// Prior knowledge rather than ALPN: the same h2 framing that the TLS listeners
+/// negotiate, without the authority, server certificate and client certificate
+/// a TLS listener would need minting here. The scheme therefore comes back
+/// `http`, which is what a plaintext listener honestly is.
+#[actix_web::test]
+async fn a_package_uploaded_over_http_2_is_advertised_at_the_authority_it_was_sent_to() {
+    let server = TestServer::start_with(|config| {
+        // Nothing that would short-circuit the derivation: no `[marti]
+        // public_host`, no `[server] domains`, no `[server] base_url`, and a
+        // `name` that is only a display name — the scenario configuration
+        // `mp-download.toml` ran with.
+        config.server.name = "rustak-interop-eud-mp-download".to_string();
+    })
+    .await;
+    let (_, admin) = server.signed_in("grace", true).await;
+
+    let socket = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a free port");
+    let port = socket.local_addr().expect("the port just bound").port();
+    // `server.app()` borrows the harness, and actix needs the factory for
+    // `'static`, so the same two values it would have cloned are cloned here.
+    let (context, limiter) = (server.context.clone(), server.limiter.clone());
+    let listener = actix_web::HttpServer::new(move || {
+        App::new().configure(rustak_server::web::server::services(
+            context.clone(),
+            limiter.clone(),
+        ))
+    })
+    .workers(1)
+    .disable_signals()
+    // `listen_auto_h2c`, because a plain `listen` speaks HTTP/1 only. The
+    // real listeners reach the same h2 dispatcher through ALPN instead.
+    .listen_auto_h2c(socket)
+    .expect("the test listener binds")
+    .run();
+    let handle = listener.handle();
+
+    actix_web::rt::spawn(listener);
+
+    let client = reqwest::Client::builder()
+        .http2_prior_knowledge()
+        .build()
+        .expect("an HTTP/2 client");
+
+    let response = client
+        .post(format!(
+            "http://127.0.0.1:{port}/Marti/sync/missionupload\
+             ?filename=trip.zip&creatorUid=ANDROID-1&Groups=__ANON__"
+        ))
+        .header("authorization", format!("Bearer {}", admin.token))
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={BOUNDARY}"),
+        )
+        .body(multipart("assetfile", "trip.zip", b"PK-not-really-a-zip").to_vec())
+        .send()
+        .await
+        .expect("the listener answers an h2 request");
+
+    assert_eq!(
+        response.version(),
+        reqwest::Version::HTTP_2,
+        "the premise of this test is that the request really was HTTP/2",
+    );
+    assert_eq!(response.status().as_u16(), 200);
+
+    let url = response.text().await.expect("the URL is the whole body");
+
+    assert!(
+        url.starts_with(&format!("http://127.0.0.1:{port}/Marti/sync/content?hash=")),
+        "the URL travels to a peer, so it names the authority the upload was addressed to: {url}",
+    );
+    assert!(
+        !url.contains("rustak-interop-eud-mp-download"),
+        "`[server] name` is a display name and nothing can resolve it: {url}",
+    );
+
+    handle.stop(false).await;
+}

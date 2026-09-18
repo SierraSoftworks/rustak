@@ -94,7 +94,11 @@ impl Algorithm {
     pub fn cose_key(self) -> Vec<u8> {
         let entries = match self {
             Self::Es256 | Self::Unsupported => {
-                let point = P256_KEY.verifying_key().to_encoded_point(false);
+                // `to_sec1_point`, not `to_encoded_point`: `elliptic-curve`
+                // 0.14 (p256 0.14) renamed the trait and the method, and the
+                // uncompressed SEC1 point is still what COSE wants both halves
+                // of the affine coordinates out of.
+                let point = P256_KEY.verifying_key().to_sec1_point(false);
                 vec![
                     (1, Value::from(COSE_KTY_EC2)),
                     (3, Value::from(self.cose_id())),

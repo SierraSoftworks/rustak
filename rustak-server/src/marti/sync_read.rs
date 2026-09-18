@@ -218,12 +218,17 @@ pub async fn remove(
 /// Built from `[marti] public_host` when an operator set one, because the URL
 /// travels: ATAK puts it in the `senderUrl` of the file-share message it sends
 /// next, and a peer behind a different NAT has to be able to resolve it.
+///
+/// Everything below that is [`public_base_url`], which reads the authority an
+/// h2 client sent and falls back to the configured URL rather than to
+/// `[server] name` — a display name, which is what CI-01 saw a peer handed.
+///
+/// [`public_base_url`]: crate::web::helpers::request::public_base_url
 pub fn content_url(request: &HttpRequest, context: &AppContext, hash: &str) -> String {
     let config = context.config();
     let base = match &config.marti.public_host {
         Some(host) => format!("https://{host}"),
-        None => crate::web::helpers::request::request_base_url(config.server.trust_proxy, request)
-            .unwrap_or_else(|| format!("https://{}", config.server.name)),
+        None => crate::web::helpers::request::public_base_url(&config.server, request),
     };
 
     format!("{base}/Marti/sync/content?hash={hash}")
