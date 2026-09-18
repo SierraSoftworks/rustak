@@ -71,8 +71,22 @@ impl Harness {
         Self::start_with(|_| {}).await
     }
 
+    /// Starts a listener with the real `<dest mission>` publisher installed.
+    ///
+    /// The default harness installs the M1 stub, because most suites have no
+    /// missions and a stub keeps them from paying for a mission lookup on
+    /// every message. A suite about `<dest mission>` needs the real one.
+    pub async fn start_with_missions() -> Self {
+        Self::build(|_| {}, true).await
+    }
+
     /// Starts a listener, letting the caller adjust the configuration.
     pub async fn start_with(adjust: impl FnOnce(&mut Config)) -> Self {
+        Self::build(adjust, false).await
+    }
+
+    /// The body both entry points share.
+    async fn build(adjust: impl FnOnce(&mut Config), missions: bool) -> Self {
         rustak_server::pki::tls::install_crypto_provider();
 
         let data_dir = tempfile::tempdir().expect("a temporary data directory");
@@ -104,12 +118,27 @@ impl Harness {
         .await
         .expect("a certificate authority");
 
-        let runtime = StreamRuntime::bind(&context, &pki, mission_hook::no_missions())
+        let ingest: std::sync::Arc<dyn rustak_server::stream::MissionIngest> = match missions {
+            true => rustak_server::missions::MissionPublisher::shared(context.clone()),
+            false => mission_hook::no_missions(),
+        };
+
+        let runtime = StreamRuntime::bind(&context, &pki, ingest)
             .await
             .expect("the stream listener binds");
 
         let addr = runtime.local_addr();
         let live = runtime.live().clone();
+
+        // Published only for the mission variant: a `t-x-m-c` is addressed to
+        // the *connected* subscribers, and the service asks the context for the
+        // registry to find out who those are.
+        if missions {
+            context
+                .install_live(std::sync::Arc::new(live.clone()))
+                .expect("the registry is installed once");
+        }
+
         let shutdown = context.shutdown().clone();
         let listener = tokio::spawn(runtime.run(shutdown.clone()));
 

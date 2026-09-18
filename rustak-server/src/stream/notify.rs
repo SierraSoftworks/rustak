@@ -33,6 +33,28 @@ pub trait Notifier: Send + Sync {
     /// Sends to every connection authenticated as an account.
     fn send_to_user(&self, username: &Username, event: Event) -> usize;
 
+    /// Sends one copy of a message to every connection claiming any of
+    /// `client_uids`.
+    ///
+    /// A mission notice is addressed to a list rather than to one device:
+    /// [`send_to_uid`](Self::send_to_uid) in a loop would encode the same event
+    /// once per subscriber, which on a busy Data Sync is the whole cost.
+    fn send_to_uids(&self, client_uids: &[String], event: Event) -> usize;
+
+    /// Sends to every identified connection that receives from any of
+    /// `groups`, skipping the connections claiming `except_uid`.
+    ///
+    /// The broadcast half of the mission notifications: "everyone who could
+    /// read this mission, except whoever changed it". It is not the
+    /// sender-to-receiver reachability question the broker asks — there is no
+    /// sender here, only a mission and the channels it belongs to.
+    fn broadcast_to_groups(
+        &self,
+        groups: &[GroupName],
+        except_uid: Option<&str>,
+        event: Event,
+    ) -> usize;
+
     /// Sends to one connection.
     fn send_to_conn(&self, id: ConnId, event: Event) -> bool;
 
@@ -51,6 +73,42 @@ impl Notifier for Hub {
 
     fn send_to_user(&self, username: &Username, event: Event) -> usize {
         deliver(&self.handles_for_user(username), event)
+    }
+
+    fn send_to_uids(&self, client_uids: &[String], event: Event) -> usize {
+        let mut handles: Vec<ConnHandle> = Vec::new();
+
+        for uid in client_uids {
+            for handle in self.handles_for_uid(uid) {
+                if !handles.iter().any(|held| held.id() == handle.id()) {
+                    handles.push(handle);
+                }
+            }
+        }
+
+        deliver(&handles, event)
+    }
+
+    fn broadcast_to_groups(
+        &self,
+        groups: &[GroupName],
+        except_uid: Option<&str>,
+        event: Event,
+    ) -> usize {
+        // `__ANON__` is force-included so that a read-only account still hears
+        // about a public mission, which is what TAK Server does by adding the
+        // channel to every subscriber's vector rather than to the mission's.
+        let everyone = groups.contains(&GroupName::anon());
+
+        let uids: Vec<String> = self
+            .snapshot()
+            .into_iter()
+            .filter(|peer| Some(peer.uid.as_str()) != except_uid)
+            .filter(|peer| everyone || peer.groups.iter().any(|held| groups.contains(held)))
+            .map(|peer| peer.uid)
+            .collect();
+
+        self.send_to_uids(&uids, event)
     }
 
     fn send_to_conn(&self, id: ConnId, event: Event) -> bool {
@@ -208,6 +266,31 @@ mod tests {
         (id, rx)
     }
 
+    /// The same, but carrying the channel **names** a contact listing shows —
+    /// which is what a mission broadcast selects on.
+    fn join_channels(
+        hub: &Hub,
+        name: &str,
+        channels: &[&str],
+    ) -> (ConnId, mpsc::Receiver<Outbound>) {
+        let id = hub.next_id();
+        let (tx, rx) = mpsc::channel(8);
+
+        hub.register(Subscription::new(
+            id,
+            principal(name, &[(7, Direction::Both)]),
+            channels
+                .iter()
+                .map(|channel| GroupName::parse(channel).unwrap())
+                .collect(),
+            format!("{name:f>64}"),
+            "127.0.0.1:9000".parse().unwrap(),
+            ConnHandle::new(id, tx, Arc::new(ConnStats::default()), 512, Shutdown::new()),
+        ));
+
+        (id, rx)
+    }
+
     fn identify(hub: &Hub, id: ConnId, uid: &str, callsign: &str) {
         let event = Event::builder("a-f-G-U-C", uid)
             .point(51.5, -0.12)
@@ -306,6 +389,102 @@ mod tests {
             1
         );
         assert_eq!(received(&mut phone_rx).unwrap().uid, "n-2");
+    }
+
+    #[test]
+    fn a_notice_addressed_to_several_uids_is_encoded_once_and_reaches_each() {
+        let hub = Hub::new();
+        let (alpha, mut alpha_rx) = join(&hub, "alpha", &[(7, Direction::Both)]);
+        let (bravo, mut bravo_rx) = join(&hub, "bravo", &[(7, Direction::Both)]);
+        let (_stranger, mut stranger_rx) = join(&hub, "stranger", &[(9, Direction::Both)]);
+        identify(&hub, alpha, "UID-A", "ALPHA");
+        identify(&hub, bravo, "UID-B", "BRAVO");
+
+        let notice = Event::builder("t-x-m-c", "n-1").point(0.0, 0.0).build();
+        let reached = hub.send_to_uids(&["UID-A".into(), "UID-B".into()], notice);
+
+        assert_eq!(reached, 2);
+        assert!(received(&mut alpha_rx).is_some());
+        assert!(received(&mut bravo_rx).is_some());
+        assert!(
+            received(&mut stranger_rx).is_none(),
+            "a mission notice is addressed, not broadcast",
+        );
+    }
+
+    #[test]
+    fn a_uid_named_twice_is_still_told_once() {
+        let hub = Hub::new();
+        let (alpha, mut alpha_rx) = join(&hub, "alpha", &[(7, Direction::Both)]);
+        identify(&hub, alpha, "UID-A", "ALPHA");
+
+        let notice = Event::builder("t-x-m-c", "n-1").point(0.0, 0.0).build();
+
+        assert_eq!(
+            hub.send_to_uids(&["UID-A".into(), "UID-A".into()], notice),
+            1
+        );
+        assert!(received(&mut alpha_rx).is_some());
+        assert!(received(&mut alpha_rx).is_none());
+    }
+
+    #[test]
+    fn a_mission_announcement_reaches_the_readers_of_its_channels_but_not_its_author() {
+        let hub = Hub::new();
+        let (author, mut author_rx) = join_channels(&hub, "author", &["Blue"]);
+        let (reader, mut reader_rx) = join_channels(&hub, "reader", &["Blue"]);
+        let (outsider, mut outsider_rx) = join_channels(&hub, "outsider", &["Red"]);
+        identify(&hub, author, "UID-AUTHOR", "AUTHOR");
+        identify(&hub, reader, "UID-READER", "READER");
+        identify(&hub, outsider, "UID-OUTSIDER", "OUTSIDER");
+
+        let notice = Event::builder("t-x-m-n", "n-1").point(0.0, 0.0).build();
+        let reached = hub.broadcast_to_groups(
+            &[GroupName::parse("Blue").unwrap()],
+            Some("UID-AUTHOR"),
+            notice,
+        );
+
+        assert_eq!(reached, 1);
+        assert!(received(&mut reader_rx).is_some());
+        assert!(
+            received(&mut author_rx).is_none(),
+            "the creator already knows",
+        );
+        assert!(received(&mut outsider_rx).is_none());
+    }
+
+    #[test]
+    fn a_public_mission_is_announced_to_everyone_connected() {
+        // `__ANON__` is force-included so a read-only account still hears about
+        // a public mission it holds no other channel for.
+        let hub = Hub::new();
+        let (reader, mut reader_rx) = join_channels(&hub, "reader", &["Red"]);
+        identify(&hub, reader, "UID-READER", "READER");
+
+        let notice = Event::builder("t-x-m-n", "n-1").point(0.0, 0.0).build();
+
+        assert_eq!(
+            hub.broadcast_to_groups(&[GroupName::anon()], None, notice),
+            1
+        );
+        assert!(received(&mut reader_rx).is_some());
+    }
+
+    #[test]
+    fn a_client_that_never_announced_itself_is_not_a_broadcast_recipient() {
+        // The contact snapshot only lists subscriptions with a uid, and a
+        // notice naming no uid could not be addressed anyway.
+        let hub = Hub::new();
+        let (_silent, mut silent_rx) = join_channels(&hub, "silent", &["Blue"]);
+
+        let notice = Event::builder("t-x-m-n", "n-1").point(0.0, 0.0).build();
+
+        assert_eq!(
+            hub.broadcast_to_groups(&[GroupName::parse("Blue").unwrap()], None, notice),
+            0
+        );
+        assert!(received(&mut silent_rx).is_none());
     }
 
     #[test]

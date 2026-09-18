@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<event version="2.0" uid="11111111-2222-3333-4444-000000000001" type="t-x-m-c-l" how="h-g-i-g-o" time="2026-09-17T12:00:40.000Z" start="2026-09-17T12:00:40.000Z" stale="2026-09-17T12:01:00.000Z"><point lat="0.0" lon="0.0" hae="0.0" ce="9999999.0" le="9999999.0"/><detail><mission name="Operation Kettle" guid="0d4f1a6e-1d2b-4c3a-9f8e-7a6b5c4d3e2f" type="CHANGE" authorUid="ANDROID-AUTHOR" tool="public"/></detail></event>

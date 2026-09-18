@@ -30,6 +30,18 @@ fn default_archived_missions() -> chrono::Duration {
     chrono::Duration::days(30)
 }
 
+/// How long a soft-deleted mission is kept before it is really gone.
+///
+/// A mission that has been deleted still answers `410 Gone` rather than `404`,
+/// which is what tells a client holding a stale Data Sync that the mission was
+/// removed rather than that it is looking in the wrong place. That distinction
+/// is only useful while clients might still ask, so the row is purged after a
+/// fortnight — long enough to cover a device that was switched off for a
+/// holiday, short enough that a deleted mission is not kept indefinitely.
+fn default_missions_purge_after() -> chrono::Duration {
+    chrono::Duration::days(14)
+}
+
 /// How long an uploaded blob nothing refers to is kept.
 ///
 /// Not zero, because an upload is referenced a moment *after* it is stored: a
@@ -73,6 +85,14 @@ pub struct RetentionConfig {
     )]
     pub archived_missions: chrono::Duration,
 
+    /// How long a soft-deleted mission keeps answering `410` before its row,
+    /// its changes and its subscriptions are removed for good.
+    #[serde(
+        default = "default_missions_purge_after",
+        with = "rustak_core::config::duration::humane"
+    )]
+    pub missions_purge_after: chrono::Duration,
+
     /// How long a stored blob that nothing refers to is kept.
     #[serde(
         default = "default_content_orphans",
@@ -92,6 +112,7 @@ impl Default for RetentionConfig {
             audit: default_audit(),
             audit_max_entries: default_audit_max_entries(),
             archived_missions: default_archived_missions(),
+            missions_purge_after: default_missions_purge_after(),
             content_orphans: default_content_orphans(),
         }
     }
@@ -111,6 +132,7 @@ mod tests {
         assert_eq!(parsed.audit, chrono::Duration::days(90));
         assert_eq!(parsed.audit_max_entries, 100_000);
         assert_eq!(parsed.archived_missions, chrono::Duration::days(30));
+        assert_eq!(parsed.missions_purge_after, chrono::Duration::days(14));
         assert_eq!(parsed.content_orphans, chrono::Duration::hours(24));
     }
 
