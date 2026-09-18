@@ -9,3 +9,13 @@ Items too small for a brief of their own, or waiting for a milestone. Remove a l
 - **`interop/cloudtak` compose nightly** — M4 gate (plan → Verification).
 - **Config-package UI** — the server has `POST /api/v1/config-packages` (M3-02); the admin UI has no page for it yet, nor for packages/profiles/clients/CoT browser (design 04 §8.3).
 - **Local toolchain is older than CI's stable** and this machine cannot reach static.rust-lang.org; CI is the authority for new clippy lints until that changes.
+
+## Admin API polish found by the operations UI (M3-04) — bundle into one brief once M3-03 has landed
+- `GET /api/v1/missions?include_deleted=true` (the row renders `deleted_at` but nothing can list soft-deleted missions) and a `410` detail body that carries the deleted mission.
+- `GET /api/v1/missions/{guid}` hard-codes `item_count: 0` per layer — one join.
+- `POST /api/v1/clients/{uid}/incognito` should answer with the updated client, not the request.
+- Report the stream listener's state (off vs quiet) so `GET /clients` = `[]` is unambiguous — a field on `GET /api/v1/health` or `/clients`.
+- `GET /api/v1/cot` lacks the time window the per-uid history has.
+- `ApiError::Gone`'s message is wizard-specific and now reachable from mission detail.
+- Package `expiration` is epoch ms with negative-means-never; consider RFC 3339 nullable on `/api/v1`.
+- Optional: a dry run for `POST /config-packages`.
