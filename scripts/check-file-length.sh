@@ -5,6 +5,7 @@
 set -euo pipefail
 MAX="${MAX_FUNCTIONAL_LINES:-300}"; status=0
 while IFS= read -r file; do
+  [ -f "$file" ] || continue   # tracked path deleted or replaced by a directory in the working tree
   case "$file" in */tests/*|*/testing/*|*/fixtures/*|*_tests.rs) continue;; esac
   count=$(awk '
     /^#\[cfg\(test\)\]/ { exit }            # column-0 attribute: everything after is the test module

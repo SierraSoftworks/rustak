@@ -13,6 +13,12 @@ description = "Shared foundation for every rustak binary: config loading, teleme
 [lints]
 workspace = true
 
+[features]
+# Exposes `telemetry::testing_session` to other crates' integration tests, which
+# need a real `Session` that reports nowhere. Always on inside this crate's own
+# tests.
+testing = []
+
 [dependencies]
 rustak-api = { workspace = true }
 tokio = { workspace = true }
