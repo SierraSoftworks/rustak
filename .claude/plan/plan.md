@@ -1,9 +1,10 @@
 # rustak — a lightweight Rust-native TAK server
 
-> Status: IN PROGRESS (2026-09-18, late). M0–M5 landed: streaming, enrolment, channels, files, profiles, Data Sync,
-> ACME, OAuth2/OIDC federation, admin API and UI, services API and sidecar SDK; CI green with node-tak, e2e and the
-> nightly commoncommo EUD harness. Remaining: CloudTAK compose suite (M4-03), admin API polish (M3-06), the first
-> pre-release tag, manual ATAK/WinTAK/iTAK checklists. Per-brief results live in `.claude/plan/status/`.
+> Status: IN PROGRESS (2026-09-18, night). M0–M6 implementation landed. Gates met: rust.yml green; nightly EUD harness
+> (ATAK's commoncommo) 9/9 and CloudTAK compose 9/9 with nothing skipped (run 35396135680). Independent reviews
+> (`.claude/plan/reviews/R-01..03`) found security, wire-contract and robustness defects; fix briefs M5-02, M4-04,
+> M1-09 are in flight, stream-side robustness follows. Remaining: first pre-release tag (user decision), manual
+> checklists in `docs/compat/` to be run on real devices.
 
 ## Context
 
