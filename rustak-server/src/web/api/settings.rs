@@ -116,6 +116,13 @@ pub async fn marti(context: web::Data<AppContext>, _: Administrative) -> ApiResu
 ///
 /// A `500` when the stored certificate row cannot be read.
 pub async fn tls(context: web::Data<AppContext>, _: Administrative) -> ApiResult {
+    // `files` is answered from what the listener actually read off disk —
+    // including "nothing yet, still waiting for them" — and every other mode
+    // from the ACME row.
+    if context.config().web.public.tls.mode == crate::config::TlsMode::Files {
+        return Ok(json_ok(&crate::pki::tls::files::report(&context.config())));
+    }
+
     let reported = crate::pki::acme::status(context.get_ref())
         .await
         .map_err(|err| human(&context, &err))?;
@@ -134,11 +141,34 @@ pub async fn tls(context: web::Data<AppContext>, _: Administrative) -> ApiResult
 /// Repeated calls collapse onto one queued order — every one of them spends
 /// real rate limit against the authority.
 ///
+/// In `files` mode there is no authority to ask: the same call queues a
+/// re-read of `cert_file` and `key_file` instead, which is what an operator
+/// whose agent has just rewritten them — or who has switched the timed check
+/// off with `reload_interval = "0"` — wants from this button.
+///
 /// # Errors
 ///
-/// A `409` when this installation is not using ACME, and a `500` when the
-/// order cannot be queued.
+/// A `409` when this installation neither uses ACME nor reads its certificate
+/// from disk, and a `500` when the work cannot be queued.
 pub async fn renew_tls(context: web::Data<AppContext>, caller: Administrative) -> ApiResult {
+    if context.config().web.public.tls.mode == crate::config::TlsMode::Files {
+        crate::jobs::TlsFilesJob::dispatch(
+            crate::jobs::TlsFilesTask { forced: true },
+            Some(crate::jobs::TLS_FILES_RELOAD_KEY.into()),
+            context.get_ref(),
+        )
+        .await
+        .map_err(|err| human(&context, &err))?;
+
+        info!(
+            actor = %caller.user.username,
+            "An administrator asked for the public certificate files to be re-read now."
+        );
+
+        return Ok(actix_web::HttpResponse::Accepted()
+            .json(crate::pki::tls::files::report(&context.config())));
+    }
+
     if !context.config().acme.enabled {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
@@ -242,6 +272,80 @@ mod tests {
         assert_eq!(status.source, TlsSource::None);
         assert!(status.directory.is_none());
         assert!(!status.needs_attention());
+    }
+
+    #[actix_web::test]
+    async fn a_listener_reading_its_certificate_from_disk_says_which_files_and_what_it_is_waiting_for()
+     {
+        let directory = tempfile::tempdir().unwrap();
+        let cert_file = directory.path().join("fullchain.pem");
+        let key_file = directory.path().join("privkey.pem");
+        let server = TestServer::start_with({
+            let (cert_file, key_file) = (cert_file.clone(), key_file.clone());
+            move |config| {
+                config.web.public.tls.mode = crate::config::TlsMode::Files;
+                config.web.public.tls.cert_file = Some(cert_file.clone());
+                config.web.public.tls.key_file = Some(key_file.clone());
+            }
+        })
+        .await;
+        let (_, session) = server.signed_in("ada", true).await;
+
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let status: TlsStatus = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/v1/settings/tls")
+                .insert_header(("authorization", bearer(&session)))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(status.source, TlsSource::Files);
+        assert_eq!(status.state, rustak_api::TlsCertificateState::Missing);
+        assert!(status.cert_file.unwrap().contains("fullchain.pem"));
+        assert!(
+            status.note.is_some(),
+            "an operator whose sidecar has not written the pair yet needs to be told that",
+        );
+    }
+
+    #[actix_web::test]
+    async fn asking_a_files_installation_to_renew_queues_a_re_read() {
+        let directory = tempfile::tempdir().unwrap();
+        let server = TestServer::start_with({
+            let directory = directory.path().to_path_buf();
+            move |config| {
+                config.web.public.tls.mode = crate::config::TlsMode::Files;
+                config.web.public.tls.cert_file = Some(directory.join("fullchain.pem"));
+                config.web.public.tls.key_file = Some(directory.join("privkey.pem"));
+            }
+        })
+        .await;
+        let (_, session) = server.signed_in("ada", true).await;
+
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/v1/settings/tls/renew")
+                .insert_header(("authorization", bearer(&session)))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        let queued = server
+            .queue()
+            .peek::<_, crate::jobs::TlsFilesTask>(crate::jobs::TLS_FILES_PARTITION, 10)
+            .await
+            .unwrap();
+
+        assert_eq!(queued.len(), 1);
+        assert!(queued[0].payload.forced, "a re-read somebody asked for");
     }
 
     #[actix_web::test]

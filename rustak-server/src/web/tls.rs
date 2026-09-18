@@ -5,11 +5,11 @@
 //! | mode | what happens |
 //! |---|---|
 //! | `internal` | our own authority issues a certificate for the configured host names. The default. |
-//! | `files` | a chain and a key are read from disk. |
+//! | `files` | a chain and a key are read from disk, behind the same swappable resolver, and re-read when they change. |
 //! | `acme` | the last certificate an ACME order produced, behind a resolver that can be swapped without a restart. |
 //! | `none` | plaintext, and only when `allow_insecure_http` also says so. |
 //!
-//! # Why `acme` starts with a certificate nobody trusts
+//! # Why `acme` and `files` start with a certificate nobody trusts
 //!
 //! The first order cannot be placed until the listener is up: `tls-alpn-01` is
 //! answered *by* that listener on :443, and `http-01` is answered by a route on
@@ -20,13 +20,20 @@
 //! order takes, rather than a listener that will not start until a certificate
 //! it cannot obtain has been obtained.
 //!
-//! The resolver is published to [`pki::acme`](crate::pki::acme) on the way out,
-//! because the job which renews the certificate is not holding one.
+//! `files` does the same thing for the same reason: the pair is usually
+//! rendered by a sidecar that starts alongside rustak, so a listener that
+//! refused to bind without it would make every deploy a race. See
+//! [`pki::tls::files`](crate::pki::tls::files); `require_files_at_start = true`
+//! asks for the fail-fast behaviour instead.
+//!
+//! The resolver is published to [`pki::acme`](crate::pki::acme) or to
+//! [`pki::tls::files`](crate::pki::tls::files) on the way out, because the job
+//! which replaces the certificate is not holding one.
 
 use std::sync::Arc;
 
 use rustls::ServerConfig;
-use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 
 use crate::config::{Config, TlsMode};
 use crate::crypto::SecretStore;
@@ -58,7 +65,7 @@ pub async fn resolve(
 ) -> Result<PublicTls, Error> {
     match config.web.public.tls.mode {
         TlsMode::None => plaintext(config).map(|()| None),
-        TlsMode::Files => from_files(config).map(Some),
+        TlsMode::Files => files(config, db, secrets, ca).await.map(Some),
         TlsMode::Acme => acme(config, db, secrets, ca).await.map(Some),
         TlsMode::Internal => internal(config, db, secrets, ca).await.map(Some),
     }
@@ -179,8 +186,17 @@ async fn bootstrap(
     .or_system_err(&["This is unexpected; please report it with the surrounding log entries."])
 }
 
-/// A chain and a key read from disk.
-fn from_files(config: &Config) -> Result<Arc<ServerConfig>, Error> {
+/// A chain and a key read from disk, behind a resolver the reload job swaps.
+///
+/// A pair that is not there yet is a warning and a bootstrap certificate, not
+/// a refusal to start — see the module documentation — unless
+/// `require_files_at_start` says otherwise.
+async fn files(
+    config: &Config,
+    db: &Database,
+    secrets: &SecretStore,
+    ca: Option<&CaMaterial>,
+) -> Result<Arc<ServerConfig>, Error> {
     let tls = &config.web.public.tls;
 
     let (Some(cert_file), Some(key_file)) = (tls.cert_file.as_ref(), tls.key_file.as_ref()) else {
@@ -190,41 +206,49 @@ fn from_files(config: &Config) -> Result<Arc<ServerConfig>, Error> {
         ));
     };
 
-    let chain: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(cert_file)
-        .and_then(|iter| iter.collect())
-        .map_err(|err| {
-            human_errors::user(
-                format!(
-                    "We could not read the certificate chain at {}: {err}",
-                    cert_file.display()
-                ),
-                &["Check that the file exists, is readable, and contains PEM certificates."],
+    install_crypto_provider();
+
+    let (initial, loaded, failure) = match crate::pki::tls::files::load(cert_file, key_file) {
+        Ok(pair) => {
+            info!(
+                certificates = pair.certificates,
+                not_after = ?pair.not_after,
+                "Loaded the public certificate from disk."
+            );
+
+            (Arc::clone(&pair.certified), Some(pair), None)
+        }
+        Err(err) if tls.require_files_at_start => return Err(err),
+        Err(err) => {
+            warn!(
+                cert_file = %cert_file.display(),
+                key_file = %key_file.display(),
+                reason = %err.description(),
+                interval = ?tls.reload_every(),
+                "The public certificate files are not usable yet, so the listener starts with one \
+                 from this installation's own authority and will swap them in as soon as they \
+                 appear. Watch GET /api/v1/settings/tls for it."
+            );
+
+            (
+                bootstrap(config, db, secrets, ca).await?,
+                None,
+                Some(err.description()),
             )
-        })?;
+        }
+    };
 
-    if chain.is_empty() {
-        return Err(human_errors::user(
-            format!("{} contains no certificates.", cert_file.display()),
-            &["Point cert_file at the full chain, leaf first, in PEM."],
-        ));
-    }
+    let resolver = crate::pki::HotSwapCertResolver::new(Some(initial));
 
-    let key = PrivateKeyDer::from_pem_file(key_file).map_err(|err| {
-        human_errors::user(
-            format!(
-                "We could not read the private key at {}: {err}",
-                key_file.display()
-            ),
-            &["Check that the file exists, is readable, and contains a PEM private key."],
-        )
-    })?;
+    crate::pki::tls::files::publish(crate::pki::tls::files::FilesCertificate::new(
+        cert_file.clone(),
+        key_file.clone(),
+        Arc::clone(&resolver),
+        loaded,
+        failure,
+    ));
 
-    info!(
-        certificates = chain.len(),
-        "Loaded the public certificate from disk."
-    );
-
-    build(chain, key)
+    Ok(Arc::new(crate::pki::tls::public_server_config(resolver)))
 }
 
 /// A certificate this installation issued itself.
@@ -300,6 +324,10 @@ fn install_crypto_provider() {
 /// The public listener is where browsers and enrolling devices arrive, and
 /// neither has a certificate yet. Client certificates belong on the Marti and
 /// stream listeners, which demand them.
+///
+/// Only `internal` builds a listener this way. The two modes whose certificate
+/// changes while the server runs — `acme` and `files` — go through a resolver
+/// instead, because a `ServerConfig` is immutable once built.
 fn build(
     chain: Vec<CertificateDer<'static>>,
     key: PrivateKeyDer<'static>,
@@ -311,11 +339,8 @@ fn build(
         .with_single_cert(chain, key)
         .map(Arc::new)
         .wrap_user_err(
-            "The certificate and private key for the public listener do not go together.",
-            &[
-                "Check that key_file is the key for cert_file's leaf certificate.",
-                "Check that cert_file lists the leaf certificate first.",
-            ],
+            "The certificate this installation issued itself and its private key do not go together.",
+            &["This is unexpected; please report it with the surrounding log entries."],
         )
 }
 
@@ -502,7 +527,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_files_mode_pointing_at_nothing_names_the_path() {
+    async fn a_files_mode_promised_its_files_and_not_given_them_names_the_path() {
         let db = database().await;
         let secrets = SecretStore::ephemeral();
         let directory = tempfile::tempdir().unwrap();
@@ -510,10 +535,61 @@ mod tests {
 
         config.web.public.tls.cert_file = Some(directory.path().join("missing.crt"));
         config.web.public.tls.key_file = Some(directory.path().join("missing.key"));
+        config.web.public.tls.require_files_at_start = true;
 
         let refused = resolve(&config, &db, &secrets, None).await.unwrap_err();
 
         assert!(refused.description().contains("missing.crt"));
+    }
+
+    #[tokio::test]
+    async fn a_files_mode_whose_pair_has_not_been_written_yet_still_binds() {
+        // The Nomad deployment this exists for: the sidecar renders the pair
+        // after the task starts, so refusing to bind would make the first
+        // deploy a race nobody can win.
+        let db = database().await;
+        let secrets = SecretStore::ephemeral();
+        let data = tempfile::tempdir().unwrap();
+        let pki = tempfile::tempdir().unwrap();
+        let (mut config, ca) = with_authority(&db, &secrets, TlsMode::Files, pki.path()).await;
+
+        let cert_file = data.path().join("fullchain.pem");
+        let key_file = data.path().join("privkey.pem");
+        config.web.public.tls.cert_file = Some(cert_file.clone());
+        config.web.public.tls.key_file = Some(key_file.clone());
+
+        assert!(
+            resolve(&config, &db, &secrets, Some(&ca))
+                .await
+                .unwrap()
+                .is_some(),
+            "a missing pair must be waited for, not fatal",
+        );
+
+        let files =
+            crate::pki::tls::files::for_config(&config).expect("the reload job has to find it");
+        assert!(
+            files.status(&[]).state == rustak_api::TlsCertificateState::Missing,
+            "the status has to say the listener is on its bootstrap certificate",
+        );
+
+        // And when the sidecar finally writes them, the next look serves them.
+        let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+        let certificate = rcgen::CertificateParams::new(vec!["tak.example.com".to_string()])
+            .unwrap()
+            .self_signed(&key)
+            .unwrap();
+        std::fs::write(&cert_file, certificate.pem()).unwrap();
+        std::fs::write(&key_file, key.serialize_pem()).unwrap();
+
+        assert!(matches!(
+            files.reload(),
+            crate::pki::tls::files::Outcome::Swapped { .. }
+        ));
+        assert_eq!(
+            files.status(&[]).state,
+            rustak_api::TlsCertificateState::Valid
+        );
     }
 
     #[tokio::test]

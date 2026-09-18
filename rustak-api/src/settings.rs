@@ -72,13 +72,16 @@ pub enum TlsSource {
 
 /// How healthy that certificate is.
 ///
-/// Only ACME has more than one answer here: a certificate from a file or from
-/// the internal authority is either being served or the server did not start.
+/// A certificate from the internal authority has one answer — it is being
+/// served, or the server did not start. ACME and `files` have all four: both
+/// bind the listener on a bootstrap certificate and fill it in afterwards, one
+/// from an order and one from two files an agent writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TlsCertificateState {
-    /// Nothing has been issued yet; the listener is serving a bootstrap
-    /// certificate until the first order finishes.
+    /// Nothing has been issued or read yet; the listener is serving a
+    /// bootstrap certificate until the first order finishes, or until the
+    /// files named in the configuration appear.
     Missing,
     /// Issued, and not yet due for renewal.
     Valid,
@@ -116,6 +119,23 @@ pub struct TlsStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub renews_at: Option<DateTime<Utc>>,
 
+    /// When the pair was last read off disk, for `files`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loaded_at: Option<DateTime<Utc>>,
+
+    /// The chain `[web.public.tls] cert_file` names, for `files`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cert_file: Option<String>,
+
+    /// The key `[web.public.tls] key_file` names, for `files`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_file: Option<String>,
+
+    /// What the listener is doing about it, where `state` alone does not say
+    /// — "waiting for the certificate files to appear", for instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+
     /// The ACME directory it was ordered from, as the configuration spells it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub directory: Option<String>,
@@ -149,6 +169,10 @@ impl TlsStatus {
             not_before: None,
             not_after: None,
             renews_at: None,
+            loaded_at: None,
+            cert_file: None,
+            key_file: None,
+            note: None,
             directory: None,
             challenge: None,
             attempts: 0,
@@ -253,6 +277,29 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<TlsStatus>(&serde_json::to_string(&status).unwrap()).unwrap(),
             status,
+        );
+    }
+
+    #[test]
+    fn a_files_status_carries_where_it_read_the_pair_and_what_it_is_waiting_for() {
+        // The fields a `files` installation needs and ACME has no use for:
+        // without them an operator whose sidecar has not written the pair yet
+        // is shown "not issued" and nothing that says which paths are watched.
+        let status = TlsStatus {
+            cert_file: Some("/etc/rustak/fullchain.pem".to_string()),
+            key_file: Some("/etc/rustak/privkey.pem".to_string()),
+            note: Some("Waiting for the certificate files to appear.".to_string()),
+            state: TlsCertificateState::Missing,
+            ..TlsStatus::fixed(TlsSource::Files)
+        };
+
+        let json = serde_json::to_string(&status).unwrap();
+
+        assert_eq!(serde_json::from_str::<TlsStatus>(&json).unwrap(), status);
+        assert!(json.contains("fullchain.pem"), "{json}");
+        assert!(
+            !json.contains("loaded_at"),
+            "a pair that has never been read says nothing about when it was: {json}",
         );
     }
 

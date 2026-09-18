@@ -199,6 +199,9 @@ pub async fn status(services: &impl Services) -> Result<TlsStatus, Error> {
         attempts: held.map_or(0, |row| u32::try_from(row.attempts).unwrap_or(u32::MAX)),
         last_attempt_at: held.and_then(|row| row.last_attempt_at),
         last_error: held.and_then(|row| row.last_error.clone()),
+        // The fields only `mode = "files"` fills in — the paths it reads and
+        // when it last read them. An order has no files behind it.
+        ..TlsStatus::fixed(source)
     })
 }
 

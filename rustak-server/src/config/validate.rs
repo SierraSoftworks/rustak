@@ -119,6 +119,10 @@ fn certificate_source(config: &Config) -> Result<(), Error> {
                 ],
             ))
         }
+        // Whether the two files have to be there *now* is a fact about how
+        // they are used, and the advice is most of the code; see
+        // [`TlsConfig::validate_files`].
+        TlsMode::Files => public.tls.validate_files(),
         _ => Ok(()),
     }
 }
@@ -468,6 +472,26 @@ mod tests {
         )
         .validate()
         .unwrap();
+    }
+
+    #[test]
+    fn files_that_are_not_there_are_only_a_refusal_when_they_were_promised() {
+        // The default is the Nomad deployment: the sidecar writes the pair
+        // after the task starts, so `--check` must accept a configuration
+        // whose files do not exist yet.
+        let directory = tempfile::tempdir().unwrap();
+        let absent = directory.path().join("fullchain.pem");
+
+        let waiting = format!(
+            "[web.public.tls]\nmode = \"files\"\ncert_file = \"{}\"\nkey_file = \"{}\"\n",
+            absent.display(),
+            directory.path().join("privkey.pem").display(),
+        );
+
+        parse(&waiting).validate().unwrap();
+
+        let message = refusal(&format!("{waiting}require_files_at_start = true\n"));
+        assert!(message.contains("fullchain.pem"), "{message}");
     }
 
     #[test]

@@ -25,6 +25,7 @@
 //! handshake that offered none, which is every ATAK connection.
 
 pub mod client_verifier;
+pub mod files;
 pub mod peer;
 pub mod resolver;
 

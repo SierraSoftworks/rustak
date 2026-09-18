@@ -105,15 +105,82 @@ for the full comment on every key.
   name** at start-up — never silently sent as literal `${{ env.… }}` text or
   turned into an empty credential.
 - There is no SIGHUP reload. Changing the file means restarting the process.
+  The certificate is the exception: `mode = "files"` re-reads `cert_file` and
+  `key_file` while rustak runs (see **TLS modes**), and `mode = "acme"` renews
+  itself.
 
 ## TLS modes
 
 | Mode | Certificate comes from | Needs |
 |---|---|---|
 | `internal` (default) | rustak's own CA, reissued automatically when the covered names, the CA, or the renewal window change | Nothing external. Browsers will not trust it until the CA (`<data_dir>/pki/ca.crt`) is installed, and devices get it automatically through enrollment. This is the LAN-only story. |
-| `files` | `cert_file` / `key_file`, PEM, reloaded when they change | A certificate from somewhere else (a public CA, your own PKI). |
+| `files` | `cert_file` / `key_file`, PEM, re-read while rustak runs whenever they change | A certificate from somewhere else (a public CA, your own PKI, a sidecar). They may appear *after* rustak starts. |
 | `acme` | Ordered from an ACME authority (Let's Encrypt by default), renewed automatically and swapped in without a restart | Public DNS for every name, and either `:443` bound (`tls-alpn-01`) or port 80 reaching the public listener (`http-01`). |
 | `none` | Nothing — plaintext HTTP | `allow_insecure_http = true` as a second, deliberate statement. Development and the e2e suite only. |
+
+### Certificate files somebody else writes
+
+`mode = "files"` is for a certificate another process owns: a Tailscale or
+Let's Encrypt sidecar that renders it into the task's filesystem, a secrets
+agent, or an image build that bakes it in. rustak does not order or renew it —
+it reads it, serves it, and watches it.
+
+```toml
+[web.public.tls]
+mode = "files"
+cert_file = "/secrets/fullchain.pem"     # the full chain, leaf first
+key_file = "/secrets/privkey.pem"        # its private key
+reload_interval = "30s"                  # "0" switches the check off
+require_files_at_start = false           # true restores fail-fast start-up
+```
+
+**The first deploy, with a sidecar.** The sidecar usually starts *alongside*
+rustak, so the pair is not on disk when the listener binds. That is not fatal:
+rustak logs a warning naming both paths, binds with a certificate from its own
+CA — exactly as an ACME installation does before its first order — and keeps
+looking. Browsers warn until the files land, which is typically seconds.
+
+```
+WARN The public certificate files are not usable yet, so the listener starts with one
+     from this installation's own authority and will swap them in as soon as they
+     appear. Watch GET /api/v1/settings/tls for it.
+     cert_file=/secrets/fullchain.pem key_file=/secrets/privkey.pem
+```
+
+Set `require_files_at_start = true` when the files ship with the image and
+their absence means something is wrong; `rustak --check` then also refuses a
+configuration whose files are not there.
+
+**Renewals, without a restart.** Every `reload_interval` a background job stats
+both files. When the size, modification time or inode of either has moved, the
+pair is re-read, the chain is parsed and the key is checked against the leaf,
+and only then is it installed into the listener's certificate resolver.
+Connections already established keep the certificate they negotiated with; every
+new handshake gets the new one.
+
+A pair that does not go together — a renewal caught half-written, a key that
+belongs to a different certificate — is **ignored**: the previous certificate
+keeps serving, the reason is logged once and reported by the API, and the next
+change to either file is tried again. The same bytes are not re-read every
+thirty seconds.
+
+```
+INFO The public listener is now presenting the certificate on disk. Existing
+     connections keep the one they negotiated with; every new handshake gets this one.
+     not_after=2026-12-17T09:41:00Z
+```
+
+**Confirming it.** `GET /api/v1/settings/tls` (administrator) reports
+`source: "files"`, both paths, `loaded_at`, `not_before`/`not_after`, and — while
+the listener is still on its bootstrap certificate — `state: "missing"` with a
+`note` saying it is waiting for the files. A pair that is on disk and cannot be
+served reads `state: "failed"` with `last_error`. `openssl s_client -connect
+host:8446 -servername host </dev/null | openssl x509 -noout -dates` is the other
+half of the check, from outside.
+
+`POST /api/v1/settings/tls/renew` re-reads the pair immediately rather than
+waiting for the next interval — which is also the way to pick a renewal up when
+`reload_interval = "0"` has switched the timed check off.
 
 ## ACME certificates
 
