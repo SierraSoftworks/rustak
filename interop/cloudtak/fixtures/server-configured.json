@@ -1,0 +1,19 @@
+{
+  "id": 1,
+  "status": "configured",
+  "connection_status": "live",
+  "connection": true,
+  "name": "rustak (interop)",
+  "version": "13.89.0",
+  "created": "2026-09-18T09:00:00.000Z",
+  "updated": "2026-09-18T09:00:01.000Z",
+  "url": "ssl://rustak:8089",
+  "api": "https://rustak:8443",
+  "webtak": "https://rustak:8446",
+  "auth": true,
+  "certificate": {
+    "subject": "CN=cloudtak-operator\nOU=interop\nO=rustak",
+    "validFrom": "2026-09-18T09:00:00.000Z",
+    "validTo": "2027-09-18T09:00:00.000Z"
+  }
+}

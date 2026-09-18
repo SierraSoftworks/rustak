@@ -35,6 +35,24 @@ by calling exactly `GET /files/api/config` (`files.md` §1) — nothing else. Un
 CloudTAK's setup wizard cannot save a working connection at all, so this is the single
 highest-priority endpoint for any CloudTAK bring-up test. Verified 03 §1.2.
 
+**The *first* configuration exercises three surfaces, not one** (read from
+`api/stateless/routes/server.ts` at 13.90.0 while building `interop/cloudtak`, and an addition to
+§1.2 rather than a correction of it). On a CloudTAK whose `server.auth` is still empty the call is
+**unauthenticated**, and it does three things in order:
+
+1. if the body carries `auth: {cert, key}`, it validates that pair by calling `GET /files/api/config`
+   through it — the smoke test above, over mTLS on `api`;
+2. it **requires** a `username` and `password` as well, runs the `/oauth/token` password grant
+   against `webtak` with them, and calls `Credentials.generate()` (`/Marti/api/tls/config` +
+   `/Marti/api/tls/signClient/v2`) to enrol a certificate of its own for that account;
+3. it makes that account CloudTAK's **system administrator** — the first successful pair wins, for
+   the life of the installation.
+
+So a bring-up test that gets past this one call has already proved `/files/api/config`, the password
+grant and enrollment. An operator supplying `auth` without credentials is refused with
+`Initial configuration must include valid TAK Username & Password to set System Administrator`, and
+once `server.auth` is set the endpoint requires an administrator bearer token like any other.
+
 ## 3. TLS trust is asymmetric across the three URLs
 
 - `api` (mTLS, `:8443`) and the stream (`:8089`): CloudTAK connects with `rejectUnauthorized: false`

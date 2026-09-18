@@ -1,0 +1,37 @@
+{
+  "version": "3",
+  "type": "MissionChange",
+  "data": [
+    {
+      "isFederatedChange": false,
+      "type": "ADD_CONTENT",
+      "missionName": "rustak-interop-cloudtak-4f2a91c7",
+      "missionGuid": "6c2f1f0a-3d2b-4f5e-9a71-0b8c2d4e6f80",
+      "timestamp": "2026-09-18T09:01:30.000Z",
+      "serverTime": "2026-09-18T09:01:30.000Z",
+      "creatorUid": "ANDROID-CloudTAK-cloudtak-operator",
+      "contentUid": "interop-marker-9c7b1d2e-2f40-4a1b-9c8d-7e6f5a4b3c21",
+      "details": {
+        "type": "a-f-G-U-C",
+        "callsign": "Interop Marker",
+        "location": { "lat": 39.7392, "lon": -104.9903 }
+      }
+    },
+    {
+      "isFederatedChange": false,
+      "type": "ADD_CONTENT",
+      "missionName": "rustak-interop-cloudtak-4f2a91c7",
+      "missionGuid": "6c2f1f0a-3d2b-4f5e-9a71-0b8c2d4e6f80",
+      "timestamp": "2026-09-18T09:02:00.000Z",
+      "serverTime": "2026-09-18T09:02:00.000Z",
+      "creatorUid": "cloudtak-operator",
+      "contentResource": {
+        "hash": "3f6b2c1d9e8a7b5c4d3e2f10112233445566778899aabbccddeeff0011223344",
+        "name": "interop-notes.txt",
+        "size": 42,
+        "creatorUid": "cloudtak-operator",
+        "submissionTime": "2026-09-18T09:02:00.000Z"
+      }
+    }
+  ]
+}

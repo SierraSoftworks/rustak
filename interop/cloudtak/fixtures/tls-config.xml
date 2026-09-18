@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<ns2:certificateConfig xmlns:ns2="http://bbn.com/marti/xml/config">
+  <nameEntries>
+    <nameEntry name="O" value="rustak"/>
+    <nameEntry name="OU" value="interop"/>
+  </nameEntries>
+</ns2:certificateConfig>

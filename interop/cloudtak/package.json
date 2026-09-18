@@ -1,0 +1,24 @@
+{
+  "name": "rustak-interop-cloudtak",
+  "version": "0.0.0",
+  "private": true,
+  "description": "CloudTAK full-stack suite: drives CloudTAK's own container (Postgres + the published API/UI image) against a rustak built from this checkout, through CloudTAK's REST API, plus a Playwright smoke of its UI.",
+  "type": "module",
+  "engines": {
+    "node": ">= 24"
+  },
+  "scripts": {
+    "test": "npm run test:unit && npm run test:suite",
+    "test:unit": "node --import tsx --test tests/*.test.ts",
+    "test:suite": "tsx src/run.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "playwright": "^1.63.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "version": "3",
+  "type": "com.bbn.marti.remote.groups.Group",
+  "data": [
+    {
+      "name": "__ANON__",
+      "direction": "OUT",
+      "created": "2026-09-18",
+      "type": "SYSTEM",
+      "bitpos": 1,
+      "active": true,
+      "description": "Anonymous"
+    },
+    {
+      "name": "Interop",
+      "direction": "OUT",
+      "created": "2026-09-18",
+      "type": "SYSTEM",
+      "bitpos": 2,
+      "active": true
+    },
+    {
+      "name": "Interop",
+      "direction": "IN",
+      "created": "2026-09-18",
+      "type": "SYSTEM",
+      "bitpos": 2,
+      "active": true
+    }
+  ],
+  "nodeId": "rustak"
+}

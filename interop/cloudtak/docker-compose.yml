@@ -1,0 +1,91 @@
+# The CloudTAK interop stack: CloudTAK's own container, its Postgres, and a
+# rustak built from this checkout, on one network.
+#
+# Written from CloudTAK's documented configuration (its own `docker-compose.yml`
+# and `.env.example`, and `api/common/config.ts`), not copied from it: this is a
+# deliberately smaller stack. CloudTAK's compose also runs MinIO, a pmtiles
+# tiler, an events worker, a retention worker and the media server; none of them
+# are on the path this suite exercises (server configuration, login, channels,
+# Data Sync, packages), and `StackName` being unset is what makes `ASSET_BUCKET`
+# optional — see interop/cloudtak/README.md → What is and is not in the stack.
+#
+#   * `rustak`     — the image the nightly job builds from rustak-server/Dockerfile.
+#                    Its /data is a bind mount because the bootstrap reads the
+#                    one-time setup token the server writes there, and it runs as
+#                    the invoking user so the files it creates stay removable.
+#   * `cloudtak`   — the pinned published image. The test CA is mounted in and
+#                    named by NODE_EXTRA_CA_CERTS, which is the only way its
+#                    `webtak` calls (full verification, no override) trust an
+#                    internal certificate — compat/cloudtak.md §3.
+#   * `postgis`    — CloudTAK's database, on tmpfs: every run starts empty, which
+#                    is what makes the unconfigured-server bootstrap repeatable.
+#
+# Ports are published on the loopback only, and every one of them is
+# overridable, because a developer's machine may already have something on 8446.
+name: rustak-interop-cloudtak
+
+services:
+  postgis:
+    image: postgis/postgis:17-3.4-alpine
+    restart: "no"
+    environment:
+      POSTGRES_DB: gis
+      POSTGRES_USER: docker
+      POSTGRES_PASSWORD: docker
+      # A subdirectory of the tmpfs rather than the mount point itself: initdb
+      # wants the data directory it creates to be 0700 and its own, and a
+      # directory it made inside the mount always is.
+      PGDATA: /var/lib/postgresql/data/pgdata
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U docker -d gis"]
+      interval: 2s
+      timeout: 5s
+      retries: 45
+
+  rustak:
+    image: ${RUSTAK_INTEROP_RUSTAK_IMAGE:-rustak-interop-cloudtak:local}
+    restart: "no"
+    # The runner generates .run/rustak/config.toml and the test CA before the
+    # stack comes up; rustak's entrypoint is `--config /data/config.toml`.
+    volumes:
+      - ./.run/rustak:/data
+    # `[server] shutdown_timeout` (8s) plus the WAL checkpoint (2s, fixed), as
+    # rustak-server/Dockerfile spells out. The default ten seconds has nothing
+    # to spare.
+    stop_grace_period: 15s
+    user: "${RUSTAK_INTEROP_UID:-0}:${RUSTAK_INTEROP_GID:-0}"
+    ports:
+      - "127.0.0.1:${RUSTAK_INTEROP_WEBTAK_PORT:-8446}:8446"
+      - "127.0.0.1:${RUSTAK_INTEROP_MARTI_PORT:-8443}:8443"
+      - "127.0.0.1:${RUSTAK_INTEROP_STREAM_PORT:-8089}:8089"
+
+  cloudtak:
+    image: ghcr.io/dfpc-coe/cloudtak-api:${RUSTAK_INTEROP_CLOUDTAK_TAG:-v13.89.0}
+    restart: "no"
+    depends_on:
+      postgis:
+        condition: service_healthy
+      rustak:
+        condition: service_started
+    environment:
+      # `docker-compose` is the mode CloudTAK's own compose uses: it runs the
+      # database migrations and the iconset/basemap seeding on start.
+      CLOUDTAK_Mode: docker-compose
+      # One process serving both halves, so no hub URL and no second container.
+      CLOUDTAK_Server_Mode: both
+      POSTGRES: postgres://docker:docker@postgis:5432/gis
+      # Only the nginx CSP and the PMTiles default are derived from this. A
+      # `localhost` host disables CSP altogether, which is what keeps the
+      # Playwright smoke honest about what failed.
+      API_URL: http://localhost:${RUSTAK_INTEROP_CLOUDTAK_PORT:-5000}
+      SigningSecret: rustak-interop-cloudtak
+      # The whole point of the exercise: CloudTAK's OAuth and enrollment calls
+      # go through undici with full system-CA verification and no override, so
+      # an internal CA has to be named here or login fails outright.
+      NODE_EXTRA_CA_CERTS: /run/rustak/ca.crt
+    volumes:
+      - ./.run/pki/ca.crt:/run/rustak/ca.crt:ro
+    ports:
+      - "127.0.0.1:${RUSTAK_INTEROP_CLOUDTAK_PORT:-5000}:5000"

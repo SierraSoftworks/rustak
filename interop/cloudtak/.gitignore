@@ -1,0 +1,14 @@
+# The dependencies are installed rather than authored. `package-lock.json` is
+# deliberately *not* here: CI installs from it with `npm ci`, so it is the only
+# thing that makes a run reproducible.
+node_modules/
+
+# The compose stack's working directory: the generated test CA, rustak's
+# configuration and its data directory (bind-mounted into the container, which
+# is why it lives here rather than under the system temporary directory — the
+# bootstrap has to read the setup token the server writes into it).
+.run/
+
+# Screenshots, the compose log and the run log a failed nightly uploads.
+artifacts/
+rustak-cloudtak.log

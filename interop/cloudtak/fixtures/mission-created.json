@@ -1,0 +1,30 @@
+{
+  "name": "rustak-interop-cloudtak-4f2a91c7",
+  "description": "Created by interop/cloudtak",
+  "tool": "public",
+  "keywords": ["interop", "rustak"],
+  "creatorUid": "ANDROID-CloudTAK-cloudtak-operator",
+  "createTime": "2026-09-18T09:01:00.000Z",
+  "externalData": [],
+  "feeds": [],
+  "mapLayers": [],
+  "inviteOnly": false,
+  "expiration": -1,
+  "guid": "6c2f1f0a-3d2b-4f5e-9a71-0b8c2d4e6f80",
+  "uids": [],
+  "contents": [
+    {
+      "timestamp": "2026-09-18T09:02:00.000Z",
+      "creatorUid": "cloudtak-operator",
+      "data": {
+        "hash": "3f6b2c1d9e8a7b5c4d3e2f10112233445566778899aabbccddeeff0011223344",
+        "name": "interop-notes.txt",
+        "size": 42,
+        "mimeType": "application/octet-stream",
+        "submissionTime": "2026-09-18T09:02:00.000Z"
+      }
+    }
+  ],
+  "passwordProtected": false,
+  "token": "mission-token-for-the-creator"
+}

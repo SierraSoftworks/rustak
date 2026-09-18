@@ -8,6 +8,12 @@ on:
     # itself on github.event.schedule.
     - cron: "0 3 * * 1"
   workflow_dispatch: {}
+  # The `run-cloudtak` label runs the CloudTAK suite on a pull request. Nothing
+  # else in this workflow selects `pull_request`, so every other job here skips
+  # on one; `synchronize` is included so a labelled PR re-runs it on a push
+  # rather than only when the label is first applied.
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
 
 env:
   REGISTRY: ghcr.io
@@ -15,18 +21,122 @@ env:
   EUD_IMAGE: rustak-interop-commoncommo
 
 jobs:
-  # Placeholder: drives CloudTAK's own docker-compose stack (Postgres + CloudTAK
-  # API + rustak with a BYO cert trusted via NODE_EXTRA_CA_CERTS) through
-  # CloudTAK's REST API (server config, login, channels, data sync, packages)
-  # plus a Playwright smoke of its UI. Lands in M4 alongside the mission API,
-  # per plan.md's "Interop in CI" table and design 01 §7.3's interop delta.
-  # `if: false` keeps it visible in the job graph without pretending it runs.
+  # Drives CloudTAK's own container — Postgres, the published CloudTAK API/UI
+  # image and a rustak built from this checkout, on one compose network —
+  # through CloudTAK's REST API (server configuration, login, channels, Data
+  # Sync, packages) plus a Playwright smoke of its UI. See
+  # interop/cloudtak/README.md and
+  # .claude/plan/status/M4-03-interop-cloudtak-compose.md.
+  #
+  # Nightly, on demand, and on a pull request labelled `run-cloudtak`: it costs
+  # a release build of the server plus a few minutes of containers, which is too
+  # much for every PR and worth having on the ones that touch the Marti surface.
   interop-cloudtak:
     name: "Interop: CloudTAK compose"
     runs-on: ubuntu-latest
-    if: false
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || github.event.schedule == '0 4 * * *'
+      || (github.event_name == 'pull_request'
+          && contains(github.event.pull_request.labels.*.name, 'run-cloudtak'))
+    # The release build is the long pole on a cold cache; the stack itself is
+    # minutes. A job that hits this bound is a bug report.
+    timeout-minutes: 60
+
+    permissions:
+      contents: read
+
     steps:
-      - run: echo "Placeholder until M4 — see plan.md 'Interop in CI' (interop/cloudtak)."
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          target: wasm32-unknown-unknown
+
+      - name: Setup Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            rustak-ui -> target
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      # Pinned to the same release the PR pipeline's `ui` job uses; bump both
+      # together and deliberately.
+      - name: Install Trunk
+        shell: bash
+        run: |
+          cargo binstall --no-confirm --disable-strategies compile trunk@0.21.14
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # The UI is embedded into the binary by `include_dir!` at compile time, so
+      # it has to exist before cargo build.
+      - name: Build release UI
+        working-directory: rustak-ui
+        run: trunk build --release
+
+      - name: cargo build
+        run: cargo build --release -p rustak-server
+
+      # rustak-server/Dockerfile packages a binary rather than compiling one,
+      # and it reads it from dist/ — the same layout the release pipeline's
+      # docker-build job stages from its artefact.
+      - name: Build the rustak image
+        run: |
+          mkdir -p dist
+          cp target/release/rustak dist/rustak
+          chmod +x dist/rustak
+          docker build -f rustak-server/Dockerfile -t rustak-interop-cloudtak:local .
+
+      # Node 24 to match the other two suites, whose launcher, bootstrap and
+      # surface probe this one shares through interop/shared.
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: interop/cloudtak/package-lock.json
+
+      - name: Install dependencies
+        working-directory: interop/cloudtak
+        run: npm ci
+
+      - name: Typecheck the suite
+        working-directory: interop/cloudtak
+        run: npm run typecheck
+
+      # Only the UI smoke needs a browser, and it skips rather than fails
+      # without one — but a nightly that quietly stopped looking at the UI is
+      # exactly the kind of silence this job exists to break.
+      - name: Install Chromium for the UI smoke
+        working-directory: interop/cloudtak
+        run: npx playwright install --with-deps chromium
+
+      # RUSTAK_INTEROP_REQUIRE_DOCKER=1 is the default, and is set here so that
+      # a runner that lost its container runtime fails rather than reporting a
+      # green run in which every step skipped.
+      - name: Run the CloudTAK suite
+        working-directory: interop/cloudtak
+        env:
+          RUSTAK_INTEROP_REQUIRE_DOCKER: "1"
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee rustak-cloudtak.log
+
+      - name: Upload the run artefacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cloudtak-artefacts
+          path: |
+            interop/cloudtak/rustak-cloudtak.log
+            interop/cloudtak/artifacts/**
+          if-no-files-found: warn
+          retention-days: 14
 
   # Builds the EUD harness image: ATAK's own networking core (commoncommo) and
   # its stock `commotest` console client, compiled from a pinned atak-civ
