@@ -641,7 +641,9 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           path: /tmp/digests
-          pattern: image-digest-${{ matrix.crate.bin }}-*
+          # Anchor on the platform prefix: `image-digest-rustak-*` would also
+          # match `image-digest-rustak-plugin-example-*` and mix the digests.
+          pattern: image-digest-${{ matrix.crate.bin }}-linux-*
           merge-multiple: true
 
       - name: Set up Docker Buildx
