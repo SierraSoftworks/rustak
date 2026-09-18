@@ -39,6 +39,29 @@ grep -q 'make -j\$\$(nproc) && make install' mk/protobuf-common.mk || {
     exit 1
 }
 
+# mk/openssl.mk's `openssl_build` recipe invokes `$(MAKE) -C … build_libs
+# build_apps …`, but OpenSSL's own (Configure-generated) unified-build
+# Makefile keeps `build_apps` only "for backward compatibility": both
+# `build_apps` and `build_tests` are aliases for the shared `build_programs`
+# target, which links *every* PROGRAMS entry Configure discovered — the
+# `apps/openssl` CLI *and* the whole `test/` tree (asn1_dsa_internal_test and
+# friends), since `build.info` only drops `SUBDIRS=test` when the `tests`
+# feature is disabled. commoncommo never runs or needs those test binaries,
+# and under -j they raced a still-settling libcrypto.a and failed to link
+# (`undefined reference to ossl_set_error_state`). `no-tests` is OpenSSL's own
+# Configure flag for exactly this: it removes `test/` from the build
+# entirely, so `build_apps` goes back to building only the CLI — the libs and
+# headers commoncommo actually links against are untouched.
+#
+# The grep is the point of the exercise: if upstream rewords the
+# openssl_CONFIG line this patches, the build fails here, loudly, instead of
+# racing intermittently in CI.
+sed -i 's|^openssl_CONFIG=\(.*\) no-asm no-module$|openssl_CONFIG=\1 no-asm no-module no-tests|' "target-config/${TARGET}.mk"
+grep -q '^openssl_CONFIG=.* no-asm no-module no-tests$' "target-config/${TARGET}.mk" || {
+    echo "build-takthirdparty: target-config/${TARGET}.mk no longer contains the openssl_CONFIG line this patches" >&2
+    exit 1
+}
+
 make TARGET="$TARGET" prebuild
 
 for pkg in zlib libiconv libxml2 openssl nghttp2 curl ngtcp2 protobuf libmicrohttpd commoncommo; do

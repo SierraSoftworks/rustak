@@ -132,7 +132,7 @@ wrong, twice over:
    transfers, and its PKCS#12 legacy algorithms all behave according to the
    linked OpenSSL. Swapping it changes the thing under test.
 
-Two deliberate quirks in `build-takthirdparty.sh`:
+Three deliberate quirks in `build-takthirdparty.sh`:
 
 - **The per-package loop is not an optimisation target.** takthirdparty's
   top-level Makefile lists the packages as sibling prerequisites of one goal
@@ -145,6 +145,19 @@ Two deliberate quirks in `build-takthirdparty.sh`:
   build. The script rewrites that one recipe and then greps to prove the
   rewrite applied, so an upstream rewording fails loudly instead of silently
   costing a quarter of an hour.
+- **The OpenSSL `no-tests` patch.** `mk/openssl.mk` invokes OpenSSL's
+  `build_apps` target, but OpenSSL's own unified-build Makefile keeps
+  `build_apps` only for backward compatibility: it and `build_tests` are both
+  aliases for the shared `build_programs` target, which links *every*
+  `PROGRAMS` entry Configure found — the `apps/openssl` CLI **and** the whole
+  `test/` tree. commoncommo never touches those test binaries, and under `-j`
+  they were racing a still-settling `libcrypto.a` and failing to link
+  (`undefined reference to ossl_set_error_state`). The script patches
+  `target-config/${TARGET}.mk`'s `openssl_CONFIG` line to add `no-tests`,
+  OpenSSL's own Configure flag for dropping `test/` from the build outright,
+  and greps to prove the patch applied. See
+  [`M1-04b-openssl-build-fix.md`](../../.claude/plan/status/M1-04b-openssl-build-fix.md)
+  for the full analysis.
 
 Java/JNI (`libcommoncommojni.so`, `jcommoncommo.jar`) is switched off with
 `commoncommo_BUILDJAVA=`, which keeps a JDK and Ant out of the builder. See the
