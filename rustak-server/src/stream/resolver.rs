@@ -17,6 +17,17 @@
 //! for them to differ, and picking one would be picking which of two
 //! contradictory facts to trust.
 //!
+//! # A selection is read at registration, not only at the endpoint
+//!
+//! Which channels are switched on is a preference, held per device
+//! (`device_group_state`) with the account's own selection
+//! (`user_group_state`) as the default a device inherits. Both are read *here*,
+//! as the connection is registered, rather than only where
+//! `/Marti/api/groups/*` answers — otherwise a device enrolled after an
+//! account-level change would route on every channel it is entitled to until it
+//! called the endpoint itself, which is the permissive direction and the one
+//! that matters.
+//!
 //! # A connection with no channels is still a connection
 //!
 //! An account with no memberships can reach nobody and be reached by nobody,
@@ -130,7 +141,7 @@ impl CertPrincipalResolver for DbPrincipalResolver {
                 members::effective_for_device(&self.db, user.id, device.id, self.anon_by_default)
                     .await?
             }
-            None => self.db.members().group_set(user.id).await?,
+            None => members::effective_for_account(&self.db, user.id, self.anon_by_default).await?,
         };
 
         if groups.is_empty() {

@@ -322,9 +322,40 @@ impl AppendLog {
         root: &Path,
         before: DateTime<Utc>,
     ) -> Result<usize, Error> {
+        let expired = db.stream_segments().expired_before(before).await?;
+        let removed = Self::remove_indexed(db, root, expired).await?;
+
+        if removed > 0 {
+            info!(segments = removed, "Pruned expired stream segments.");
+        }
+
+        Ok(removed)
+    }
+
+    /// Unlinks each segment's file and forgets its row, reporting how many went.
+    ///
+    /// The file goes first — a row without its file is recoverable, a file
+    /// without its row is invisible and leaks.
+    ///
+    /// Public because retention has a second list to sweep — the segments a
+    /// stream keeps past `[retention] cot_history_max_rows`, which the index
+    /// picks out ([`over_row_cap`]) and `cot_store::retention` hands back here.
+    ///
+    /// [`over_row_cap`]: crate::db::repos::StreamSegmentsRepo::over_row_cap
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::System`] error when a row cannot be deleted. A
+    /// file that cannot be unlinked is logged and left indexed, so the next
+    /// sweep tries again.
+    pub async fn remove_indexed(
+        db: &Database,
+        root: &Path,
+        rows: Vec<StreamSegmentRow>,
+    ) -> Result<usize, Error> {
         let mut removed = 0;
 
-        for row in db.stream_segments().expired_before(before).await? {
+        for row in rows {
             let path = root.join(&row.segment_path);
 
             match tokio::fs::remove_file(&path).await {
@@ -334,7 +365,7 @@ impl AppendLog {
                     warn!(
                         segment = %row.segment_path,
                         error = %err,
-                        "Could not remove an expired stream segment; it will be retried."
+                        "Could not remove a stream segment; it will be retried."
                     );
                     continue;
                 }
@@ -349,10 +380,6 @@ impl AppendLog {
 
             db.stream_segments().delete(row.id).await?;
             removed += 1;
-        }
-
-        if removed > 0 {
-            info!(segments = removed, "Pruned expired stream segments.");
         }
 
         Ok(removed)

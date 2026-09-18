@@ -1,12 +1,12 @@
-//! Who may reach which channel, and which of those a device has switched on.
+//! Who may reach which channel: the *rights* half.
 //!
-//! Two questions that look alike and must not be collapsed. A *membership* is a
-//! right, granted by an administrator or mapped from a `groups` claim. The
-//! *active state* is a preference, set by a client through
-//! `PUT /Marti/api/groups/active?clientUid=` and scoped to the device that
-//! asked — switching a channel off on a phone must not switch it off on a
-//! laptop. A subscription's effective rights are the two intersected, which is
-//! what [`effective_for_device`] returns.
+//! Two questions that look alike and must not be collapsed. A **membership** is
+//! a right, granted by an administrator or mapped from a `groups` claim, and it
+//! is what this file reads and writes. The **active state** is a preference —
+//! `PUT /Marti/api/groups/active`, per device over per account — and it lives
+//! in [`active`](super::active), which this module re-exports so that every
+//! existing `members::effective_for_device` caller still names the same
+//! function. A subscription's effective rights are the two intersected.
 //!
 //! # The default channel
 //!
@@ -17,8 +17,7 @@
 //! lacks it. An installation that turns the setting off is saying it will grant
 //! every channel by hand, and then nothing here re-adds anything.
 
-use rustak_api::{ActiveGroup, Direction, GroupMembership, GroupName, MembershipSource};
-use rustak_core::identity::GroupSet;
+use rustak_api::{Direction, GroupMembership, GroupName, MembershipSource};
 use rustak_core::prelude::*;
 
 use crate::db::{
@@ -26,6 +25,11 @@ use crate::db::{
     repos::{GroupRow, Membership},
 };
 use crate::services::{AppContext, Services};
+
+pub use super::active::{
+    active_for_device, active_for_user, effective_for_account, effective_for_device, set_active,
+    set_active_for_user,
+};
 
 /// A person's channels, named and sorted, for the API.
 ///
@@ -126,69 +130,6 @@ pub async fn replace_manual(
     grants_for_user(db, user_id).await
 }
 
-/// A subscription's effective rights: what the person holds, minus what this
-/// device has switched off.
-///
-/// A channel the device has said nothing about counts as on, because a client
-/// that has never called the groups endpoint expects everything it is entitled
-/// to.
-///
-/// # Errors
-///
-/// A [`human_errors::Kind::System`] error if a read fails.
-pub async fn effective_for_device(
-    db: &Database,
-    user_id: UserId,
-    device_id: DeviceId,
-    anon_by_default: bool,
-) -> Result<GroupSet, Error> {
-    let mut effective = db.members().effective(user_id, device_id).await?;
-
-    if anon_by_default {
-        add_default_channel(db, device_id, &mut effective).await?;
-    }
-
-    Ok(effective)
-}
-
-/// Records which channels a device currently has switched on.
-///
-/// A state naming a channel that does not exist is dropped rather than
-/// refusing the whole call: ATAK sends back the list it was given, and a
-/// channel deleted between the two would otherwise break every client that
-/// still had it cached.
-///
-/// Returns how many states were applied, so a caller can tell a request that
-/// did nothing from one that did.
-///
-/// # Errors
-///
-/// A [`human_errors::Kind::System`] error if a read or write fails.
-#[instrument("identity.members.set_active", skip_all, fields(device = %device_id), err(Display))]
-pub async fn set_active(
-    db: &Database,
-    device_id: DeviceId,
-    states: &[ActiveGroup],
-) -> Result<usize, Error> {
-    let groups = db.groups().list().await?;
-    let mut applied = 0;
-
-    for state in states.iter().flat_map(ActiveGroup::expand) {
-        let Some(group) = groups.iter().find(|group| group.name == state.group) else {
-            debug!(group = %state.group, "Ignoring an active-channel state for a channel that is not here.");
-            continue;
-        };
-
-        db.members()
-            .set_active(device_id, group.id, state.direction, state.active)
-            .await?;
-
-        applied += 1;
-    }
-
-    Ok(applied)
-}
-
 /// Makes a channel change take effect on whatever the account has connected.
 ///
 /// Two things happen, in this order and for different reasons.
@@ -259,7 +200,10 @@ async fn reauth(
             )
             .await?
         }
-        None => db.members().group_set(user_id).await?,
+        // No device: the account-level selection is the whole answer.
+        None => {
+            effective_for_account(db, user_id, context.config().auth.anon_group_default).await?
+        }
     };
 
     // The `OUT` names, which is what the contact and endpoint listings render.
@@ -268,44 +212,6 @@ async fn reauth(
     live.reauth(conn, std::sync::Arc::new(groups), names);
 
     Ok(())
-}
-
-/// Every channel a device has an opinion about, named, for the API.
-///
-/// # Errors
-///
-/// A [`human_errors::Kind::System`] error if a read fails.
-pub async fn active_for_device(
-    db: &Database,
-    device_id: DeviceId,
-) -> Result<Vec<ActiveGroup>, Error> {
-    let states = db.members().active_for_device(device_id).await?;
-
-    if states.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let groups = db.groups().list().await?;
-    let mut active: Vec<ActiveGroup> = states
-        .iter()
-        .filter_map(|state| {
-            groups
-                .iter()
-                .find(|group| group.id == state.group_id)
-                .map(|group| ActiveGroup {
-                    group: group.name.clone(),
-                    direction: state.direction,
-                    active: state.active,
-                })
-        })
-        .collect();
-
-    active.sort_by(|left, right| {
-        (left.group.as_str(), left.direction.as_str())
-            .cmp(&(right.group.as_str(), right.direction.as_str()))
-    });
-
-    Ok(active)
 }
 
 /// Turns the names an administrator sent into channel identifiers.
@@ -329,35 +235,6 @@ fn resolve(
     Ok(resolved)
 }
 
-/// Adds `__ANON__` to a subscription that the installation says should have it.
-///
-/// The device's own preference still applies: somebody who switched the default
-/// channel off on their phone has switched it off, whatever the default says.
-async fn add_default_channel(
-    db: &Database,
-    device_id: DeviceId,
-    effective: &mut GroupSet,
-) -> Result<(), Error> {
-    let Some(anon) = db.groups().get_by_name(&GroupName::anon()).await? else {
-        warn!("The default channel is missing, so nothing was added to a subscription.");
-        return Ok(());
-    };
-
-    let states = db.members().active_for_device(device_id).await?;
-
-    for direction in Direction::Both.expand() {
-        let switched_off = states.iter().any(|state| {
-            state.group_id == anon.id && state.direction == *direction && !state.active
-        });
-
-        if !switched_off {
-            effective.set(anon.bitpos, *direction);
-        }
-    }
-
-    Ok(())
-}
-
 /// Whether a grant is one an administrator made, and so ours to replace.
 fn is_manual(membership: &&Membership) -> bool {
     membership.source == MembershipSource::Manual
@@ -376,7 +253,9 @@ fn unknown_channel(name: &GroupName) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use rustak_api::GroupSource;
+    // The active-state tests below drive [`active`](super::super::active)
+    // through this module's re-exports, which is how every caller reaches it.
+    use rustak_api::{ActiveGroup, GroupSource};
 
     use super::*;
     use crate::db::repos::{NewDevice, NewGroup, NewUser};

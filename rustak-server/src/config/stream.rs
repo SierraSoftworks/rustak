@@ -14,8 +14,6 @@
 //! deployment needs to see, instead of a plaintext port they believe is open
 //! and is not.
 
-use std::sync::atomic::{AtomicU8, Ordering};
-
 use rustak_core::config::ListenAddr;
 use serde::{Deserialize, Serialize};
 
@@ -64,51 +62,6 @@ pub enum NegotiationMode {
     Silent = 2,
 }
 
-/// What the configuration selected, for the connection to read.
-///
-/// # Why this is a process-wide value rather than a field on the connection
-///
-/// The mode has to reach [`crate::stream::negotiation::Negotiation`], which is
-/// built from `ConnLimits` in `stream/connection.rs` — a struct whose
-/// `negotiate` field is a `bool` and whose file, along with `stream/mod.rs`
-/// that fills it in, belongs to other work in flight. Threading a third state
-/// through it is a two-line change that belongs with those files, and this knob
-/// is deliberately not worth blocking on it: the value is published here when
-/// the configuration is parsed, which happens exactly once per process, and
-/// read where the state machine is built.
-///
-/// See `.claude/plan/status/M2-09-eud-interop-scenarios.md` → Deviations for
-/// the patch that replaces this with the field, whenever those files are free.
-static SELECTED: AtomicU8 = AtomicU8::new(NegotiationMode::Accept as u8);
-
-impl NegotiationMode {
-    /// Publishes this mode as the one connections will use.
-    pub fn select(self) {
-        SELECTED.store(self as u8, Ordering::Relaxed);
-    }
-
-    /// The mode the configuration selected; [`NegotiationMode::Accept`] until one does.
-    pub fn selected() -> Self {
-        match SELECTED.load(Ordering::Relaxed) {
-            1 => Self::Refuse,
-            2 => Self::Silent,
-            _ => Self::Accept,
-        }
-    }
-}
-
-/// Parses the key and publishes it in one step, so nothing has to remember to.
-fn select_negotiation<'de, D>(deserializer: D) -> Result<NegotiationMode, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let mode = NegotiationMode::deserialize(deserializer)?;
-
-    mode.select();
-
-    Ok(mode)
-}
-
 /// `[stream]`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -122,7 +75,10 @@ pub struct StreamConfig {
     pub limits: StreamLimits,
 
     /// How the server answers the protocol negotiation. See [`NegotiationMode`].
-    #[serde(default, deserialize_with = "select_negotiation")]
+    ///
+    /// Read once, where the listener builds its `ConnLimits`
+    /// (`stream/mod.rs`), so two servers in one process each get their own.
+    #[serde(default)]
     pub negotiation: NegotiationMode,
 }
 
@@ -336,11 +292,11 @@ mod tests {
     }
 
     #[test]
-    fn the_negotiation_switch_is_parsed_and_published() {
+    fn the_negotiation_switch_is_parsed_into_the_value_the_listener_reads() {
         // The two values that exist for the EUD interop suite, and nothing else:
         // `refuse` makes the server answer `status="false"`, `silent` makes it
-        // never offer at all. Both are restored to `accept` afterwards, because
-        // the selection is process-wide by design (see `SELECTED`).
+        // never offer at all. The parsed value is the whole story — nothing is
+        // published process-wide — so these can run in any order.
         for (written, expected) in [
             ("refuse", NegotiationMode::Refuse),
             ("silent", NegotiationMode::Silent),
@@ -350,10 +306,7 @@ mod tests {
                 toml::from_str(&format!(r#"negotiation = "{written}""#)).unwrap();
 
             assert_eq!(parsed.negotiation, expected);
-            assert_eq!(NegotiationMode::selected(), expected);
         }
-
-        NegotiationMode::Accept.select();
     }
 
     #[test]

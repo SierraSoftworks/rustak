@@ -34,6 +34,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tokio_util::codec::{FramedRead, FramedWrite};
 
+use crate::config::stream::NegotiationMode;
 use crate::prelude::*;
 
 use super::metrics::StreamMetrics;
@@ -55,8 +56,8 @@ pub struct ConnLimits {
     pub close_after_drops: u64,
     /// How long it may go silent.
     pub idle_timeout: Duration,
-    /// Whether it is offered protobuf.
-    pub negotiate: bool,
+    /// How it answers the TAK Protocol v1 negotiation.
+    pub negotiate: NegotiationMode,
 }
 
 /// Everything a connection task shares with the rest of the listener.
@@ -130,7 +131,8 @@ pub async fn run<IO>(
 
     replay::replay_latest_sa(&hub, id);
 
-    let mut negotiation = Negotiation::new(deps.limits.negotiate, deps.server_version.clone());
+    let mut negotiation =
+        Negotiation::with_mode(deps.limits.negotiate, deps.server_version.clone());
     if let Some(offer) = negotiation.offer(uuid::Uuid::new_v4().to_string(), CotTime::now()) {
         handle.send(Outbound::Event(Arc::new(EncodedEvent::new(offer))));
     }

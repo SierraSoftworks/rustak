@@ -13,6 +13,10 @@
 //! the segment that straddles it** — up to one segment's worth of extra
 //! history. Trimming inside a file would mean rewriting it, which is the cost
 //! the append-only design exists to avoid.
+//!
+//! The same pass enforces `[retention] cot_history_max_rows`, the per-device
+//! floor that keeps a busy installation from filling the disk inside the age
+//! window. It is approximate in the same direction and for the same reason.
 
 use chrono::TimeDelta;
 
@@ -88,7 +92,13 @@ impl Job for CotRetentionJob {
         let config = services.config();
         let before = chrono::Utc::now() - config.retention.cot_history;
 
-        let swept = retention::sweep(services.db(), &config.streams_dir(), before).await?;
+        let swept = retention::sweep(
+            services.db(),
+            &config.streams_dir(),
+            before,
+            config.retention.cot_history_max_rows,
+        )
+        .await?;
 
         if swept.is_empty() {
             debug!("The CoT history is within its retention; nothing to remove.");
@@ -120,9 +130,14 @@ mod tests {
         let config = context.config();
         let before = chrono::Utc::now() - config.retention.cot_history;
 
-        let swept = retention::sweep(context.db(), &config.streams_dir(), before)
-            .await
-            .unwrap();
+        let swept = retention::sweep(
+            context.db(),
+            &config.streams_dir(),
+            before,
+            config.retention.cot_history_max_rows,
+        )
+        .await
+        .unwrap();
 
         assert!(swept.is_empty());
     }

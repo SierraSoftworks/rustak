@@ -344,6 +344,10 @@ Two other things worth knowing:
   cut off, but the checkpoint still runs — pressing Ctrl-C twice is a way to
   skip the waiting, not a way to skip the durability. A *third* exits at once
   and is the only thing short of `SIGKILL` that skips the checkpoint.
+- **Exit status.** A stop that drained exits **0**; one that was cut short by a
+  second or third signal exits **130**, after the checkpoint. If your unit file
+  uses `Restart=on-failure`, list `130` in `SuccessExitStatus=` so that an
+  operator who stopped the server impatiently does not have it restarted.
 - **An idle browser tab can hold the drain open for the whole budget.** HTTP/2
   keep-alive connections are not requests in flight, but they are connections,
   and the listener waits for them. That is what the budget is for; there is

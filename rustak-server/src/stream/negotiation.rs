@@ -64,23 +64,12 @@ pub struct Negotiation {
 }
 
 impl Negotiation {
-    /// A negotiation that will offer protobuf, or one that will not.
+    /// A negotiation in the mode the listener was configured with.
     ///
-    /// `enabled` is the installation's `[stream.limits] negotiate_protobuf`; the
-    /// mode is [`NegotiationMode::selected`], which is `accept` everywhere
-    /// except under the compatibility-testing switch the EUD interop suite
-    /// drives the two negative outcomes with.
-    pub fn new(enabled: bool, server_version: impl Into<String>) -> Self {
-        let mode = if enabled {
-            NegotiationMode::selected()
-        } else {
-            NegotiationMode::Silent
-        };
-
-        Self::with_mode(mode, server_version)
-    }
-
-    /// A negotiation in a named mode, which is how the tests pin each outcome.
+    /// The mode arrives on `ConnLimits::negotiate`, which `stream/mod.rs` fills
+    /// from `[stream] negotiation` — or from [`NegotiationMode::Silent`] when
+    /// `[stream.limits] negotiate_protobuf` is off, because an installation
+    /// that does not offer protobuf makes no offer whatever the switch says.
     pub fn with_mode(mode: NegotiationMode, server_version: impl Into<String>) -> Self {
         Self {
             state: if mode == NegotiationMode::Silent {
@@ -179,11 +168,6 @@ mod tests {
     }
 
     /// A negotiation in the mode every installation runs.
-    ///
-    /// Written out rather than `Negotiation::new(true, …)` deliberately: `new`
-    /// reads the process-wide selection that `config::stream` publishes, and
-    /// both sets of tests live in one binary, so a test that read it could be
-    /// racing the one that sets it.
     fn accepting() -> Negotiation {
         Negotiation::with_mode(NegotiationMode::Accept, "rustak-0.1.0")
     }
@@ -204,9 +188,9 @@ mod tests {
 
     #[test]
     fn an_installation_that_does_not_offer_protobuf_says_nothing() {
-        // `negotiate_protobuf = false` is silence whatever the switch says, so
-        // this one may go through `new`.
-        let mut negotiation = Negotiation::new(false, "rustak-0.1.0");
+        // `negotiate_protobuf = false` is what `stream/mod.rs` turns into
+        // `Silent` before the connection is built.
+        let mut negotiation = Negotiation::with_mode(NegotiationMode::Silent, "rustak-0.1.0");
 
         assert!(negotiation.offer("neg-1", now()).is_none());
         assert_eq!(negotiation.mode(), Mode::Xml);

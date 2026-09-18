@@ -2,12 +2,7 @@
 
 Items too small for a brief of their own, or waiting for a milestone. Remove a line when it lands.
 
-- **node-tak `stream.test.ts` probe race** — the surface probe can run before the CoT listener's bind log line; the scenario then skips intermittently. Make the probe wait for the "listener is bound" line (or retry the stream probe for a few seconds). (`interop/shared/src/probe.ts`, `interop/node-tak/src/surfaces.ts`.) Found by M4-01.
-- **Account-level active channels need a table** — M2-06 stores the account-level selection in `kv`; a device enrolled after an account-level change routes permissively until it calls `PUT /groups/active`. Add `user_group_state` (migration) and consult it at registration. (`marti/channels.rs`, `identity/members.rs`, `stream/resolver.rs`.)
-- **`[retention] cot_history_max_rows` is not enforced** (age only) — needs a `stream_segments` query. (`cot_store/retention.rs`.) Found by M1-05.
-- **`main.rs` exit code on a second signal** is now 0; M0-19's status file has the one-line change if a distinguishing status is wanted.
-- **e2e `gracefulShutdown` (5 s) is shorter than the server's 8 s + 2 s budget**; harmless while the e2e config is plaintext. (`e2e/playwright.config.ts`.)
-- **`stream/negotiation.rs` knob is published through a process-wide `AtomicU8`**; M2-09's status file has the 3-line patch to thread it through `Negotiation::new` once `stream/{connection,mod}.rs` are free.
+- **The e2e launcher does not wait for the server it stopped.** `e2e/scripts/start-server.mjs` answers `SIGTERM` by killing the child, removing the scratch directory and calling `process.exit(130)` at once, so the server checkpoints into a directory that has already gone. Playwright's `gracefulShutdown` is now 15 s (M2-11 item 5), which only helps once the launcher awaits the child's exit before cleaning up. (`e2e/scripts/start-server.mjs`.) Found by M2-11.
 - **GeoChat bounce (`b-t-f-s`)** — brief `M1-08-chat-bounce.md` exists; launch when `stream/router.rs` is free.
 - **ACME for the public listener** — config (`[acme]`) and the `acme_*` tables exist; no implementation brief yet (design 03 §ACME). Milestone M2 exit item.
 - **OAuth2 authorize flow and `/login/*` OIDC federation** for CloudTAK SSO — M5 (design 03 M5.1–M5.5).

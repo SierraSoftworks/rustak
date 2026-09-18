@@ -91,7 +91,7 @@ async fn main() {
     let shutdown = Shutdown::new();
     shutdown.listen_for_signals();
 
-    if let Err(err) = rustak_server::run(config, session.clone(), shutdown).await {
+    if let Err(err) = rustak_server::run(config, session.clone(), shutdown.clone()).await {
         report_and_exit(&err, Some(session)).await;
     }
 
@@ -99,6 +99,16 @@ async fn main() {
     // needs sole ownership of the session, which is why `run` takes a clone
     // rather than the session itself.
     telemetry::shutdown(session).await;
+
+    // A second signal is an operator saying they are not waiting for the
+    // drain, and the process should say so: `run` returns `Ok` either way —
+    // it checkpointed the database on both paths — so a status of 0 would
+    // make "stopped cleanly" and "cut off mid-drain" indistinguishable to
+    // whatever is supervising. 130 is the conventional "ended by a signal",
+    // and it is only ever reached after the flush above.
+    if shutdown.is_aborted() {
+        std::process::exit(130);
+    }
 }
 
 /// `--check`: validate the file and say what it would do.

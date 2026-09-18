@@ -11,12 +11,15 @@
 //! # The shape of it
 //!
 //! [`users`] and [`groups`] are the two aggregates an administrator edits;
-//! [`members`] is the relation between them, plus the per-device preference
-//! that narrows it into a subscription. [`devices`] is what has connected, and
+//! [`members`] is the relation between them and [`active`] is the preference —
+//! per device, then per account — that narrows it into a subscription;
+//! `members` re-exports `active`, so either path names the same function.
+//! [`devices`] is what has connected, and
 //! [`credentials`] is what it connected with — minted, recorded and taken back
 //! there, checked in [`verify`], with [`secret_cache`] keeping a re-presented
 //! secret from costing an argon2 hash every time.
 
+pub mod active;
 pub mod credentials;
 pub mod devices;
 pub mod groups;

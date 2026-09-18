@@ -260,6 +260,47 @@ impl<'a> StreamSegmentsRepo<'a> {
             .await
     }
 
+    /// Every sealed segment a stream keeps only because nothing has evicted it,
+    /// once the newer segments alone already hold `max_rows` records.
+    ///
+    /// The cap is per stream key — per device, for CoT — so that one talkative
+    /// source cannot evict everybody else's history. The arithmetic is done
+    /// here rather than in Rust because it is a window function over an index,
+    /// and reading every segment row of every stream into memory to add up a
+    /// column is the kind of thing that is fine until an installation has been
+    /// running for a year.
+    ///
+    /// A segment is returned when the records in the segments *newer* than it
+    /// already reach the cap: it is therefore entirely surplus, and the
+    /// effective floor is `max_rows` plus the tail of the segment that
+    /// straddles it — the same approximation the age horizon makes, and for the
+    /// same reason. Only sealed segments: the one the writer is still appending
+    /// to is the present, whatever the count says.
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::System`] error if the read fails.
+    pub async fn over_row_cap(
+        &self,
+        stream_kind: &str,
+        max_rows: u64,
+    ) -> Result<Vec<StreamSegmentRow>, Error> {
+        let stream_kind = stream_kind.to_owned();
+        let cap = i64::try_from(max_rows).unwrap_or(i64::MAX);
+
+        self.db
+            .read(move |c| {
+                let mut statement = c.prepare(&format!(
+                    "SELECT {COLUMNS} FROM (                        SELECT s.*, SUM(s.record_count) OVER (                          PARTITION BY s.stream_key                          ORDER BY s.last_time DESC, s.id DESC                          ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING                        ) AS newer                        FROM stream_segments s WHERE s.stream_kind = ?1                      ) WHERE sealed = 1 AND COALESCE(newer, 0) >= ?2                      ORDER BY stream_key ASC, last_time ASC"
+                ))?;
+
+                statement
+                    .query_map(rusqlite::params![stream_kind, cap], StreamSegmentRow::from_row)?
+                    .collect()
+            })
+            .await
+    }
+
     /// Forgets a segment, once its file has been unlinked.
     ///
     /// # Errors

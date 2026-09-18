@@ -66,6 +66,7 @@ pub mod writer;
 
 use std::sync::Arc;
 
+use crate::config::stream::NegotiationMode;
 use crate::cot_store::{self, CotStoreHandle, CotStoreOptions};
 use crate::pki::Pki;
 use crate::prelude::*;
@@ -186,7 +187,14 @@ impl StreamRuntime {
                 queue_len: limits.queue_len,
                 close_after_drops: limits.close_after_drops,
                 idle_timeout: to_std(config.stream.tls.idle_timeout),
-                negotiate: limits.negotiate_protobuf,
+                // `negotiate_protobuf = false` is the operational way to turn
+                // the offer off; `[stream] negotiation` is the compatibility
+                // switch, and it never overrides the operational one.
+                negotiate: if limits.negotiate_protobuf {
+                    config.stream.negotiation
+                } else {
+                    NegotiationMode::Silent
+                },
             },
         };
 

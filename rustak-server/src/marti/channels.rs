@@ -16,14 +16,19 @@
 //! browser half, a script, the admin UI — and those callers have no device row
 //! to write to.
 //!
-//! So there is a second, account-level selection, kept in the key/value store
-//! and used as the default a device inherits when it has said nothing itself.
-//! A write with no `clientUid` sets the account default **and** every one of
-//! that account's devices, which is what keeps routing (`members::effective`,
-//! which reads only the device rows) agreeing with what the caller was told. A
-//! device enrolled afterwards starts from the account default on the next read,
-//! and from everything-on for routing until it sets its own state — the one
-//! place the two can disagree, and only in the permissive direction.
+//! So there is a second, account-level selection, kept in `user_group_state`
+//! (migration `0012`) and used as the default a device inherits when it has
+//! said nothing itself. A write with no `clientUid` sets the account default
+//! **and** every one of that account's devices — the devices because a client
+//! that *has* an opinion should be given the new one rather than silently
+//! inheriting it, and the account because that is what a device enrolled
+//! afterwards reads.
+//!
+//! The table matters more than where it puts the bytes. `members::effective`
+//! joins it, so the routing path and this file now answer the same question the
+//! same way: a device enrolled after an account-level change routes on the
+//! account's selection from its very first connection, instead of routing
+//! permissively until it called this endpoint.
 
 use std::collections::HashMap;
 
@@ -36,9 +41,6 @@ use crate::prelude::*;
 
 use super::error::MartiError;
 use super::time;
-
-/// Where an account's own channel selection is kept.
-const PARTITION: &str = "marti-channels";
 
 /// Every channel rustak serves is one it created itself.
 ///
@@ -126,7 +128,7 @@ pub async fn selection(
     device: Option<&DeviceUid>,
 ) -> Result<Selection, MartiError> {
     let mut selection = Selection {
-        account: index(&stored(context, user_id).await?),
+        account: index(&members::active_for_user(context.db(), user_id).await?),
         device: HashMap::new(),
     };
 
@@ -207,10 +209,7 @@ pub async fn apply(
         return Ok(());
     }
 
-    context
-        .kv()
-        .set(PARTITION, key(user_id), states.to_vec())
-        .await?;
+    members::set_active_for_user(context.db(), user_id, states).await?;
 
     for row in devices::list_for_user(context.db(), user_id).await? {
         members::set_active(context.db(), row.id, states).await?;
@@ -283,20 +282,6 @@ async fn views(
     views.dedup_by(|left, right| left.name == right.name && left.direction == right.direction);
 
     Ok(views)
-}
-
-/// The account's stored selection, or nothing when it has never set one.
-async fn stored(context: &AppContext, user_id: UserId) -> Result<Vec<ActiveGroup>, MartiError> {
-    Ok(context
-        .kv()
-        .get::<Vec<ActiveGroup>>(PARTITION, key(user_id))
-        .await?
-        .unwrap_or_default())
-}
-
-/// The key one account's selection is kept under.
-fn key(user_id: UserId) -> String {
-    format!("active-{}", user_id.get())
 }
 
 /// Turns a list of states into the lookup [`Selection`] answers from.
@@ -416,6 +401,90 @@ mod tests {
         );
         assert!(views.iter().all(|view| view.bitpos > 0));
         assert!(views.iter().all(|view| view.created.len() == 10));
+    }
+
+    #[actix_web::test]
+    async fn an_account_level_selection_reaches_the_devices_that_already_exist() {
+        // The browser-half case: no `clientUid`, so the account default is set
+        // and every device the account has is brought with it, because routing
+        // reads the device rows first.
+        let server = TestServer::start().await;
+        let user = server.user("ada", false).await;
+        channel(&server, "Blue").await;
+
+        let device = server
+            .db()
+            .devices()
+            .create(crate::db::repos::NewDevice::new(
+                DeviceUid::parse("ANDROID-ADA").unwrap(),
+                user.id,
+            ))
+            .await
+            .unwrap();
+
+        apply(
+            &server.context,
+            user.id,
+            &[state("Blue", Direction::Both, false)],
+            None,
+        )
+        .await
+        .unwrap();
+
+        let selection = selection(&server.context, user.id, Some(&device.uid))
+            .await
+            .unwrap();
+
+        assert!(!selection.is_active(&GroupName::parse("Blue").unwrap(), Direction::Out));
+        assert_eq!(
+            members::active_for_device(server.db(), device.id)
+                .await
+                .unwrap()
+                .len(),
+            2,
+            "the device has its own rows, not only the account's",
+        );
+    }
+
+    #[actix_web::test]
+    async fn a_device_enrolled_after_an_account_level_change_reads_the_account() {
+        // The gap `user_group_state` closes: this device has no rows of its own
+        // and must still read — and route on — the account's answer.
+        let server = TestServer::start().await;
+        let user = server.user("ada", false).await;
+        channel(&server, "Blue").await;
+
+        apply(
+            &server.context,
+            user.id,
+            &[state("Blue", Direction::Both, false)],
+            None,
+        )
+        .await
+        .unwrap();
+
+        let later = server
+            .db()
+            .devices()
+            .create(crate::db::repos::NewDevice::new(
+                DeviceUid::parse("ANDROID-LATER").unwrap(),
+                user.id,
+            ))
+            .await
+            .unwrap();
+
+        let selection = selection(&server.context, user.id, Some(&later.uid))
+            .await
+            .unwrap();
+
+        assert!(!selection.is_active(&GroupName::parse("Blue").unwrap(), Direction::Out));
+        assert!(
+            members::active_for_device(server.db(), later.id)
+                .await
+                .unwrap()
+                .is_empty(),
+            "it inherits rather than having rows written for it",
+        );
     }
 
     #[actix_web::test]

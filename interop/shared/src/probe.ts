@@ -52,6 +52,24 @@ export interface ProbeTarget {
 /** How long a single probe may take before it is called absent. */
 const PROBE_TIMEOUT_MS = 5_000;
 
+/**
+ * How long the stream probe keeps trying before it calls the port empty.
+ *
+ * The stream listener binds *after* the public one, so a probe pass that
+ * started the moment `/api/v1/health` answered could reach a port nothing was
+ * on yet and skip every stream scenario for the run — intermittently, which is
+ * the worst way for a suite to be wrong. `interop/shared/src/launch.ts`'s
+ * `waitForPort` closes the same gap for the suites that start their own server;
+ * this closes it for the ones that probe a server somebody else started.
+ *
+ * A port that is genuinely unserved costs this once per run, not once per
+ * surface: there is only ever one `on: "stream"` probe.
+ */
+const STREAM_PROBE_WINDOW_MS = 5_000;
+
+/** How long to wait between attempts at the stream port. */
+const STREAM_RETRY_INTERVAL_MS = 100;
+
 /** Probes every surface once and reports which ones answered. */
 export async function probeSurfaces<S extends Record<string, SurfaceProbe>>(
   surfaces: S,
@@ -94,8 +112,25 @@ async function served(target: ProbeTarget, route: string): Promise<boolean> {
   }
 }
 
-/** Whether something accepts a TCP connection on the CoT stream port. */
-function streamListening(url: string): Promise<boolean> {
+/**
+ * Whether something accepts a TCP connection on the CoT stream port, retried
+ * for [`STREAM_PROBE_WINDOW_MS`] so that a listener still binding is not read
+ * as a listener that does not exist.
+ */
+async function streamListening(url: string): Promise<boolean> {
+  const deadline = Date.now() + STREAM_PROBE_WINDOW_MS;
+
+  for (;;) {
+    if (await connects(url)) return true;
+
+    if (Date.now() >= deadline) return false;
+
+    await new Promise((resolve) => setTimeout(resolve, STREAM_RETRY_INTERVAL_MS));
+  }
+}
+
+/** One attempt at the stream port. */
+function connects(url: string): Promise<boolean> {
   const parsed = new URL(url);
 
   return new Promise((resolve) => {
@@ -108,6 +143,6 @@ function streamListening(url: string): Promise<boolean> {
 
     socket.once("connect", () => settle(true));
     socket.once("error", () => settle(false));
-    socket.setTimeout(PROBE_TIMEOUT_MS, () => settle(false));
+    socket.setTimeout(STREAM_RETRY_INTERVAL_MS * 10, () => settle(false));
   });
 }

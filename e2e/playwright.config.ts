@@ -131,7 +131,13 @@ export default defineConfig({
     // which would leave the scratch directory — database, key file, content
     // store and all — behind after every run. A signal the launcher can catch
     // lets it remove what it made.
-    gracefulShutdown: { signal: "SIGTERM", timeout: 5_000 },
+    //
+    // The timeout is longer than the server's own budget on purpose:
+    // `[server] shutdown_timeout` defaults to 8 s of draining and the WAL
+    // checkpoint that follows it is allowed 2 s more, so a 5 s wait here used
+    // to SIGKILL the server in the middle of the checkpoint it had been asked
+    // to make. 15 s leaves both of them room and still fails fast.
+    gracefulShutdown: { signal: "SIGTERM", timeout: 15_000 },
     env: {
       RUSTAK_E2E_PORT: String(port),
       RUSTAK_E2E_HOST: host,

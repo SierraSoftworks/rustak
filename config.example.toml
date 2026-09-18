@@ -419,6 +419,9 @@ renew_before = "30d"
 # CoT history. Whole segment files are pruned, so the effective horizon is this
 # plus the tail of the segment that spans it.
 cot_history = "7d"
+# The most frames kept for any one device, enforced the same way and with the
+# same rounding. 0 means no cap rather than "keep nothing": an installation
+# that wants no history sets [stream.limits] record_history = false.
 cot_history_max_rows = 2000000
 
 audit = "90d"

@@ -284,11 +284,18 @@ impl<'a> MembersRepo<'a> {
     }
 
     /// A subscription's effective rights: the user's grants, minus anything the
-    /// device has explicitly switched off.
+    /// device — or, failing that, the account — has explicitly switched off.
     ///
-    /// A channel the device has said nothing about counts as on, because a
-    /// client that has never called the groups endpoint expects everything it
-    /// is entitled to.
+    /// Three layers, most specific first, which is the same order
+    /// `marti::channels::Selection` reads them in and deliberately so: what the
+    /// device said, then what the account said, then on. A channel nobody has
+    /// an opinion about counts as on, because a client that has never called
+    /// the groups endpoint expects everything it is entitled to.
+    ///
+    /// The account layer is what makes a device enrolled *after* an
+    /// account-level change route correctly: it has no `device_group_state`
+    /// rows at all, so without the fallback it would be routed everything until
+    /// it set its own state.
     ///
     /// # Errors
     ///
@@ -303,8 +310,11 @@ impl<'a> MembersRepo<'a> {
                      LEFT JOIN device_group_state d \
                        ON d.group_id = m.group_id AND d.direction = m.direction \
                        AND d.device_id = ?2 \
+                     LEFT JOIN user_group_state u \
+                       ON u.group_id = m.group_id AND u.direction = m.direction \
+                       AND u.user_id = m.user_id \
                      WHERE m.user_id = ?1 AND g.deleted_at IS NULL \
-                       AND COALESCE(d.active, 1) = 1",
+                       AND COALESCE(d.active, u.active, 1) = 1",
                 )?;
                 let rows = statement.query_map([user_id.get(), device_id.get()], |row| {
                     Ok((
@@ -363,7 +373,11 @@ fn membership_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Membership> 
     })
 }
 
-fn to_set(bits: Vec<(u32, Direction)>) -> GroupSet {
+/// Turns `(bitpos, direction)` pairs into the set the router reads.
+///
+/// `pub(super)` so that [`user_state`](super::user_state) — the account-level
+/// half of the same question — builds its answer the same way.
+pub(super) fn to_set(bits: Vec<(u32, Direction)>) -> GroupSet {
     let mut set = GroupSet::new();
 
     for (bitpos, direction) in bits {
