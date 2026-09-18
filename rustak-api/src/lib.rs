@@ -33,6 +33,7 @@
 pub mod audit;
 pub mod auth;
 pub mod certificate;
+pub mod config_package;
 pub mod credential;
 pub mod device;
 pub mod error;
@@ -40,6 +41,7 @@ pub mod group;
 pub mod health;
 pub mod identity;
 pub mod passkey;
+pub mod profile;
 pub mod service;
 pub mod settings;
 pub mod setup;
@@ -50,6 +52,7 @@ pub use auth::{
     AuthMetadata, AuthMode, AuthVia, Me, TokenExchangeRequest, TokenRefreshRequest, TokenResponse,
 };
 pub use certificate::{Certificate, CertificateKind, CertificateSource};
+pub use config_package::{ConfigPackageRequest, ConfigPackageVariant};
 pub use credential::{
     CreateCredentialRequest, Credential, CredentialCreated, CredentialKind, ENROLL_URL,
     EnrollTemplate,
@@ -69,6 +72,9 @@ pub use identity::{
 pub use passkey::{
     PasskeyChallenge, PasskeyLoginFinish, PasskeyLoginStart, PasskeyRegistrationFinish,
     PasskeyRegistrationStart, PasskeySummary,
+};
+pub use profile::{
+    PrefCatalogEntry, PrefClass, PrefEntry, Profile, ProfileCreate, ProfileFile, ProfileUpdate,
 };
 pub use service::{
     Capability, CapabilityError, Heartbeat, ServiceDescriptor, ServiceEndpoints, ServiceState,

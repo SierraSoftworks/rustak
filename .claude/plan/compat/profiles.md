@@ -144,6 +144,33 @@ TAK-ecosystem admin tooling directly — not required for M3.
 - `username`/`password` keys in a `.pref`'s `cot_streams` block are silently ignored by ATAK — don't
   design a credential-push feature around them (§6).
 
+## Corrections from the M3-02 implementation
+
+- **`304` is not a redirect.** `marti::headers::assert_no_redirect` turns any `3xx` reaching it into
+  a `500`, which would have made the `If-Modified-Since` contract in §2 unimplementable. `304` is
+  now exempt: it carries no `Location` and is the documented answer to a conditional request.
+- **Timestamps are truncated on both sides.** §2 asks for stored timestamps to be truncated to
+  whole seconds before comparing. The *delivered* file's timestamp has to be truncated too, not
+  just the stored one — `Last-Modified` cannot carry milliseconds, so a file whose `updated_at`
+  is not exactly on a second would otherwise be reported as changed on every single request.
+- **`class` is not always `String`.** §5 documents TAK Server's generator, which hard-codes
+  `class java.lang.String`. rustak stores a class per entry (`String|Boolean|Integer|Long|Float`),
+  because the preference editor needs it and because ATAK reads all five. The enrolment defaults
+  and the host-scoped Channels flag stay `String` holding `"true"`, which is what ATAK's own server
+  sends.
+- **`<Role>` attribute name.** Design 04 §5.3 writes `<Role name=…>`; `compat/files.md` §10 writes
+  `<Role type=…>`. The writer emits `name` (per the design) and the reader accepts either, so a
+  package from a real TAK Server round-trips whichever it turns out to be. Unresolved until a
+  mission archive is checked against a real client (M4).
+- **iTAK keystore paths are unverified.** §6.3 of design 04 says the iTAK variant uses unsuffixed
+  `caLocation`/`caPassword`/`certificateLocation`/`clientPassword`, but not what they resolve
+  against. rustak writes `cert/truststore.p12` for both variants, matching ATAK's certificate
+  sorter. Flagged in `docs/compat/profiles.md` §5 as a manual check.
+- **A configuration package cannot include a client keystore.** rustak never holds a device's
+  private key, so `include_client_cert: true` is refused in words rather than served by minting a
+  key pair. The `.pref` builder still supports the certificate variant for the day a keystore has
+  somewhere to come from.
+
 ## Verified in
 
 - `research/06-takserver-http-api-verified.md` §10 (`ProfileAPI`/`ProfileAdminAPI`, exact status

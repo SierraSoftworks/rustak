@@ -22,6 +22,7 @@
 
 pub mod audit;
 pub mod auth;
+pub mod config_packages;
 pub mod credentials;
 pub mod devices;
 pub mod error;
@@ -31,6 +32,8 @@ pub mod health;
 pub mod me;
 pub mod middleware;
 pub mod passkey;
+pub mod profile_files;
+pub mod profiles;
 pub mod settings;
 pub mod setup;
 pub mod subject;
@@ -93,7 +96,12 @@ pub fn configure() -> actix_web::Scope<
             .route("/setup/server", web::post().to(setup::server))
             .route("/setup/ca", web::get().to(setup::get_ca))
             .route("/setup/ca", web::post().to(setup::ca))
-            .route("/setup/complete", web::post().to(setup::complete)),
+            .route("/setup/complete", web::post().to(setup::complete))
+            // Device profiles and the manual configuration package, whose own
+            // registration order puts `/profiles/pref-catalog` ahead of the
+            // `{id}` that would otherwise swallow it.
+            .configure(profiles::routes)
+            .configure(config_packages::routes),
     )
 }
 

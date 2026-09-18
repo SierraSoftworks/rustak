@@ -195,31 +195,6 @@ pub async fn sign_client_v1(
         .body(bundle))
 }
 
-/// `GET /Marti/api/tls/profile/enrollment` — the package ATAK fetches straight
-/// after enrolling.
-///
-/// `204` until device profiles land in M3: ATAK reads "there is nothing for
-/// you" and carries on to the stream, which is exactly the behaviour we want
-/// until there is something to send.
-///
-/// # Errors
-///
-/// Never.
-pub async fn enrollment_profile() -> MartiResult {
-    Ok(HttpResponse::NoContent().finish())
-}
-
-/// `GET /Marti/api/device/profile/connection` — the on-connect profile fetch.
-///
-/// `204` for the same reason as [`enrollment_profile`].
-///
-/// # Errors
-///
-/// Never.
-pub async fn connection_profile() -> MartiResult {
-    Ok(HttpResponse::NoContent().finish())
-}
-
 /// Who is enrolling, and the authority that will answer them.
 ///
 /// The refusal is returned as a response rather than as a [`MartiError`]

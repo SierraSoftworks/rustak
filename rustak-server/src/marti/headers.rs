@@ -24,6 +24,9 @@
 //! `assert_no_redirect` is the belt to those braces: it runs in every build
 //! and turns a redirect somebody adds later into a `500` and a loud log line,
 //! which is a visible failure rather than a client silently reading nothing.
+//! `304 Not Modified` is exempt — it is a conditional-request answer rather
+//! than a redirect, it carries no `Location`, and the device-profile endpoints
+//! are required to emit it.
 
 use actix_web::ResponseError as _;
 use actix_web::body::BoxBody;
@@ -131,6 +134,15 @@ fn decorate(
 /// one request and far better for whoever has to find out why.
 fn assert_no_redirect(response: &mut ServiceResponse<BoxBody>) {
     if !response.status().is_redirection() {
+        return;
+    }
+
+    // `304 Not Modified` is in the 3xx range but is not a redirect: it is the
+    // documented answer to a conditional request, it carries no `Location`, and
+    // the device-profile endpoints (M3-02) are required to emit it when an
+    // `If-Modified-Since` a client echoed back from our own `Last-Modified`
+    // covers everything that matched.
+    if response.status() == actix_web::http::StatusCode::NOT_MODIFIED {
         return;
     }
 
