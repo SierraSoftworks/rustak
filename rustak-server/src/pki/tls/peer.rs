@@ -19,6 +19,7 @@ use std::any::Any;
 use rustls::pki_types::CertificateDer;
 
 use crate::pki::pem::sha256_fingerprint;
+use crate::pki::serial::serial_hex;
 
 /// The client certificate a connection authenticated with.
 #[derive(Clone, PartialEq, Eq)]
@@ -60,7 +61,7 @@ impl PeerCertificate {
                     .next()
                     .and_then(|attribute| attribute.as_str().ok())
                     .map(str::to_owned),
-                hex::encode(certificate.raw_serial()),
+                serial_hex(certificate.raw_serial()),
             ),
             // The verifier parsed it to accept it, so this is unreachable in
             // practice; an unparseable certificate still yields a fingerprint,
@@ -127,7 +128,39 @@ pub fn common_name(der: &CertificateDer<'_>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pki::keys::{KeyType, generate_key};
+    use crate::pki::serial::SERIAL_BYTES;
     use crate::pki::testing::TestAuthority;
+
+    /// A certificate carrying exactly this serial. Self-signed, because
+    /// [`PeerCertificate::from_der`] reads a certificate the verifier has
+    /// already accepted and does no chain building of its own.
+    fn certificate_with_serial(serial: &[u8]) -> CertificateDer<'static> {
+        let key = generate_key(KeyType::EcdsaP256).expect("a key");
+        let mut params = rcgen::CertificateParams::default();
+
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "alice");
+        params.serial_number = Some(rcgen::SerialNumber::from_slice(serial));
+
+        CertificateDer::from(
+            params
+                .self_signed(&key)
+                .expect("a self-signed certificate")
+                .der()
+                .to_vec(),
+        )
+    }
+
+    /// The content octets a certificate actually carries its serial in.
+    fn carried_serial(der: &CertificateDer<'_>) -> Vec<u8> {
+        x509_parser::parse_x509_certificate(der)
+            .expect("a certificate")
+            .1
+            .raw_serial()
+            .to_vec()
+    }
 
     #[tokio::test]
     async fn a_certificate_yields_the_identity_the_handshake_proved() {
@@ -139,6 +172,57 @@ mod tests {
         assert_eq!(peer.fingerprint, client.fingerprint);
         assert_eq!(peer.serial_hex.len(), 32, "a 128-bit serial");
         assert_eq!(peer.der, client.der);
+    }
+
+    #[test]
+    fn a_serial_der_shortened_by_a_leading_zero_is_read_back_at_full_width() {
+        // One serial in 128 begins with a zero byte, because `random_serial`
+        // clears the top bit to keep the integer positive. DER integers are
+        // minimal, so the certificate carries fifteen bytes, and a bare
+        // `hex::encode` of them is two characters short of what issuance
+        // recorded — which is what an administrator correlates an audit entry
+        // against.
+        let issued = [
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+            0xee, 0xff,
+        ];
+        let der = certificate_with_serial(&issued);
+
+        assert_eq!(carried_serial(&der).len(), 15, "DER drops the leading zero");
+        assert_eq!(
+            PeerCertificate::from_der(&der).serial_hex,
+            "00112233445566778899aabbccddeeff",
+            "which is what issuance stored"
+        );
+    }
+
+    #[test]
+    fn a_serial_der_shortened_by_several_leading_zeros_is_read_back_at_full_width() {
+        // Nothing stops two leading zero bytes; the encoder drops every one of
+        // them, so padding a single byte back would not be enough.
+        let mut issued = [0x0a; SERIAL_BYTES];
+        issued[..3].fill(0x00);
+        let der = certificate_with_serial(&issued);
+
+        assert_eq!(carried_serial(&der).len(), SERIAL_BYTES - 3);
+        assert_eq!(
+            PeerCertificate::from_der(&der).serial_hex,
+            serial_hex(&issued),
+            "the handshake's reading is the issued spelling"
+        );
+        assert_eq!(PeerCertificate::from_der(&der).serial_hex.len(), 32);
+    }
+
+    #[tokio::test]
+    async fn the_serial_read_off_a_certificate_is_the_one_issuance_recorded() {
+        let authority = TestAuthority::new().await;
+        let client = authority.issue("alice");
+
+        assert_eq!(
+            PeerCertificate::from_der(&client.der).serial_hex,
+            client.serial_hex,
+            "an audit entry and the certificate row must name the same serial"
+        );
     }
 
     #[tokio::test]

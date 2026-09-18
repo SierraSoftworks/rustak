@@ -25,6 +25,7 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use super::ca::{CaMaterial, PKI_PARTITION};
 use super::keys::{KeyType, generate_key, key_pair_from_pkcs8};
 use super::pem::sha256_fingerprint;
+use super::serial::random_serial;
 use crate::config::PkiConfig;
 use crate::crypto::{Sealed, SecretContext, SecretStore};
 use crate::db::{Database, KeyValueStore as _};
@@ -325,18 +326,6 @@ fn dn_type(name: &str) -> Option<rcgen::DnType> {
         "ST" | "S" => Some(rcgen::DnType::StateOrProvinceName),
         _ => None,
     }
-}
-
-/// A 128-bit serial with the top bit cleared, so its DER encoding stays
-/// positive without a leading pad byte.
-fn random_serial() -> [u8; 16] {
-    use rand::Rng as _;
-
-    let mut serial = [0u8; 16];
-    rand::rng().fill_bytes(&mut serial);
-    serial[0] &= 0x7f;
-
-    serial
 }
 
 /// A certificate as base64, for the JSON record.

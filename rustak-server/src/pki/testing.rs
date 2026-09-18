@@ -115,6 +115,7 @@ impl TestAuthority {
         TestClient {
             der: issued.der,
             fingerprint: issued.fingerprint,
+            serial_hex: issued.serial_hex,
             key_pkcs8: key.serialize_der(),
         }
     }
@@ -132,6 +133,9 @@ impl std::fmt::Debug for TestAuthority {
 pub struct TestClient {
     pub der: CertificateDer<'static>,
     pub fingerprint: String,
+    /// Exactly what issuance recorded, so a test can hold the handshake's
+    /// reading of the same certificate against it.
+    pub serial_hex: String,
     pub key_pkcs8: Vec<u8>,
 }
 

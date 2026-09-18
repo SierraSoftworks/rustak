@@ -21,13 +21,13 @@
 //! certificate rather than a broken one.
 
 use chrono::{DateTime, Duration, Utc};
-use rand::Rng as _;
 use rustak_core::prelude::*;
 use rustls_pki_types::CertificateDer;
 
 use super::ca::CaMaterial;
 use super::csr::{CsrKey, ParsedCsr};
 use super::pem::sha256_fingerprint;
+use super::serial::{random_serial, serial_hex};
 
 /// The OID TAK Server adds to a client certificate when the enrolment carried a
 /// `version` query parameter: PKCS#9 `challengePassword`, used out of its
@@ -36,9 +36,6 @@ use super::pem::sha256_fingerprint;
 /// ATAK performs no extended-key-usage inspection of its own, so this is for
 /// parity with the rest of the TAK ecosystem rather than a requirement.
 pub const CHANNELS_MARKER_OID: &[u64] = &[1, 2, 840, 113549, 1, 9, 7];
-
-/// How many bytes of randomness a serial number carries.
-const SERIAL_BYTES: usize = 16;
 
 /// How far the validity window is kept inside the authority's own.
 const CA_EXPIRY_MARGIN_DAYS: i64 = 1;
@@ -193,7 +190,7 @@ pub fn issue_client_cert(
 
     info!(
         subject = %subject,
-        serial = %hex::encode(serial),
+        serial = %serial_hex(&serial),
         not_after = %not_after,
         key = %csr.key.describe(),
         encoding = %csr.encoding.as_str(),
@@ -204,7 +201,7 @@ pub fn issue_client_cert(
     Ok(IssuedCert {
         fingerprint: sha256_fingerprint(&der),
         common_name: request.username.as_str().to_owned(),
-        serial_hex: hex::encode(serial),
+        serial_hex: serial_hex(&serial),
         subject,
         der,
         not_before,
@@ -312,16 +309,6 @@ fn dn_type(name: &str) -> Option<rcgen::DnType> {
     }
 }
 
-/// A 128-bit serial with the top bit cleared, so its DER encoding stays
-/// positive without a leading pad byte.
-fn random_serial() -> [u8; SERIAL_BYTES] {
-    let mut serial = [0u8; SERIAL_BYTES];
-    rand::rng().fill_bytes(&mut serial);
-    serial[0] &= 0x7f;
-
-    serial
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,6 +318,7 @@ mod tests {
     use crate::pki::ca::load_or_create_root_ca;
     use crate::pki::csr::parse_csr;
     use crate::pki::keys::{KeyType, generate_key};
+    use crate::pki::serial::SERIAL_BYTES;
 
     const ENTRIES: &[(&str, &str)] = &[("O", "rustak"), ("OU", "EUD")];
 
@@ -558,6 +546,11 @@ mod tests {
         assert!(
             parsed(&first).raw_serial()[0] < 0x80,
             "the serial must encode as a positive integer"
+        );
+        assert_eq!(
+            serial_hex(parsed(&first).raw_serial()),
+            first.serial_hex,
+            "the certificate spells its serial the way the row does"
         );
     }
 

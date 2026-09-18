@@ -17,6 +17,7 @@
 //! | [`issue`] | signing a client certificate, with our subject |
 //! | [`server_cert`] | the certificate our own listeners present |
 //! | [`mod@revoke`] | taking one back, and the cache the handshake consults |
+//! | [`serial`] | the one spelling of a serial number, shared by both ends |
 //! | [`p12`] | PKCS#12 bundles in the shapes TAK clients read |
 //! | [`pem`] | the textual encodings certificates travel in |
 //! | [`tls`] | the rustls configurations the three listeners are built from |
@@ -45,6 +46,7 @@ pub mod keys;
 pub mod p12;
 pub mod pem;
 pub mod revoke;
+pub mod serial;
 pub mod server_cert;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
@@ -59,6 +61,7 @@ pub use keys::{KeyType, generate_key, key_pair_from_pkcs8, signature_algorithm};
 pub use p12::{P12Options, client_keystore, legacy_signclient_v1, truststore};
 pub use pem::{bare_base64_64col, parse_pem_chain, pem_certificate, sha256_fingerprint};
 pub use revoke::{CertRejection, RevocationCache, RevokeReason, revoke};
+pub use serial::{SERIAL_BYTES, random_serial, serial_hex};
 pub use server_cert::{ServerCertificate, load_or_issue as load_or_issue_server_cert};
 pub use tls::{
     HotSwapCertResolver, ListenerKind, PeerCertificate, RustakClientVerifier, marti_server_config,

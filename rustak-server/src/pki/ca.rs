@@ -28,12 +28,12 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Datelike as _, Utc};
-use rand::Rng as _;
 use rustak_core::prelude::*;
 use rustls_pki_types::CertificateDer;
 
 use super::keys::{KeyType, generate_key, key_pair_from_pkcs8};
 use super::pem::{pem_certificate, sha256_fingerprint};
+use super::serial::{random_serial, serial_hex};
 use crate::config::PkiConfig;
 use crate::crypto::{Sealed, SecretContext, SecretStore};
 use crate::db::{Database, KeyValueStore as _};
@@ -52,9 +52,6 @@ const CA_CERT_FILE: &str = "ca.crt";
 
 /// The record format version, so a later change can be told from this one.
 const RECORD_VERSION: u8 = 1;
-
-/// How many bytes of randomness a serial number carries.
-const SERIAL_BYTES: usize = 16;
 
 /// The certificate identity the root CA's sealed key is bound to.
 ///
@@ -358,7 +355,7 @@ fn root_params(pki: &PkiConfig) -> RootPlan {
     RootPlan {
         params,
         subject,
-        serial_hex: hex::encode(serial),
+        serial_hex: serial_hex(&serial),
         not_before: now,
         not_after: expires,
     }
@@ -375,16 +372,6 @@ fn dn_type(name: &str) -> Option<rcgen::DnType> {
         "ST" | "S" => Some(rcgen::DnType::StateOrProvinceName),
         _ => None,
     }
-}
-
-/// A 128-bit serial with the top bit cleared, so its DER encoding stays
-/// positive without a leading pad byte.
-fn random_serial() -> [u8; SERIAL_BYTES] {
-    let mut serial = [0u8; SERIAL_BYTES];
-    rand::rng().fill_bytes(&mut serial);
-    serial[0] &= 0x7f;
-
-    serial
 }
 
 /// Writes `ca.crt` where operators expect to find it.
@@ -438,6 +425,7 @@ fn decode_der(encoded: &str) -> Result<Vec<u8>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pki::serial::SERIAL_BYTES;
 
     fn config() -> PkiConfig {
         PkiConfig {
