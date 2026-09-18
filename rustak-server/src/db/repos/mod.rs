@@ -18,6 +18,7 @@ pub mod members;
 pub mod oauth_keys;
 pub mod passkeys;
 pub mod refresh_tokens;
+pub mod resources;
 pub mod revoked_jtis;
 pub mod services;
 pub mod settings;
@@ -34,6 +35,7 @@ pub use members::{ActiveChannel, MembersRepo, Membership};
 pub use oauth_keys::{KeyAlgorithm, KeyPurpose, NewOauthKey, OauthKeyRow, OauthKeysRepo};
 pub use passkeys::{NewPasskey, PasskeyRow, PasskeysRepo};
 pub use refresh_tokens::{Exchange, NewRefreshToken, RefreshTokenRow, RefreshTokensRepo};
+pub use resources::{MutableField, NewResource, ResourceFilter, ResourceRow, ResourcesRepo};
 pub use revoked_jtis::RevokedJtisRepo;
 pub use services::{NewService, ServiceRow, ServicesRepo};
 pub use settings::{SettingRow, SettingsRepo};
@@ -144,6 +146,11 @@ impl Database {
     /// Settings the wizard and the admin UI own.
     pub fn settings(&self) -> SettingsRepo<'_> {
         SettingsRepo::new(self)
+    }
+
+    /// Enterprise Sync metadata: data packages, attachments and their keywords.
+    pub fn resources(&self) -> ResourcesRepo<'_> {
+        ResourcesRepo::new(self)
     }
 
     /// The index over the append-only stream segments.

@@ -55,8 +55,13 @@ Content-Type: multipart/form-data (part "assetfile" or "resource")   OR any othe
 GET /Marti/sync/search?keywords=&Filename=&MIMEType=&Name=&UID=&Tool=&PrimaryKey=&…   (case-insensitive param names)
 ```
 ```json
-{ "resultCount": 2, "results": [ { "UID":"…","Name":"…","Hash":"…","PrimaryKey":"0","SubmissionDateTime":"2024-01-01T00:00:00.000Z", "SubmissionUser":"…","CreatorUid":"…","Keywords":["…"],"MIMEType":"…","Size":"1234","EXPIRATION":"…","Tool":"…","Groups":"a,b" } ] }
+{ "resultCount": 2, "results": [ { "UID":"…","Name":"…","Hash":"…","PrimaryKey":"0","SubmissionDateTime":"2024-01-01T00:00:00.000Z", "SubmissionUser":"…","CreatorUid":"…","Keywords":["…"],"MIMEType":"…","Size":"1234","EXPIRATION":"-1","Tool":"…","Groups":["a","b"] } ] }
 ```
+**Corrected (M3-01):** `Groups` is a JSON **array** here, not a comma string — it is one of the four
+array-valued `Metadata.Field`s (`Keywords`, `Permissions`, `Contacts`, `Groups`, 06 §9.2), and the
+comma string belongs to the *other* endpoint, `/Marti/api/files/metadata` (§8). The earlier sample
+above conflated the two.
+
 `Content-Type: text/json`. `resultCount` **is** a real JSON number. Every element is the same
 `Metadata` shape as §2's response — Title-case keys, `Size`/`PrimaryKey` as strings,
 `SubmissionDateTime` **padded-millis** `yyyy-MM-dd'T'HH:mm:ss.SSS'Z'`. ATAK's package browser
@@ -72,8 +77,10 @@ GET /Marti/sync/content?hash=|uid=&offset=&length=
 ```
 `Hash` (case-insensitive param) wins over `uid` if both given. Headers: `api-version: 3` (the only
 endpoint that sets this), `Content-Type` = the stored MIME type, `Content-Disposition: inline;
-filename="<urlencoded>"`, `Content-Encoding: gzip` only if the request sent `Accept-Encoding`
-containing `gzip`. Status `200`, or `206` when `length > 0` and it's a partial range, or `404` when
+filename="<urlencoded>"`. **rustak never sets `Content-Encoding: gzip` here (M3-01, design 04 §5.2):**
+the payloads are overwhelmingly zips and JPEGs, which do not compress, and both verified clients
+accept identity. A `Content-Length` is always set instead, which is what makes a resumed download
+work. Status `200`, or `206` when `length > 0` and it's a partial range, or `404` when
 no metadata matches. ATAK's browse-and-download path appends `&receiver=<callsign>` to this URL when
 following a `senderUrl` — accept and ignore that extra query param. Verified 06 §9.4.
 
@@ -95,7 +102,12 @@ Content-Type: multipart/form-data, part "assetfile" (ATAK) or "resource" (browse
 - **Accept both `Groups` and `groups`** as the param name — node-tak deliberately sends the
   capitalised form "due to an apparent bug in TAK server" (03 §8.6); reproduce the tolerance, not
   the bug.
-- Duplicate detection: same `filename` + `creatorUid` as an existing row ⇒ `403`.
+- Duplicate detection — **corrected (M3-01)**: TAK answers `403` for a repeat, which makes ATAK's
+  "another EUD already shared this package" path a visible error. rustak instead **reuses the row and
+  answers `200`** with the same URL (design 04 §5.2): the store is content-addressed, so the second
+  upload of identical bytes under the same `filename` *is* the first one. A row already holding that
+  hash under a **different** name is somebody else's listing, so that upload gets its own row with a
+  minted uid rather than overwriting theirs.
 - **Response: `200`, `Content-Type: text/plain`, body is a bare URL**:
   ```
   https://{host}:{marti-port}/Marti/sync/content?hash=<hash>
@@ -156,8 +168,12 @@ map of strings**:
   "MimeType":"…","Keywords":"a,b,c","Expiration":"2024-05-01T00:00:00"|"none","Hash":"…","Groups":"a,b" }
 ```
 `Size` is **humanised** (`"12kB"`, not a byte count). `Time` is emitted from Java's default
-`Date.toString()` in TAK Server — rustak should instead emit an unambiguous format here (RFC 3339);
-no verified client parses this field programmatically, it's a display string. `Expiration` is either
+`Date.toString()` in TAK Server. **Corrected (M3-01):** rustak emits that same
+`EEE MMM dd HH:mm:ss UTC yyyy` rendering rather than RFC 3339, per design 04 D5 — CloudTAK reads
+`entry.Time` out of this map for its packages page (§3.12 of report 03), and the safe answer for a
+display string a client already reads is the one it has always been handed. The `Time` of
+`HEAD /Marti/api/files/{hash}` is the padded instant instead, because that map is the metadata
+rendering rather than the file manager's. `Expiration` is either
 an ISO-ish timestamp with the trailing `Z` omitted, or the literal string `"none"`.
 
 **`GET /Marti/api/files/metadata?missionPackage=true&name={pkg}`** is called **directly** by
