@@ -15,9 +15,26 @@
 //! cannot cause and a legitimate user would only notice as their lockout being
 //! forgiven early.
 //!
-//! The map is swept on [`RateLimiter::check`] rather than by a timer: the only
+//! The map is swept from the paths that use it rather than by a timer: the only
 //! thing that grows it is failures, so the only place it needs pruning is where
 //! a failure is looked up.
+//!
+//! # Why the sweep is on a clock and the map has a ceiling
+//!
+//! The sweep used to run on every [`check`](RateLimiter::check) past a
+//! thousand entries, and it keeps anything still locked out — a fifteen-minute
+//! default. A flood of a hundred thousand distinct subjects from one address
+//! therefore left a hundred thousand entries that every sweep looked at and
+//! none of which it could remove, so every legitimate sign-in, refresh and
+//! passkey ceremony afterwards paid a full scan under the mutex, on an actix
+//! worker thread. The cost of the attack was linear; the cost of surviving it
+//! was quadratic.
+//!
+//! Two bounds fix that. The sweep runs at most once per window, so its cost is
+//! amortised over time rather than over requests. And the map has a ceiling:
+//! once it is full, a new bucket evicts one of a small random sample, cheapest
+//! candidate first. Losing somebody's lockout a few minutes early is a far
+//! better failure than making every request pay for the attacker's.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -27,12 +44,22 @@ use chrono::{DateTime, Duration, Utc};
 
 use crate::config::RateLimitConfig;
 
-/// How many entries may accumulate before a sweep is forced.
+/// The most keys tracked at once.
 ///
-/// A sweep is linear in the size of the map, so doing one on every failure
-/// would be quadratic under attack. This bounds the memory a flood of distinct
-/// addresses can cost us without putting the scan in the common path.
-const SWEEP_AT: usize = 1024;
+/// Roughly ten megabytes of buckets and keys at the sizes a username reaches,
+/// which is a bound on what a flood can cost. Far above any real installation:
+/// five hundred devices failing simultaneously is five hundred entries.
+pub const MAX_BUCKETS: usize = 100_000;
+
+/// How many entries an eviction looks at before choosing one.
+///
+/// `HashMap`'s iteration order is effectively arbitrary, so a small sample is a
+/// random sample. Scanning the whole map for the true best candidate would put
+/// the cost this exists to avoid back on the insert path.
+const EVICTION_SAMPLE: usize = 64;
+
+/// The key a bucket is filed under: who, and what they are guessing at.
+type Key = (Option<IpAddr>, String);
 
 /// What a key is doing right now.
 #[derive(Debug, Clone, Copy)]
@@ -45,10 +72,18 @@ struct Bucket {
     locked_until: Option<DateTime<Utc>>,
 }
 
+/// The tracked keys, and when they were last pruned.
+#[derive(Debug)]
+struct Buckets {
+    map: HashMap<Key, Bucket>,
+    /// The earliest moment another sweep is worth running.
+    next_sweep: DateTime<Utc>,
+}
+
 /// Refuses a key that has been failing.
 #[derive(Debug)]
 pub struct RateLimiter {
-    buckets: Mutex<HashMap<(Option<IpAddr>, String), Bucket>>,
+    buckets: Mutex<Buckets>,
     attempts: u32,
     window: Duration,
     lockout: Duration,
@@ -58,7 +93,10 @@ impl RateLimiter {
     /// Builds a limiter from `[auth.rate_limit]`.
     pub fn new(config: &RateLimitConfig) -> Self {
         Self {
-            buckets: Mutex::new(HashMap::new()),
+            buckets: Mutex::new(Buckets {
+                map: HashMap::new(),
+                next_sweep: Utc::now(),
+            }),
             attempts: config.attempts.max(1),
             window: config.window,
             lockout: config.lockout,
@@ -74,11 +112,9 @@ impl RateLimiter {
         let now = Utc::now();
         let mut buckets = self.lock();
 
-        if buckets.len() > SWEEP_AT {
-            buckets.retain(|_, bucket| live(bucket, now, self.window));
-        }
+        self.sweep_if_due(&mut buckets, now);
 
-        match buckets.get(&(client_ip, subject.to_owned())) {
+        match buckets.map.get(&(client_ip, subject.to_owned())) {
             Some(Bucket {
                 locked_until: Some(until),
                 ..
@@ -94,14 +130,17 @@ impl RateLimiter {
     pub fn record_failure(&self, client_ip: Option<IpAddr>, subject: &str) -> Option<Duration> {
         let now = Utc::now();
         let mut buckets = self.lock();
+        let key = (client_ip, subject.to_owned());
 
-        let bucket = buckets
-            .entry((client_ip, subject.to_owned()))
-            .or_insert(Bucket {
-                failures: 0,
-                window_started: now,
-                locked_until: None,
-            });
+        if !buckets.map.contains_key(&key) {
+            self.make_room(&mut buckets, now);
+        }
+
+        let bucket = buckets.map.entry(key).or_insert(Bucket {
+            failures: 0,
+            window_started: now,
+            locked_until: None,
+        });
 
         // A window that has run out starts again rather than accumulating: the
         // limit is ten failures a minute, not ten failures ever.
@@ -123,20 +162,69 @@ impl RateLimiter {
 
     /// Forgets a key, which is what a success means.
     pub fn record_success(&self, client_ip: Option<IpAddr>, subject: &str) {
-        self.lock().remove(&(client_ip, subject.to_owned()));
+        self.lock().map.remove(&(client_ip, subject.to_owned()));
     }
 
     /// Drops every key that is neither locked out nor inside its window.
     pub fn sweep(&self) {
         let now = Utc::now();
+        let mut buckets = self.lock();
 
-        self.lock()
-            .retain(|_, bucket| live(bucket, now, self.window));
+        self.prune(&mut buckets, now);
     }
 
     /// How many keys are being tracked, for the tests and for diagnostics.
     pub fn tracked(&self) -> usize {
-        self.lock().len()
+        self.lock().map.len()
+    }
+
+    /// Prunes, but at most once per window.
+    ///
+    /// The clock is what makes a check O(1): the scan happens on a schedule
+    /// rather than on a request, so a map full of entries the scan cannot
+    /// remove costs the same as an empty one.
+    fn sweep_if_due(&self, buckets: &mut Buckets, now: DateTime<Utc>) {
+        if now < buckets.next_sweep {
+            return;
+        }
+
+        self.prune(buckets, now);
+    }
+
+    /// Drops everything expired and sets the next sweep a window away.
+    fn prune(&self, buckets: &mut Buckets, now: DateTime<Utc>) {
+        buckets
+            .map
+            .retain(|_, bucket| live(bucket, now, self.window));
+        buckets.next_sweep = now + self.window;
+    }
+
+    /// Makes space for one more key when the map is at its ceiling.
+    ///
+    /// Tries the cheap thing first — a prune, which under a flood of locked-out
+    /// entries removes nothing — and then gives up a bucket rather than the
+    /// bound. An attacker who has filled the map gets their own oldest lockout
+    /// forgiven; everybody else keeps a limiter that answers in constant time.
+    fn make_room(&self, buckets: &mut Buckets, now: DateTime<Utc>) {
+        if buckets.map.len() < MAX_BUCKETS {
+            return;
+        }
+
+        self.prune(buckets, now);
+
+        while buckets.map.len() >= MAX_BUCKETS {
+            let Some(victim) = buckets
+                .map
+                .iter()
+                .take(EVICTION_SAMPLE)
+                .min_by_key(|(_, bucket)| bucket.locked_until)
+                .map(|(key, _)| key.clone())
+            else {
+                return;
+            };
+
+            buckets.map.remove(&victim);
+        }
     }
 
     /// The map, recovering from a panic in another holder.
@@ -144,7 +232,7 @@ impl RateLimiter {
     /// A poisoned lock here means some other thread panicked while counting a
     /// failure. Refusing every sign-in from then on would turn that into an
     /// outage; the worst a recovered map can be is a count that is off by one.
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<(Option<IpAddr>, String), Bucket>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Buckets> {
         self.buckets.lock().unwrap_or_else(|err| err.into_inner())
     }
 }
@@ -168,6 +256,41 @@ mod tests {
 
     fn address() -> Option<IpAddr> {
         Some("198.51.100.4".parse().unwrap())
+    }
+
+    #[test]
+    fn a_flood_of_lockouts_does_not_make_every_later_check_pay_for_it() {
+        // M5. An attacker posting a hundred thousand distinct usernames locks
+        // out a hundred thousand buckets, all of which a `retain` keeps. The
+        // sweep used to run on every check past a thousand entries, so each
+        // legitimate sign-in afterwards scanned the whole attack under the
+        // mutex, on a reactor thread.
+        let limiter = limiter(1);
+
+        for index in 0..(MAX_BUCKETS + 5_000) {
+            limiter.record_failure(address(), &format!("victim-{index}"));
+        }
+
+        assert!(
+            limiter.tracked() <= MAX_BUCKETS,
+            "{} buckets is past the ceiling",
+            limiter.tracked()
+        );
+
+        let started = std::time::Instant::now();
+
+        for index in 0..10_000 {
+            let _ = limiter.check(address(), &format!("ada-{index}"));
+        }
+
+        let elapsed = started.elapsed();
+
+        // Generous by two orders of magnitude: the same loop against a full map
+        // and a sweep per check is a billion comparisons, which is minutes.
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "ten thousand checks took {elapsed:?} against a full map"
+        );
     }
 
     #[test]

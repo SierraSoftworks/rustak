@@ -139,7 +139,7 @@ impl StreamRuntime {
             let (handle, task) = cot_store::start(
                 context.db().clone(),
                 config.streams_dir(),
-                CotStoreOptions::default(),
+                CotStoreOptions::default().with_open_history_logs(config.storage.open_history_logs),
                 context.shutdown().child(),
             );
 

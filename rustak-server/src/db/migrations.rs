@@ -158,16 +158,39 @@ pub async fn migrate_to(connection: &Connection, version: usize) -> Result<(), E
     {
         let Migration { id, name, sql } = *migration;
 
-        connection
+        let applied_now = connection
             .call(move |c| {
-                let transaction = c.transaction()?;
+                // `IMMEDIATE` rather than the default `DEFERRED`, and the
+                // version re-read inside it. Two processes started against one
+                // file — a rolling restart, a stray CLI — both read version 0
+                // outside the transaction and both try to apply `0001`; a
+                // deferred transaction takes the write lock at the first
+                // statement, so the loser finds out with `SQLITE_BUSY` or a
+                // primary-key violation and fails start-up with an error that
+                // says neither. Taking the lock first and re-checking makes the
+                // loser a no-op.
+                let transaction =
+                    c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+
+                let already: i64 = transaction.query_one(
+                    "SELECT COALESCE(MAX(id), 0) FROM schema_migrations",
+                    [],
+                    |row| row.get(0),
+                )?;
+
+                if already >= id as i64 {
+                    return Ok::<_, rusqlite::Error>(false);
+                }
+
                 transaction.execute_batch(sql)?;
                 transaction.execute(
                     "INSERT INTO schema_migrations (id, name, applied_at) VALUES (?1, ?2, ?3)",
                     rusqlite::params![id as i64, name, Timestamp::now()],
                 )?;
 
-                transaction.commit()
+                transaction.commit()?;
+
+                Ok(true)
             })
             .await
             .wrap_system_err(
@@ -175,7 +198,14 @@ pub async fn migrate_to(connection: &Connection, version: usize) -> Result<(), E
                 ADVICE_REPORT_DEV,
             )?;
 
-        info!(migration = name, "Applied a database migration.");
+        if applied_now {
+            info!(migration = name, "Applied a database migration.");
+        } else {
+            debug!(
+                migration = name,
+                "Another process applied this database migration first."
+            );
+        }
     }
 
     Ok(())

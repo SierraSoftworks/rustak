@@ -69,6 +69,16 @@ impl ContentStore {
         &self.root
     }
 
+    /// Where a blob lives while it is still being written.
+    ///
+    /// Inside the store rather than in the system temporary directory, so that
+    /// the rename which finishes an upload is within one filesystem and
+    /// therefore atomic. [`orphans::sweep`](super::orphans::sweep) collects
+    /// whatever a kill left here.
+    pub fn temp_dir(&self) -> PathBuf {
+        self.root.join(TEMP_DIR)
+    }
+
     /// Creates the store's directories if they are not already there.
     ///
     /// Called once at startup so that the first upload of an installation's
@@ -148,14 +158,22 @@ impl ContentStore {
 
         let destination = self.path_for(&content.hash)?;
 
-        if let Some(parent) = destination.parent() {
-            tokio::fs::create_dir_all(parent).await.wrap_user_err(
+        // Every failure from here on removes the temporary file first: the
+        // orphan sweep would collect it a day later, but a 400 MB package left
+        // behind by a full disk should not wait a day, and the failure the
+        // caller sees must not be the one that happened while cleaning up.
+        if let Some(parent) = destination.parent()
+            && let Err(err) = tokio::fs::create_dir_all(parent).await
+        {
+            let _ = tokio::fs::remove_file(&temp).await;
+
+            return Err(err).wrap_user_err(
                 format!(
                     "We could not create the content directory '{}'.",
                     parent.display()
                 ),
                 ADVICE_STORAGE,
-            )?;
+            );
         }
 
         if tokio::fs::try_exists(&destination).await.unwrap_or(false) {
@@ -165,10 +183,14 @@ impl ContentStore {
 
         // Atomic within a filesystem, which is why the temporary directory is
         // inside the store rather than in the system temporary directory.
-        tokio::fs::rename(&temp, &destination).await.wrap_user_err(
-            format!("We could not store a file as '{}'.", destination.display()),
-            ADVICE_STORAGE,
-        )?;
+        if let Err(err) = tokio::fs::rename(&temp, &destination).await {
+            let _ = tokio::fs::remove_file(&temp).await;
+
+            return Err(err).wrap_user_err(
+                format!("We could not store a file as '{}'.", destination.display()),
+                ADVICE_STORAGE,
+            );
+        }
 
         Ok(content)
     }

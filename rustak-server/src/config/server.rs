@@ -41,6 +41,27 @@ fn default_shutdown_timeout() -> chrono::Duration {
         .expect("eight seconds is a duration chrono can hold")
 }
 
+/// How long an outbound request may take in total, by default.
+///
+/// reqwest imposes none of its own, and the failure it leaves open is the
+/// common one rather than the exotic one: an identity provider whose load
+/// balancer accepts the connection and never answers. Thirty seconds is longer
+/// than any discovery document, JWKS or ACME exchange takes and short enough
+/// that a hung provider does not hold an actix worker — and therefore an
+/// administrator's sign-in — open indefinitely.
+fn default_http_timeout() -> chrono::Duration {
+    chrono::Duration::seconds(30)
+}
+
+/// How long the connect phase of an outbound request may take, by default.
+///
+/// Separate from the total because the two failures are different: a refused
+/// or black-holed address should be given up on quickly, while a slow but live
+/// response is worth waiting for.
+fn default_http_connect_timeout() -> chrono::Duration {
+    chrono::Duration::seconds(10)
+}
+
 /// The longest drain an operator may configure.
 ///
 /// Not a technical limit: a minute is already far longer than any orchestrator
@@ -104,6 +125,25 @@ pub struct ServerConfig {
         with = "rustak_core::config::duration::humane"
     )]
     pub shutdown_timeout: chrono::Duration,
+
+    /// How long an outbound HTTP request may take in total.
+    ///
+    /// Applies to every request the server makes: OIDC discovery and JWKS, the
+    /// OIDC token exchange, ACME, and plugin webhooks. Zero turns the limit
+    /// off, which is what a provider behind an exceptionally slow proxy needs
+    /// and nothing else should.
+    #[serde(
+        default = "default_http_timeout",
+        with = "rustak_core::config::duration::humane"
+    )]
+    pub http_timeout: chrono::Duration,
+
+    /// How long the connect phase of an outbound HTTP request may take.
+    #[serde(
+        default = "default_http_connect_timeout",
+        with = "rustak_core::config::duration::humane"
+    )]
+    pub http_connect_timeout: chrono::Duration,
 }
 
 impl Default for ServerConfig {
@@ -119,11 +159,31 @@ impl Default for ServerConfig {
             trust_proxy: false,
             data_dir: default_data_dir(),
             shutdown_timeout: default_shutdown_timeout(),
+            http_timeout: default_http_timeout(),
+            http_connect_timeout: default_http_connect_timeout(),
         }
     }
 }
 
 impl ServerConfig {
+    /// The outbound request budget, as the standard library spells a duration.
+    ///
+    /// [`None`] means an operator has asked for no limit at all.
+    pub fn http_budget(&self) -> Option<std::time::Duration> {
+        self.http_timeout
+            .to_std()
+            .ok()
+            .filter(|budget| !budget.is_zero())
+    }
+
+    /// The outbound connect budget, as the standard library spells a duration.
+    pub fn http_connect_budget(&self) -> Option<std::time::Duration> {
+        self.http_connect_timeout
+            .to_std()
+            .ok()
+            .filter(|budget| !budget.is_zero())
+    }
+
     /// The drain budget, as the standard library spells a duration.
     ///
     /// A value the validator would have refused falls back to the default
@@ -188,6 +248,8 @@ mod tests {
         let parsed: ServerConfig = toml::from_str("").unwrap();
 
         assert_eq!(parsed.shutdown_timeout, chrono::Duration::seconds(8));
+        assert_eq!(parsed.http_timeout, chrono::Duration::seconds(30));
+        assert_eq!(parsed.http_connect_timeout, chrono::Duration::seconds(10));
         assert_eq!(parsed.shutdown_budget(), std::time::Duration::from_secs(8));
     }
 

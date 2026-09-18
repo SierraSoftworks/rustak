@@ -50,18 +50,26 @@
 
 pub mod acme_renew;
 pub mod audit_prune;
+pub mod content_orphans;
+pub mod dead_letter;
 pub mod host;
 pub mod job;
 pub mod mission_expiry;
 pub mod retention;
 pub mod runnable;
 pub mod service_health;
+pub mod tls_files;
 pub mod wal_checkpoint;
 
 pub use acme_renew::{
     ACME_RENEW_FORCED_KEY, ACME_RENEW_PARTITION, AcmeRenewJob, AcmeRenewTask, RENEW_INTERVAL,
 };
 pub use audit_prune::{AUDIT_PRUNE_PARTITION, AuditPruneJob, AuditPruneTask, PRUNE_INTERVAL};
+pub use content_orphans::{
+    CONTENT_ORPHANS_PARTITION, ContentOrphansJob, ContentOrphansTask,
+    SWEEP_INTERVAL as CONTENT_ORPHANS_INTERVAL,
+};
+pub use dead_letter::DEAD_LETTERS;
 pub use host::JobHost;
 pub use job::{DEFAULT_JOB_TIMEOUT, Job, JobContext};
 pub use mission_expiry::{
@@ -72,4 +80,5 @@ pub use runnable::{JobRegistration, JobRunnable};
 pub use service_health::{
     SERVICE_HEALTH_INTERVAL, SERVICE_HEALTH_PARTITION, ServiceHealthJob, ServiceHealthTask,
 };
+pub use tls_files::{TLS_FILES_PARTITION, TLS_FILES_RELOAD_KEY, TlsFilesJob, TlsFilesTask};
 pub use wal_checkpoint::{WAL_CHECKPOINT_PARTITION, WalCheckpointJob, WalCheckpointTask};

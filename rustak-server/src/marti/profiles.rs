@@ -31,7 +31,10 @@ use actix_web::{HttpRequest, HttpResponse, web};
 use crate::prelude::*;
 
 use crate::profiles::UserSettings;
-use crate::profiles::builder::{PROFILE_FILENAME, build_multifile_package, build_profile_package};
+use bytes::Bytes;
+
+use crate::profiles::builder::PROFILE_FILENAME;
+use crate::profiles::package::{multifile_package, profile_package};
 use crate::profiles::repo::ProfilesRepo;
 use crate::profiles::service::{Assembled, ProfileService};
 
@@ -102,7 +105,7 @@ pub async fn enrollment(
         .await
         .map_err(internal)?;
 
-    packaged("Enrollment", &assembled)
+    packaged("Enrollment", assembled).await
 }
 
 /// `GET /Marti/api/device/profile/connection?syncSecago=&clientUid=`.
@@ -124,7 +127,7 @@ pub async fn connection(
         .await
         .map_err(internal)?;
 
-    packaged("Connection", &assembled)
+    packaged("Connection", assembled).await
 }
 
 /// `GET /Marti/api/device/profile/tool/{tool}?syncSecago=&clientUid=`.
@@ -147,7 +150,7 @@ pub async fn tool(
         .await
         .map_err(internal)?;
 
-    packaged(&name, &assembled)
+    packaged(&name, assembled).await
 }
 
 /// `GET /Marti/api/{tls,device}/profile/tool/{tool}/file?relativePath=…`.
@@ -204,19 +207,15 @@ pub async fn tool_file(
         return Ok(download(
             only.content_type(),
             only.basename(),
-            only.data.clone(),
+            Bytes::from(only.data.clone()),
             assembled.last_modified,
         ));
     }
 
-    let body = build_multifile_package(&assembled.files).map_err(internal)?;
+    let last_modified = assembled.last_modified;
+    let body = multifile_package(assembled.files).await.map_err(internal)?;
 
-    Ok(download(
-        ZIP,
-        PROFILE_FILENAME,
-        body,
-        assembled.last_modified,
-    ))
+    Ok(download(ZIP, PROFILE_FILENAME, body, last_modified))
 }
 
 /// `GET /Marti/api/device/profile/{name}/missionpackage`.
@@ -241,7 +240,7 @@ pub async fn mission_package(
 
     let assembled = service.assemble_one(&row).await.map_err(internal)?;
 
-    packaged(&name, &assembled)
+    packaged(&name, assembled).await
 }
 
 /// `HEAD /Marti/api/device/profile/{name}/missionpackage`, which TAK Server
@@ -332,19 +331,20 @@ fn content(
 }
 
 /// `204` when there is nothing, and the package otherwise.
-fn packaged(name: &str, assembled: &Assembled) -> MartiResult {
+async fn packaged(name: &str, assembled: Assembled) -> MartiResult {
     if assembled.is_empty() {
         return Ok(HttpResponse::NoContent().finish());
     }
 
-    let body = build_profile_package(name, &assembled.files).map_err(internal)?;
+    let last_modified = assembled.last_modified;
+    // Built on a blocking thread and kept until the profile changes: this is
+    // reached from `GET .../profile/connection`, which every device asks for on
+    // every connection.
+    let body = profile_package(name, assembled.files)
+        .await
+        .map_err(internal)?;
 
-    Ok(download(
-        ZIP,
-        PROFILE_FILENAME,
-        body,
-        assembled.last_modified,
-    ))
+    Ok(download(ZIP, PROFILE_FILENAME, body, last_modified))
 }
 
 /// A download, with the **unquoted** `Content-Disposition` ATAK parses and the
@@ -352,7 +352,7 @@ fn packaged(name: &str, assembled: &Assembled) -> MartiResult {
 fn download(
     content_type: impl TryInto<HeaderValue>,
     filename: &str,
-    body: Vec<u8>,
+    body: Bytes,
     last_modified: Option<chrono::DateTime<chrono::Utc>>,
 ) -> HttpResponse {
     let mut response = HttpResponse::Ok();

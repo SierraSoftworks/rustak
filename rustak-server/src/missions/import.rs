@@ -35,6 +35,12 @@ const DEFAULT_MIME: &str = "application/octet-stream";
 /// The manifest parameter ATAK marks a CoT entry with.
 const IS_COT: &str = "isCoT";
 
+/// The most entries one package may declare.
+///
+/// A manifest is a list somebody's device wrote; a list of a million names is
+/// not one of those, and refusing it costs nothing legitimate.
+const MAX_ENTRIES: usize = 4_096;
+
 impl MissionService {
     /// Files every entry of a Mission Package under a mission.
     ///
@@ -49,16 +55,31 @@ impl MissionService {
         bytes: Vec<u8>,
         creator_uid: Option<&str>,
     ) -> Result<Vec<MissionChangeRow>, MartiError> {
-        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
-            .map_err(|err| MartiError::Duplicate(format!("that package is not a zip: {err}")))?;
-        let (manifest, prefix) = package::read_manifest(&mut archive)
-            .map_err(|err| MartiError::Duplicate(err.description()))?;
+        // The limit applies to what comes *out* of the zip, not to what went
+        // in: deflate reaches a thousand to one, so a package inside the upload
+        // ceiling can still inflate to more memory than the server has.
+        let limit = crate::files::limits::limit_bytes(&self.context.config(), self.db()).await?;
+
+        // Inflated on a blocking thread. Deflate is CPU-bound and an actix
+        // worker running it is a worker not answering anything else — including
+        // the health check the orchestrator restarts the pod over.
+        let extracted = tokio::task::spawn_blocking(move || extract(bytes, limit))
+            .await
+            .map_err(|err| {
+                MartiError::Internal(format!("A mission package could not be read: {err}."))
+            })??;
+
+        let Extracted {
+            manifest,
+            prefix,
+            mut files,
+        } = extracted;
 
         let mut changes = Vec::new();
 
         for entry in manifest.contents.iter().filter(|entry| !entry.ignore) {
             let path = format!("{prefix}{}", entry.zip_entry);
-            let Some(bytes) = read_entry(&mut archive, &path) else {
+            let Some(bytes) = files.remove(&path) else {
                 warn!(entry = %path, "Skipped a package entry the zip does not hold.");
                 continue;
             };
@@ -192,15 +213,74 @@ impl MissionService {
     }
 }
 
-/// One entry's bytes, or nothing when the zip does not hold it.
+/// A package after it has been inflated, ready for the async filing.
+struct Extracted {
+    manifest: package::Manifest,
+    /// The directory every `zipEntry` is relative to.
+    prefix: String,
+    /// Each entry's bytes, by its full path in the zip.
+    files: std::collections::HashMap<String, Vec<u8>>,
+}
+
+/// Opens a package and inflates every entry its manifest names, under a cap.
+///
+/// Synchronous on purpose: the caller runs it on a blocking thread.
+fn extract(bytes: Vec<u8>, limit: u64) -> Result<Extracted, MartiError> {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+        .map_err(|err| MartiError::Duplicate(format!("that package is not a zip: {err}")))?;
+    let (manifest, prefix) = package::read_manifest(&mut archive)
+        .map_err(|err| MartiError::Duplicate(err.description()))?;
+
+    if manifest.contents.len() > MAX_ENTRIES {
+        return Err(MartiError::Duplicate(format!(
+            "that package declares {} entries, which is more than the {MAX_ENTRIES} we will read",
+            manifest.contents.len()
+        )));
+    }
+
+    let mut files = std::collections::HashMap::new();
+    let mut inflated = 0u64;
+
+    for entry in manifest.contents.iter().filter(|entry| !entry.ignore) {
+        let path = format!("{prefix}{}", entry.zip_entry);
+        let Some(bytes) = read_entry(&mut archive, &path, limit - inflated.min(limit)) else {
+            continue;
+        };
+
+        inflated = inflated.saturating_add(bytes.len() as u64);
+
+        if inflated > limit {
+            return Err(MartiError::Duplicate(format!(
+                "that package inflates to more than the {limit} byte upload limit"
+            )));
+        }
+
+        files.insert(path, bytes);
+    }
+
+    Ok(Extracted {
+        manifest,
+        prefix,
+        files,
+    })
+}
+
+/// One entry's bytes, or nothing when the zip does not hold it or it would take
+/// the package past what is left of the budget.
 fn read_entry(
     archive: &mut zip::ZipArchive<std::io::Cursor<Vec<u8>>>,
     path: &str,
+    remaining: u64,
 ) -> Option<Vec<u8>> {
-    let mut entry = archive.by_name(path).ok()?;
+    let entry = archive.by_name(path).ok()?;
     let mut bytes = Vec::new();
 
-    entry.read_to_end(&mut bytes).ok()?;
+    // One byte past the budget, so the caller can tell "exactly full" from
+    // "over" without trusting the header's declared size.
+    entry
+        .take(remaining.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .ok()?;
 
     Some(bytes)
 }
@@ -233,6 +313,43 @@ fn mime_for(filename: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A package holding one entry of `size` bytes.
+    fn package_of(size: usize) -> Vec<u8> {
+        use crate::files::package::{ContentEntry, Manifest};
+        use crate::profiles::builder::write_package;
+
+        let manifest = Manifest::new("uid-1", "Test").content(ContentEntry::new("big.bin"));
+        // Incompressible, so the zip cannot shrink it below the cap by itself.
+        let data: Vec<u8> = (0..size).map(|index| (index % 251) as u8).collect();
+
+        write_package(&manifest, &[("big.bin".to_string(), data.as_slice())]).unwrap()
+    }
+
+    #[test]
+    fn a_package_that_inflates_past_the_upload_limit_is_refused() {
+        // M1/H6: the input used to be capped at actix's accidental 256 KiB and
+        // the decompressed total at nothing at all, so a zip bomb inflated on
+        // the worker thread that was reading it.
+        let bytes = package_of(64 * 1024);
+
+        let Err(err) = extract(bytes, 8 * 1024) else {
+            panic!("a package past the limit should be refused");
+        };
+
+        assert!(
+            matches!(&err, MartiError::Duplicate(message) if message.contains("inflates")),
+            "{err:?}",
+        );
+    }
+
+    #[test]
+    fn a_package_inside_the_limit_is_read_whole() {
+        let extracted = extract(package_of(1_024), 1_000_000).unwrap();
+
+        assert_eq!(extracted.manifest.contents.len(), 1);
+        assert_eq!(extracted.files.get("big.bin").map(Vec::len), Some(1_024));
+    }
 
     #[test]
     fn a_content_type_is_guessed_from_the_extension() {

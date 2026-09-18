@@ -56,6 +56,14 @@ data_dir = "./data"
 # ends the drain early and still runs the checkpoint.
 shutdown_timeout = "8s"
 
+# How long an outbound HTTP request may take in total, and how long its connect
+# phase may take. These cover every request the server makes: OIDC discovery and
+# JWKS, the OIDC token exchange, and ACME. Without them a provider whose load
+# balancer accepts the connection and never answers hangs every sign-in behind
+# it. "0s" turns a limit off.
+http_timeout = "30s"
+http_connect_timeout = "10s"
+
 
 [storage]
 # The SQLite database. Default: "<data_dir>/rustak.sqlite". The key that seals
@@ -82,6 +90,13 @@ busy_timeout = "5s"
 # clean shutdown; this is what keeps it bounded on a server that stays up.
 checkpoint_interval = "5m"
 
+# How many per-device CoT history logs the writer keeps open at once. Each one
+# costs a file descriptor, so keep this above [stream.limits] max_connections
+# and below the process descriptor limit (`ulimit -n`). Below the number of
+# connected devices the writer thrashes: every message evicts somebody else's
+# log and pays to reopen it.
+open_history_logs = 4096
+
 
 # The browser- and enrollment-facing listener: the admin UI, /api/v1, /oauth/*,
 # /login/*, /Marti/api/tls/* and the full Marti API for CloudTAK's webtak role.
@@ -105,7 +120,9 @@ allow_insecure_http = false
 #   "internal" — rustak's own CA issues it, and devices are given that CA in
 #                their enrollment package. Needs no public DNS and no open port
 #                80; browsers will not trust it until the CA is installed.
-#   "files"    — cert_file and key_file below, reloaded when they change.
+#   "files"    — cert_file and key_file below, re-read while rustak runs when
+#                they change on disk, and waited for when they are not there
+#                yet. No restart for a renewal.
 #   "acme"     — ordered from an ACME authority; see [acme].
 #   "none"     — no TLS, for development or behind a terminating proxy.
 #                Refused unless allow_insecure_http is also set.
@@ -114,6 +131,22 @@ mode = "internal"
 # Required by mode = "files": the full chain, and its private key, in PEM form.
 # cert_file = "/etc/rustak/fullchain.pem"
 # key_file = "/etc/rustak/privkey.pem"
+
+# How often mode = "files" looks at those two files: a stat of each, and a
+# re-read only when the size, modification time or inode of one has moved. A
+# new pair is served only if the key belongs to the leaf, so a half-written
+# renewal is ignored rather than breaking every handshake. "0" switches the
+# check off and leaves POST /api/v1/settings/tls/renew as the way to pick a
+# renewal up without a restart.
+reload_interval = "30s"
+
+# Whether a missing or unreadable pair stops rustak at start-up. The default
+# binds the listener with a certificate from rustak's own CA, warns with both
+# paths, and swaps the files in as soon as they appear — which is what a
+# sidecar that renders them after the task starts needs. Set it to true when
+# the files ship with the image and their absence means something is wrong;
+# `rustak --check` then refuses a configuration whose files are not there.
+require_files_at_start = false
 
 
 # The mutually authenticated Marti listener. Every caller presents a client
@@ -466,5 +499,22 @@ missions_purge_after = "14d"
 
 # How long a stored blob that nothing refers to is kept. Not zero: an upload is
 # referenced a moment after it is stored, and a collector running in between
-# would delete the file out from under the request that wrote it.
+# would delete the file out from under the request that wrote it. The hourly
+# content-orphan job also sweeps partly written uploads out of <content_dir>/tmp
+# on the same horizon.
 content_orphans = "24h"
+
+
+# Background housekeeping: the queue consumer that runs the retention sweeps,
+# the ACME renewal, the content-orphan collector and the WAL checkpoint.
+[jobs]
+# How many times a failing message is retried before it is moved to the
+# 'jobs/dead-letters' key-value partition with the error that ended it and
+# stops being run. With the host's doubling backoff, ten attempts is a little
+# over an hour of trying. 0 retries for ever, which is what this replaced.
+max_attempts = 10
+
+# How many jobs may run at once. The work is almost entirely writes against the
+# single SQLite writer connection, so more in flight buys nothing and costs the
+# web API its turn.
+concurrency = 4

@@ -127,11 +127,21 @@ pub async fn build_context(
     )
     .await?;
 
-    let secrets = crypto::SecretStore::load(
-        config.auth.secret_key.as_deref(),
-        &config.auth.previous_secret_keys,
-        &database_path,
-    )?;
+    // On a blocking thread: loading the key reads a file, and creating one
+    // writes and chmods a file. Start-up only today, so the impact is nil — but
+    // blocking `std::fs` under an async caller is the sort of thing that gets
+    // reused on a request path later, and then it is a stalled reactor.
+    let secrets = {
+        let configured = config.auth.secret_key.clone();
+        let previous = config.auth.previous_secret_keys.clone();
+        let beside = database_path.clone();
+
+        tokio::task::spawn_blocking(move || {
+            crypto::SecretStore::load(configured.as_deref(), &previous, &beside)
+        })
+        .await
+        .or_system_err(&["Please report this issue to the development team via GitHub."])??
+    };
 
     let context = AppContext::new(config, db, secrets, session, shutdown)?;
 

@@ -37,6 +37,21 @@ use super::latest::LatestRow;
 /// The most rows one page of the browser may carry.
 pub const MAX_PAGE: u32 = 200;
 
+/// The most history events one read will ever return.
+///
+/// A hard ceiling rather than a page size: the caller clamps to its own page,
+/// and this is what stops a caller that does not from asking for a device's
+/// entire two-million-frame history in one allocation.
+pub const MAX_HISTORY_ROWS: usize = 10_000;
+
+/// The most stored records one history read will decode.
+///
+/// The other bound on [`history`]: a window whose in-range records are sparse —
+/// a device that reported once an hour inside a week of somebody else's
+/// traffic — would otherwise walk every segment it touches looking for a page
+/// it will never fill.
+const MAX_SCANNED_RECORDS: usize = 200_000;
+
 /// Which of the stored messages a listing wants.
 ///
 /// The textual predicates are decided in SQL so that a page is a page. The
@@ -112,6 +127,18 @@ pub async fn latest(db: &Database, query: LatestQuery) -> Result<Vec<LatestRow>,
 /// the request — one corrupt frame in a segment must not hide the rest of a
 /// device's history.
 ///
+/// # Why the walk is newest first, and stops
+///
+/// `limit` used to be applied *last*: every record of every segment the window
+/// touched was read off disk and decoded into a full [`Event`] with its detail
+/// tree before two hundred of them were kept. The per-device floor is
+/// `[retention] cot_history_max_rows` — two million frames — so an
+/// administrator asking for the last week of a busy device could allocate a
+/// gigabyte to answer one page. Segments are time-ordered, so walking them
+/// newest first means the newest `limit` events are found in the newest files
+/// and everything older can be left on disk. A scan ceiling bounds the other
+/// direction: a window whose in-range records are sparse still ends.
+///
 /// # Errors
 ///
 /// A [`human_errors::Kind::System`] error when the index cannot be read, and a
@@ -124,15 +151,40 @@ pub async fn history(
     to: DateTime<Utc>,
     limit: usize,
 ) -> Result<Vec<Event>, Error> {
+    let limit = limit.clamp(1, MAX_HISTORY_ROWS);
     let mut events = Vec::new();
     let mut undecodable = 0usize;
+    let mut scanned = 0usize;
+    let mut truncated = false;
 
-    for path in segment_paths(db, uid, from, to).await? {
-        for payload in read_segment(streams_dir, &path).await? {
-            match decode(&payload) {
-                Some(event) => events.push(event),
+    for path in segment_paths(db, uid, from, to).await?.into_iter().rev() {
+        let bytes = read_segment(streams_dir, &path).await?;
+
+        // Decoded straight out of the borrowed frame: copying every record into
+        // its own `Vec` first was a second full copy of the file, per file.
+        for payload in Frames::new(&bytes) {
+            scanned += 1;
+
+            match decode(payload) {
+                Some(event) if within(&event, from, to) => events.push(event),
+                Some(_) => {}
                 None => undecodable += 1,
             }
+        }
+
+        if events.len() >= limit {
+            truncated = true;
+            break;
+        }
+
+        if scanned >= MAX_SCANNED_RECORDS {
+            truncated = true;
+            warn!(
+                uid = %uid,
+                scanned,
+                "Stopped reading CoT history at the scan limit; the window may hold more."
+            );
+            break;
         }
     }
 
@@ -144,12 +196,10 @@ pub async fn history(
         );
     }
 
-    events.retain(|event| {
-        event
-            .time
-            .to_datetime()
-            .is_some_and(|at| at >= from && at <= to)
-    });
+    if truncated {
+        debug!(uid = %uid, scanned, "Answered a CoT history page without reading the whole window.");
+    }
+
     events.sort_by_key(|event| std::cmp::Reverse(event.time));
     events.truncate(limit);
 
@@ -241,8 +291,12 @@ async fn segment_paths(
     Ok(paths)
 }
 
-/// Every complete record in one segment file.
-async fn read_segment(root: &Path, relative: &str) -> Result<Vec<Vec<u8>>, Error> {
+/// One segment file's bytes, for the caller to walk as frames.
+///
+/// Returned whole rather than as a `Vec` of owned records: [`Frames`] borrows,
+/// and copying every record out of the buffer first was a second full copy of
+/// an eight-megabyte file for a caller that decodes and drops most of them.
+async fn read_segment(root: &Path, relative: &str) -> Result<Vec<u8>, Error> {
     let path = root.join(relative);
 
     let bytes = match tokio::fs::read(&path).await {
@@ -259,7 +313,7 @@ async fn read_segment(root: &Path, relative: &str) -> Result<Vec<Vec<u8>>, Error
         }
     };
 
-    Ok(Frames::new(&bytes).map(<[u8]>::to_vec).collect())
+    Ok(bytes)
 }
 
 /// One stored payload as an event, or [`None`] for a record we cannot read.
@@ -267,6 +321,14 @@ fn decode(payload: &[u8]) -> Option<Event> {
     rustak_cot::proto::decode(payload)
         .ok()
         .and_then(|message| rustak_cot::proto::message_to_event(message).ok())
+}
+
+/// Whether an event's own time falls inside the window that was asked for.
+fn within(event: &Event, from: DateTime<Utc>, to: DateTime<Utc>) -> bool {
+    event
+        .time
+        .to_datetime()
+        .is_some_and(|at| at >= from && at <= to)
 }
 
 /// The start of the epoch, as a lower bound a segment cannot precede.
@@ -512,6 +574,83 @@ mod tests {
         .unwrap();
         assert_eq!(capped.len(), 1);
         assert_eq!(capped[0].time, window[0].time, "a limit keeps the newest");
+    }
+
+    #[tokio::test]
+    async fn a_page_of_history_stops_once_it_has_one() {
+        // H4: `limit` used to be applied after every record of every segment in
+        // the window had been read off disk and decoded. The older segments
+        // here are replaced by directories, so a read that still walked the
+        // whole window would fail rather than quietly cost a gigabyte.
+        let dir = tempfile::tempdir().unwrap();
+        let db = db().await;
+        let now = Utc::now();
+
+        let mut log = AppendLog::open(
+            &db,
+            dir.path(),
+            STREAM_KIND,
+            "UID-A",
+            // One record per segment, so "segments" and "records" are the same
+            // number and the walk under test is visible.
+            AppendLogOptions {
+                max_segment_bytes: 1,
+            },
+        )
+        .await
+        .unwrap();
+
+        for offset in (0..6i64).rev() {
+            let at = now - chrono::Duration::seconds(offset * 10);
+            log.append(at, event("UID-A", "a-f-G-U-C", "ALPHA", at).proto())
+                .await
+                .unwrap();
+        }
+        log.flush().await.unwrap();
+
+        let mut rows = db
+            .stream_segments()
+            .overlapping(STREAM_KIND, "UID-A", epoch(), far_future())
+            .await
+            .unwrap();
+        rows.sort_by_key(|row| row.first_time);
+        assert_eq!(rows.len(), 6);
+
+        for row in rows.iter().take(3) {
+            let path = dir.path().join(&row.segment_path);
+            tokio::fs::remove_file(&path).await.unwrap();
+            tokio::fs::create_dir(&path).await.unwrap();
+        }
+
+        let page = history(
+            &db,
+            dir.path(),
+            "UID-A",
+            now - chrono::Duration::hours(1),
+            now,
+            2,
+        )
+        .await
+        .expect("a page of two must not read the whole window");
+
+        assert_eq!(page.len(), 2);
+        assert!(page[0].time >= page[1].time);
+
+        // And the whole window is still an error rather than a silent short
+        // answer, so the stop above is the walk stopping and not a read that
+        // swallows failures.
+        assert!(
+            history(
+                &db,
+                dir.path(),
+                "UID-A",
+                now - chrono::Duration::hours(1),
+                now,
+                100,
+            )
+            .await
+            .is_err()
+        );
     }
 
     #[tokio::test]

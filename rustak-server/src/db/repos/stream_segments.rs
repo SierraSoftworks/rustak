@@ -301,6 +301,44 @@ impl<'a> StreamSegmentsRepo<'a> {
             .await
     }
 
+    /// Seals every segment of `stream_kind` nothing has appended to since
+    /// `before`, reporting how many were closed.
+    ///
+    /// The writer parks a log rather than sealing it when it evicts one, so
+    /// that the next message for that device continues the same file instead of
+    /// starting a new one. The cost of that is a row left open, and retention
+    /// only prunes sealed segments — so a device that never comes back would
+    /// keep its last segment for ever. This is what closes them.
+    ///
+    /// Sealing a segment a live writer still holds is safe and rare: its next
+    /// flush finds the row closed and rolls to a fresh segment
+    /// ([`AppendLog::flush`](crate::store::AppendLog::flush)).
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::System`] error if the write fails.
+    pub async fn seal_idle(
+        &self,
+        stream_kind: &str,
+        before: DateTime<Utc>,
+    ) -> Result<usize, Error> {
+        let stream_kind = stream_kind.to_owned();
+        let before = Timestamp::from(before);
+
+        let sealed = self
+            .db
+            .write(move |tx| {
+                tx.execute(
+                    "UPDATE stream_segments SET sealed = 1 \
+                     WHERE stream_kind = ?1 AND sealed = 0 AND last_time < ?2",
+                    rusqlite::params![stream_kind, before],
+                )
+            })
+            .await?;
+
+        Ok(sealed)
+    }
+
     /// Forgets a segment, once its file has been unlinked.
     ///
     /// # Errors

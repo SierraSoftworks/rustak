@@ -36,6 +36,16 @@ fn default_checkpoint_interval() -> chrono::Duration {
     chrono::Duration::minutes(5)
 }
 
+/// How many per-device CoT history logs stay open at once.
+///
+/// Sized against the connection ceiling rather than against a guess: the
+/// access pattern of a live fleet is round robin over every connected uid,
+/// which is the pathological case for a least-recently-used cache, so a cap
+/// below the number of connected devices means *every* message misses.
+fn default_open_history_logs() -> usize {
+    4096
+}
+
 /// `[storage]`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -83,6 +93,15 @@ pub struct StorageConfig {
         with = "rustak_core::config::duration::humane"
     )]
     pub checkpoint_interval: chrono::Duration,
+
+    /// How many per-device CoT history logs the writer keeps open at once.
+    ///
+    /// Each open log costs one file descriptor, so this wants to be above
+    /// `[stream.limits] max_connections` and below the process descriptor
+    /// limit. Going below the number of connected devices is what makes the
+    /// history writer thrash: every message then evicts somebody else's log.
+    #[serde(default = "default_open_history_logs")]
+    pub open_history_logs: usize,
 }
 
 impl Default for StorageConfig {
@@ -97,6 +116,7 @@ impl Default for StorageConfig {
             reader_connections: default_reader_connections(),
             busy_timeout: default_busy_timeout(),
             checkpoint_interval: default_checkpoint_interval(),
+            open_history_logs: default_open_history_logs(),
         }
     }
 }
@@ -144,6 +164,7 @@ mod tests {
         assert_eq!(parsed.reader_connections, 2);
         assert_eq!(parsed.busy_timeout, chrono::Duration::seconds(5));
         assert_eq!(parsed.checkpoint_interval, chrono::Duration::minutes(5));
+        assert_eq!(parsed.open_history_logs, 4096);
     }
 
     #[test]

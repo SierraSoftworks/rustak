@@ -37,6 +37,12 @@ pub struct CotStoreOptions {
     pub window: Duration,
     /// Whether history segments are written as well as `cot_latest`.
     pub history: bool,
+    /// How many per-uid history logs stay open at once.
+    ///
+    /// `[storage] open_history_logs`. It has to sit above the number of
+    /// devices reporting concurrently or every message evicts somebody else's
+    /// log; see [`history`](super::history) for what that costs.
+    pub open_history_logs: usize,
 }
 
 impl Default for CotStoreOptions {
@@ -46,7 +52,17 @@ impl Default for CotStoreOptions {
             batch: 256,
             window: Duration::from_millis(50),
             history: true,
+            open_history_logs: super::history::DEFAULT_OPEN_LOGS,
         }
+    }
+}
+
+impl CotStoreOptions {
+    /// The batching defaults, with the configured history-log cap.
+    #[must_use]
+    pub fn with_open_history_logs(mut self, open_history_logs: usize) -> Self {
+        self.open_history_logs = open_history_logs.max(1);
+        self
     }
 }
 
@@ -63,7 +79,8 @@ pub fn start(
     shutdown: Shutdown,
 ) -> (CotStoreHandle, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel(options.queue_len.max(1));
-    let history = HistoryWriter::new(db.clone(), streams_dir);
+    let history =
+        HistoryWriter::new(db.clone(), streams_dir).with_max_open(options.open_history_logs);
     let task = tokio::spawn(run(db, rx, history, options, shutdown));
 
     (CotStoreHandle::new(tx), task)
@@ -113,7 +130,11 @@ async fn run(
         warn!(error = %err, "Could not close the CoT history segments cleanly.");
     }
 
-    debug!("The CoT store has stopped.");
+    debug!(
+        evictions = history.evictions(),
+        segments_created = crate::store::segments_created(),
+        "The CoT store has stopped."
+    );
 }
 
 /// Takes whatever else is already waiting, up to the batch size or the window.

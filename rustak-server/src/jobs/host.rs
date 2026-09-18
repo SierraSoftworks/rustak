@@ -12,9 +12,11 @@
 use std::collections::HashMap;
 
 use chrono::{TimeDelta, Utc};
+use futures::FutureExt as _;
 use rustak_core::prelude::*;
 use tokio::task::JoinSet;
 
+use super::dead_letter;
 use super::{JobContext, JobRegistration, JobRunnable};
 use crate::{
     db::{Queue, QueueMessage, queue::POLL_INTERVAL},
@@ -88,10 +90,32 @@ impl JobHost {
         // what lets `main` reclaim the session and flush telemetry on the way
         // out.
         let mut tasks = JoinSet::new();
+        let in_flight = context.config().jobs.in_flight();
 
         while !shutdown.is_cancelled() {
             // Reap finished jobs so the set does not grow without bound.
-            while tasks.try_join_next().is_some() {}
+            Self::reap(&mut tasks);
+
+            // And wait, rather than spawning, when enough are already running.
+            // `try_dequeue_any` reserves the message it returns, so dequeuing
+            // one we are not ready to run would hide it for the reservation
+            // window; the backpressure has to be before the poll.
+            while tasks.len() >= in_flight {
+                let joined = tokio::select! {
+                    biased;
+                    () = shutdown.cancelled() => None,
+                    joined = tasks.join_next() => joined,
+                };
+
+                match joined {
+                    Some(finished) => Self::report(finished),
+                    None => break,
+                }
+            }
+
+            if shutdown.is_cancelled() {
+                break;
+            }
 
             let dequeued = tokio::select! {
                 // Cancellation wins a tie: when both are ready we are stopping.
@@ -158,6 +182,31 @@ impl JobHost {
         Ok(registry)
     }
 
+    /// Takes every finished job off the set, reporting any that panicked.
+    fn reap(tasks: &mut JoinSet<()>) {
+        while let Some(finished) = tasks.try_join_next() {
+            Self::report(finished);
+        }
+    }
+
+    /// Logs a job task that did not return normally.
+    ///
+    /// A panic inside a handler is caught in [`process`](Self::process), where
+    /// the job's name is known, so reaching here means the panic was in the
+    /// host's own bookkeeping — which used to be discarded entirely, leaving a
+    /// message that reappeared after its reservation and was retried for ever
+    /// with nothing in the log to say why.
+    fn report(finished: Result<(), tokio::task::JoinError>) {
+        if let Err(err) = finished
+            && !err.is_cancelled()
+        {
+            error!(
+                error = %err,
+                "A job task ended abnormally; its message will be retried when its reservation expires."
+            );
+        }
+    }
+
     /// Sleeps, unless we are asked to stop first.
     async fn wait(context: &AppContext, how_long: std::time::Duration) {
         tokio::select! {
@@ -222,11 +271,27 @@ impl JobHost {
         .with_key(item.idempotency_key.clone())
         .with_attempts(item.attempts);
 
-        match handler
-            .handle(ctx, &item.payload)
-            .instrument(span.clone())
-            .await
-        {
+        // Caught rather than allowed to unwind into the `JoinSet`: a panicking
+        // handler used to produce no log line at all — the message simply
+        // reappeared after its reservation window and was retried for ever,
+        // invisibly. Caught here, it is an ordinary failure with the job's name
+        // on it, and it counts towards the attempt ceiling like any other.
+        let outcome = std::panic::AssertUnwindSafe(
+            handler.handle(ctx, &item.payload).instrument(span.clone()),
+        )
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|panic| {
+            Err(human_errors::system(
+                format!(
+                    "The job '{name}' panicked: {}.",
+                    dead_letter::panic_message(panic.as_ref())
+                ),
+                &["This is a bug; please report it with the surrounding log entries."],
+            ))
+        });
+
+        match outcome {
             Ok(()) => {
                 debug!(job.name = name, "The job '{name}' finished.");
 
@@ -244,6 +309,11 @@ impl JobHost {
                 // Recorded against the job's own span rather than the host's, so
                 // that it is exported with the trace of the run that failed.
                 record_failure(&span, &err);
+
+                if context.config().jobs.is_exhausted(item.attempts) {
+                    dead_letter::set_aside(&context, item, name, &err).await;
+                    return;
+                }
 
                 let backoff = Self::backoff(item.attempts, handler.timeout());
                 Self::hold(&context, &item, backoff).await;
@@ -354,6 +424,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::jobs::dead_letter::DEAD_LETTERS;
 
     use crate::{
         jobs::{AUDIT_PRUNE_PARTITION, Job, WAL_CHECKPOINT_PARTITION},
@@ -426,6 +497,32 @@ mod tests {
                 "The job failed.",
                 &["This failure is expected in tests."],
             ))
+        }
+    }
+
+    /// Panics, so that a test can assert the host reports it rather than
+    /// losing the run entirely.
+    struct PanickingJob;
+
+    static PANICKING: PanickingJob = PanickingJob;
+
+    impl Job for PanickingJob {
+        type JobType = Payload;
+
+        fn partition() -> &'static str {
+            "test/panicking"
+        }
+
+        fn timeout(&self) -> TimeDelta {
+            TimeDelta::seconds(-1)
+        }
+
+        async fn handle(
+            &self,
+            _ctx: JobContext<impl Services + Send + Sync + 'static>,
+            _job: &Self::JobType,
+        ) -> Result<(), Error> {
+            panic!("this panic is expected in tests");
         }
     }
 
@@ -518,6 +615,89 @@ mod tests {
 
         let generated: Option<String> = context.kv().get("test/recording", "k3/key").await.unwrap();
         assert_eq!(generated.as_deref(), Some("<generated>"));
+    }
+
+    #[tokio::test]
+    async fn a_message_that_has_run_out_of_attempts_is_set_aside_rather_than_retried_for_ever() {
+        // M3. A payload that no longer deserialises, or a handler with a
+        // deterministic bug, used to be retried every fifteen minutes for the
+        // life of the installation, one error line at a time.
+        let context = AppContext::new_mock(|config| config.jobs.max_attempts = 1)
+            .await
+            .unwrap();
+        enqueued(&context, "test/failing", "k9", None).await;
+
+        let item = context
+            .queue()
+            .try_dequeue_any(TimeDelta::seconds(60))
+            .await
+            .unwrap()
+            .unwrap();
+        let key = item.key.clone();
+
+        JobHost::process(&FAILING, item, context.clone(), Span::none()).await;
+
+        assert!(
+            context
+                .queue()
+                .try_dequeue_any(TimeDelta::seconds(60))
+                .await
+                .unwrap()
+                .is_none(),
+            "a message that has run out of attempts should have left the queue",
+        );
+
+        let letter: Option<serde_json::Value> = context
+            .kv()
+            .get(DEAD_LETTERS, format!("test/failing/{key}"))
+            .await
+            .unwrap();
+        let letter = letter.expect("the message should be readable in the dead letters");
+
+        assert_eq!(letter["partition"], "test/failing");
+        assert!(
+            letter["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("failed"),
+            "the dead letter should carry the error that ended it: {letter}",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_handler_that_panics_is_a_failure_with_its_name_on_it_rather_than_silence() {
+        // M3. `try_join_next()` discarded the `Result`, so a panicking handler
+        // produced no log line at all and its message came back after the
+        // reservation window to be retried for ever, invisibly.
+        let context = AppContext::new_mock(|config| config.jobs.max_attempts = 1)
+            .await
+            .unwrap();
+        enqueued(&context, "test/panicking", "k10", None).await;
+
+        let item = context
+            .queue()
+            .try_dequeue_any(TimeDelta::seconds(60))
+            .await
+            .unwrap()
+            .unwrap();
+        let key = item.key.clone();
+
+        JobHost::process(&PANICKING, item, context.clone(), Span::none()).await;
+
+        let letter: Option<serde_json::Value> = context
+            .kv()
+            .get(DEAD_LETTERS, format!("test/panicking/{key}"))
+            .await
+            .unwrap();
+        let letter = letter.expect("a panic should be handled like any other failure");
+
+        assert!(
+            letter["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("panicked"),
+            "the dead letter should say the handler panicked: {letter}",
+        );
     }
 
     #[tokio::test]

@@ -35,6 +35,16 @@ use crate::store::append_log::AppendLog;
 
 use super::{STREAM_KIND, latest};
 
+/// How long a segment goes unwritten before the sweep closes it.
+///
+/// The writer *parks* a log it evicts rather than sealing it, so that the next
+/// message for that device continues the same file; the row therefore stays
+/// open after the device has gone quiet, and retention only prunes sealed
+/// segments. An hour is far longer than any gap in a live device's reporting
+/// and far shorter than any retention horizon, so nothing a writer is actually
+/// using is closed and nothing a device left behind is kept for ever.
+const IDLE_SEAL_AFTER: chrono::TimeDelta = chrono::TimeDelta::hours(1);
+
 /// What one sweep removed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Swept {
@@ -44,12 +54,14 @@ pub struct Swept {
     pub over_cap: usize,
     /// `cot_latest` rows deleted.
     pub latest: usize,
+    /// Segments closed because nothing had appended to them for an hour.
+    pub sealed: usize,
 }
 
 impl Swept {
     /// Whether the sweep found anything at all.
     pub fn is_empty(self) -> bool {
-        self.segments == 0 && self.over_cap == 0 && self.latest == 0
+        self.segments == 0 && self.over_cap == 0 && self.latest == 0 && self.sealed == 0
     }
 }
 
@@ -73,7 +85,15 @@ pub async fn sweep(
     before: DateTime<Utc>,
     max_rows: u64,
 ) -> Result<Swept, Error> {
-    // Age first: a segment past the horizon is gone whatever the counts say,
+    // Idle segments first: a parked log's row is open, and neither horizon
+    // below looks at an open row, so sealing is what makes the rest of this
+    // sweep able to see them at all.
+    let sealed = db
+        .stream_segments()
+        .seal_idle(STREAM_KIND, Utc::now() - IDLE_SEAL_AFTER)
+        .await?;
+
+    // Age next: a segment past the horizon is gone whatever the counts say,
     // and removing it is one fewer row for the cap's window function to add up.
     let segments = AppendLog::prune_before(db, streams_dir, before).await?;
     let over_cap = prune_over_cap(db, streams_dir, max_rows).await?;
@@ -83,6 +103,7 @@ pub async fn sweep(
         segments,
         over_cap,
         latest,
+        sealed,
     };
 
     if !swept.is_empty() {
@@ -90,6 +111,7 @@ pub async fn sweep(
             segments,
             over_cap,
             rows = latest,
+            sealed,
             "Removed CoT history past its retention."
         );
     }
@@ -153,10 +175,11 @@ mod tests {
     #[tokio::test]
     async fn an_open_segment_is_left_alone() {
         // The writer is still appending to it; unlinking it would take the
-        // history of whatever is happening right now.
+        // history of whatever is happening right now. The horizon is set past
+        // the segment's own last record, so only `sealed = 0` is protecting it.
         let dir = tempfile::tempdir().unwrap();
         let db = Database::open_in_memory().await.unwrap();
-        let old = Utc::now() - chrono::Duration::days(30);
+        let recent = Utc::now() - chrono::Duration::minutes(10);
 
         let mut log = AppendLog::open(
             &db,
@@ -167,14 +190,50 @@ mod tests {
         )
         .await
         .unwrap();
+        log.append(recent, b"live").await.unwrap();
+        log.flush().await.unwrap();
+
+        let swept = sweep(
+            &db,
+            dir.path(),
+            Utc::now() - chrono::Duration::minutes(5),
+            0,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(swept.sealed, 0);
+        assert_eq!(swept.segments, 0);
+    }
+
+    #[tokio::test]
+    async fn a_segment_nothing_has_appended_to_for_an_hour_is_sealed_so_it_can_be_pruned() {
+        // The writer parks an evicted log rather than sealing it, so the row
+        // stays open after the device goes quiet. Without this the segment
+        // would be kept for ever: every horizon below only sees sealed rows.
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open_in_memory().await.unwrap();
+        let old = Utc::now() - chrono::Duration::days(30);
+
+        let mut log = AppendLog::open(
+            &db,
+            dir.path(),
+            STREAM_KIND,
+            "UID-GONE",
+            AppendLogOptions::default(),
+        )
+        .await
+        .unwrap();
         log.append(old, b"ancient").await.unwrap();
         log.flush().await.unwrap();
+        drop(log);
 
         let swept = sweep(&db, dir.path(), Utc::now() - chrono::Duration::days(7), 0)
             .await
             .unwrap();
 
-        assert_eq!(swept.segments, 0);
+        assert_eq!(swept.sealed, 1);
+        assert_eq!(swept.segments, 1);
     }
 
     /// A stream with `segments` sealed one-record segments, oldest first.

@@ -40,6 +40,7 @@
 
 pub mod acme;
 pub mod auth;
+pub mod jobs;
 pub mod marti;
 pub mod oidc;
 pub mod pki;
@@ -57,6 +58,7 @@ use serde::{Deserialize, Serialize};
 
 pub use acme::{AcmeChallenge, AcmeConfig, AcmeDirectory};
 pub use auth::{AuthConfig, OAuthClient, OAuthServerConfig, RateLimitConfig};
+pub use jobs::JobsConfig;
 pub use marti::MartiConfig;
 pub use oidc::OidcConfig;
 pub use pki::{KeyType, PkiConfig};
@@ -110,6 +112,10 @@ pub struct Config {
     /// How long we keep things.
     #[serde(default)]
     pub retention: RetentionConfig,
+
+    /// How the background queue consumer handles failure and load.
+    #[serde(default)]
+    pub jobs: JobsConfig,
 }
 
 impl Config {

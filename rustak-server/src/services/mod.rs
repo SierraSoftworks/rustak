@@ -45,6 +45,7 @@
 //! Tests build one with `AppContext::new_mock`, which is compiled only under
 //! `cfg(test)` or the `testing` feature.
 
+pub mod http;
 pub mod late;
 mod mock;
 mod wiring;
@@ -104,6 +105,41 @@ pub type LiveConnections = crate::stream::LiveState;
 /// that cannot.
 pub const HTTP_USER_AGENT: &str = concat!("SierraSoftworks/rustak/", env!("CARGO_PKG_VERSION"));
 
+/// The shared outbound HTTP client, with `[server]`'s budgets on it.
+///
+/// reqwest has no default request timeout, and the failure that leaves open is
+/// the common partial one rather than a refused connection: an identity
+/// provider whose load balancer accepts and never answers. Without a timeout
+/// every administrator sign-in hangs on it, every token validation that needs a
+/// JWKS refresh joins the same stall behind the cache, and an ACME renewal job
+/// runs on past the reservation the host eventually reclaims.
+///
+/// # Errors
+///
+/// A [`Kind::System`](human_errors::Kind::System) error when the TLS backend
+/// cannot be initialised.
+fn http_client(config: &Config) -> Result<reqwest::Client, Error> {
+    let mut builder = reqwest::Client::builder()
+        .user_agent(HTTP_USER_AGENT)
+        // An idle pooled connection to an identity provider is worth keeping
+        // across a burst of sign-ins and worth dropping long before a NAT
+        // gateway silently forgets it.
+        .pool_idle_timeout(std::time::Duration::from_secs(90));
+
+    if let Some(budget) = config.server.http_budget() {
+        builder = builder.timeout(budget);
+    }
+
+    if let Some(budget) = config.server.http_connect_budget() {
+        builder = builder.connect_timeout(budget);
+    }
+
+    builder.build().or_system_err(&[
+        "This usually means the TLS backend could not be initialised.",
+        "Please report this issue to the development team via GitHub.",
+    ])
+}
+
 /// Everything the server is, in one cloneable handle.
 ///
 /// Built once during start-up and cloned into every listener, request handler
@@ -144,13 +180,7 @@ impl AppContext {
         session: Arc<Session>,
         shutdown: Shutdown,
     ) -> Result<Self, Error> {
-        let http_client = reqwest::Client::builder()
-            .user_agent(HTTP_USER_AGENT)
-            .build()
-            .or_system_err(&[
-                "This usually means the TLS backend could not be initialised.",
-                "Please report this issue to the development team via GitHub.",
-            ])?;
+        let http_client = http_client(&config)?;
 
         Ok(Self {
             config: Arc::new(config),
@@ -512,6 +542,42 @@ mod tests {
                 .is_none(),
             "the agent is applied by the client, not written into each request",
         );
+    }
+
+    #[tokio::test]
+    async fn an_endpoint_that_accepts_and_never_answers_does_not_hang_the_request() {
+        // The common partial failure, not a refused connection: reqwest has no
+        // default request timeout, so without `[server] http_timeout` every
+        // administrator sign-in behind this client would sit on a spinner until
+        // the browser gave up, holding an actix worker the whole time.
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/.well-known/openid-configuration"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_secs(30))
+                    .set_body_string("{}"),
+            )
+            .mount(&server)
+            .await;
+
+        let mut config = Config::default();
+        config.server.http_timeout = chrono::Duration::milliseconds(250);
+
+        let client = http_client(&config).unwrap();
+        let started = std::time::Instant::now();
+        let err = client
+            .get(format!("{}/.well-known/openid-configuration", server.uri()))
+            .send()
+            .await
+            .expect_err("a stalled provider should time out");
+
+        assert!(err.is_timeout(), "{err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 
     #[test]

@@ -8,6 +8,7 @@
 
 use crate::config::OidcConfig;
 use crate::prelude::*;
+use crate::services::http::{MAX_JSON_BYTES, body_within};
 
 use super::discovery::OidcDiscovery;
 
@@ -132,7 +133,7 @@ async fn token_request(
     rejection: &'static str,
     rejection_advice: &'static [&'static str],
 ) -> Result<TokenSet, Error> {
-    let tokens: ProviderTokens = http
+    let response = http
         .post(token_endpoint)
         .form(params)
         .send()
@@ -142,13 +143,20 @@ async fn token_request(
             ADVICE_PROVIDER,
         )?
         .error_for_status()
-        .wrap_user_err(rejection, rejection_advice)?
-        .json()
+        .wrap_user_err(rejection, rejection_advice)?;
+
+    // Capped rather than `.json()`; see `discovery::fetch`.
+    let body = body_within(response, MAX_JSON_BYTES)
         .await
         .wrap_system_err(
-            "Your identity provider's token response was not in a shape we could read.",
+            "We could not read your identity provider's token response.",
             ADVICE_PROVIDER,
         )?;
+
+    let tokens: ProviderTokens = serde_json::from_slice(&body).wrap_system_err(
+        "Your identity provider's token response was not in a shape we could read.",
+        ADVICE_PROVIDER,
+    )?;
 
     Ok(TokenSet {
         id_token: tokens.id_token,

@@ -45,6 +45,18 @@ pub(super) const ADVICE_STREAMS: &[&str] = &[
     "Check that the filesystem holding it has free space and free inodes.",
 ];
 
+/// How many segment files this process has created.
+///
+/// A rate that tracks the message rate means the history writer is thrashing:
+/// a healthy installation creates one segment per device per roll, not one per
+/// message. Worth an alert.
+static SEGMENTS_CREATED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many segment files this process has created since it started.
+pub fn segments_created() -> u64 {
+    SEGMENTS_CREATED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// What a scan of a segment file actually found in it.
 pub(super) struct Scan {
     /// Complete records.
@@ -131,10 +143,36 @@ impl Segment {
         let relative = format!("{directory}/{}", segment_name(first_time));
         let path = root.join(&relative);
 
-        // The file first: a file with no index row is read by nobody and
-        // superseded on the next roll, whereas a row created before its file
-        // would point at something that is not there.
-        let file = tokio::fs::OpenOptions::new()
+        // The directory is created here rather than only in `AppendLog::open`:
+        // retention removes a stream's directory once its last segment goes, so
+        // a log that was opened before that sweep and appends after it would
+        // otherwise fail with `ENOENT` for the life of the process.
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await.wrap_user_err(
+                format!(
+                    "We could not create the stream directory '{}'.",
+                    parent.display()
+                ),
+                ADVICE_STREAMS,
+            )?;
+        }
+
+        // The index row first, and the file second. A row whose file is missing
+        // is a state everything here already handles — `repair` reports it,
+        // `recover` seals it, retention unlinks nothing and deletes the row —
+        // whereas a file with no row is invisible to every one of them and
+        // leaks for the life of the volume.
+        let row = db
+            .stream_segments()
+            .create(NewStreamSegment {
+                stream_kind: kind.to_owned(),
+                stream_key: key.to_owned(),
+                segment_path: relative.clone(),
+                first_time,
+            })
+            .await?;
+
+        let created = tokio::fs::OpenOptions::new()
             .create_new(true)
             .append(true)
             .open(&path)
@@ -145,25 +183,17 @@ impl Segment {
                     path.display()
                 ),
                 ADVICE_STREAMS,
-            )?;
+            );
 
-        let indexed = db
-            .stream_segments()
-            .create(NewStreamSegment {
-                stream_kind: kind.to_owned(),
-                stream_key: key.to_owned(),
-                segment_path: relative.clone(),
-                first_time,
-            })
-            .await;
-
-        let row = match indexed {
-            Ok(row) => row,
+        let file = match created {
+            Ok(file) => file,
             Err(err) => {
-                let _ = tokio::fs::remove_file(&path).await;
+                let _ = db.stream_segments().delete(row.id).await;
                 return Err(err);
             }
         };
+
+        SEGMENTS_CREATED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         Ok(Self {
             id: row.id,

@@ -14,6 +14,7 @@
 
 use crate::config::OidcConfig;
 use crate::prelude::*;
+use crate::services::http::{MAX_JSON_BYTES, body_within};
 
 /// Where a cached discovery document lives.
 pub const DISCOVERY_PARTITION: &str = "oidc:discovery";
@@ -117,7 +118,8 @@ async fn fetch<T: DeserializeOwned>(
     url: &str,
     what: &'static str,
 ) -> Result<T, Error> {
-    http.get(url)
+    let response = http
+        .get(url)
         .send()
         .await
         .wrap_system_err(
@@ -128,13 +130,23 @@ async fn fetch<T: DeserializeOwned>(
         .wrap_system_err(
             format!("Your identity provider refused to hand over its {what}."),
             ADVICE_PROVIDER,
-        )?
-        .json()
+        )?;
+
+    // Capped rather than `.json()`: a provider that streams without end would
+    // otherwise stream into this server's memory, and this fetch sits inside
+    // the JWKS cache, so every token validation waiting on a refresh is behind
+    // it.
+    let body = body_within(response, MAX_JSON_BYTES)
         .await
         .wrap_system_err(
-            format!("Your identity provider's {what} was not in a shape we could read."),
+            format!("We could not read your identity provider's {what}."),
             ADVICE_PROVIDER,
-        )
+        )?;
+
+    serde_json::from_slice(&body).wrap_system_err(
+        format!("Your identity provider's {what} was not in a shape we could read."),
+        ADVICE_PROVIDER,
+    )
 }
 
 #[cfg(test)]

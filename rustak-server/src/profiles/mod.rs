@@ -28,6 +28,7 @@ pub mod builder;
 pub mod catalog;
 pub mod config_package;
 pub mod model;
+pub mod package;
 pub mod prefs;
 pub mod repo;
 pub mod service;
@@ -38,6 +39,7 @@ pub use builder::{
 };
 pub use config_package::{ConfigPackageInput, build_itak, build_wintak_atak};
 pub use model::{Delivery, NewProfile, ProfileFileRow, ProfileRow};
+pub use package::{multifile_package, profile_package};
 pub use prefs::{APP_PREFS, COT_STREAMS, PrefGroup, UserSettings, enrollment_defaults, render};
 pub use repo::ProfilesRepo;
 pub use service::{Assembled, ProfileService};

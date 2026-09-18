@@ -219,19 +219,41 @@ impl AppendLog {
     ///
     /// A [`human_errors::Kind::System`] error when the index cannot be written.
     pub async fn flush(&mut self) -> Result<(), Error> {
-        let Some(segment) = self.current.as_mut() else {
-            return Ok(());
+        let (id, relative, pending) = {
+            let Some(segment) = self.current.as_mut() else {
+                return Ok(());
+            };
+
+            let id = segment.id();
+            let Some(pending) = segment.take_pending() else {
+                return Ok(());
+            };
+
+            (id, segment.relative().to_owned(), pending)
         };
 
-        let id = segment.id();
-        let Some((last_time, records, bytes)) = segment.take_pending() else {
-            return Ok(());
-        };
+        let (last_time, records, bytes) = pending;
 
-        self.db
+        let indexed = self
+            .db
             .stream_segments()
             .record_append(id, last_time, records, bytes)
             .await?;
+
+        if !indexed {
+            // The row was sealed or deleted underneath us — by `forget`, by
+            // retention, or by the idle sweep. Carrying on would append into a
+            // file nothing indexes: the records would be unreadable and, when
+            // the file was unlinked, the space would be held until the process
+            // exited. So let go of it; the next append starts a fresh segment.
+            warn!(
+                segment = %relative,
+                records,
+                "A stream segment's index row is gone; rolling to a new segment."
+            );
+
+            self.current = None;
+        }
 
         Ok(())
     }
@@ -387,6 +409,26 @@ impl AppendLog {
 
     /// Reconciles an index row left open by the previous run with its file.
     async fn recover(&mut self, row: StreamSegmentRow) -> Result<(), Error> {
+        // The common case is not a crash: it is a log that was parked to make
+        // room in the writer's cache, whose file is exactly as long as its row
+        // says because parking flushes. One `stat` settles that, where the scan
+        // below reads up to `max_segment_bytes` — which at fleet scale would be
+        // the entire cost of a cache miss.
+        if let Ok(metadata) = tokio::fs::metadata(self.root.join(&row.segment_path)).await
+            && metadata.len() == row.byte_length
+        {
+            if row.byte_length >= self.options.max_segment_bytes {
+                self.db.stream_segments().seal(row.id).await?;
+                return Ok(());
+            }
+
+            let bytes = row.byte_length;
+
+            self.current = Some(Segment::adopt(&self.root, row, bytes).await?);
+
+            return Ok(());
+        }
+
         let Some(scan) = repair(&self.root.join(&row.segment_path), &row.segment_path).await?
         else {
             warn!(
@@ -483,6 +525,64 @@ mod tests {
 
     async fn log(db: &Database, root: &Path, options: AppendLogOptions) -> AppendLog {
         AppendLog::open(db, root, KIND, KEY, options).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_segment_whose_row_was_deleted_rolls_instead_of_appending_into_a_hole() {
+        // `cot_store::query::forget` unlinks a segment the writer may still
+        // hold open. Carrying on would write up to a whole segment's worth of
+        // records into an unreachable inode, holding the space until the
+        // process exited. The log notices at its next flush and rolls.
+        let db = database().await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut log = log(&db, dir.path(), AppendLogOptions::default()).await;
+
+        log.append(at(0), b"one").await.unwrap();
+        log.flush().await.unwrap();
+
+        let rows = db
+            .stream_segments()
+            .overlapping(KIND, KEY, at(-60), at(60))
+            .await
+            .unwrap();
+        let orphaned = rows[0].segment_path.clone();
+
+        db.stream_segments().delete(rows[0].id).await.unwrap();
+
+        log.append(at(1), b"two").await.unwrap();
+        log.flush().await.unwrap();
+        log.append(at(2), b"three").await.unwrap();
+        log.flush().await.unwrap();
+
+        let rows = db
+            .stream_segments()
+            .overlapping(KIND, KEY, at(-60), at(60))
+            .await
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_ne!(rows[0].segment_path, orphaned);
+        assert_eq!(rows[0].record_count, 1);
+    }
+
+    #[tokio::test]
+    async fn a_stream_directory_retention_removed_is_recreated_on_the_next_append() {
+        // `remove_indexed` removes a stream's directory with its last segment.
+        // A log opened before that sweep used to fail with `ENOENT` for the
+        // rest of the process's life, because only `open` created directories.
+        let db = database().await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut log = log(&db, dir.path(), AppendLogOptions::default()).await;
+
+        tokio::fs::remove_dir_all(log.directory()).await.unwrap();
+
+        log.append(at(0), b"one").await.unwrap();
+        log.flush().await.unwrap();
+
+        assert_eq!(
+            log.read_range(at(-60), at(60)).await.unwrap(),
+            vec![b"one".to_vec()]
+        );
     }
 
     #[tokio::test]

@@ -314,10 +314,23 @@ impl Database {
             .await
             .or_system_err(ADVICE_DB_ERROR)?;
 
-        if let Ok(writer) = Arc::try_unwrap(writer)
-            && let Err(err) = writer.close().await
-        {
-            warn!(error = %err, "The database connection did not close cleanly.");
+        // Joining the worker thread needs sole ownership of the writer, and on
+        // every path this is reached from the application context still holds a
+        // handle — it is shared with every task that has not finished unwinding
+        // yet. That is not a durability problem: `PRAGMA optimize` and the
+        // TRUNCATE checkpoint above both ran on this connection, so the file on
+        // disk is already complete and the log is already folded in. The thread
+        // ends when the last handle is dropped, which is moments later.
+        match Arc::try_unwrap(writer) {
+            Ok(writer) => {
+                if let Err(err) = writer.close().await {
+                    warn!(error = %err, "The database connection did not close cleanly.");
+                }
+            }
+            Err(shared) => debug!(
+                handles = Arc::strong_count(&shared),
+                "The database worker thread will end when the last handle is dropped."
+            ),
         }
 
         Ok(())

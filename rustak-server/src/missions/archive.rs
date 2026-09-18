@@ -115,12 +115,26 @@ impl MissionService {
                 .collect(),
         });
 
-        let borrowed: Vec<(String, &[u8])> = entries
-            .iter()
-            .map(|(name, data)| (name.clone(), data.as_slice()))
-            .collect();
+        // Deflated on a blocking thread: a mission of a few hundred megabytes
+        // of attachments is seconds of CPU, and an actix worker spending them
+        // is a worker not answering anything else.
+        let built = tokio::task::spawn_blocking(move || {
+            let borrowed: Vec<(String, &[u8])> = entries
+                .iter()
+                .map(|(name, data)| (name.clone(), data.as_slice()))
+                .collect();
 
-        Ok(write_package(&manifest, &borrowed)?)
+            write_package(&manifest, &borrowed)
+        })
+        .await
+        .map_err(|err| {
+            human_errors::system(
+                format!("A mission archive could not be built: {err}."),
+                &["Please report this issue to the development team via GitHub."],
+            )
+        })??;
+
+        Ok(built)
     }
 
     /// Archives a mission and stores the zip as an ordinary resource.
