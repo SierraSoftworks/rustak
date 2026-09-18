@@ -1349,6 +1349,495 @@ footer {
   }
 }
 
+// -----------------------------------------------------------------------------
+// Identity: accounts, devices, credentials and channels (M2)
+//
+// Every list below shares one shape — identity on the left, a wrapping row of
+// dimmed metadata beside it, then state and the actions on that row — so a
+// device row and a credential row read the same way even though they describe
+// different things.
+// -----------------------------------------------------------------------------
+
+// The mixin the four lists share, rather than four copies of the same rule.
+@mixin entity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+@mixin entity-row {
+  display: grid;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid $border-lighter;
+
+  li:last-child & {
+    border-bottom: none;
+  }
+}
+
+@mixin entity-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+  font-size: 0.8rem;
+  color: $text-secondary;
+  min-width: 0;
+}
+
+@mixin entity-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 0.8rem;
+  color: $danger;
+}
+
+// A row's own identity: a strong name over a monospaced identifier.
+@mixin entity-identity {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+
+  > :first-child {
+    font-weight: 600;
+    font-size: 0.9rem;
+  }
+}
+
+// The link from a listed account to its own page. Underlined only on hover,
+// because a list where every name is underlined reads as a wall of links.
+.user-row__name--link {
+  color: $brand;
+  text-decoration: none;
+
+  &:hover,
+  &:focus-visible {
+    text-decoration: underline;
+  }
+}
+
+.panel-empty {
+  margin: 0;
+  padding: 1.25rem 0;
+  font-size: 0.875rem;
+  color: $text-secondary;
+}
+
+// Whose page this is, above the tabs.
+.entity-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+
+  &__name {
+    margin: 0;
+    font-size: 1.15rem;
+    font-weight: 600;
+  }
+
+  &__meta {
+    margin: 0.2rem 0 0;
+    font-size: 0.8rem;
+    color: $text-secondary;
+  }
+
+  &__username {
+    font-family: $font-mono;
+  }
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-bottom: 1.25rem;
+  border-bottom: 1px solid $border-light;
+
+  &__tab {
+    appearance: none;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    padding: 0.55rem 0.9rem;
+    font: inherit;
+    font-size: 0.875rem;
+    color: $text-regular;
+    cursor: pointer;
+    transition: color $transition, border-color $transition;
+
+    &:hover {
+      color: $brand;
+    }
+
+    &--active {
+      color: $brand;
+      font-weight: 600;
+      border-bottom-color: $brand;
+    }
+  }
+}
+
+// A form laid out as a row of fields with the action at its end, for the
+// "create one of these" panels that sit above a list.
+.inline-form,
+.mint-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  // Top-aligned, not bottom-aligned: every label is one line, so starting them
+  // together is what puts the *inputs* on one line. Aligning the bottoms instead
+  // lines up the help text, which is the part that differs in height.
+  align-items: start;
+  gap: 0 1rem;
+
+  .field {
+    min-width: 0;
+  }
+
+  &__action {
+    display: flex;
+    align-items: center;
+    // Clears the label row above it, so the button sits on the line the inputs
+    // are on rather than above them.
+    padding-top: 1.55rem;
+  }
+}
+
+.credential-list {
+  @include entity-list;
+}
+
+.credential-row {
+  @include entity-row;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr) auto auto;
+
+  &__identity {
+    @include entity-identity;
+  }
+
+  &__kind {
+    font-size: 0.78rem;
+    color: $text-secondary;
+  }
+
+  &__meta {
+    @include entity-meta;
+  }
+
+  &__error {
+    @include entity-error;
+  }
+}
+
+.device-list {
+  @include entity-list;
+}
+
+.device-row {
+  @include entity-row;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto;
+
+  &__identity {
+    @include entity-identity;
+  }
+
+  &__uid {
+    font-family: $font-mono;
+    font-size: 0.78rem;
+    color: $text-secondary;
+    overflow-wrap: anywhere;
+  }
+
+  &__meta {
+    @include entity-meta;
+  }
+
+  &__error {
+    @include entity-error;
+  }
+}
+
+.channel-list {
+  @include entity-list;
+}
+
+.channel-row {
+  @include entity-row;
+  grid-template-columns: minmax(0, 1.2fr) auto minmax(0, 1.4fr) auto auto;
+
+  &--selected {
+    background: $brand-tint;
+  }
+
+  // The whole left-hand block selects the channel, so the target is a row
+  // rather than a word — but it is still a button, because that is what it does.
+  &__select {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.1rem;
+    appearance: none;
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    min-width: 0;
+  }
+
+  &__name {
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: $text-primary;
+  }
+
+  &__bitpos {
+    font-family: $font-mono;
+    font-size: 0.75rem;
+    color: $text-secondary;
+  }
+
+  &__error {
+    @include entity-error;
+  }
+}
+
+.member-list {
+  @include entity-list;
+}
+
+.member-row {
+  @include entity-row;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+
+  &__identity {
+    @include entity-identity;
+  }
+
+  &__username {
+    font-family: $font-mono;
+    font-size: 0.78rem;
+    color: $text-secondary;
+  }
+
+  &__note {
+    font-size: 0.78rem;
+    color: $text-secondary;
+  }
+
+  &__error {
+    @include entity-error;
+  }
+}
+
+// One channel per row with its two directions, used both on an account's
+// Channels tab and wherever a set of memberships is edited.
+.channel-picker {
+  @include entity-list;
+
+  &__row {
+    @include entity-row;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+
+  &__identity {
+    @include entity-identity;
+  }
+
+  &__meta {
+    font-size: 0.78rem;
+    color: $text-secondary;
+  }
+
+  &__actions {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 1rem;
+  }
+
+  &__saved {
+    font-size: 0.8rem;
+    color: $success;
+  }
+
+  &__empty {
+    margin: 0;
+    font-size: 0.875rem;
+    color: $text-secondary;
+  }
+}
+
+.profile-panel {
+  // The facts sit directly above an editable field, so they need the same gap
+  // any two form rows have — without one the value and the next label collide.
+  &__facts {
+    margin-bottom: 1.25rem;
+  }
+
+  &__toggles {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5rem;
+    margin: 0.5rem 0 1rem;
+  }
+
+  &__note {
+    margin: 0 0 1rem;
+    font-size: 0.8rem;
+    color: $text-secondary;
+  }
+}
+
+.detail-list__mono {
+  font-family: $font-mono;
+}
+
+// A destructive action that asks first: the question replaces the button, in
+// place, so the answer stays next to the thing it is about.
+.confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+
+  &__question {
+    font-size: 0.8rem;
+    color: $text-regular;
+    text-align: right;
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Secrets shown once: the panel, the copyable values and the QR code
+// -----------------------------------------------------------------------------
+
+.secret-reveal {
+  @include card;
+  border-color: $brand-tint-border;
+  background: $brand-tint;
+  margin-bottom: 1.5rem;
+  padding: 1.25rem;
+
+  &__header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+
+  &__title {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+  }
+
+  &__warning {
+    margin: 0.3rem 0 0;
+    max-width: 44rem;
+    font-size: 0.82rem;
+    line-height: 1.6;
+    color: $text-regular;
+  }
+
+  &__body {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 1.5rem;
+    margin-top: 1rem;
+  }
+
+  &__values {
+    flex: 1 1 22rem;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  &__qr {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    max-width: 16rem;
+  }
+
+  &__qr-note {
+    margin: 0;
+    font-size: 0.75rem;
+    line-height: 1.5;
+    color: $text-secondary;
+    text-align: center;
+  }
+}
+
+.copyable {
+  &__header {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    margin-bottom: 0.25rem;
+  }
+
+  &__label {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: $text-secondary;
+  }
+
+  &__note {
+    font-size: 0.75rem;
+    color: $success;
+
+    &--error {
+      color: $danger;
+    }
+  }
+
+  &__row {
+    display: flex;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+
+  &__value {
+    flex: 1;
+    min-width: 0;
+    padding: 0.45rem 0.6rem;
+    background: $bg-white;
+    border: 1px solid $border-base;
+    border-radius: $radius;
+    font-size: 0.8rem;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+
+    &--mono {
+      font-family: $font-mono;
+    }
+  }
+}
+
+.qr-code {
+  display: block;
+  border: 1px solid $border-base;
+  border-radius: $radius;
+  background: $bg-white;
+
+  &__error {
+    margin: 0;
+    font-size: 0.8rem;
+    color: $danger;
+  }
+}
+
 // The control gallery (debug builds only).
 .gallery {
   &__row {
@@ -1424,6 +1913,37 @@ footer {
       grid-column: 1 / -1;
       justify-self: start;
     }
+  }
+
+  .credential-row,
+  .device-row,
+  .channel-row,
+  .member-row,
+  .channel-picker__row {
+    grid-template-columns: minmax(0, 1fr);
+
+    // A grid item stretches to its column by default, which turns a pill into a
+    // banner and a button into a bar; these want their own width.
+    > .btn,
+    > .status-pill,
+    > .btn-group,
+    > .confirm,
+    > .switch {
+      justify-self: start;
+    }
+
+    .confirm {
+      justify-content: flex-start;
+    }
+  }
+
+  .entity-heading {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .secret-reveal__body {
+    flex-direction: column;
   }
 
   .passkey-add {

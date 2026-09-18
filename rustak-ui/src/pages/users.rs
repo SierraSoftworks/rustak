@@ -10,15 +10,17 @@
 use rustak_api::{User, UserPatch, UserSource, Username};
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
+use yew_router::prelude::*;
 
 use crate::api;
-use crate::app::AuthHandle;
+use crate::app::{AuthHandle, Route};
 use crate::components::{
     Alert, AlertKind, Button, ButtonGroup, ButtonKind, Card, LoadingNote, StatusPill, StatusTone,
 };
-use crate::util::optional_relative;
+use crate::util::{nav_href, optional_relative, urlencode};
 
 use super::load::{use_refresh_action, use_resource};
+use super::user_create::CreateUser;
 
 #[function_component(Users)]
 pub fn users() -> Html {
@@ -54,7 +56,38 @@ pub fn users() -> Html {
         },
     };
 
-    html! { <Card>{ body }</Card> }
+    html! {
+        <>
+            <CreateUser on_created={users.reload.clone()} />
+            <Card>{ body }</Card>
+        </>
+    }
+}
+
+/// The link from a row to that account's own page.
+///
+/// Demo mode lives in the query string and a client-side navigation replaces the
+/// whole URL, so following a `Link` out of a demo page would land on one talking
+/// to a server that is not there.
+fn open(user: &User) -> Html {
+    let label = user.display().to_string();
+
+    if crate::fixtures::is_demo() {
+        let href = nav_href(&format!(
+            "/admin/users/{}",
+            urlencode(user.username.as_str())
+        ));
+        return html! { <a class="user-row__name user-row__name--link" {href}>{ label }</a> };
+    }
+
+    html! {
+        <Link<Route>
+            to={Route::UserDetail { username: user.username.to_string() }}
+            classes="user-row__name user-row__name--link"
+        >
+            { label }
+        </Link<Route>>
+    }
 }
 
 #[derive(Properties, PartialEq)]
@@ -135,7 +168,7 @@ fn user_row(props: &UserRowProps) -> Html {
     html! {
         <div class="user-row">
             <div class="user-row__identity">
-                <span class="user-row__name">{ props.user.display().to_string() }</span>
+                { open(&props.user) }
                 <span class="user-row__username">{ props.user.username.to_string() }</span>
             </div>
 

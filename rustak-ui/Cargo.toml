@@ -66,6 +66,12 @@ web-sys = { version = "0.3", features = [
     "AuthenticatorAssertionResponse",
 ] }
 
+# A pure-Rust QR encoder. Default features are the `image`, `svg` and `pic`
+# renderers; none is used, because `components/qr_code.rs` walks the module
+# matrix and emits the SVG as Yew nodes — so nothing has to be injected as raw
+# HTML, and the crate brings no dependencies of its own to wasm.
+qrcode = { version = "0.14", default-features = false }
+
 base64 = "0.23"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

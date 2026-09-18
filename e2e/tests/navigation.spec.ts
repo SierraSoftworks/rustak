@@ -10,6 +10,12 @@
  * Every destination in the navigation strip is here from M0, even the ones
  * whose pages arrive in a later milestone, because a link that goes nowhere is
  * worse than one that says what it is waiting for.
+ *
+ * Since M2 three of them are real pages rather than stubs — Devices, Channels
+ * and Credentials — and one destination is reachable only from inside another:
+ * an account's own page, at `/admin/users/{username}`. It has no link in the
+ * strip on purpose, because it is about one row rather than one area, so it is
+ * tested as a deep link instead.
  */
 
 import { bootstrapAdmin, expect, gotoApp, signIn, test, waitForApp } from "./helpers";
@@ -49,6 +55,39 @@ test("every destination in the navigation strip opens the page it names", async 
     await page.getByRole("link", { name: label, exact: true }).click();
     await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
   }
+});
+
+test("an account's own page is a deep link, and the strip still says where it is", async ({
+  page,
+}) => {
+  // `Route::UserDetail` carries the username as a path segment, so this is both
+  // a router test and a server-fallback test: the path has two segments below
+  // `/admin`, and only the catch-all can answer it.
+  const response = await page.goto("/admin/users/avery");
+  expect(response?.status()).toBe(200);
+
+  await waitForApp(page);
+  await expect(page.getByRole("heading", { name: "Account", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Profile" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Channels" })).toBeVisible();
+
+  // One account's page is somewhere inside Users, so the strip must not read as
+  // though nothing is selected while it is open.
+  await expect(page.getByRole("link", { name: "Users", exact: true })).toHaveClass(
+    /admin-nav__link--active/,
+  );
+
+  await page.getByRole("link", { name: "Users", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Users", exact: true })).toBeVisible();
+});
+
+test("a name no account could have says so rather than failing to load", async ({ page }) => {
+  // `__anon__` is reserved, so `Username::parse` refuses it — which is not the
+  // same as an account that is missing, and the page says which of the two it is.
+  await page.goto("/admin/users/__anon__");
+  await waitForApp(page);
+
+  await expect(page.getByText("That is not a username.")).toBeVisible();
 });
 
 test("a deep link into the console is served by the single-page fallback", async ({ page }) => {

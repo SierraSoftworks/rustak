@@ -10,9 +10,10 @@
 use chrono::{DateTime, Duration, Utc};
 use rustak_api::{
     AuditCategory, AuditOutcome, AuditRecord, AuthMetadata, AuthMode, AuthVia, CaSummary,
-    ComponentStatus, Direction, GroupMembership, GroupName, Health, Me, MembershipSource,
-    PasskeyChallenge, PasskeyId, PasskeySummary, ServerSettings, SetupStatus, TokenResponse, User,
-    UserId, UserKind, UserSource, Username,
+    CertificateId, ComponentStatus, Credential, CredentialId, CredentialKind, Device, DeviceId,
+    DeviceUid, Direction, Group, GroupId, GroupMembership, GroupName, GroupSource, Health, Me,
+    MembershipSource, PasskeyChallenge, PasskeyId, PasskeySummary, ServerSettings, SetupStatus,
+    TokenResponse, User, UserId, UserKind, UserSource, Username,
 };
 
 /// A timestamp relative to now, so the fixtures never look stale.
@@ -65,7 +66,7 @@ pub fn token_response() -> TokenResponse {
     TokenResponse::new(demo_token(), "demo-mode-refresh-token", 3600)
 }
 
-fn memberships() -> Vec<GroupMembership> {
+pub fn memberships() -> Vec<GroupMembership> {
     vec![
         GroupMembership {
             group: GroupName::anon(),
@@ -349,4 +350,208 @@ const ENTRIES: &[Entry] = &[
 
 pub fn audit() -> Vec<AuditRecord> {
     ENTRIES.iter().map(Entry::build).collect()
+}
+
+/// The host the demo installation tells enrolling clients to come back to. It
+/// has to match [`server_settings`], because that is where a real enrolment URL
+/// gets its host from.
+pub const DEMO_HOST: &str = "tak.example.com";
+
+pub fn groups() -> Vec<Group> {
+    vec![
+        Group {
+            id: GroupId::new(1),
+            name: GroupName::anon(),
+            bitpos: 0,
+            description: Some("Everybody, unless an operator says otherwise.".to_string()),
+            source: GroupSource::System,
+        },
+        Group {
+            id: GroupId::new(2),
+            name: GroupName::from_storage("Blue Team"),
+            bitpos: 1,
+            description: Some("The friendly picture.".to_string()),
+            source: GroupSource::Oidc,
+        },
+        Group {
+            id: GroupId::new(3),
+            name: GroupName::from_storage("Command"),
+            bitpos: 2,
+            description: Some("Operations staff only.".to_string()),
+            source: GroupSource::Manual,
+        },
+        Group {
+            id: GroupId::new(4),
+            name: GroupName::from_storage("Logistics"),
+            bitpos: 3,
+            description: None,
+            source: GroupSource::Manual,
+        },
+    ]
+}
+
+/// Who is in what. Keyed by username, because that is how every endpoint that
+/// reads or writes a membership names an account.
+pub fn all_memberships() -> Vec<(Username, Vec<GroupMembership>)> {
+    vec![
+        (username("avery"), memberships()),
+        (
+            username("bhavna"),
+            vec![
+                GroupMembership {
+                    group: GroupName::anon(),
+                    direction: Direction::Both,
+                    source: Some(MembershipSource::Manual),
+                },
+                GroupMembership {
+                    group: GroupName::from_storage("Blue Team"),
+                    direction: Direction::Both,
+                    source: Some(MembershipSource::Oidc),
+                },
+            ],
+        ),
+        (
+            username("cormac"),
+            vec![GroupMembership {
+                group: GroupName::anon(),
+                direction: Direction::Both,
+                source: Some(MembershipSource::Manual),
+            }],
+        ),
+        (
+            username("service-weather"),
+            vec![GroupMembership {
+                group: GroupName::from_storage("Logistics"),
+                direction: Direction::Out,
+                source: Some(MembershipSource::Manual),
+            }],
+        ),
+    ]
+}
+
+pub fn devices() -> Vec<Device> {
+    vec![
+        Device {
+            id: DeviceId::new(1),
+            uid: DeviceUid::from_storage("ANDROID-2f1c9a7b4e0d"),
+            username: username("avery"),
+            callsign: Some("QUINN".to_string()),
+            platform: Some("Android".to_string()),
+            version: Some("5.2.0".to_string()),
+            device_model: Some("Pixel 8".to_string()),
+            first_seen_at: ago(60 * 24 * 21),
+            last_seen_at: ago(4),
+            last_ip: "203.0.113.24".parse().ok(),
+            last_certificate_id: Some(CertificateId::new(11)),
+        },
+        Device {
+            id: DeviceId::new(2),
+            uid: DeviceUid::from_storage("WINTAK-7b3e10cc"),
+            username: username("avery"),
+            callsign: Some("QUINN-DESK".to_string()),
+            platform: Some("Windows".to_string()),
+            version: Some("5.1.1".to_string()),
+            device_model: None,
+            first_seen_at: ago(60 * 24 * 14),
+            last_seen_at: ago(60 * 30),
+            last_ip: "198.51.100.7".parse().ok(),
+            last_certificate_id: Some(CertificateId::new(12)),
+        },
+        Device {
+            id: DeviceId::new(3),
+            uid: DeviceUid::from_storage("IOS-91ac4d55f207"),
+            username: username("bhavna"),
+            callsign: Some("RAO".to_string()),
+            platform: Some("iOS".to_string()),
+            version: Some("2.9.4".to_string()),
+            device_model: Some("iPhone 15".to_string()),
+            first_seen_at: ago(60 * 24 * 6),
+            last_seen_at: ago(48),
+            last_ip: "198.51.100.19".parse().ok(),
+            last_certificate_id: Some(CertificateId::new(13)),
+        },
+        Device {
+            id: DeviceId::new(4),
+            uid: DeviceUid::from_storage("SERVICE-weather"),
+            username: username("service-weather"),
+            callsign: Some("WX".to_string()),
+            platform: Some("rustak-sidecar".to_string()),
+            version: Some("0.1.0".to_string()),
+            device_model: None,
+            first_seen_at: ago(60 * 24 * 4),
+            last_seen_at: ago(1),
+            last_ip: "127.0.0.1".parse().ok(),
+            last_certificate_id: None,
+        },
+    ]
+}
+
+pub fn credentials() -> Vec<Credential> {
+    vec![
+        Credential {
+            id: CredentialId::new(1),
+            kind: CredentialKind::EnrollmentToken,
+            label: "Pixel 8".to_string(),
+            username: Some(username("avery")),
+            created_at: ago(60 * 24 * 21),
+            created_by: Some(username("avery")),
+            expires_at: Some(ago(60 * 24 * 21 - 15)),
+            max_uses: Some(1),
+            uses: 1,
+            last_used_at: Some(ago(60 * 24 * 21 - 2)),
+            revoked_at: None,
+        },
+        Credential {
+            id: CredentialId::new(2),
+            kind: CredentialKind::ClientPassword,
+            label: "CloudTAK".to_string(),
+            username: Some(username("avery")),
+            created_at: ago(60 * 24 * 9),
+            created_by: Some(username("avery")),
+            expires_at: Some(ago(-60 * 24 * 81)),
+            max_uses: None,
+            uses: 46,
+            last_used_at: Some(ago(12)),
+            revoked_at: None,
+        },
+        Credential {
+            id: CredentialId::new(3),
+            kind: CredentialKind::EnrollmentToken,
+            label: "iPhone 15".to_string(),
+            username: Some(username("bhavna")),
+            created_at: ago(9),
+            created_by: Some(username("avery")),
+            expires_at: Some(ago(-6)),
+            max_uses: Some(1),
+            uses: 0,
+            last_used_at: None,
+            revoked_at: None,
+        },
+        Credential {
+            id: CredentialId::new(4),
+            kind: CredentialKind::ServiceToken,
+            label: "Weather sidecar".to_string(),
+            username: Some(username("service-weather")),
+            created_at: ago(60 * 24 * 4),
+            created_by: Some(username("avery")),
+            expires_at: None,
+            max_uses: None,
+            uses: 1_204,
+            last_used_at: Some(ago(1)),
+            revoked_at: None,
+        },
+        Credential {
+            id: CredentialId::new(5),
+            kind: CredentialKind::EnrollmentToken,
+            label: "Spare handset".to_string(),
+            username: Some(username("cormac")),
+            created_at: ago(60 * 24 * 9),
+            created_by: Some(username("avery")),
+            expires_at: Some(ago(60 * 24 * 9 - 15)),
+            max_uses: Some(1),
+            uses: 0,
+            last_used_at: None,
+            revoked_at: Some(ago(60 * 24 * 5)),
+        },
+    ]
 }

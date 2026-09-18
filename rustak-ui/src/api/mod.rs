@@ -19,6 +19,9 @@
 
 pub mod audit;
 pub mod auth;
+pub mod credentials;
+pub mod devices;
+pub mod groups;
 pub mod health;
 pub mod settings;
 pub mod setup;
@@ -72,6 +75,7 @@ impl std::fmt::Display for ApiError {
 pub enum Verb {
     Get,
     Post,
+    Put,
     Patch,
     Delete,
 }
@@ -86,6 +90,7 @@ fn build<B: Serialize>(
     let builder = match verb {
         Verb::Get => Request::get(url),
         Verb::Post => Request::post(url),
+        Verb::Put => Request::put(url),
         Verb::Patch => Request::patch(url),
         Verb::Delete => Request::delete(url),
     };
@@ -203,4 +208,26 @@ pub async fn patch_json<B: Serialize, T: DeserializeOwned>(
     body: &B,
 ) -> Result<T, ApiError> {
     json_response(send(Verb::Patch, path, Some(body)).await?).await
+}
+
+/// PUTs a JSON body and deserialises the JSON response.
+///
+/// `PUT` is a replacement rather than a change: the caller sends the whole set
+/// it wants, which is what makes "these are this account's channels" one
+/// request instead of a grant and a revocation that could half-apply.
+pub async fn put_json<B: Serialize, T: DeserializeOwned>(
+    path: &str,
+    body: &B,
+) -> Result<T, ApiError> {
+    json_response(send(Verb::Put, path, Some(body)).await?).await
+}
+
+/// DELETEs a path. The server answers `204`, so there is no body to read.
+pub async fn delete_empty(path: &str) -> Result<(), ApiError> {
+    let response = send::<()>(Verb::Delete, path, None).await?;
+    if response.ok() {
+        Ok(())
+    } else {
+        Err(error_from_response(response).await)
+    }
 }

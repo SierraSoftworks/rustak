@@ -116,6 +116,9 @@ fn admin_nav() -> Html {
         // not appear unselected while the other is showing.
         let active = match (route, &current) {
             (Route::Dashboard, Route::Dashboard | Route::AdminRoot) => true,
+            // One account's page is somewhere inside Users, so the strip must
+            // not read as though nothing is selected while it is open.
+            (Route::Users, Route::Users | Route::UserDetail { .. }) => true,
             (route, current) => route == current,
         };
 

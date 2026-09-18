@@ -86,3 +86,36 @@ pub fn initials(name: &str) -> String {
 
     initials.to_uppercase()
 }
+
+/// How long to wait for the clipboard before giving up on it.
+///
+/// Not a nicety. A browser that has *denied* clipboard access does not reject
+/// `writeText` — in Chromium the promise simply never settles — so without a
+/// deadline the button would spin silently for ever and the person holding a
+/// one-time secret would have no idea whether it had been copied.
+const CLIPBOARD_TIMEOUT_MS: u32 = 3_000;
+
+/// Puts a value on the system clipboard, reporting whether it worked.
+///
+/// The asynchronous Clipboard API is the only one that does not need a
+/// synthetic selection, but it exists only in a secure context and a browser
+/// may refuse it outright — so the caller is told, and every place that offers
+/// a copy button shows the value beside it for somebody to take by hand.
+pub async fn copy_to_clipboard(value: &str) -> Result<(), String> {
+    let refused = "Your browser would not let us reach the clipboard. \
+                   Select the value and copy it by hand.";
+
+    let write =
+        wasm_bindgen_futures::JsFuture::from(window().navigator().clipboard().write_text(value));
+    let deadline = gloo_timers::future::TimeoutFuture::new(CLIPBOARD_TIMEOUT_MS);
+
+    futures::pin_mut!(write);
+    futures::pin_mut!(deadline);
+
+    match futures::future::select(write, deadline).await {
+        futures::future::Either::Left((Ok(_), _)) => Ok(()),
+        futures::future::Either::Left((Err(_), _)) | futures::future::Either::Right(_) => {
+            Err(refused.to_string())
+        }
+    }
+}

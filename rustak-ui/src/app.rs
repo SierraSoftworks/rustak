@@ -40,6 +40,9 @@ pub enum Route {
     Credentials,
     #[at("/admin/users")]
     Users,
+    /// One account, with its devices, credentials and channels.
+    #[at("/admin/users/:username")]
+    UserDetail { username: String },
     #[at("/admin/groups")]
     Groups,
     #[at("/admin/services")]
@@ -76,9 +79,13 @@ impl Route {
             ),
             Route::Credentials => (
                 "Credentials",
-                "Enrolment tokens and client passwords, shown once and revocable.",
+                "The credentials you hold, and the devices you enrolled with them.",
             ),
             Route::Users => ("Users", "Everyone who can sign in, and what they may do."),
+            Route::UserDetail { .. } => (
+                "Account",
+                "One account: who they are, what they carry, and what they can see.",
+            ),
             Route::Groups => ("Channels", "Who can see whose position reports."),
             Route::Services => ("Services", "The sidecars connected to this server."),
             Route::Missions => ("Missions", "Data Sync missions and their subscribers."),
@@ -269,8 +276,12 @@ fn switch(route: Route) -> Html {
         Route::Setup => html! { <pages::Setup /> },
         Route::AdminRoot | Route::Dashboard => admin(html! { <pages::Dashboard /> }),
         Route::Devices => admin(html! { <pages::Devices /> }),
-        Route::Credentials => admin(html! { <pages::Credentials /> }),
+        // The signed-in account's own, because that is what the server answers
+        // when a credentials request names nobody — so this page needs no
+        // administrative access and a person can enrol their own phone.
+        Route::Credentials => admin(html! { <pages::Me /> }),
         Route::Users => admin(html! { <pages::Users /> }),
+        Route::UserDetail { username } => admin(html! { <pages::UserDetail {username} /> }),
         Route::Groups => admin(html! { <pages::Groups /> }),
         Route::Services => admin(html! { <pages::Services /> }),
         Route::Missions => admin(html! { <pages::Missions /> }),

@@ -39,30 +39,6 @@ macro_rules! stub {
 }
 
 stub!(
-    Devices,
-    devices,
-    "M2",
-    "Every EUD that has enrolled, what it last connected as, and the certificate \
-     it presented — alongside the controls to revoke one."
-);
-
-stub!(
-    Credentials,
-    credentials,
-    "M2",
-    "One-time enrolment tokens with their QR codes, and the opt-in client \
-     passwords that exist only for clients which can do nothing better."
-);
-
-stub!(
-    Groups,
-    groups,
-    "M2",
-    "The channels this server routes by: who may write into each one, who may \
-     read out of it, and which of them a device currently has switched on."
-);
-
-stub!(
     Missions,
     missions,
     "M4",

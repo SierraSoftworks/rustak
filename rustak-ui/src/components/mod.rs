@@ -8,25 +8,34 @@
 mod admin_shell;
 mod alert;
 mod app_bar;
+mod confirm;
 mod form;
+mod groups_picker;
 mod helpers;
 mod layout;
 mod page_title;
+mod qr_code;
 mod secret_input;
+mod secret_reveal;
 mod status_pill;
 
 pub use admin_shell::{AdminShell, PageActions};
 pub use alert::{Alert, AlertKind};
 pub use app_bar::AppBar;
+pub use confirm::ConfirmButton;
 #[allow(unused_imports)]
 pub use form::{
     Button, ButtonGroup, ButtonKind, Field, NumberInput, Select, SelectOption, Switch, TextArea,
     TextInput,
 };
+pub use groups_picker::GroupsPicker;
 #[allow(unused_imports)]
 pub use helpers::{Card, Center, EmptyState, LoadingNote, RefreshButton, Stat};
 pub use layout::Layout;
 pub use page_title::PageTitle;
+pub use qr_code::QrCodeView;
 #[allow(unused_imports)]
 pub use secret_input::SecretInput;
+#[allow(unused_imports)]
+pub use secret_reveal::{Copyable, SecretReveal};
 pub use status_pill::{StatusPill, StatusTone};
