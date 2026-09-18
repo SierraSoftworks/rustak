@@ -1,4 +1,6 @@
-# rustak
+<p align="center">
+  <img src="docs/assets/icon.svg" alt="rustak" width="360" />
+</p>
 
 **A single-binary TAK server for ATAK and CloudTAK, secure by default.**
 

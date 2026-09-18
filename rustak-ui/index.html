@@ -10,11 +10,10 @@
       content="rustak is a lightweight, self-hosted TAK server admin console."
     />
     <title>rustak | Sierra Softworks</title>
-    <link
-      rel="icon"
-      href="https://cdn.sierrasoftworks.com/logos/logo.ico"
-      type="image/x-icon"
-    />
+    <!-- The favicon is the project mark from docs/assets, copied into dist by
+         Trunk so the server embeds it beside the bundle. -->
+    <link data-trunk rel="copy-file" href="../docs/assets/logo.svg" />
+    <link rel="icon" href="/logo.svg" type="image/svg+xml" />
     <link data-trunk rel="scss" href="styles.scss" />
     <link data-trunk rel="rust" data-bin="rustak-ui" />
   </head>

@@ -55,8 +55,8 @@ pub fn app_bar(props: &AppBarProps) -> Html {
             <div class="app-bar__inner">
                 <a class="app-bar__brand" href={nav_href("/admin")}>
                     <img
-                        src="https://cdn.sierrasoftworks.com/logos/icon.svg"
-                        alt="The Sierra Softworks logo."
+                        src="/logo.svg"
+                        alt="The rustak logo."
                     />
                     <span class="app-bar__brand-name">{ "rustak" }</span>
                 </a>
