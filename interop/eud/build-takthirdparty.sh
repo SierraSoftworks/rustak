@@ -69,14 +69,18 @@ OUT="${PWD}/builds/${TARGET}-release"
 for pkg in zlib libiconv libxml2 openssl nghttp2 curl ngtcp2 protobuf libmicrohttpd commoncommo; do
     echo "=== takthirdparty: ${pkg} (-j${JOBS}) ==="
     if [ "$pkg" = openssl ]; then
-        # mk/openssl.mk installs with an ungrouped multi-target rule
-        # (`$(openssl_out_libs): …` names lib/libssl.a *and* lib/libcrypto.a),
-        # so a parallel make runs `install_sw` once per target, concurrently,
-        # and the two installs trample each other (`install_dev` Error 1).
-        # Ask for one of the two first: that runs the (internally parallel)
-        # OpenSSL build and a single install, which produces both files, and
-        # the package target below then finds nothing left to do.
-        make TARGET="$TARGET" -j"$JOBS" commoncommo_BUILDJAVA= "${OUT}/lib/libcrypto.a"
+        # OpenSSL is built serially, and it is the only package that is.
+        # Two races have been seen under -j here: mk/openssl.mk installs with an
+        # ungrouped multi-target rule (`$(openssl_out_libs): …` names both
+        # lib/libssl.a and lib/libcrypto.a, so `install_sw` ran twice at once
+        # and `install_dev` failed), and OpenSSL's own unified Makefile, handed
+        # `build_libs build_apps …` as sibling goals, produced a truncated
+        # object while `ar` was already reading it (`libcrypto.a: error reading
+        # libcrypto-lib-ct_b64.o: file truncated`). -j1 removes both by
+        # construction; the cost is a few minutes on an image that is rebuilt
+        # only when its inputs change.
+        make TARGET="$TARGET" -j1 commoncommo_BUILDJAVA= "$pkg"
+        continue
     fi
     make TARGET="$TARGET" -j"$JOBS" commoncommo_BUILDJAVA= "$pkg"
 done
