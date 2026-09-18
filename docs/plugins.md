@@ -12,11 +12,12 @@ visible in the admin UI — and a plugin can be written in any language that can
 open a TLS socket. `rustak-client` exists to make the Rust version of that a
 hundred lines rather than a thousand.
 
-> **Status (M1).** The harness and the CoT stream are real and run today: a
-> plugin with a `[server] stream` connects, reconnects, receives and publishes.
-> The Marti client lands in M2 and the `/api/v1/services/*` control API in M6;
-> the shape they arrive through — `Sidecar::on_event` and `SidecarEvent` — is
-> already here, so a plugin written now keeps compiling when they land.
+> **Status (M6).** All of it runs today: the CoT stream, the typed Marti client,
+> the `/api/v1/services/*` control API and the server-event feed. A plugin with a
+> `[server] stream` connects, reconnects, receives and publishes; one with a
+> `[server] control` registers itself, reports a heartbeat on every tick, and
+> receives `SidecarEvent::Server`; one with a `[server] marti` reaches missions,
+> files, channels and contacts through `ctx.marti()`.
 
 ## The identity model
 
@@ -64,16 +65,24 @@ start-up stays a safe thing to do.
 
 ```bash
 cp -r rustak-plugin-example rustak-plugin-adsb
+sed -i '' 's/rustak-plugin-example/rustak-plugin-adsb/g' \
+  rustak-plugin-adsb/Cargo.toml rustak-plugin-adsb/Dockerfile
+cargo run -p rustak-plugin-adsb -- --config rustak-plugin-adsb/config.example.toml --check
 ```
+
+Three occurrences in `Cargo.toml` and `Dockerfile` carry the name — the package,
+the `[[bin]]`, and the `ADD`/`ENTRYPOINT` paths — and `--check` is what proves
+the copy is a crate the workspace builds and a binary that reads its own example
+file. There is nothing to add to the root manifest: the workspace picks up
+`rustak-*` by glob.
 
 Then, in the copy:
 
-1. rename the package and the `[[bin]]` in `Cargo.toml` (the workspace picks up
-   `rustak-*` by glob, so there is nothing to add to the root manifest);
-2. update the `Dockerfile`'s `ADD`/`ENTRYPOINT` paths and its image description;
-3. add the crate to the `build` matrix in `.github/workflows/rust.yml` (see
+1. reword the `description` in `Cargo.toml` and the image description in the
+   `Dockerfile`, which the `sed` above leaves saying "example";
+2. add the crate to the `build` matrix in `.github/workflows/rust.yml` (see
    `docs/ci.md`) so it is cross-compiled and published like the others;
-4. write your plugin.
+3. write your plugin.
 
 Every dependency comes from the workspace (`dep = { workspace = true }`), and
 `rustak-client` re-exports what you need from `rustak-core`, so the manifest
@@ -142,8 +151,9 @@ go through) is one to log and swallow in the plugin, not one to return. A
 connection that drops is *not* one of these: it arrives as
 `SidecarEvent::Disconnected` and the harness reopens it.
 
-`SidecarEvent` is `#[non_exhaustive]`: match it with a `_` arm, and the variants
-M2 and M6 add are an additive change rather than a broken build.
+`SidecarEvent` is `#[non_exhaustive]`: match it with a `_` arm, and a variant a
+later release adds is an additive change rather than a broken build. `Server` is
+the one M6 added, and a plugin written against M1 kept compiling.
 
 ### The CoT stream
 
@@ -160,6 +170,10 @@ negotiation on your behalf, and hands you everything else:
 
 Control traffic never reaches a plugin: pings, pongs and the negotiation
 exchange are answered inside the client.
+
+`SidecarEvent::Server` arrives on the same `on_event` and comes from the
+server-event feed rather than the stream — see "Reacting to server events"
+below.
 
 **Publishing is a return value, not a socket.** `tick` and `on_event` return the
 `rustak_cot::Event`s to write, and the harness writes them in order. Nothing is
@@ -259,22 +273,176 @@ a server, if you point the sidecar's `[server] stream` at a listener of your
 own. That is how `rustak-client`'s own harness test proves connect → receive →
 publish → drop → reconnect.
 
-## The control API (M6)
+## Registering with the server
 
-Registration and health are not wired up yet. When they are, they will be these
-routes, authenticated with the service token:
+Set `[server] control` and the harness does three things for you:
 
-| Route | What it is for |
+| When | What it does |
 |---|---|
-| `POST /api/v1/services` | Register a `ServiceDescriptor`; list what is registered |
-| `POST /api/v1/services/<name>/heartbeat` | `ServiceState` plus whatever metrics the plugin wants recorded |
-| `GET`/`PUT /api/v1/services/<name>/config` | Per-service configuration key/value store |
-| `GET /api/v1/events` | Server-event SSE feed: client connect/disconnect, mission changes, group changes, package uploads |
+| Before `start` | `POST /api/v1/services/register` with the `ServiceDescriptor` built from `[service]` and `[server]` |
+| After every `tick` | `POST /api/v1/services/<name>/heartbeat` with a healthy state |
+| Continuously | Holds `GET /api/v1/events` open and delivers what arrives as `SidecarEvent::Server` |
 
-The harness will call the first two for you — registration in `start`, a
-heartbeat on each `tick` — and deliver the feed to `on_event` as further
-`SidecarEvent` variants. The DTOs already exist in `rustak_api::service`, so a
-plugin can be written against them today.
+None of them can stop a plugin. A control API that refuses a registration, loses
+a heartbeat or drops the feed is logged and retried, because the CoT a plugin
+publishes is the part that matters and a server that cannot take a heartbeat
+right now has not stopped taking events. What the server does about the silence
+is its own business: a registration that has not reported for ninety seconds is
+moved back to *not reporting*, which the admin UI draws as needing attention.
+
+Registration is an **upsert keyed on the service's name**, so a sidecar that
+restarts registers again rather than failing, and its configuration and its last
+known health survive. The one rule the server enforces is that a name belongs to
+the account that claimed it: registering under a name another account holds is a
+`409`, not a takeover.
+
+If an administrator removes the registration while the plugin is running, the
+next heartbeat is a `404` — and the harness registers again rather than exiting.
+
+### Saying more than "healthy"
+
+The harness's heartbeat is the floor. A plugin with something to report reaches
+the client itself:
+
+```rust
+use rustak_api::{Heartbeat, ServiceState};
+
+if let Some(control) = self.context.as_ref().and_then(|ctx| ctx.control()) {
+    let _ = control
+        .heartbeat(&Heartbeat {
+            state: ServiceState::Degraded,
+            message: Some("The upstream feed has not answered for 4 minutes.".into()),
+            metrics: serde_json::json!({ "events_published": 1204, "queue_depth": 3 }),
+        })
+        .await;
+}
+```
+
+`metrics` is whatever your plugin says it is; it is rendered in the admin UI
+as-is, so nothing secret belongs in it. Swallow the failure, as above — a
+heartbeat that did not go through is not a reason to stop.
+
+### Per-service configuration
+
+`GET/PUT /api/v1/services/<name>/config` is a JSON object an administrator sets
+and the service reads. **The service may read only its own, and only an
+administrator may write one** — a plugin that could rewrite its own
+configuration would make the admin UI's copy a suggestion rather than a setting.
+
+```rust
+#[derive(Deserialize)]
+struct Tuning {
+    interval_seconds: u64,
+}
+
+let tuning: Tuning = control.config_as().await?;
+```
+
+Reading it on a tick is what lets a setting changed in the UI reach the sidecar
+without anybody restarting it.
+
+### Two credentials
+
+A service token authenticates `/api/v1/services/*` and nothing else; the client
+certificate authenticates everything (and the control API too, so a sidecar that
+has enrolled needs no token at all). The token exists for the case where the
+plugin has no certificate **yet** — which is also what `rustak_client::enroll`
+is for:
+
+```rust
+use rustak_client::enroll::{Enrolment, enroll};
+
+let enrolled = enroll(&Enrolment {
+    marti: "https://tak.example.com:8443",
+    username: "svc.adsb",
+    secret: &Secret::new(std::env::var("RUSTAK_ENROLLMENT_TOKEN")?),
+    client_uid: "SERVICE-adsb",
+    truststore: None,
+})
+.await?;
+
+let paths = enrolled.write_to("/etc/rustak", "adsb")?;
+```
+
+The private key is generated in the plugin's own process and never sent: what
+crosses the wire is a signing request carrying the public half. An enrolment
+token is one-time and is spent only once the certificate has been issued, so a
+failed enrolment leaves it usable — and a sidecar enrols when it has no
+certificate rather than on every start.
+
+## Reacting to server events
+
+`GET /api/v1/events` is a Server-Sent Events feed of what happened on the
+server. The harness holds it open, reopens it when it drops, resumes from the
+last event it saw, and delivers each one as `SidecarEvent::Server`:
+
+| Event | When |
+|---|---|
+| `client.connected` / `client.disconnected` | A device joined or left the CoT stream |
+| `mission.changed` | A mission was created, changed, shared or deleted |
+| `channel.changed` | An account's channel membership or selection changed |
+| `package.uploaded` | A file or mission package arrived in enterprise sync |
+| `service.status` | A registered service reported its health, or stopped reporting it |
+
+```rust
+use rustak_client::control::ServerEventPayload;
+
+async fn on_event(&mut self, event: SidecarEvent) -> Result<Vec<Event>, Error> {
+    if let SidecarEvent::Server(event) = &event
+        && let ServerEventPayload::ClientConnected(client) = &event.payload
+    {
+        info!(username = %client.username, "A client joined the stream.");
+    }
+
+    Ok(Vec::new())
+}
+```
+
+An event **says that something changed, not what it now is**: read the new state
+back through the API that owns it. That is what keeps an event small enough that
+a slow consumer falls behind by kilobytes, and what keeps the feed free of
+anything secret — no tokens, no certificate material, no file contents, no peer
+addresses.
+
+Each event carries an `id` that increases by one. A plugin that keeps state
+watches for a **gap**: it means the feed was down for longer than the server's
+ring of recent events, and whatever the plugin was tracking should be re-read.
+The ids restart at 1 when the server does, which reads as an id lower than the
+last one seen.
+
+The feed is for administrators and services. An ordinary account is refused,
+because it says which devices are on the stream and which packages arrived
+across every channel.
+
+## The Marti API
+
+`[server] marti` gives `ctx.marti()`, a typed client over the same certificate:
+
+```rust
+let missions = marti.missions().list(None).await?;
+let subscription = marti.missions().subscribe("OPS", ctx.identity().uid().as_str(), None).await?;
+
+// Later calls about that mission present the token it handed back.
+let changes = marti
+    .missions()
+    .with_token(subscription.token.unwrap_or_default())
+    .changes("OPS", 60)
+    .await?;
+
+let uploaded = marti
+    .files()
+    .upload(&Upload::named("track.zip"), bytes)
+    .await?;
+
+let online = marti.contacts().connected().await?;
+let channels = marti.groups().receiving().await?;
+```
+
+Every call answers a `human_errors::Error` carrying the server's own words, so a
+`403` from a channel a service is not in reads as that rather than as a status
+code. The fields a plugin acts on are typed; the parts TAK itself treats as
+opaque stay `serde_json::Value`, and nothing uses `deny_unknown_fields` — the
+wire shape is TAK's and grows.
 
 ## See also
 

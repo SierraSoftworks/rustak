@@ -33,6 +33,11 @@ name = "example"
 # none. It is a credential, so it belongs in the environment rather than here;
 # an unset variable is refused at start-up by name rather than sent as literal
 # "${{ env.… }}" text.
+#
+# Mint one in the admin UI against this service's account, or with
+# `POST /api/v1/credentials` and kind "service_token". Without it — and without
+# the client certificate below — the control API refuses this sidecar, and the
+# harness logs that and carries on publishing CoT.
 # token = "${{ env.RUSTAK_SERVICE_TOKEN }}"
 
 # The client certificate and private key this service opens the CoT stream with,
@@ -62,7 +67,14 @@ name = "example"
 # The Marti API. Default: none.
 # marti = "https://tak.example.com:8443"
 
-# The service control API. Default: none.
+# The service control API — the admin API's host, which is usually the same one
+# the UI is on. Default: none.
+#
+# Set it and the harness registers this sidecar before `start`, reports a
+# heartbeat after every tick, and opens `GET /api/v1/events` — so the plugin's
+# `on_event` starts receiving `SidecarEvent::Server`: clients connecting and
+# disconnecting, missions changing, packages arriving. Leave it unset and the
+# plugin runs exactly as it did before, publishing CoT and nothing else.
 # control = "https://tak.example.com:8446"
 
 

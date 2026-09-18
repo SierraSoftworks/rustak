@@ -58,6 +58,7 @@
 //! See `docs/plugins.md` for the operator-facing version of all of this.
 
 pub mod config;
+mod control_link;
 mod link;
 pub mod run;
 
@@ -68,10 +69,14 @@ use rustak_core::service::{ServiceDescriptor, ServiceIdentity};
 use rustak_cot::Event;
 use tracing::Span;
 
+use crate::control::{ControlClient, ServerEvent};
+use crate::marti::MartiClient;
+
 pub use async_trait::async_trait;
 pub use config::{HarnessConfig, NoSettings, ServerConfig, ServiceConfig, SidecarConfig};
 pub use run::{Args, drive, run, run_with};
 
+pub(crate) use control_link::ControlLink;
 pub(crate) use link::Link;
 
 /// Something the sidecar harness noticed that a plugin may want to react to.
@@ -121,6 +126,15 @@ pub enum SidecarEvent {
     /// Boxed because a CoT event is an order of magnitude larger than the other
     /// variants and a plugin passes events around by value.
     Cot(Box<Event>),
+
+    /// Something happened on the server that a plugin may want to react to: a
+    /// device joined the stream, a mission changed, a package arrived.
+    ///
+    /// Delivered only when `[server] control` is set, from
+    /// `GET /api/v1/events`. The harness reopens the feed when it drops and
+    /// resumes from the last event it saw, so a plugin sees a gap in the ids
+    /// rather than a silence it has to notice for itself.
+    Server(Box<ServerEvent>),
 }
 
 /// Everything the harness knows, handed to the plugin when it starts.
@@ -136,6 +150,8 @@ pub struct SidecarContext<S = NoSettings> {
     identity: ServiceIdentity,
     descriptor: ServiceDescriptor,
     config: Arc<SidecarConfig<S>>,
+    marti: Option<Arc<MartiClient>>,
+    control: Option<Arc<ControlClient>>,
     shutdown: Shutdown,
     span: Span,
 }
@@ -168,13 +184,58 @@ impl<S> SidecarContext<S> {
             uid = %identity.uid(),
         );
 
+        // One HTTPS client behind both, so a sidecar that uses both APIs shares
+        // a connection pool and a TLS session cache rather than opening two of
+        // everything. Built only when something is configured to call: a plugin
+        // that only publishes CoT reads no certificate it does not need.
+        let http = match (&config.server.marti, &config.server.control) {
+            (None, None) => None,
+            _ => Some(crate::http::client(
+                &identity,
+                crate::http::DEFAULT_TIMEOUT,
+            )?),
+        };
+
+        let marti = match (&config.server.marti, &http) {
+            (Some(base), Some(http)) => Some(Arc::new(MartiClient::with_http(base, http.clone())?)),
+            _ => None,
+        };
+        let control = match (&config.server.control, &http) {
+            (Some(base), Some(http)) => Some(Arc::new(ControlClient::with_http(
+                base,
+                http.clone(),
+                &identity,
+            )?)),
+            _ => None,
+        };
+
         Ok(Self {
             identity,
             descriptor,
             config: Arc::new(config),
+            marti,
+            control,
             shutdown,
             span,
         })
+    }
+
+    /// The Marti API client, when `[server] marti` names one.
+    ///
+    /// [`None`] is a plugin that was not configured to call it, which is the
+    /// ordinary case for one that only publishes CoT.
+    pub fn marti(&self) -> Option<&MartiClient> {
+        self.marti.as_deref()
+    }
+
+    /// The control-API client, when `[server] control` names one.
+    ///
+    /// The harness already registers this sidecar and reports a heartbeat on
+    /// every tick through it; this is for a plugin that wants to say more than
+    /// "healthy" — its own metrics, a degraded state, or the configuration an
+    /// administrator set for it.
+    pub fn control(&self) -> Option<&ControlClient> {
+        self.control.as_deref()
     }
 
     /// Who this sidecar is, including the credentials it connects with.
@@ -221,6 +282,8 @@ impl<S> Clone for SidecarContext<S> {
             identity: self.identity.clone(),
             descriptor: self.descriptor.clone(),
             config: self.config.clone(),
+            marti: self.marti.clone(),
+            control: self.control.clone(),
             shutdown: self.shutdown.clone(),
             span: self.span.clone(),
         }

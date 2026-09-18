@@ -23,12 +23,22 @@
 //!
 //! # The loop
 //!
-//! One `select!` over three things: the shutdown signal, the tick interval, and
-//! the CoT stream. A tick or an inbound event becomes a call
-//! into the plugin, and whatever the plugin returns is written to the stream
-//! before the loop comes round again. A sidecar with no `[server] stream` has a
-//! link that is never ready, so it is the same loop with one branch that never
-//! fires.
+//! One `select!` over four things: the shutdown signal, the tick interval, the
+//! CoT stream, and the server-event feed. A tick or an inbound event becomes a
+//! call into the plugin, and whatever the plugin returns is written to the
+//! stream before the loop comes round again. A sidecar with no `[server] stream`
+//! has a link that is never ready, and one with no `[server] control` has a feed
+//! that is never ready, so it is the same loop with branches that never fire.
+//!
+//! # Registration and heartbeats
+//!
+//! A sidecar with `[server] control` registers itself before
+//! [`Sidecar::start`] and reports a heartbeat after every tick, without the
+//! plugin writing a line. Both are best-effort: a control API that is down is
+//! logged and retried, never a reason to stop publishing CoT. A plugin that
+//! wants to report more than "healthy" — its own metrics, a degraded state —
+//! calls [`SidecarContext::control`] itself and the harness's heartbeat becomes
+//! the floor rather than the whole story.
 //!
 //! The connection is opened *before* [`Sidecar::start`], so an operator who got
 //! the connect string or the certificate paths wrong is told that rather than
@@ -46,6 +56,7 @@ use std::path::PathBuf;
 
 use clap::{CommandFactory, FromArgMatches, Parser};
 use futures::StreamExt;
+use rustak_api::Heartbeat;
 use rustak_core::config;
 use rustak_core::errors::report_and_exit;
 use rustak_core::prelude::*;
@@ -54,7 +65,7 @@ use rustak_core::telemetry::{self, TelemetryOptions};
 use rustak_cot::Event;
 use tracing::Instrument;
 
-use super::{Link, Sidecar, SidecarConfig, SidecarContext, SidecarEvent};
+use super::{ControlLink, Link, Sidecar, SidecarConfig, SidecarContext, SidecarEvent};
 
 /// The command line every sidecar shares.
 #[derive(Clone, Debug, Parser)]
@@ -215,6 +226,8 @@ enum Woken {
     Tick,
     /// The CoT stream produced something.
     Stream(SidecarEvent),
+    /// The server-event feed produced something.
+    Server(SidecarEvent),
 }
 
 /// [`drive`], inside the context's span.
@@ -229,6 +242,13 @@ async fn tick_until_shutdown<S: Sidecar>(
     // Before `start`, so that a connect string or a certificate the operator
     // got wrong is reported instead of the plugin's own start-up work.
     let mut link = Link::open(&context)?;
+    let mut control = ControlLink::open(&context);
+
+    // Registration is best-effort and happens before `start`, so that a plugin
+    // whose own start-up reads its per-service configuration finds a
+    // registration to read it from. A server that refused it is logged, not
+    // fatal — see `ControlLink`.
+    control.register().await;
 
     sidecar.start(context).await?;
     tracing::info!(?interval, stream = ?link.endpoint(), "The sidecar has started.");
@@ -248,11 +268,20 @@ async fn tick_until_shutdown<S: Sidecar>(
             () = shutdown.cancelled() => break,
             _ = ticker.tick() => Woken::Tick,
             Some(event) = link.next() => Woken::Stream(event),
+            Some(event) = control.next() => Woken::Server(SidecarEvent::Server(Box::new(event))),
         };
 
         let published: Vec<Event> = match woken {
-            Woken::Tick => sidecar.tick().await?,
-            Woken::Stream(event) => sidecar.on_event(event).await?,
+            Woken::Tick => {
+                let published = sidecar.tick().await?;
+
+                // After the plugin's own tick, so that a heartbeat says how the
+                // sidecar is *after* the work rather than before it.
+                control.heartbeat(&Heartbeat::healthy()).await;
+
+                published
+            }
+            Woken::Stream(event) | Woken::Server(event) => sidecar.on_event(event).await?,
         };
 
         // Raced against the shutdown because a write into a connection that is

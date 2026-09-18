@@ -35,7 +35,14 @@ tokio = { workspace = true }
 tokio-rustls = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
-reqwest = { workspace = true }
+# `query` on top of the workspace features: the Marti API puts almost everything
+# in the query string, and building those by hand is how a repeated parameter
+# ends up comma-joined. Features are additive, so this asks for one more rather
+# than replacing the set.
+reqwest = { workspace = true, features = ["query"] }
+# Enrolment generates the sidecar's key pair and its signing request locally;
+# the private half never leaves the process.
+rcgen = { workspace = true }
 futures = { workspace = true }
 tokio-util = { workspace = true }
 bytes = { workspace = true }
@@ -50,7 +57,7 @@ human-errors = { workspace = true }
 # and 25 seconds and are not worth waiting for in a test suite.
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
-# A throwaway certificate authority for the TLS handshake test; the client's
-# default build speaks nothing else, so the handshake has to be exercised.
-rcgen = { workspace = true }
 rustls = { workspace = true }
+# The Marti and control clients are tested against a stub server rather than a
+# real one: what they are being held to is the bytes they send.
+wiremock = { workspace = true }

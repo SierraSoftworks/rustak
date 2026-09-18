@@ -1,0 +1,396 @@
+//! Getting a sidecar its certificate, the way an ATAK device gets one.
+//!
+//! A service is a client like any other, so it enrols like one: it generates a
+//! key, sends a signing request to `POST /Marti/api/tls/signClient/v2` under HTTP
+//! Basic with a one-time enrolment token, and keeps what comes back. There is no
+//! sidecar-shaped shortcut, which is the point — anything a plugin can do, a
+//! well-behaved client could do.
+//!
+//! ```no_run
+//! # async fn example() -> Result<(), human_errors::Error> {
+//! use rustak_client::enroll::{Enrolment, enroll};
+//! use rustak_core::identity::Secret;
+//!
+//! let enrolled = enroll(&Enrolment {
+//!     marti: "https://tak.example.com:8443",
+//!     username: "svc.weather",
+//!     secret: &Secret::new(std::env::var("RUSTAK_ENROLLMENT_TOKEN").unwrap()),
+//!     client_uid: "SERVICE-weather",
+//!     truststore: None,
+//! })
+//! .await?;
+//!
+//! enrolled.write_to("/etc/rustak", "weather")?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # The private key never leaves this process
+//!
+//! It is generated here, written here, and the server never sees it: what
+//! crosses the wire is a signing request carrying the *public* key. That is why
+//! there is no "download my certificate" call to re-run — a lost key is a
+//! re-enrolment, not a recovery.
+//!
+//! # The token is spent
+//!
+//! An enrolment token is one-time by default, and the server consumes it only
+//! once the certificate has been issued and recorded. A failed enrolment
+//! therefore leaves the token usable, and a successful one leaves it spent — so
+//! a sidecar enrols when it has no certificate and not on every start.
+
+use std::path::{Path, PathBuf};
+
+use rustak_core::prelude::*;
+use rustak_core::service::ServiceIdentity;
+
+use crate::http;
+
+/// What the sign response carries, once it is JSON.
+#[derive(Debug, Deserialize)]
+struct Signed {
+    /// The issued certificate, as bare base64 with no PEM armour.
+    #[serde(rename = "signedCert")]
+    signed_cert: String,
+
+    /// `ca0`, `ca1`, … — one per link of the chain, zero-indexed.
+    #[serde(flatten)]
+    chain: std::collections::BTreeMap<String, String>,
+}
+
+/// What to enrol as, and where.
+#[derive(Debug, Clone)]
+pub struct Enrolment<'a> {
+    /// The Marti API, e.g. `https://tak.example.com:8443`.
+    pub marti: &'a str,
+
+    /// The account to enrol. The certificate's common name is this, and the
+    /// server refuses a signing request that claims any other.
+    pub username: &'a str,
+
+    /// The enrolment token or client password, presented over HTTP Basic.
+    pub secret: &'a Secret,
+
+    /// The device identifier this certificate is recorded against, which for a
+    /// service is `SERVICE-<name>`.
+    pub client_uid: &'a str,
+
+    /// A truststore to verify the *server* with during enrolment.
+    ///
+    /// [`None`] uses the platform's roots, which is right for a server behind a
+    /// public certificate and wrong for one behind its own CA — an installation
+    /// with a private CA has to distribute it before a sidecar can enrol, exactly
+    /// as it does for a device.
+    pub truststore: Option<&'a Path>,
+}
+
+/// A freshly issued identity: the certificate, its key, and the CA chain.
+#[derive(Debug, Clone)]
+pub struct Enrolled {
+    /// The issued certificate, PEM.
+    pub certificate_pem: String,
+
+    /// Its private key, PKCS#8 PEM. Generated locally and never sent.
+    pub key_pem: String,
+
+    /// The chain the server sent, PEM, leaf-issuer first. This is the
+    /// truststore a sidecar verifies the server with from now on.
+    pub truststore_pem: String,
+}
+
+impl Enrolled {
+    /// Writes the three files and answers the paths.
+    ///
+    /// They are named `<name>.pem`, `<name>.key` and `truststore.pem` inside
+    /// `directory`, which is what `[service] certificate`, `key` and `truststore`
+    /// then point at.
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::User`] error when the directory cannot be written.
+    pub fn write_to(&self, directory: impl AsRef<Path>, name: &str) -> Result<Paths, Error> {
+        let directory = directory.as_ref();
+        let paths = Paths {
+            certificate: directory.join(format!("{name}.pem")),
+            key: directory.join(format!("{name}.key")),
+            truststore: directory.join("truststore.pem"),
+        };
+
+        std::fs::create_dir_all(directory).map_err(|err| cannot_write(directory, err))?;
+
+        for (path, contents) in [
+            (&paths.certificate, &self.certificate_pem),
+            (&paths.key, &self.key_pem),
+            (&paths.truststore, &self.truststore_pem),
+        ] {
+            std::fs::write(path, contents).map_err(|err| cannot_write(path, err))?;
+        }
+
+        Ok(paths)
+    }
+}
+
+/// Where [`Enrolled::write_to`] put the three files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Paths {
+    pub certificate: PathBuf,
+    pub key: PathBuf,
+    pub truststore: PathBuf,
+}
+
+impl Paths {
+    /// Attaches these files to an identity, as `[service]` would have.
+    #[must_use]
+    pub fn attach(&self, identity: ServiceIdentity) -> ServiceIdentity {
+        identity
+            .with_client_cert(&self.certificate, &self.key)
+            .with_truststore(&self.truststore)
+    }
+}
+
+/// Enrols, and answers the certificate, the key and the chain.
+///
+/// # Errors
+///
+/// A [`human_errors::Kind::User`] error when the URL is not one we can call, the
+/// key cannot be generated, the server refuses the credential (which is what a
+/// spent one-time token looks like), or the answer is not one we can read.
+#[instrument("client.enroll", skip_all, fields(username = %request.username), err(Display))]
+pub async fn enroll(request: &Enrolment<'_>) -> Result<Enrolled, Error> {
+    let mut identity = ServiceIdentity::new(ServiceName::parse("enrolment").map_err(|err| {
+        human_errors::user(err.to_string(), &["Please report this issue via GitHub."])
+    })?);
+
+    if let Some(truststore) = request.truststore {
+        identity = identity.with_truststore(truststore);
+    }
+
+    let client = http::client(&identity, http::DEFAULT_TIMEOUT)?;
+    let base = http::base_url(request.marti, "marti")?;
+    let (csr, key) = signing_request(request.username)?;
+
+    let response = client
+        .post(http::endpoint(&base, "/Marti/api/tls/signClient/v2")?)
+        .basic_auth(request.username, Some(request.secret.expose()))
+        .query(&[("clientUid", request.client_uid), ("version", "3")])
+        .header("accept", "application/json")
+        .body(csr)
+        .send()
+        .await
+        .map_err(|err| http::transport(err, "ask the server to sign a certificate"))?;
+
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+
+    if !status.is_success() {
+        return Err(refused(status));
+    }
+
+    let signed: Signed = serde_json::from_str(&body).map_err(|err| {
+        human_errors::user(
+            format!("The server's enrolment answer was not one we can read ({err})."),
+            &[
+                "Check that [server] marti names the TAK API, which is usually port 8443.",
+                "A proxy that rewrites the response body will break enrolment.",
+            ],
+        )
+    })?;
+
+    Ok(Enrolled {
+        certificate_pem: armour(&signed.signed_cert),
+        key_pem: key,
+        truststore_pem: chain(&signed),
+    })
+}
+
+/// A fresh key and the signing request that carries its public half.
+fn signing_request(username: &str) -> Result<(String, String), Error> {
+    let key = rcgen::KeyPair::generate().map_err(|err| {
+        human_errors::user(
+            format!("Could not generate a private key ({err})."),
+            &["This usually means the platform's random number source is unavailable."],
+        )
+    })?;
+
+    let mut params = rcgen::CertificateParams::default();
+    params.distinguished_name = rcgen::DistinguishedName::new();
+    // The common name is the only part of the subject the server reads, and it
+    // has to be the account being enrolled: everything else is replaced with the
+    // installation's own organisation on the certificate that comes back.
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, username);
+
+    let csr = params.serialize_request(&key).and_then(|csr| csr.pem());
+
+    match csr {
+        Ok(csr) => Ok((csr, key.serialize_pem())),
+        Err(err) => Err(human_errors::user(
+            format!("Could not build a signing request for '{username}' ({err})."),
+            &["Check that [service] name is a name a certificate can carry."],
+        )),
+    }
+}
+
+/// The CA chain, in the order the server numbered it.
+///
+/// `ca0`, `ca1`, … are the keys; a `BTreeMap` orders them lexically, which is
+/// the same order for any chain a certificate authority will ever have.
+fn chain(signed: &Signed) -> String {
+    signed
+        .chain
+        .iter()
+        .filter(|(key, _)| key.starts_with("ca"))
+        .map(|(_, value)| armour(value))
+        .collect()
+}
+
+/// Rebuilds the PEM armour around the bare base64 the server sends.
+///
+/// Both ATAK and CloudTAK do this themselves, which is why the server sends it
+/// bare; a client that forgot would hand rustls something it cannot parse.
+fn armour(bare: &str) -> String {
+    let body: String = bare.split_whitespace().collect::<Vec<_>>().join("\n");
+
+    format!("-----BEGIN CERTIFICATE-----\n{body}\n-----END CERTIFICATE-----\n")
+}
+
+/// What each way of being refused means for whoever is holding the token.
+fn refused(status: reqwest::StatusCode) -> Error {
+    let advice: &[&str] = match status.as_u16() {
+        401 => &[
+            "An enrolment token is one-time: mint a new one if this one has been used.",
+            "Check the username — it is the account's, not the service's display name.",
+        ],
+        403 => &["The signing request names a different account than the credential does."],
+        429 => &["Too many attempts. Wait for the lockout to pass and try again."],
+        503 => &["This installation has no certificate authority yet."],
+        _ => &["The status above is the server's own."],
+    };
+
+    human_errors::user(
+        format!("The server refused the enrolment ({status})."),
+        advice,
+    )
+}
+
+/// A file that could not be written, named.
+fn cannot_write(path: &Path, err: std::io::Error) -> Error {
+    human_errors::user(
+        format!("Could not write '{}': {err}.", path.display()),
+        &["Check that the directory exists and that this process may write to it."],
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use wiremock::matchers::{header, method, path as path_matcher, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use super::*;
+
+    /// The shape the server answers with: bare base64, no armour anywhere.
+    fn signed_body() -> serde_json::Value {
+        serde_json::json!({
+            "signedCert": "TEVBRg==",
+            "ca0": "SU5URVJNRURJQVRF",
+            "ca1": "Uk9PVA==",
+        })
+    }
+
+    async fn enrolled(server: &MockServer) -> Result<Enrolled, Error> {
+        enroll(&Enrolment {
+            marti: &server.uri(),
+            username: "svc.weather",
+            secret: &Secret::new("one-time-token"),
+            client_uid: "SERVICE-weather",
+            truststore: None,
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn enrolling_sends_a_signing_request_and_keeps_the_key() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_matcher("/Marti/api/tls/signClient/v2"))
+            .and(query_param("clientUid", "SERVICE-weather"))
+            .and(query_param("version", "3"))
+            .and(header("accept", "application/json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(signed_body()))
+            .mount(&server)
+            .await;
+
+        let enrolled = enrolled(&server).await.unwrap();
+
+        assert!(
+            enrolled
+                .certificate_pem
+                .starts_with("-----BEGIN CERTIFICATE-----"),
+            "{}",
+            enrolled.certificate_pem
+        );
+        assert!(
+            enrolled.key_pem.contains("PRIVATE KEY"),
+            "the key is generated locally and is the only copy",
+        );
+        assert_eq!(
+            enrolled.truststore_pem.matches("BEGIN CERTIFICATE").count(),
+            2,
+            "both chain links are kept, in the order the server numbered them",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_spent_token_says_to_mint_another() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("Unauthorized"))
+            .mount(&server)
+            .await;
+
+        let err = enrolled(&server).await.unwrap_err();
+
+        assert!(err.is(human_errors::Kind::User), "{err}");
+        assert!(err.to_string().contains("one-time"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn the_three_files_land_where_the_configuration_expects_them() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(signed_body()))
+            .mount(&server)
+            .await;
+        let directory = tempfile::tempdir().unwrap();
+
+        let paths = enrolled(&server)
+            .await
+            .unwrap()
+            .write_to(directory.path().join("pki"), "weather")
+            .unwrap();
+
+        assert!(paths.certificate.ends_with("weather.pem"));
+        assert!(paths.key.ends_with("weather.key"));
+        assert!(paths.truststore.ends_with("truststore.pem"));
+
+        let identity = paths.attach(ServiceIdentity::new(ServiceName::parse("weather").unwrap()));
+        assert!(identity.has_client_cert());
+        assert_eq!(identity.truststore(), Some(paths.truststore.as_path()));
+    }
+
+    #[test]
+    fn a_signing_request_names_the_account_and_carries_no_private_key() {
+        let (csr, key) = signing_request("svc.weather").unwrap();
+
+        assert!(
+            csr.starts_with("-----BEGIN CERTIFICATE REQUEST-----"),
+            "{csr}"
+        );
+        assert!(
+            !csr.contains("PRIVATE KEY"),
+            "the request carries the public half and nothing else",
+        );
+        assert!(key.contains("PRIVATE KEY"));
+    }
+}

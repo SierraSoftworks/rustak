@@ -1,0 +1,275 @@
+//! The control API: registering a sidecar, reporting its health, reading the
+//! configuration an administrator set for it, and consuming the server-event
+//! feed.
+//!
+//! ```no_run
+//! # async fn example(control: &rustak_client::control::ControlClient) -> Result<(), human_errors::Error> {
+//! use rustak_api::Heartbeat;
+//!
+//! control.heartbeat(&Heartbeat::healthy()).await?;
+//!
+//! let settings = control.config().await?;
+//! println!("{settings}");
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Two credentials, and which one is used
+//!
+//! A sidecar's *primary* identity is its client certificate, which is what the
+//! CoT stream and the Marti API authenticate. The control API also accepts a
+//! **service token**, because a plugin may need to reach it before it has a
+//! certificate — to find out what it is meant to be doing, or to report that its
+//! enrolment failed. [`ControlClient`] presents the token when one is
+//! configured and lets the certificate speak for itself when one is not; the
+//! server prefers the certificate when both arrive.
+//!
+//! # Nothing here stops a sidecar
+//!
+//! Every call answers a `Result`, and the harness treats a failed registration or
+//! a heartbeat that did not land as something to log and carry on from. A control
+//! API that is briefly unavailable is not a reason to stop publishing CoT — the
+//! feed the plugin exists to serve is the part that matters, and the server
+//! notices the missing heartbeats on its own.
+
+mod events;
+mod register;
+
+use rustak_core::prelude::*;
+use rustak_core::service::ServiceIdentity;
+use url::Url;
+
+use crate::http;
+
+pub use events::{
+    ChannelEvent, ClientEvent, EventStream, MissionEvent, PackageEvent, ServerEvent,
+    ServerEventPayload, ServiceEvent,
+};
+
+/// The path prefix every control-API route sits under.
+pub const CONTROL_ROOT: &str = "/api/v1";
+
+/// A client for one server's control API.
+#[derive(Clone, Debug)]
+pub struct ControlClient {
+    http: reqwest::Client,
+    base: Url,
+    name: ServiceName,
+    token: Option<Secret>,
+}
+
+impl ControlClient {
+    /// Builds a client for `base`, authenticating as `identity`.
+    ///
+    /// `base` is `[server] control`, e.g. `https://tak.example.com:8446`.
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::User`] error when the URL is not one we can call,
+    /// or when the certificate, key or truststore the identity names cannot be
+    /// read.
+    pub fn new(base: &str, identity: &ServiceIdentity) -> Result<Self, Error> {
+        Self::with_http(
+            base,
+            http::client(identity, http::DEFAULT_TIMEOUT)?,
+            identity,
+        )
+    }
+
+    /// Builds a client over an HTTP client somebody else made.
+    ///
+    /// This is how a sidecar shares one connection pool with the Marti client,
+    /// and how a test points this one at `wiremock`.
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::User`] error when `base` is not an http or https
+    /// URL.
+    pub fn with_http(
+        base: &str,
+        http: reqwest::Client,
+        identity: &ServiceIdentity,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            http,
+            base: http::base_url(base, "control")?,
+            name: identity.name().clone(),
+            token: identity.credential().cloned(),
+        })
+    }
+
+    /// The service this client speaks for.
+    pub fn name(&self) -> &ServiceName {
+        &self.name
+    }
+
+    /// The server this client calls.
+    pub fn base(&self) -> &Url {
+        &self.base
+    }
+
+    /// A request against a control-API path, carrying the service token when one
+    /// is configured.
+    pub(crate) fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+        let url = http::endpoint(&self.base, &format!("{CONTROL_ROOT}{path}"))
+            .map(String::from)
+            .unwrap_or_else(|_| path.to_string());
+        let request = self.http.request(method, url);
+
+        match &self.token {
+            Some(token) => request.bearer_auth(token.expose()),
+            None => request,
+        }
+    }
+
+    /// Sends a request and refuses anything but a success status.
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::User`] error carrying whatever the server said —
+    /// the admin API's `{"error": …}` body, when it sent one.
+    pub(crate) async fn send(
+        &self,
+        request: reqwest::RequestBuilder,
+        what: &str,
+    ) -> Result<reqwest::Response, Error> {
+        let response = self.raw(request, what).await?;
+
+        succeeded(response, what).await
+    }
+
+    /// Sends a request and answers whatever came back, status and all.
+    ///
+    /// For the one caller that reads a status as an answer rather than a
+    /// failure: a heartbeat's `404` means "register again".
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::User`] error when the server could not be
+    /// reached at all.
+    pub(crate) async fn raw(
+        &self,
+        request: reqwest::RequestBuilder,
+        what: &str,
+    ) -> Result<reqwest::Response, Error> {
+        request
+            .send()
+            .await
+            .map_err(|err| http::transport(err, what))
+    }
+}
+
+/// Refuses anything but a success status, carrying the server's own words.
+///
+/// # Errors
+///
+/// A [`human_errors::Kind::User`] error — see [`refused`].
+pub(crate) async fn succeeded(
+    response: reqwest::Response,
+    what: &str,
+) -> Result<reqwest::Response, Error> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+
+    let body = response.text().await.unwrap_or_default();
+
+    Err(refused(status, &body, what))
+}
+
+/// What the admin API answers a failure with.
+#[derive(Debug, Deserialize)]
+struct ApiErrorBody {
+    #[serde(default)]
+    error: String,
+}
+
+/// Turns a control-API refusal into something an operator can act on.
+fn refused(status: reqwest::StatusCode, body: &str, what: &str) -> Error {
+    let detail = serde_json::from_str::<ApiErrorBody>(body)
+        .ok()
+        .filter(|parsed| !parsed.error.trim().is_empty())
+        .map(|parsed| parsed.error.trim().to_string())
+        .unwrap_or_else(|| status.to_string());
+
+    let advice: &[&str] = match status.as_u16() {
+        401 => &[
+            "Set [service] token to a service token minted for this service's account.",
+            "Write it as \"${{ env.RUSTAK_SERVICE_TOKEN }}\" and supply it from the environment.",
+        ],
+        403 => &[
+            "A service may only act on its own registration.",
+            "Check that [service] name matches the account the token belongs to.",
+        ],
+        404 => &["Register the service before reporting on it."],
+        409 => &["Another account already holds that service name. Choose another."],
+        _ => &["The message above is the server's own."],
+    };
+
+    human_errors::user(format!("Could not {what}: {detail}."), advice)
+}
+
+#[cfg(test)]
+mod tests {
+    use rustak_core::identity::ServiceName;
+
+    use super::*;
+
+    #[test]
+    fn a_client_presents_the_token_when_one_is_configured() {
+        let bare = ServiceIdentity::new(ServiceName::parse("weather").unwrap());
+        let held = bare.clone().with_credential(Secret::new("rsk_secret"));
+
+        let without = ControlClient::with_http(
+            "https://tak.example.com:8446",
+            reqwest::Client::new(),
+            &bare,
+        )
+        .unwrap();
+        let with = ControlClient::with_http(
+            "https://tak.example.com:8446",
+            reqwest::Client::new(),
+            &held,
+        )
+        .unwrap();
+
+        assert!(without.token.is_none());
+        assert!(with.token.is_some());
+        assert!(
+            !format!("{with:?}").contains("rsk_secret"),
+            "a client is logged at start-up and must not carry its token into the log",
+        );
+    }
+
+    #[test]
+    fn a_refusal_says_what_to_do_about_it() {
+        let unauthorised = refused(
+            reqwest::StatusCode::UNAUTHORIZED,
+            r#"{"error":"That credential is not one this server accepts."}"#,
+            "register",
+        );
+        let conflict = refused(
+            reqwest::StatusCode::CONFLICT,
+            r#"{"error":"The service name 'weather' is registered to a different account."}"#,
+            "register",
+        );
+
+        assert!(unauthorised.is(human_errors::Kind::User));
+        assert!(
+            unauthorised.description().contains("not one this server"),
+            "{unauthorised}"
+        );
+        assert!(
+            conflict.description().contains("different account"),
+            "{conflict}"
+        );
+    }
+
+    #[test]
+    fn a_refusal_with_no_body_still_names_the_status() {
+        let err = refused(reqwest::StatusCode::BAD_GATEWAY, "", "send a heartbeat");
+
+        assert!(err.description().contains("502"), "{err}");
+    }
+}

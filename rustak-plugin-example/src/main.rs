@@ -2,16 +2,21 @@
 //!
 //! A plugin is a process that connects to a rustak server as a service identity
 //! and does something useful with CoT. This one does the smallest thing that is
-//! still a plugin: it appears on the map as a contact, re-appears there after
-//! every reconnection, logs what arrives on the stream, and stops cleanly when
-//! it is asked to. Everything else a real plugin does — reading a feed,
-//! filtering a channel, reporting to the control API — hangs off the same three
-//! methods.
+//! still a plugin: it registers itself, appears on the map as a contact,
+//! re-appears there after every reconnection, logs what arrives on the stream
+//! and what the server tells it on the event feed, and stops cleanly when it is
+//! asked to. Everything else a real plugin does — reading a feed, filtering a
+//! channel, filing content into a mission — hangs off the same three methods.
+//!
+//! Registration and heartbeats are the harness's, not this file's: set
+//! `[server] control` and they happen. What is here is the *reacting* half —
+//! `SidecarEvent::Server`, which is the server-event feed.
 //!
 //! Copy this crate to start a new plugin; `docs/plugins.md` has the recipe.
 
 use std::time::Duration;
 
+use rustak_client::control::ServerEventPayload;
 use rustak_client::sidecar::{Sidecar, SidecarContext, SidecarEvent, async_trait, run};
 use rustak_core::prelude::*;
 use rustak_cot::Event;
@@ -93,6 +98,10 @@ struct ExampleSidecar {
 
     /// How many heartbeats this process has logged.
     heartbeats: u64,
+
+    /// How many devices have joined the stream since this sidecar started,
+    /// counted off the server-event feed rather than by watching for CoT.
+    clients_seen: u64,
 }
 
 impl ExampleSidecar {
@@ -186,6 +195,23 @@ impl Sidecar for ExampleSidecar {
             SidecarEvent::Cot(event) => {
                 info!(uid = %event.uid, r#type = %event.r#type, "A CoT event arrived.");
             }
+            // The server-event feed: what happened on the server, rather than
+            // what came down the CoT stream. A plugin that only publishes has no
+            // use for it; one that reacts to who is online, to a mission
+            // changing or to a package arriving does.
+            SidecarEvent::Server(event) => match &event.payload {
+                ServerEventPayload::ClientConnected(client) => {
+                    self.clients_seen += 1;
+
+                    info!(
+                        username = %client.username,
+                        uid = client.uid.as_deref().unwrap_or("(not yet said)"),
+                        clients_seen = self.clients_seen,
+                        "A client joined the stream.",
+                    );
+                }
+                other => debug!(event = %event.name(), ?other, "The server said something."),
+            },
             _ => debug!("An event this sidecar does not handle yet."),
         }
 
@@ -195,6 +221,7 @@ impl Sidecar for ExampleSidecar {
     async fn stop(&mut self) -> Result<(), Error> {
         info!(
             heartbeats = self.heartbeats,
+            clients_seen = self.clients_seen,
             "The example sidecar is stopping."
         );
 
@@ -226,7 +253,7 @@ mod tests {
 
         ExampleSidecar {
             context: Some(context),
-            heartbeats: 0,
+            ..ExampleSidecar::default()
         }
     }
 
@@ -304,6 +331,32 @@ mod tests {
             .unwrap();
 
         assert!(quiet.is_empty(), "there is nowhere to publish to");
+    }
+
+    #[tokio::test]
+    async fn a_client_joining_the_stream_is_counted_off_the_server_event_feed() {
+        // What `[server] control` buys a plugin: it hears that a device joined
+        // without watching for its situational-awareness message, and without
+        // polling `/Marti/api/clientEndPoints`.
+        use rustak_client::control::{ClientEvent, ServerEvent, ServerEventPayload};
+
+        let mut sidecar = started();
+
+        let published = sidecar
+            .on_event(SidecarEvent::Server(Box::new(ServerEvent {
+                id: 1,
+                at: "2026-09-18T12:00:00.000Z".parse().unwrap(),
+                payload: ServerEventPayload::ClientConnected(ClientEvent {
+                    username: "ada".into(),
+                    uid: Some("ANDROID-1".into()),
+                    callsign: Some("ADA".into()),
+                }),
+            })))
+            .await
+            .unwrap();
+
+        assert_eq!(sidecar.clients_seen, 1);
+        assert!(published.is_empty(), "noticing is not a reason to publish");
     }
 
     #[tokio::test]

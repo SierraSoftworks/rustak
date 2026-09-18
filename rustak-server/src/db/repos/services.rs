@@ -19,7 +19,7 @@ use crate::db::{
 /// The columns [`ServiceRow::from_row`] expects, in order.
 const COLUMNS: &str = "id, name, user_id, display_name, description, version, capabilities, \
                        endpoints, config, status, status_message, last_heartbeat_at, enabled, \
-                       created_at, updated_at";
+                       created_at, updated_at, metrics";
 
 /// One row of `services`.
 #[derive(Debug, Clone, PartialEq)]
@@ -41,6 +41,10 @@ pub struct ServiceRow {
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// The latest numbers the service reported with its heartbeat, whatever it
+    /// decided those were. Replaced rather than accumulated; `{}` until the
+    /// first heartbeat carries any.
+    pub metrics: serde_json::Value,
 }
 
 impl ServiceRow {
@@ -61,6 +65,7 @@ impl ServiceRow {
             enabled: bool_col(row, 12)?,
             created_at: ts(row, 13)?,
             updated_at: ts(row, 14)?,
+            metrics: json_col(row, 15)?,
         })
     }
 }
@@ -215,14 +220,22 @@ impl<'a> ServicesRepo<'a> {
         id: ServiceId,
         state: ServiceState,
         message: Option<String>,
+        metrics: serde_json::Value,
     ) -> Result<bool, Error> {
         let changed = self
             .db
             .write(move |tx| {
                 tx.execute(
                     "UPDATE services \
-                     SET status = ?2, status_message = ?3, last_heartbeat_at = ?4 WHERE id = ?1",
-                    rusqlite::params![id.get(), state.as_str(), message, Timestamp::now()],
+                     SET status = ?2, status_message = ?3, last_heartbeat_at = ?4, metrics = ?5 \
+                     WHERE id = ?1",
+                    rusqlite::params![
+                        id.get(),
+                        state.as_str(),
+                        message,
+                        Timestamp::now(),
+                        to_json(&metrics)?,
+                    ],
                 )
             })
             .await?;
@@ -345,6 +358,7 @@ mod tests {
         assert_eq!(registered.version.as_deref(), Some("1.2.3"));
         assert_eq!(registered.capabilities.len(), 1);
         assert_eq!(registered.config, serde_json::json!({}));
+        assert_eq!(registered.metrics, serde_json::json!({}));
         assert!(registered.enabled);
         assert_eq!(
             db.services().get(registered.id).await.unwrap().unwrap(),
@@ -361,7 +375,7 @@ mod tests {
             .await
             .unwrap();
         db.services()
-            .record_heartbeat(first.id, ServiceState::Healthy, None)
+            .record_heartbeat(first.id, ServiceState::Healthy, None, serde_json::json!({}))
             .await
             .unwrap();
 
@@ -404,6 +418,7 @@ mod tests {
                 registered.id,
                 ServiceState::Degraded,
                 Some("Upstream feed is slow.".into()),
+                serde_json::json!({ "queue_depth": 3 }),
             )
             .await
             .unwrap();
@@ -414,6 +429,7 @@ mod tests {
             read.status_message.as_deref(),
             Some("Upstream feed is slow.")
         );
+        assert_eq!(read.metrics, serde_json::json!({ "queue_depth": 3 }));
         assert!(read.last_heartbeat_at.is_some());
     }
 
@@ -422,7 +438,12 @@ mod tests {
         let (db, user) = fixture().await;
         let registered = db.services().register(service(user)).await.unwrap();
         db.services()
-            .record_heartbeat(registered.id, ServiceState::Healthy, Some("Fine.".into()))
+            .record_heartbeat(
+                registered.id,
+                ServiceState::Healthy,
+                Some("Fine.".into()),
+                serde_json::json!({}),
+            )
             .await
             .unwrap();
 
