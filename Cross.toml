@@ -1,0 +1,16 @@
+# rustak cross-compilation configuration.
+#
+# Unlike automate, rustak needs no `protobuf-compiler` (rustak-cot builds its
+# wire format with `protox`, a pure-Rust protoc substitute, so nothing ever
+# shells out to a system `protoc`) and no `libssl-dev` (TLS is rustls/aws-lc-rs
+# throughout, never OpenSSL). The only cross target in the build matrix is
+# aarch64-unknown-linux-musl; `rusqlite` (bundled) and `aws-lc-sys` are expected
+# to compile against that target's own C toolchain inside the cross image with
+# no pre-build step, the same way they already do for automate's
+# aarch64-unknown-linux-musl leg (which builds aws-lc-rs transitively via
+# jsonwebtoken).
+#
+# Fallback only: uncomment if a cross build of aws-lc-sys for this target fails
+# because one of its vendored build scripts needs cmake that the image lacks.
+# [target.aarch64-unknown-linux-musl]
+# pre-build = ["apt-get update && apt-get install -y --no-install-recommends cmake"]

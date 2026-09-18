@@ -1,0 +1,677 @@
+name: Rust
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, synchronize, reopened]
+  release:
+    types: [published]
+
+env:
+  VERSION: "0.0.0-dev"
+  REGISTRY: ghcr.io
+  ORG: sierrasoftworks
+
+concurrency:
+  group: rust-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  deduplicate:
+    name: Check CI Result
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    outputs:
+      cache-hit: ${{ steps.success.outputs.cache-hit }}
+      fingerprint: ${{ steps.fingerprint.outputs.tree }}
+
+    steps:
+      - name: Check out merge result
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v7
+
+      - name: Fingerprint merge result
+        id: fingerprint
+        if: github.event_name == 'pull_request'
+        run: echo "tree=$(git rev-parse HEAD^{tree})" >> "$GITHUB_OUTPUT"
+
+      - name: Find successful result
+        id: success
+        if: github.event_name == 'pull_request'
+        uses: actions/cache/restore@v6
+        continue-on-error: true
+        with:
+          path: .ci-success
+          key: rust-ci-v1-${{ steps.fingerprint.outputs.tree }}
+          lookup-only: true
+
+  version:
+    name: Start Release
+    runs-on: ubuntu-latest
+    needs: deduplicate
+    if: github.event_name != 'pull_request' || needs.deduplicate.outputs.cache-hit != 'true'
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Generate Package Version (Release Tag)
+        shell: pwsh
+        if: github.event_name == 'release'
+        run: Add-Content -Path $env:GITHUB_ENV -Value "VERSION=$('${{ github.event.release.tag_name }}'.substring(1))"
+
+      # rustak is a multi-crate workspace: every crate inherits its version from
+      # the single `[workspace.package]` table in the root Cargo.toml, so (unlike
+      # automate, which rewrites one package's manifest) only that one line needs
+      # rewriting for every binary in the `build` matrix to pick up the release
+      # version.
+      - name: Set Workspace Version
+        run: sed -i "s/^version\s*=\s*\".*\"/version = \"$VERSION\"/g" Cargo.toml
+
+      - name: Stash Versioned Cargo.toml
+        uses: actions/upload-artifact@v7
+        with:
+          name: cargofile
+          path: Cargo.toml
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    needs: deduplicate
+
+    permissions:
+      contents: read
+
+    if: github.event_name != 'pull_request' || needs.deduplicate.outputs.cache-hit != 'true'
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Setup Cache
+        uses: Swatinem/rust-cache@v2
+
+      # No protoc step here or anywhere else in this workflow: rustak-cot builds
+      # its protobuf definitions with protox (a pure-Rust protoc), so the whole
+      # pipeline never shells out to a system protoc binary.
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: File length check
+        run: scripts/check-file-length.sh
+
+      - name: cargo doc
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: deduplicate
+
+    permissions:
+      contents: read
+
+    if: github.event_name != 'pull_request' || needs.deduplicate.outputs.cache-hit != 'true'
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+
+      - name: Setup Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo install grcov
+        uses: SierraSoftworks/setup-grcov@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run tests
+        run: cargo test --workspace --no-fail-fast
+        env:
+          RUSTFLAGS: -Cinstrument-coverage
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: grcov
+        run: grcov . --binary-path target/debug/deps/ -s . -t lcov --ignore-not-existing --ignore '../**' --ignore '/*' --ignore 'C:/' --ignore 'rustak-ui/*' -o ./lcov.info
+
+      - name: codecov upload
+        uses: codecov/codecov-action@v7.0.0
+        with:
+          files: ./lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  ui:
+    name: Build UI
+    runs-on: ubuntu-latest
+    needs: deduplicate
+
+    permissions:
+      contents: read
+
+    if: github.event_name != 'pull_request' || needs.deduplicate.outputs.cache-hit != 'true'
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          target: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      # Pinned to the current stable release (0.21.14); 0.22 is still beta at
+      # the time this pipeline was written. Bump deliberately, not via
+      # dependabot (it has no visibility into cargo-binstall installs).
+      - name: Install Trunk
+        shell: bash
+        run: |
+          cargo binstall --no-confirm trunk@0.21.14
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Setup Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rustak-ui -> target
+
+      # rustak-ui is excluded from the workspace (it targets wasm32, not the
+      # host triple), so the workspace-wide `lint` job never touches it. Lint it
+      # here instead, where the wasm32 toolchain is already installed.
+      - name: cargo fmt --check (rustak-ui)
+        working-directory: rustak-ui
+        run: cargo fmt --all --check
+
+      - name: cargo clippy (rustak-ui)
+        working-directory: rustak-ui
+        run: cargo clippy --all-targets --target wasm32-unknown-unknown -- -D warnings
+
+      # e2e specs rely on `?demo` fixtures for deterministic integration data.
+      # Demo mode is compiled out of release bundles, so a debug bundle is kept
+      # for that job before the release bundle is produced below.
+      - name: Build UI for E2E
+        working-directory: rustak-ui
+        run: trunk build
+
+      - name: Upload E2E UI artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-dist-e2e
+          path: rustak-ui/dist
+
+      - name: Build release UI
+        working-directory: rustak-ui
+        run: trunk build --release
+
+      - name: Upload release UI artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-dist
+          path: rustak-ui/dist
+
+  e2e:
+    name: End-to-End Tests
+    runs-on: ubuntu-latest
+
+    needs:
+      - deduplicate
+      - ui
+
+    if: github.event_name != 'pull_request' || needs.deduplicate.outputs.cache-hit != 'true'
+
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Setup Cache
+        uses: Swatinem/rust-cache@v2
+
+      # The UI is embedded into rustak-server by `include_dir!` at compile
+      # time. e2e uses the debug bundle because several (future) specs rely on
+      # deterministic `?demo` fixtures, deliberately absent from release builds.
+      - name: Fetch E2E UI bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: ui-dist-e2e
+          path: rustak-ui/dist
+
+      - name: cargo build
+        run: cargo build -p rustak-server
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      - name: Install dependencies
+        working-directory: e2e
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: e2e
+        run: npx playwright install --with-deps chromium
+
+      - name: Run end-to-end tests
+        working-directory: e2e
+        run: npx playwright test
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: playwright-report
+          path: e2e/playwright-report
+          retention-days: 7
+
+  # Placeholder: the node-tak contract suite (design 01 / plan.md "Interop in
+  # CI") lands in M2, once enrollment, groups and Marti version/config exist for
+  # it to exercise. `if: false` keeps this a visible, always-skipped entry in
+  # the job graph rather than silent scope-creep on a future PR. Flip to a real
+  # `needs: [e2e]` job (checkout interop/node-tak, `npm ci`, run against a
+  # server built with a test CA) when M2 lands, per plan.md's interop table.
+  interop-node-tak:
+    name: "Interop: node-tak"
+    runs-on: ubuntu-latest
+    needs: deduplicate
+    if: false
+    steps:
+      - run: echo "Placeholder until M2 — see plan.md 'Interop in CI'."
+
+  build:
+    name: ${{ matrix.os }}-${{ matrix.arch }}-${{ matrix.crate.bin }}
+    runs-on: ${{ matrix.run_on }}
+
+    needs:
+      - deduplicate
+      - version
+      - ui
+
+    if: github.event_name != 'pull_request' || needs.deduplicate.outputs.cache-hit != 'true'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - { name: rustak-server, bin: rustak }
+          - { name: rustak-plugin-example, bin: rustak-plugin-example }
+        include:
+          # Windows
+          - arch: amd64
+            os: windows
+            run_on: windows-latest
+            target: x86_64-pc-windows-msvc
+            extension: .exe
+            builder: cargo
+
+          # Linux
+          - arch: amd64
+            os: linux
+            run_on: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            builder: cargo
+            setup: |
+              sudo apt update && sudo apt install -y musl-tools
+          - arch: arm64
+            os: linux
+            run_on: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            builder: cross
+
+          # Apple
+          - arch: amd64
+            os: darwin
+            run_on: macos-latest
+            target: x86_64-apple-darwin
+            builder: cargo
+          - arch: arm64
+            os: darwin
+            run_on: macos-latest
+            target: aarch64-apple-darwin
+            builder: cargo
+
+    steps:
+      - name: Run setup script
+        if: matrix.setup
+        run: ${{ matrix.setup }}
+
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Get Rust Stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          components: llvm-tools-preview
+
+      # No protoc / setup-protoc step for either builder: protox (a pure-Rust
+      # protoc) is a build-dependency of rustak-cot, so cross's Docker images
+      # need nothing extra to compile it either.
+
+      - name: Install Cross
+        if: matrix.builder == 'cross'
+        shell: bash
+        run: |
+          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          cargo binstall --no-confirm cross
+
+      - name: Setup Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Fetch Versioned Cargo.toml
+        uses: actions/download-artifact@v8
+        with:
+          name: cargofile
+          path: .
+
+      - name: Fetch UI bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: ui-dist
+          path: rustak-ui/dist
+
+      - name: cargo build
+        run: ${{ matrix.builder }} build --release --target ${{ matrix.target }} -p ${{ matrix.crate.name }}
+
+      # cross runs the compiler inside a Docker container as root; see
+      # automate's rust.yml for the full explanation of why the cache save
+      # would otherwise fail.
+      - name: Reclaim cache ownership from cross
+        if: matrix.builder == 'cross'
+        run: sudo chown -R "$(id -u):$(id -g)" "$HOME/.cargo" target
+
+      - name: Upload GitHub Release Artifacts
+        uses: SierraSoftworks/gh-releases@v1.0.10
+        if: github.event_name == 'release'
+        with:
+          files: "target/${{ matrix.target }}/release/${{ matrix.crate.bin }}${{ matrix.extension }} | ${{ matrix.crate.bin }}-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.extension }}"
+          token: ${{ secrets.GITHUB_TOKEN }}
+          overwrite: "true"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.crate.bin }}-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.extension }}
+          path: target/${{ matrix.target }}/release/${{ matrix.crate.bin }}${{ matrix.extension }}
+
+  ci:
+    name: CI
+    runs-on: ubuntu-latest
+
+    needs:
+      - deduplicate
+      - version
+      - lint
+      - test
+      - ui
+      - e2e
+      - interop-node-tak
+      - build
+
+    if: always()
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Verify CI result
+        env:
+          CACHE_HIT: ${{ needs.deduplicate.outputs.cache-hit }}
+          DEDUPLICATE_RESULT: ${{ needs.deduplicate.result }}
+          VERSION_RESULT: ${{ needs.version.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          UI_RESULT: ${{ needs.ui.result }}
+          E2E_RESULT: ${{ needs.e2e.result }}
+          INTEROP_NODE_TAK_RESULT: ${{ needs.interop-node-tak.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          if [ "$CACHE_HIT" = "true" ]; then
+            echo "This merge tree has already passed CI."
+            exit 0
+          fi
+
+          failed=0
+          for job in \
+            "Check CI Result=$DEDUPLICATE_RESULT" \
+            "Start Release=$VERSION_RESULT" \
+            "Lint=$LINT_RESULT" \
+            "Test=$TEST_RESULT" \
+            "Build UI=$UI_RESULT" \
+            "End-to-End Tests=$E2E_RESULT" \
+            "Build=$BUILD_RESULT"
+          do
+            name="${job%%=*}"
+            result="${job#*=}"
+            if [ "$result" != "success" ]; then
+              echo "::error::$name completed with result '$result'."
+              failed=1
+            fi
+          done
+
+          # interop-node-tak is a placeholder (`if: false`) until M2, so its
+          # result is always "skipped" for now; that is not a CI failure. Once
+          # it is a real job this line should be folded back into the loop
+          # above so a genuine failure there blocks merges.
+          if [ "$INTEROP_NODE_TAK_RESULT" != "skipped" ] && [ "$INTEROP_NODE_TAK_RESULT" != "success" ]; then
+            echo "::error::Interop: node-tak completed with result '$INTEROP_NODE_TAK_RESULT'."
+            failed=1
+          fi
+
+          exit "$failed"
+
+      - name: Create success marker
+        if: github.event_name == 'pull_request' && needs.deduplicate.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .ci-success
+          echo "${{ needs.deduplicate.outputs.fingerprint }}" > .ci-success/merge-tree
+
+      - name: Save successful result
+        if: github.event_name == 'pull_request' && needs.deduplicate.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        continue-on-error: true
+        with:
+          path: .ci-success
+          key: rust-ci-v1-${{ needs.deduplicate.outputs.fingerprint }}
+
+  docker-build:
+    name: "Docker Build: ${{ matrix.crate.bin }} (${{ matrix.platform }})"
+    runs-on: ubuntu-latest
+    needs:
+      - build
+
+    # Unlike automate (release-only), rustak's M0 exit criterion requires
+    # `ghcr.io/sierrasoftworks/rustak:latest` to exist on a green `main`, so
+    # this also runs on pushes to main.
+    if: github.event_name == 'release' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - { name: rustak-server, bin: rustak }
+          - { name: rustak-plugin-example, bin: rustak-plugin-example }
+        platform: [linux/amd64, linux/arm64]
+
+    steps:
+      - name: set environment variables
+        run: |
+          platform=${{ matrix.platform }}
+          echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
+
+          arch=${platform##*/}
+          echo "ARCH=${arch}" >> $GITHUB_ENV
+
+          image="${{ env.REGISTRY }}/${{ env.ORG }}/${{ matrix.crate.bin }}"
+          image="$(echo $image | tr '[:upper:]' '[:lower:]')"
+          echo "FULL_IMAGE_NAME=${image}" >> $GITHUB_ENV
+
+      - name: Setup Docker buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.FULL_IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Pull in platform artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ matrix.crate.bin }}-linux-${{ env.ARCH }}
+
+      - name: mark artifact as executable
+        run: chmod +x ${{ matrix.crate.bin }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.crate.name }}/Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.FULL_IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests/${{ matrix.crate.bin }}
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${{ matrix.crate.bin }}/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: image-digest-${{ matrix.crate.bin }}-${{ env.PLATFORM_PAIR }}
+          path: /tmp/digests/${{ matrix.crate.bin }}/*
+          if-no-files-found: error
+          retention-days: 1
+
+  docker-publish:
+    name: "Docker Publish: ${{ matrix.crate.bin }}"
+    runs-on: ubuntu-latest
+    needs:
+      - docker-build
+
+    if: github.event_name == 'release' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    strategy:
+      matrix:
+        crate:
+          - { name: rustak-server, bin: rustak }
+          - { name: rustak-plugin-example, bin: rustak-plugin-example }
+
+    steps:
+      - name: set environment variables
+        run: |
+          image="${{ env.REGISTRY }}/${{ env.ORG }}/${{ matrix.crate.bin }}"
+          image="$(echo $image | tr '[:upper:]' '[:lower:]')"
+          echo "FULL_IMAGE_NAME=${image}" >> $GITHUB_ENV
+
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/digests
+          pattern: image-digest-${{ matrix.crate.bin }}-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.FULL_IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      - name: Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.FULL_IMAGE_NAME }}@sha256:%s ' *)
+
+      - name: Inspect image
+        run: docker buildx imagetools inspect ${{ env.FULL_IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+
+  tap:
+    name: Update Homebrew Tap
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    needs:
+      - build
+    steps:
+      # Formula name is inferred by the action from the repository (rustak),
+      # matching design 01 §7.3's "formula `rustak`" — unlike automate, whose
+      # repository (automate-rs) and package (automate) names differ, rustak's
+      # repository is already named after its binary so no override is needed.
+      - name: Update Homebrew Tap
+        uses: SierraSoftworks/actions-tap@v1
+        with:
+          app-id: ${{ secrets.TAP_APP_ID }}
+          private-key: ${{ secrets.TAP_APP_PRIVATE_KEY }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          aliases: major minor

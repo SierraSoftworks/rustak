@@ -1,0 +1,63 @@
+version: 2
+updates:
+  # Workspace crates (rustak-cot, rustak-api, rustak-core, rustak-client,
+  # rustak-server, rustak-plugin-example) — rustak-ui is excluded from the
+  # workspace and has its own Cargo.lock, so it gets a separate entry below.
+  - directory: /
+    package-ecosystem: cargo
+    open-pull-requests-limit: 5
+    rebase-strategy: auto
+    schedule:
+      interval: daily
+    groups:
+      opentelemetry:
+        patterns:
+          - "opentelemetry*"
+          - "tracing*"
+          - "tonic"
+      protobuf:
+        patterns:
+          - "prost*"
+          - "protox"
+      rustls:
+        patterns:
+          - "rustls*"
+          - "tokio-rustls"
+          - "rcgen"
+          - "aws-lc-*"
+          - "instant-acme"
+      actix:
+        patterns:
+          - "actix-*"
+
+  # rustak-ui: excluded from the workspace (wasm32 target), so its dependencies
+  # are pinned separately and dependabot needs a second cargo entry to see them.
+  - directory: /rustak-ui
+    package-ecosystem: cargo
+    open-pull-requests-limit: 5
+    rebase-strategy: auto
+    schedule:
+      interval: daily
+    groups:
+      yew:
+        patterns:
+          - "yew*"
+          - "gloo-*"
+          - "wasm-bindgen*"
+          - "web-sys"
+          - "js-sys"
+
+  - directory: /
+    package-ecosystem: github-actions
+    open-pull-requests-limit: 5
+    rebase-strategy: auto
+    schedule:
+      interval: daily
+
+  # e2e harness (Playwright/TypeScript)
+  - directory: /e2e
+    package-ecosystem: npm
+    open-pull-requests-limit: 5
+    rebase-strategy: auto
+    schedule:
+      interval: daily

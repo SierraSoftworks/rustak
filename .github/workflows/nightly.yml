@@ -1,0 +1,33 @@
+name: Nightly Interop
+on:
+  schedule:
+    # 04:00 UTC daily — after the rest of the world's business-hours CI load.
+    - cron: "0 4 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  # Placeholder: drives CloudTAK's own docker-compose stack (Postgres + CloudTAK
+  # API + rustak with a BYO cert trusted via NODE_EXTRA_CA_CERTS) through
+  # CloudTAK's REST API (server config, login, channels, data sync, packages)
+  # plus a Playwright smoke of its UI. Lands in M4 alongside the mission API,
+  # per plan.md's "Interop in CI" table and design 01 §7.3's interop delta.
+  # `if: false` keeps it visible in the job graph without pretending it runs.
+  interop-cloudtak:
+    name: "Interop: CloudTAK compose"
+    runs-on: ubuntu-latest
+    if: false
+    steps:
+      - run: echo "Placeholder until M4 — see plan.md 'Interop in CI' (interop/cloudtak)."
+
+  # Placeholder: an ATAK-side harness (commoncommo build, Android emulator, or
+  # a pytak/takproto client — the M1 exploration brief settles which) driving
+  # enrollment, TLS 1.3 `!ECDH` handshake, protobuf negotiation and SA/chat
+  # routing against a live rustak. Lands once that M1 brief lands its
+  # recommendation in `.claude/plan/status/`; see plan.md's "Interop in CI"
+  # table and design 01 §7.3.
+  interop-eud:
+    name: "Interop: EUD harness"
+    runs-on: ubuntu-latest
+    if: false
+    steps:
+      - run: echo "Placeholder until the M1 EUD-harness exploration brief lands — see plan.md 'Interop in CI' (interop/eud)."
