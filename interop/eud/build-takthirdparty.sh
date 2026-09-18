@@ -82,6 +82,19 @@ for pkg in zlib libiconv libxml2 openssl nghttp2 curl ngtcp2 protobuf libmicroht
         make TARGET="$TARGET" -j1 commoncommo_BUILDJAVA= "$pkg"
         continue
     fi
+    if [ "$pkg" = commoncommo ]; then
+        # mk/commoncommo.mk copies the source tree into the build directory
+        # through a *phony* target that only `commoncommo_build` depends on;
+        # `commoncommo_buildtest` (the commotest console client) has no such
+        # edge, so a parallel package build can start it before the copy
+        # exists (`test/console: No such file or directory`). Build the core
+        # first, in parallel, then let the package target finish serially:
+        # the copy re-runs (cheap), the core is up to date, and commotest is a
+        # small program.
+        make TARGET="$TARGET" -j"$JOBS" commoncommo_BUILDJAVA= commoncommo_build
+        make TARGET="$TARGET" -j1 commoncommo_BUILDJAVA= "$pkg"
+        continue
+    fi
     make TARGET="$TARGET" -j"$JOBS" commoncommo_BUILDJAVA= "$pkg"
 done
 
