@@ -80,10 +80,16 @@ test("the bootstrap left a working administrator session", async () => {
 });
 
 test("the credential CloudTAK will use is a client password", async () => {
-  assert.equal(session.client.username, session.admin.username);
+  assert.notEqual(
+    session.client.username,
+    session.admin.username,
+    "the scenarios must run as an ordinary account, not the administrator",
+  );
   assert.ok(session.client.password.length > 0, "the secret is returned exactly once, at minting");
 
-  const response = await fetch(new URL("/api/v1/credentials", session.urls.webtak), {
+  const listing = new URL("/api/v1/credentials", session.urls.webtak);
+  listing.searchParams.set("username", session.client.username);
+  const response = await fetch(listing, {
     headers: { Authorization: `Bearer ${session.admin.token}` },
   });
 

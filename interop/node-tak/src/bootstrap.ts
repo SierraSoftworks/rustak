@@ -16,7 +16,8 @@
  *     POST /api/v1/auth/passkey/register/finish  → the administrator's session
  *     POST /api/v1/setup/server                  record the host name
  *     POST /api/v1/setup/complete                close the wizard for good
- *     POST /api/v1/credentials                   → the client password
+ *     POST /api/v1/users                         an ordinary account for the EUD
+ *     POST /api/v1/credentials?username=…        → its client password
  *
  * The passkey step is why `webauthn.ts` exists. There is no non-browser path to
  * an administrator bearer token today, and this suite may not add one — see
@@ -35,6 +36,14 @@ import { SoftAuthenticator, type CredentialOptions } from "./webauthn.js";
 
 /** The account the wizard creates. */
 const ADMIN_USERNAME = "interop-admin";
+
+/**
+ * The ordinary account the scenarios enrol and authenticate as.
+ *
+ * Deliberately not the administrator: a suite that only ever exercised an
+ * administrator would miss an authorisation bug that bites everybody else.
+ */
+const CLIENT_USERNAME = "interop-eud";
 
 /** What the bootstrap produced. */
 export interface Bootstrapped {
@@ -173,22 +182,24 @@ async function finishWizard(server: ServerInfo, token: string): Promise<void> {
   await call(server.webtak, "/setup/complete", { method: "POST", token });
 }
 
-/** Mints the reusable credential CloudTAK authenticates with. */
-async function mintClientPassword(
-  server: ServerInfo,
-  username: string,
-  token: string,
-): Promise<Credentials> {
+/** Creates the ordinary account and mints the reusable credential CloudTAK authenticates with. */
+async function mintClientPassword(server: ServerInfo, token: string): Promise<Credentials> {
+  const created = await call<{ username: string }>(server.webtak, "/users", {
+    body: { username: CLIENT_USERNAME, display_name: "node-tak interop EUD" },
+    token,
+  });
+
   const minted = await call<{ secret: string }>(server.webtak, "/credentials", {
     body: {
       kind: "client_password",
       label: "node-tak interop suite",
       expires_in_days: 1,
+      username: created.username,
     },
     token,
   });
 
-  return { username, password: minted.secret };
+  return { username: created.username, password: minted.secret };
 }
 
 /** Performs the whole walk against a server that has just started. */
@@ -207,5 +218,5 @@ export async function bootstrap(server: ServerInfo): Promise<Bootstrapped> {
     throw new Error(`the bootstrap signed in as ${me.username}, which is not an administrator.`);
   }
 
-  return { admin, client: await mintClientPassword(server, admin.username, admin.token) };
+  return { admin, client: await mintClientPassword(server, admin.token) };
 }
