@@ -1,0 +1,14 @@
+# The dependencies are installed rather than authored. `package-lock.json` is
+# deliberately *not* here: CI installs from it with `npm ci`, so it is the only
+# thing that makes a run reproducible.
+node_modules/
+
+# A run works in a scratch directory under the system temporary directory — the
+# server's data directory, and each EUD's mounted directory with its
+# truststore.p12, payload.dat, commo-log.txt, commo-xml.txt and
+# commo-enroll-cert.p12 — and removes it on the way out. The two paths below are
+# the exceptions: a failed scenario's files are copied here so the nightly job
+# can upload them (RUSTAK_EUD_ARTIFACTS moves that elsewhere), and the CI step
+# tees its own output beside them.
+artifacts/
+rustak-eud.log

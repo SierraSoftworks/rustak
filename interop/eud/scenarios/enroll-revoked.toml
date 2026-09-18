@@ -1,0 +1,45 @@
+# Revocation, from the device's side.
+#
+# ALPHA enrols and connects; the runner then revokes what it was issued while it
+# is still connected. rustak's own revocation hook closes the live session by
+# certificate fingerprint (`stream/mod.rs` → `pki.revocations().on_revoked`), so
+# the EUD must see its interface go, and the `sstream:` re-add at T+45 — the
+# same keystore, presented again — must be refused at the handshake rather than
+# accepted by a server that only checks revocation at enrollment time.
+#
+# **Skipped until M2-08.** `requires` names `certificateRevocation`, so this
+# scenario does not run until `/api/v1/certificates` is served. The revocation
+# the runner performs today is `DELETE /api/v1/credentials/{id}`, which rustak
+# documents as cascading to the certificates issued with that credential; when
+# M2-08 lands a per-certificate revoke, `src/execute.ts` is where to switch it.
+name = "enroll-revoked"
+summary = "Revoking what was issued drops the live stream and makes the certificate unusable for a new one."
+requires = ["enrollment", "stream", "certificateRevocation"]
+timeout_seconds = 210
+min_runtime_seconds = 60
+
+[[euds]]
+id = "alpha"
+uid = "EUD-REVOKED-ALPHA"
+callsign = "REVOKED-ALPHA"
+username = "eud-revoked-alpha"
+channels = [{ group = "__ANON__", direction = "BOTH" }]
+revoke_after_seconds = 25
+script = [
+  "0",
+  "estream:{truststore}:atakatak:atakatak:atakatak::{username}:{token}:-{host}:{enroll_port}:{stream_port}:rustak-interop",
+  "45",
+  "sstream:/work/commo-enroll-cert.p12:{truststore}:atakatak:{host}:{stream_port}",
+  "25",
+  "quit",
+]
+
+[euds.expect]
+log = [
+  "Completed status for enrollment \\d+, adding stream connection",
+  "Interface (Down|Error)",
+]
+log_any = ["Interface Error"]
+
+[expect]
+client_endpoints_absent = ["REVOKED-ALPHA"]

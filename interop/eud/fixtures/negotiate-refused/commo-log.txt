@@ -1,0 +1,6 @@
+2026-09-18 04:10:02.410 INFO  Completed status for enrollment 1, adding stream connection
+2026-09-18 04:10:02.905 INFO  Interface Up: ssl:127.0.0.1:8089
+2026-09-18 04:10:03.118 INFO  TakServer ssl:127.0.0.1:8089 Proto Negotiate: Server supports protocol versions: 1
+2026-09-18 04:10:03.119 INFO  TakServer ssl:127.0.0.1:8089 Proto Negotiate: Requesting transition to protocol version 1
+2026-09-18 04:10:03.201 INFO  TakServer ssl:127.0.0.1:8089 Proto Negotiate: protocol negotiation request denied, using xml only
+2026-09-18 04:10:52.004 INFO  commotest quitting

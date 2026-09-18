@@ -1,0 +1,58 @@
+# Mission-package upload: `smpsend:` puts a file on the server through ATAK's
+# own curl stack, over the HTTPS listener — and that context is the one
+# commoncommo configures with `SSL_CTX_set_cipher_list(ctx, "DEFAULT:!ECDH")`.
+#
+# **This scenario is the `DEFAULT:!ECDH` gate.** No other client in rustak's CI
+# reproduces that cipher-list constraint, and `research/02` §A.9 flagged its
+# consequence as an inference worth an empirical test. If rustak's Marti/HTTPS
+# listener ever offers only ECDH key exchange, this is what fails.
+#
+# Client-side `result = SUCCESS` is itself the three-step assertion: commoncommo
+# only reports success after `missionquery`, `missionupload` and the metadata
+# call have all answered as it expects. The audit check is the server-side
+# witness that the bytes landed.
+name = "mp-upload"
+summary = "An EUD uploads a mission package over the !ECDH curl context and the server records it."
+requires = ["enrollment", "stream", "missionPackages"]
+timeout_seconds = 210
+min_runtime_seconds = 50
+
+# ATAK's own port numbers, bound rather than reserved.
+#
+# `smpsend:`/`mpsend:` do not take a port: commoncommo builds the HTTPS URL for
+# a mission-package transfer itself, from the server it is streaming to, so the
+# transfer can only be exercised where ATAK's convention points — 8443 for the
+# Marti/HTTPS listener, 8446 for enrollment, 8089 for the stream. If the first
+# nightly run shows the upload going somewhere else, this block and the
+# `{marti_port}` placeholder are the two things to change.
+[ports]
+web = 8446
+marti = 8443
+stream = 8089
+
+[[euds]]
+id = "alpha"
+uid = "EUD-MPUP-ALPHA"
+callsign = "MPUP-ALPHA"
+username = "eud-mpup-alpha"
+channels = [{ group = "__ANON__", direction = "BOTH" }]
+script = [
+  "0",
+  "estream:{truststore}:atakatak:atakatak:atakatak::{username}:{token}:-{host}:{enroll_port}:{stream_port}:rustak-interop",
+  "20",
+  "smpsend:/work/payload.dat:0",
+  "35",
+  "quit",
+]
+
+[euds.expect]
+log = [
+  "Completed status for enrollment \\d+, adding stream connection",
+  "Mission package \\d+ sent to TAK Server, result = SUCCESS",
+]
+log_absent = ["Interface Error", "result = FAILED"]
+
+[expect]
+# rustak audits the stored resource rather than each of the three HTTP steps;
+# the steps are what `result = SUCCESS` above already proves.
+audit_matches = ["uploaded"]

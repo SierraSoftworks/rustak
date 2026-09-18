@@ -1,0 +1,61 @@
+# The scenario everything else depends on: a real ATAK enrollment, performed by
+# ATAK's own code, against rustak's 8446-equivalent listener.
+#
+# `estream:` is the whole flow — GET /Marti/api/tls/config, a CSR built from
+# what it answered, POST /Marti/api/tls/signClient/v2, then an immediate TLS
+# stream connection with the certificate that came back. The token goes in as
+# the Basic *password* with the account name as the user, because that is what
+# ATAK-CIV does (it always passes passIsToken=false); the `-` prefix on the host
+# selects normal enrollment, which keeps the pre-existing truststore and does
+# not verify the host name. Both are the defaults a device in the field uses.
+#
+# 95 seconds of connection is not idling: it is comfortably past commoncommo's
+# 25-second receive timeout and its 15-second ping cadence, so an absence of
+# `Interface Error` over that span is the ping/pong assertion.
+name = "enroll-basic"
+summary = "A one-time token enrols, the stream comes up, protobuf is negotiated and the SA reaches the server."
+requires = ["enrollment", "stream", "clientEndPoints"]
+timeout_seconds = 210
+min_runtime_seconds = 90
+
+[[euds]]
+id = "alpha"
+uid = "EUD-ENROLL-ALPHA"
+callsign = "ALPHA"
+username = "eud-alpha"
+channels = [{ group = "__ANON__", direction = "BOTH" }]
+script = [
+  "0",
+  "estream:{truststore}:atakatak:atakatak:atakatak::{username}:{token}:-{host}:{enroll_port}:{stream_port}:rustak-interop",
+  "95",
+  "quit",
+]
+
+[euds.expect]
+# The three ENROLL_STEP_* callbacks, then the connection, then the one
+# negotiation. Ordered, because a server that answered before it offered would
+# satisfy an unordered list.
+log = [
+  "EnrollUpdate: step \\d+ id \\d+",
+  "EnrollUpdate: step \\d+ id \\d+",
+  "EnrollUpdate: step \\d+ id \\d+",
+  "Completed status for enrollment \\d+, adding stream connection",
+  "Proto Negotiate: Server supports protocol versions",
+  "Proto Negotiate: Requesting transition to protocol version 1",
+  "Proto Negotiate: Protocol negotiation request accepted",
+]
+# Asserted on the prefix only: commoncommo can log an unknown description for
+# an interface enrollment created, because the description map is populated
+# after the callback can fire (M1-00 §3.3).
+log_any = ["Interface Up"]
+log_absent = [
+  "Interface Error",
+  "using xml only",
+  "Timed out waiting for protocol",
+]
+# The CSR ATAK builds puts the common name first, and rustak must issue what
+# was asked for rather than a subject of its own design.
+enroll_cert_cn = "{username}"
+
+[expect]
+client_endpoints_present = ["ALPHA"]

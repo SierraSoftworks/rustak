@@ -1,0 +1,12 @@
+2026-09-18 04:00:01.004 INFO  commotest starting, uid EUD-ENROLL-ALPHA callsign ALPHA out /work
+2026-09-18 04:00:01.201 INFO  EnrollUpdate: step 0 id 1 status 0 (generating key pair) 
+2026-09-18 04:00:01.884 INFO  EnrollUpdate: step 1 id 1 status 0 (submitting certificate signing request) 
+2026-09-18 04:00:02.402 INFO  EnrollUpdate: step 2 id 1 status 0 (signing) 
+2026-09-18 04:00:02.410 INFO  Completed status for enrollment 1, adding stream connection
+2026-09-18 04:00:02.905 INFO  Interface Up: ssl:127.0.0.1:8089
+2026-09-18 04:00:03.118 INFO  TakServer ssl:127.0.0.1:8089 Proto Negotiate: Server supports protocol versions: 1
+2026-09-18 04:00:03.119 INFO  TakServer ssl:127.0.0.1:8089 Proto Negotiate: Requesting transition to protocol version 1
+2026-09-18 04:00:03.223 INFO  TakServer ssl:127.0.0.1:8089 Proto Negotiate: Protocol negotiation request accepted, swapping proto version
+2026-09-18 04:00:08.551 INFO  Contact Added: EUD-ENROLL-BRAVO
+2026-09-18 04:01:37.002 INFO  Interface Down: ssl:127.0.0.1:8089
+2026-09-18 04:01:37.010 INFO  commotest quitting

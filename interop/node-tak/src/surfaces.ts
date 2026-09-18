@@ -18,17 +18,10 @@
  * - **M4** Data Sync (the mission API).
  */
 
-/** How a surface is looked for. */
-export interface SurfaceProbe {
-  /** Which of the three CloudTAK base URLs it is served on. */
-  readonly on: "webtak" | "stream";
+import type { SurfaceProbe } from "../../shared/src/probe.js";
 
-  /** The path to probe, for an HTTP surface. */
-  readonly path?: string;
-
-  /** What is missing, and what will flip this skip. */
-  readonly todo: string;
-}
+/** How a surface is looked for; the probing itself is shared. */
+export type { SurfaceProbe };
 
 export const SURFACES = {
   martiVersion: {

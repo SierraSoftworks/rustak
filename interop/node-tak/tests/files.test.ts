@@ -58,20 +58,49 @@ test(
     const body = Buffer.from(`node-tak interop ${Date.now()}\n`, "utf8");
     const name = `interop-${Date.now()}.txt`;
 
-    const stored = await api.Files.upload(
-      {
-        name,
-        contentLength: body.length,
-        contentType: "text/plain",
-        keywords: ["interop"],
-        // The shape CloudTAK uses for content its own connections create.
-        creatorUid: `connection-interop-data-${name}`,
+    // `Files.upload()` cannot be called here: it turns the buffer into a
+    // `Readable` and hands it to `fetch` without the `duplex: "half"` that
+    // Node 18 and later require for a streamed request body, so it throws
+    // `RequestInit: duplex option is required when sending a body` *before* a
+    // request is made. That is a defect in the client library on modern Node
+    // and nothing a server can answer, so the request below is assembled
+    // exactly as `Files.upload()` would have sent it — same path, same query
+    // parameters, same headers — and the rest of the scenario goes back
+    // through node-tak. Delete this block and restore the one-liner when the
+    // vendored client sets `duplex`.
+    const url = new URL("/Marti/sync/upload", session.urls.webtak);
+    url.searchParams.append("name", name);
+    url.searchParams.append("keywords", "interop");
+    // The shape CloudTAK uses for content its own connections create.
+    url.searchParams.append("creatorUid", `connection-interop-data-${name}`);
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${session.admin.token}`,
+        "Content-Type": "text/plain",
+        "Content-Length": String(body.length),
       },
       body,
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(
+      response.headers.get("content-type"),
+      "text/json",
+      "the legacy Enterprise Sync content type, which node-tak parses as a string",
     );
+
+    const stored = JSON.parse(await response.text());
 
     assert.equal(typeof stored.Hash, "string");
     assert.equal(stored.Name, name);
+    assert.equal(
+      typeof stored.PrimaryKey,
+      "string",
+      "the legacy metadata carries its numbers as strings",
+    );
+    assert.ok(Number.isInteger(Number(stored.PrimaryKey)) && Number(stored.PrimaryKey) >= 0);
 
     const chunks: Buffer[] = [];
 

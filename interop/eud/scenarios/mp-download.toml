@@ -1,0 +1,66 @@
+# The other direction: a package that arrives because the server told the EUD
+# where to fetch it.
+#
+# ALPHA sends a package addressed to BRAVO with `mpsend:`, which the server
+# relays as a `b-f-t-r` pointing at a URL; BRAVO's commoncommo fetches it over
+# the same `DEFAULT:!ECDH` curl context and reports the receipt. That is the
+# `b-f-t-r` → download → `b-f-t-a` path in full, driven by ATAK's own code on
+# both ends, with rustak in the middle doing the hosting and the relaying.
+name = "mp-download"
+summary = "A peer-addressed mission package is relayed by rustak and fetched by the receiving EUD."
+requires = ["enrollment", "stream", "missionPackages"]
+timeout_seconds = 240
+min_runtime_seconds = 60
+
+# ATAK's own port numbers, bound rather than reserved.
+#
+# `smpsend:`/`mpsend:` do not take a port: commoncommo builds the HTTPS URL for
+# a mission-package transfer itself, from the server it is streaming to, so the
+# transfer can only be exercised where ATAK's convention points — 8443 for the
+# Marti/HTTPS listener, 8446 for enrollment, 8089 for the stream. If the first
+# nightly run shows the upload going somewhere else, this block and the
+# `{marti_port}` placeholder are the two things to change.
+[ports]
+web = 8446
+marti = 8443
+stream = 8089
+
+[[euds]]
+id = "alpha"
+uid = "EUD-MPDL-ALPHA"
+callsign = "MPDL-ALPHA"
+username = "eud-mpdl-alpha"
+channels = [{ group = "__ANON__", direction = "BOTH" }]
+script = [
+  "0",
+  "estream:{truststore}:atakatak:atakatak:atakatak::{username}:{token}:-{host}:{enroll_port}:{stream_port}:rustak-interop",
+  "25",
+  "mpsend:/work/payload.dat:EUD-MPDL-BRAVO",
+  "40",
+  "quit",
+]
+
+[euds.expect]
+log = ["Completed status for enrollment \\d+, adding stream connection"]
+log_absent = ["Interface Error"]
+
+[[euds]]
+id = "bravo"
+uid = "EUD-MPDL-BRAVO"
+callsign = "MPDL-BRAVO"
+username = "eud-mpdl-bravo"
+channels = [{ group = "__ANON__", direction = "BOTH" }]
+script = [
+  "0",
+  "estream:{truststore}:atakatak:atakatak:atakatak::{username}:{token}:-{host}:{enroll_port}:{stream_port}:rustak-interop",
+  "70",
+  "quit",
+]
+
+[euds.expect]
+log = [
+  "Completed status for enrollment \\d+, adding stream connection",
+  "Receive of MP .* result OK",
+]
+log_absent = ["Interface Error", "result FAIL"]
+xml_present = [{ uid = "EUD-MPDL-ALPHA", type = "a-f-G-U-C" }]

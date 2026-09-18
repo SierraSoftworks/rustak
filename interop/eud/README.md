@@ -18,11 +18,18 @@ interop/eud/
   fetch-distfiles.sh       resolves the Git-LFS distfiles over plain HTTPS, sha256-verified
   build-takthirdparty.sh   ordered, per-package build of the commoncommo dependency chain
   stage-runtime.sh         assembles the runtime payload and its licence paperwork
+  scenarios/*.toml         declarative scenarios: config, argv, expectations
+  src/*.ts                 the runner — starts rustak, runs containers, asserts
+  tests/*.test.ts          unit tests for the loader, parsers and assertions
+  fixtures/                hand-written commo-log.txt / commo-xml.txt for those
   README.md                this file
 ```
 
-Scenario files and the runner that drives them land in **M2**, once rustak can
-enrol devices — see [Scenarios](#scenarios-m2) below.
+The launcher and the `/api/v1` bootstrap live one directory up, in
+`interop/shared/`, because `interop/node-tak` performs the same walk.
+
+The scenarios and the runner that drives them are described under
+[Scenarios](#scenarios) below; `npm test` is the whole entry point.
 
 ## Licence posture
 
@@ -287,50 +294,144 @@ reachable from this harness.
 compatibility contract. `interop/node-tak` owns the *HTTP/JSON* half. Neither
 replaces the other; together they cover everything except the ATAK UI.
 
-## Scenarios (M2)
+## Scenarios
 
-The scenario files and the runner land in M2, when rustak can issue
-certificates and expose the 8446 enrollment listener. The runner starts rustak
-with a test CA, runs `docker run --rm --network <net> -v <out>:/work <image>
-<argv>`, waits for exit, and asserts against the two text files — **never
-linking, including or vendoring commoncommo.**
+`npm test` is the whole entry point. It runs the unit tests (the loader, the two
+parsers and the assertion engine, against the fixtures in `fixtures/`) and then
+the scenarios:
 
-Night-one set, in dependency order:
+```bash
+cd interop/eud
+npm ci
+npm test                          # unit tests, then the scenarios
+npm run test:scenarios -- enroll   # one scenario, by name fragment
+```
 
-1. `enroll-basic` — one-time enrollment token as the Basic password →
-   `signClient/v2` → stream up → negotiation accepted → SA visible in rustak →
-   `t-x-c-t` ping answered (no `Interface Error` across 90 s, comfortably past
-   the 25 s receive timeout).
-2. `enroll-revoked` — enroll, revoke, re-add the interface → handshake failure
-   → `Interface Error`.
-3. `negotiate-refused` — rustak answers `t-x-takp-r status="false"` → expect
-   the XML-only fallback, with XML still flowing.
-4. `negotiate-silent` — rustak sends no `t-x-takp-v` → expect the 60 s timeout
-   and XML forever, connection kept.
-5. `two-eud-routing` — two containers in different groups; assert reachability
-   (IN/OUT) in `commo-xml.txt`.
-6. `chat-direct` — `chatsend:` from A to B, assert delivery and the `b-t-f-s`
-   bounce when B is absent.
-7. `mp-upload` — `smpsend:`, assert the three-step
-   `missionquery`/`missionupload`/`metadata` sequence server-side **and**
-   success client-side. *This is the `DEFAULT:!ECDH` gate.*
-8. `mp-download` — rustak pushes `b-f-t-r`; assert receipt and byte-identical
-   content.
-9. `disconnect` — `remiface:`, assert peers get `t-x-d-d` with the right
-   `<link>`.
+What a scenario run does, for each `scenarios/*.toml` in turn:
 
-Known traps for whoever writes these:
+1. Starts a throwaway rustak in a scratch directory with that scenario's
+   configuration overrides merged over the shared defaults
+   (`interop/shared/src/launch.ts`), and waits for both the API and the stream
+   listener — they do not bind at the same moment.
+2. Bootstraps it through `/api/v1` — setup token, first administrator, a passkey
+   registered with a software authenticator, the wizard — then creates the
+   channels the scenario names, an account per EUD with its channel grants, and
+   a **one-time enrolment token** for each.
+3. Exports rustak's own CA as a PKCS#12 truststore, which is what `estream:`
+   verifies the server against. `openssl` does that; nothing in Node writes
+   PKCS#12.
+4. Runs each EUD as `docker run --rm --network host -v <out>:/work <image>
+   <argv>`, staggered by its `start_delay_seconds`, sampling
+   `/Marti/api/clientEndPoints` while they run — by the time a container has
+   exited, nobody is connected.
+5. **After every container has exited**, reads `commo-log.txt`, `commo-xml.txt`
+   and `commo-enroll-cert.p12` and applies the scenario's expectations. After,
+   because the interface and mission-package callbacks do not flush.
+
+A scenario whose server surfaces are not served yet **skips**, naming the brief
+that will flip it (`src/surfaces.ts`), exactly as `interop/node-tak` does.
+
+### Modes, and what happens without Docker
+
+| Docker | `RUSTAK_EUD_REQUIRE_DOCKER` | Result |
+|---|---|---|
+| yes | anything | scenarios run for real |
+| no | `1` | **the run fails loudly**, naming the image it needed |
+| no | unset | probe-only: every scenario file is validated and the surfaces are probed, then everything skips |
+
+The nightly job sets `RUSTAK_EUD_REQUIRE_DOCKER=1`, so a runner that lost its
+container runtime fails rather than reporting a green run in which nothing ran.
+Probe-only is what a developer gets, and it is enough to work on the loader, the
+parsers and the assertions — which is what the unit tests cover.
+
+Other environment variables: `RUSTAK_EUD_IMAGE` (default
+`ghcr.io/sierrasoftworks/rustak-interop-commoncommo:latest`), `RUSTAK_EUD_DOCKER`
+(for podman), `RUSTAK_EUD_OPENSSL`, `RUSTAK_EUD_ARTIFACTS` (where a failed
+scenario's files are kept; default `interop/eud/artifacts/`), `RUSTAK_EUD_KEEP=1`
+(keep them for passing scenarios too) and `RUSTAK_INTEROP_BINARY`.
+
+### The night-one set
+
+| Scenario | What it proves | Needs |
+|---|---|---|
+| `enroll-basic` | a one-time token enrols through `/Marti/api/tls/config` → `signClient/v2`, the stream comes up, protobuf is negotiated, the SA reaches `/Marti/api/clientEndPoints`, no `Interface Error` across 95 s (past the 25 s receive timeout, so it is the ping/pong assertion), and the issued keystore carries `CN=<username>` first | enrollment, stream, clientEndPoints |
+| `two-eud-routing` | disjoint IN/OUT grants on one channel route one way and only one way, with `anon_group_default = false` so `__ANON__` cannot mask it | + channels |
+| `chat-direct` | a unicast `b-t-f` reaches a connected peer, and bounces back as `b-t-f-s` when the peer has gone | enrollment, stream |
+| `disconnect` | `remiface:` produces a `t-x-d-d` at the *other* EUD with a `<link>` naming the one that left | enrollment, stream |
+| `negotiate-refused` | `[stream] negotiation = "refuse"` → ATAK's `using xml only` fallback, and XML still flowing between two EUDs | enrollment, stream |
+| `negotiate-silent` | `[stream] negotiation = "silent"` → the 60 s `Timed out waiting for protocol version support message`, the connection kept, and no reconnect | enrollment, stream |
+| `enroll-revoked` | revoking what was issued drops the live stream and makes the certificate unusable for a new one | + certificateRevocation (M2-08) |
+| `mp-upload` | `smpsend:` succeeds over the `DEFAULT:!ECDH` curl context and rustak records the upload. **This is the `!ECDH` gate** | + missionPackages (M3-01) |
+| `mp-download` | a peer-addressed `mpsend:` is relayed as `b-f-t-r` and fetched by the other EUD | + missionPackages (M3-01) |
+
+### Writing one
+
+A scenario is TOML, validated before anything starts — because `commotest`
+returns 0 from every path, including an argument error, so a malformed script is
+otherwise indistinguishable from a server that refused the connection. The
+loader checks the keys and types, that `script` is `<wait-seconds> <command>`
+pairs ending in `quit`, that every `{placeholder}` is one the runner fills, that
+every expectation is a valid regular expression, and that every `requires` names
+a surface the probe knows.
+
+```toml
+name = "enroll-basic"
+summary = "..."
+requires = ["enrollment", "stream", "clientEndPoints"]
+timeout_seconds = 210          # the outer limit on a container
+min_runtime_seconds = 90       # below this, the assertions prove nothing
+
+[config.stream]                # merged over the launcher's defaults
+negotiation = "accept"
+
+[[euds]]
+id = "alpha"                   # also its output directory
+uid = "EUD-ENROLL-ALPHA"
+callsign = "ALPHA"
+username = "eud-alpha"         # the account the runner creates
+channels = [{ group = "__ANON__", direction = "BOTH" }]
+start_delay_seconds = 0
+script = ["0", "estream:{truststore}:atakatak:atakatak:atakatak::{username}:{token}:-{host}:{enroll_port}:{stream_port}:rustak-interop", "95", "quit"]
+
+[euds.expect]
+log = ["...", "..."]           # regexes, matched IN ORDER
+log_any = ["Interface Up"]     # in any order
+log_absent = ["Interface Error"]
+xml_present = [{ uid = "...", type = "a-f-G-U-C" }]
+xml_absent = [{ uid = "..." }]           # uid, type and link_uid; any subset
+enroll_cert_cn = "{username}"
+
+[expect]                       # the server's own half
+client_endpoints_present = ["ALPHA"]
+audit_matches = ["uploaded"]
+```
+
+Placeholders: `{host}`, `{stream_port}`, `{enroll_port}`, `{marti_port}`,
+`{username}`, `{token}`, `{truststore}`, `{work}`, `{uid}`, `{callsign}`. Every
+EUD's mounted directory also holds `payload.dat`, for the mission-package
+scenarios to send.
+
+Two rules the scenarios follow:
+
+- **Assert on a positive marker, not only on the absence of an error.** A run
+  that never connected has no `Interface Error` either.
+- **Ordered means ordered.** `log` is a sequence; use `log_any` when it is not.
+
+Known traps, and what was done about them:
 
 - `Interface Up` can log an unknown-interface description for
   enrollment-created interfaces, because the description map is populated after
-  the callback can fire. Assert on the `Interface Up:` prefix, not the
-  description.
-- A rustak `t-x-takp-v` sent before the connection settles could race the
-  client's 60 s timer; scenario 4 exists to pin that behaviour.
+  the callback can fire. The scenarios assert on the `Interface Up` prefix, not
+  the description.
+- `Interface Down` is *normal* at `quit`, so no scenario forbids it; only
+  `Interface Error` is forbidden, and `disconnect` asserts the `Down` it wants.
+- A served `/Marti/sync/missionquery` answers `404` for a hash it does not hold,
+  which is exactly what a probe reads as "no such route" — so the enterprise-sync
+  surface is probed at `missionupload`, which is POST-only and answers `405`.
 - `stream:<host>:<port>` (plaintext TCP) is useful as a **negative** test —
   rustak has no plaintext listener by design.
 
-One independent-witness enrollment smoke (pytak or goatak) is also worth having
+One independent-witness enrollment smoke (pytak or goatak) is still worth having
 in the nightly suite: it catches "we accidentally depend on libcurl quirks".
 Neither should ever become the primary EUD — pytak has no `t-x-takp-*` handling
 at all and sends protobuf unconditionally, which is the opposite of ATAK.

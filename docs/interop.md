@@ -8,7 +8,7 @@ the compatibility contract in `.claude/plan/plan.md` → Appendix A.
 |---|---|---|---|
 | `interop/rust` | `rustak-client` fake EUDs, in-process | negotiation, routing by group, disconnect | every PR (part of `cargo test --workspace`; lives in `rustak-server/tests/stream_*.rs`) |
 | `interop/node-tak` | `@tak-ps/node-tak` + `@tak-ps/node-cot` — the libraries CloudTAK uses | the HTTP/JSON half: `/oauth/token`, `tls/*`, groups, contacts, missions, files | every PR — **lands in M2** |
-| `interop/eud` | ATAK's own `commoncommo`, via its stock `commotest` CLI | the transport/crypto/CoT half: enrollment, TLS, protobuf negotiation, ping/pong, SA and chat routing, mission packages | nightly — **image lands now, scenarios in M2** |
+| `interop/eud` | ATAK's own `commoncommo`, via its stock `commotest` CLI | the transport/crypto/CoT half: enrollment, TLS, protobuf negotiation, ping/pong, SA and chat routing, mission packages | nightly |
 | `interop/cloudtak` | CloudTAK's own docker-compose stack and REST API | full-stack Data Sync round-trip, plus a Playwright UI smoke | nightly — **lands in M4** |
 
 `interop/node-tak` and `interop/eud` are complements, not alternatives:
@@ -58,17 +58,54 @@ version:
   enrollment listener on **8446**, distinct from the mTLS Marti listener on
   8443.
 
+### The scenarios
+
+`interop/eud/scenarios/*.toml` are declarative — rustak's configuration
+overrides, each EUD's `commotest` argv with placeholders the runner fills, and
+the expectations on `commo-log.txt`, `commo-xml.txt` and the issued
+`commo-enroll-cert.p12` — and `interop/eud/src/*.ts` is the runner that starts
+rustak, bootstraps it through `/api/v1`, mints a one-time enrolment token per
+EUD, runs each of them as a container and asserts afterwards. The night-one set
+is `enroll-basic`, `two-eud-routing`, `chat-direct`, `disconnect`,
+`negotiate-refused`, `negotiate-silent`, `enroll-revoked`, `mp-upload` and
+`mp-download`; `interop/eud/README.md` → Scenarios has the table and the schema.
+
+Three things worth knowing from outside the directory:
+
+- **The launcher and the bootstrap are shared.** `interop/shared/` holds the
+  throwaway-server launcher, the `/api/v1` cold-start walk (setup token → first
+  administrator → passkey → wizard) and the surface probe; `interop/node-tak`
+  and `interop/eud` both drive them, so the two suites cannot drift about what
+  "a rustak with an internal CA in a scratch directory" means.
+- **Scenarios skip rather than fail when a surface is missing**, naming the
+  brief that will serve it — the same convention `interop/node-tak` uses.
+- **`[stream] negotiation = "accept" | "refuse" | "silent"`** is a
+  compatibility-testing switch, documented in `config.example.toml`, and exists
+  so `negotiate-refused` and `negotiate-silent` can drive ATAK's own two
+  fallback paths against a server that is otherwise working. Installations leave
+  it alone; to turn protobuf off, `[stream.limits] negotiate_protobuf = false`
+  is the supported way.
+
+Without Docker the runner still validates every scenario file and probes the
+server, and reports everything as a skip. The nightly job sets
+`RUSTAK_EUD_REQUIRE_DOCKER=1` so that a runner without a container runtime fails
+there instead.
+
 ## Nightly workflow (`.github/workflows/nightly.yml`)
 
 | Job | Trigger | State |
 |---|---|---|
 | `interop-eud-image` | 03:00 UTC Mondays, and `workflow_dispatch` | **active** — builds and pushes the commoncommo image, caching layers in ghcr |
-| `interop-eud` | 04:00 UTC daily | `if: false` placeholder until M2 |
+| `interop-eud` | 04:00 UTC daily, and `workflow_dispatch` | **active** — builds the UI and the server, pulls the pinned image tag (falling back to `:latest`) and runs `npm test` in `interop/eud`, keeping `commo-log.txt`/`commo-xml.txt` and the run log as artefacts on failure |
 | `interop-cloudtak` | 04:00 UTC daily | `if: false` placeholder until M4 |
 
 The image build is weekly rather than nightly because a cold build is ~25-45
 minutes and the result only changes when the upstream pin or the build recipe
-changes; scenario runs consume the published tag and never rebuild it. The
+changes; scenario runs consume the published tag and never rebuild it, which is
+why `interop-eud` does not `needs:` `interop-eud-image` — a night on which the
+image job did not run is a night the scenarios still have an image to pull. The
+scenario job needs `packages: read` for the same reason the image job needs
+`packages: write`: the package is private to the organisation on purpose. The
 pin itself lives in exactly one place — the `ARG ATAK_CIV_SHA` line in
 `interop/eud/Dockerfile` — and the workflow derives the image tags from it, so
 a bump cannot leave a tag pointing at the wrong upstream revision.

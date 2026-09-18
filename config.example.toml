@@ -165,6 +165,28 @@ store_error_logs = true
 error_log_retention = 200
 
 
+# The CoT stream.
+[stream]
+# How the server answers a client's TAK Protocol v1 request. A
+# COMPATIBILITY-TESTING SWITCH, not an operational one — leave it at "accept"
+# unless you are deliberately reproducing a broken server:
+#
+#   "accept" — offer protobuf and accept a request for version 1. (default)
+#   "refuse" — offer, then answer the request with status="false". ATAK falls
+#              back to XML for the life of the connection and logs
+#              "protocol negotiation request denied, using xml only".
+#   "silent" — never send the offer at all. ATAK waits sixty seconds, logs
+#              "Timed out waiting for protocol version support message" and
+#              carries on in XML without reconnecting.
+#
+# The two negative values exist so the EUD interop suite (interop/eud, scenarios
+# negotiate-refused and negotiate-silent) can drive ATAK's own fallback paths
+# against a server that is otherwise working. Setting either here costs every
+# client protobuf framing and gains nothing. To switch protobuf off altogether
+# — the supported way — use [stream.limits] negotiate_protobuf = false instead.
+# negotiation = "accept"
+
+
 # The CoT streaming listener. A client certificate is always required: there is
 # no plaintext [stream.tcp] section and no anonymous access, by design.
 [stream.tls]

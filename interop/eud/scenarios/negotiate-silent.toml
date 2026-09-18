@@ -1,0 +1,63 @@
+# The second negative negotiation outcome: a server that never offers at all.
+#
+# "silent" makes rustak send no `t-x-takp-v`. ATAK waits sixty seconds for one
+# and then continues as XML, keeping the connection — it does *not* reconnect,
+# which is the distinction this scenario pins: the other timeout in commoncommo
+# ("Timed out waiting for protocol negotiation response, reconnecting...")
+# belongs to a server that offered and then went quiet, and seeing that line
+# here would mean rustak had done something else.
+#
+# Hence the 75-second run: the assertion is about a 60-second timer, so the EUD
+# has to outlive it.
+name = "negotiate-silent"
+summary = "A server that never offers protobuf leaves ATAK in XML after its 60-second timeout, still connected."
+requires = ["enrollment", "stream"]
+timeout_seconds = 240
+min_runtime_seconds = 70
+
+[config.stream]
+negotiation = "silent"
+
+[[euds]]
+id = "alpha"
+uid = "EUD-SILENT-ALPHA"
+callsign = "SILENT-ALPHA"
+username = "eud-silent-alpha"
+channels = [{ group = "__ANON__", direction = "BOTH" }]
+script = [
+  "0",
+  "estream:{truststore}:atakatak:atakatak:atakatak::{username}:{token}:-{host}:{enroll_port}:{stream_port}:rustak-interop",
+  "75",
+  "quit",
+]
+
+[euds.expect]
+log = [
+  "Completed status for enrollment \\d+, adding stream connection",
+  "Timed out waiting for protocol version support message",
+]
+log_absent = [
+  "Interface Error",
+  "swapping proto version",
+  "Server supports protocol versions",
+  "reconnecting",
+]
+xml_present = [{ uid = "EUD-SILENT-BRAVO", type = "a-f-G-U-C" }]
+
+[[euds]]
+id = "bravo"
+uid = "EUD-SILENT-BRAVO"
+callsign = "SILENT-BRAVO"
+username = "eud-silent-bravo"
+channels = [{ group = "__ANON__", direction = "BOTH" }]
+script = [
+  "0",
+  "estream:{truststore}:atakatak:atakatak:atakatak::{username}:{token}:-{host}:{enroll_port}:{stream_port}:rustak-interop",
+  "75",
+  "quit",
+]
+
+[euds.expect]
+log = ["Completed status for enrollment \\d+, adding stream connection"]
+log_absent = ["Interface Error", "swapping proto version"]
+xml_present = [{ uid = "EUD-SILENT-ALPHA", type = "a-f-G-U-C" }]

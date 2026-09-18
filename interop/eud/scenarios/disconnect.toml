@@ -1,0 +1,57 @@
+# `t-x-d-d`: what the server tells everyone else when a device goes away.
+#
+# `remiface:0` removes ALPHA's stream interface the way ATAK does when a server
+# is switched off in the settings — a clean close rather than a dropped socket,
+# which is the case a server can actually notice at once. BRAVO stays connected
+# for another half minute and must be told, with ALPHA's uid in a `<link>`
+# element: a `t-x-d-d` naming nobody would be worse than none at all, because
+# the receiving client clears whatever it thinks the link means.
+name = "disconnect"
+summary = "A clean remiface disconnect reaches the other EUD as t-x-d-d naming the device that left."
+requires = ["enrollment", "stream"]
+timeout_seconds = 180
+min_runtime_seconds = 50
+
+[[euds]]
+id = "alpha"
+uid = "EUD-GONE-ALPHA"
+callsign = "GONE-ALPHA"
+username = "eud-gone-alpha"
+channels = [{ group = "__ANON__", direction = "BOTH" }]
+script = [
+  "0",
+  "estream:{truststore}:atakatak:atakatak:atakatak::{username}:{token}:-{host}:{enroll_port}:{stream_port}:rustak-interop",
+  "25",
+  "remiface:0",
+  "30",
+  "quit",
+]
+
+[euds.expect]
+log = [
+  "Completed status for enrollment \\d+, adding stream connection",
+  "Interface Down",
+]
+log_absent = ["Interface Error"]
+
+[[euds]]
+id = "bravo"
+uid = "EUD-GONE-BRAVO"
+callsign = "GONE-BRAVO"
+username = "eud-gone-bravo"
+channels = [{ group = "__ANON__", direction = "BOTH" }]
+script = [
+  "0",
+  "estream:{truststore}:atakatak:atakatak:atakatak::{username}:{token}:-{host}:{enroll_port}:{stream_port}:rustak-interop",
+  "55",
+  "quit",
+]
+
+[euds.expect]
+log = ["Completed status for enrollment \\d+, adding stream connection"]
+log_any = ["Contact Added", "Contact Removed"]
+log_absent = ["Interface Error"]
+xml_present = [
+  { uid = "EUD-GONE-ALPHA", type = "a-f-G-U-C" },
+  { type = "t-x-d-d", link_uid = "EUD-GONE-ALPHA" },
+]

@@ -14,6 +14,8 @@
 //! deployment needs to see, instead of a plaintext port they believe is open
 //! and is not.
 
+use std::sync::atomic::{AtomicU8, Ordering};
+
 use rustak_core::config::ListenAddr;
 use serde::{Deserialize, Serialize};
 
@@ -30,6 +32,83 @@ fn default_idle_timeout() -> chrono::Duration {
     chrono::Duration::seconds(90)
 }
 
+/// How a connection answers the TAK Protocol v1 negotiation.
+///
+/// **A compatibility-testing switch, not an operational one.** `accept` is what
+/// an installation runs; the other two exist so that the EUD interop suite can
+/// drive the two *negative* outcomes ATAK's own state machine implements, which
+/// are otherwise only reachable against a broken server:
+///
+/// * `refuse` — answer the client's `t-x-takp-q` with `status="false"`. ATAK
+///   logs `protocol negotiation request denied, using xml only` and stays in
+///   XML for the life of the connection.
+/// * `silent` — never send the `t-x-takp-v` offer at all. ATAK waits sixty
+///   seconds, logs `Timed out waiting for protocol version support message`,
+///   and carries on in XML **without reconnecting**.
+///
+/// Setting either on a real installation costs every client protobuf framing
+/// and gains nothing, which is why the documentation in `config.example.toml`
+/// says so in as many words.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[repr(u8)]
+pub enum NegotiationMode {
+    /// Offer protobuf and accept a request for version 1. The only sane value.
+    #[default]
+    Accept = 0,
+
+    /// Offer protobuf and then refuse the request.
+    Refuse = 1,
+
+    /// Never offer.
+    Silent = 2,
+}
+
+/// What the configuration selected, for the connection to read.
+///
+/// # Why this is a process-wide value rather than a field on the connection
+///
+/// The mode has to reach [`crate::stream::negotiation::Negotiation`], which is
+/// built from `ConnLimits` in `stream/connection.rs` — a struct whose
+/// `negotiate` field is a `bool` and whose file, along with `stream/mod.rs`
+/// that fills it in, belongs to other work in flight. Threading a third state
+/// through it is a two-line change that belongs with those files, and this knob
+/// is deliberately not worth blocking on it: the value is published here when
+/// the configuration is parsed, which happens exactly once per process, and
+/// read where the state machine is built.
+///
+/// See `.claude/plan/status/M2-09-eud-interop-scenarios.md` → Deviations for
+/// the patch that replaces this with the field, whenever those files are free.
+static SELECTED: AtomicU8 = AtomicU8::new(NegotiationMode::Accept as u8);
+
+impl NegotiationMode {
+    /// Publishes this mode as the one connections will use.
+    pub fn select(self) {
+        SELECTED.store(self as u8, Ordering::Relaxed);
+    }
+
+    /// The mode the configuration selected; [`NegotiationMode::Accept`] until one does.
+    pub fn selected() -> Self {
+        match SELECTED.load(Ordering::Relaxed) {
+            1 => Self::Refuse,
+            2 => Self::Silent,
+            _ => Self::Accept,
+        }
+    }
+}
+
+/// Parses the key and publishes it in one step, so nothing has to remember to.
+fn select_negotiation<'de, D>(deserializer: D) -> Result<NegotiationMode, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let mode = NegotiationMode::deserialize(deserializer)?;
+
+    mode.select();
+
+    Ok(mode)
+}
+
 /// `[stream]`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -41,6 +120,10 @@ pub struct StreamConfig {
     /// What one connection may cost the server.
     #[serde(default)]
     pub limits: StreamLimits,
+
+    /// How the server answers the protocol negotiation. See [`NegotiationMode`].
+    #[serde(default, deserialize_with = "select_negotiation")]
+    pub negotiation: NegotiationMode,
 }
 
 /// `[stream.limits]` — the bounds every connection is held to.
@@ -239,6 +322,47 @@ mod tests {
 
         assert!(!parsed.limits.negotiate_protobuf);
         assert_eq!(parsed.limits.queue_len, 256, "the rest keep their defaults");
+    }
+
+    #[test]
+    fn the_negotiation_switch_defaults_to_accepting() {
+        let parsed: StreamConfig = toml::from_str("").unwrap();
+
+        assert_eq!(
+            parsed.negotiation,
+            NegotiationMode::Accept,
+            "an installation that does not mention the key gets the sane behaviour",
+        );
+    }
+
+    #[test]
+    fn the_negotiation_switch_is_parsed_and_published() {
+        // The two values that exist for the EUD interop suite, and nothing else:
+        // `refuse` makes the server answer `status="false"`, `silent` makes it
+        // never offer at all. Both are restored to `accept` afterwards, because
+        // the selection is process-wide by design (see `SELECTED`).
+        for (written, expected) in [
+            ("refuse", NegotiationMode::Refuse),
+            ("silent", NegotiationMode::Silent),
+            ("accept", NegotiationMode::Accept),
+        ] {
+            let parsed: StreamConfig =
+                toml::from_str(&format!(r#"negotiation = "{written}""#)).unwrap();
+
+            assert_eq!(parsed.negotiation, expected);
+            assert_eq!(NegotiationMode::selected(), expected);
+        }
+
+        NegotiationMode::Accept.select();
+    }
+
+    #[test]
+    fn a_negotiation_mode_nobody_implements_is_refused_by_name() {
+        let Err(err) = toml::from_str::<StreamConfig>(r#"negotiation = "ignore""#) else {
+            panic!("an unknown negotiation mode should be refused");
+        };
+
+        assert!(err.to_string().contains("ignore"), "{err}");
     }
 
     #[test]

@@ -1,0 +1,24 @@
+{
+  "name": "rustak-interop-eud",
+  "version": "0.0.0",
+  "private": true,
+  "description": "EUD scenario suite: drives ATAK's own commoncommo (its stock commotest CLI, in a container) against a throwaway rustak and asserts on commo-log.txt / commo-xml.txt.",
+  "type": "module",
+  "engines": {
+    "node": ">= 24"
+  },
+  "scripts": {
+    "test": "npm run test:unit && npm run test:scenarios",
+    "test:unit": "node --import tsx --test tests/*.test.ts",
+    "test:scenarios": "tsx src/run.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "smol-toml": "^1.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3"
+  }
+}

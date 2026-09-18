@@ -116,16 +116,139 @@ jobs:
           done
           echo "commotest CLI surface intact"
 
-  # Placeholder: the scenario suite that drives the image above against a live
-  # rustak — enrollment (`estream:`), TLS, TAK Protocol v1 negotiation,
-  # ping/pong, SA/chat routing and mission-package transfer — asserting on
-  # commotest's commo-log.txt / commo-xml.txt. Lands in M2, once rustak can
-  # enrol devices and expose the 8446 enrollment listener the harness needs;
-  # see interop/eud/README.md and plan.md's "Interop in CI" table.
-  # `if: false` keeps it visible in the job graph without pretending it runs.
+  # The scenario suite: drives the image above against a live rustak —
+  # enrollment (`estream:`), TLS, TAK Protocol v1 negotiation, ping/pong, SA and
+  # chat routing, disconnect and mission-package transfer — asserting on
+  # commotest's commo-log.txt / commo-xml.txt and on rustak's own API. See
+  # interop/eud/README.md → Scenarios and
+  # .claude/plan/status/M2-09-eud-interop-scenarios.md.
+  #
+  # It consumes the published tag and never rebuilds the image, so it does not
+  # `needs:` the job above: a night on which the image build did not run is a
+  # night this still has an image to pull.
   interop-eud:
     name: "Interop: EUD harness"
     runs-on: ubuntu-latest
-    if: false
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 4 * * *'
+    timeout-minutes: 90
+
+    permissions:
+      contents: read
+      # The GHCR package is private to the organisation on purpose — publishing
+      # GPL binaries is conveying under GPLv3 §6, and internal use is not. So
+      # the job has to authenticate to pull it.
+      packages: read
+
     steps:
-      - run: echo "Placeholder until M2 — see interop/eud/README.md (interop/eud scenarios)."
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          target: wasm32-unknown-unknown
+
+      - name: Setup Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            rustak-ui -> target
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      # Pinned to the same release the PR pipeline's `ui` job uses; bump both
+      # together and deliberately.
+      - name: Install Trunk
+        shell: bash
+        run: |
+          cargo binstall --no-confirm --disable-strategies compile trunk@0.21.14
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # The UI is embedded into the binary by `include_dir!` at compile time, so
+      # it has to exist before cargo build. Release rather than debug: nothing
+      # here drives the admin UI, so the `?demo` fixtures are dead weight.
+      - name: Build release UI
+        working-directory: rustak-ui
+        run: trunk build --release
+
+      - name: cargo build
+        run: cargo build -p rustak-server
+
+      # The `ARG ATAK_CIV_SHA=` line in interop/eud/Dockerfile is the single
+      # source of truth for the pin, exactly as in interop-eud-image above, so
+      # the scenarios run against the revision this tree pins. `:latest` is the
+      # fallback for the window after a pin bump and before the weekly build has
+      # published the new tag.
+      - name: Resolve the image tag
+        id: image
+        run: |
+          sha="$(sed -n 's/^ARG ATAK_CIV_SHA=\([0-9a-f]\{40\}\)[[:space:]]*$/\1/p' interop/eud/Dockerfile | head -n 1)"
+          if [ -z "$sha" ]; then
+            echo "interop/eud/Dockerfile has no 'ARG ATAK_CIV_SHA=<40 hex chars>' line" >&2
+            exit 1
+          fi
+          echo "image=${REGISTRY}/${ORG}/${EUD_IMAGE}:atak-civ-${sha:0:7}" >> "$GITHUB_OUTPUT"
+          echo "fallback=${REGISTRY}/${ORG}/${EUD_IMAGE}:latest" >> "$GITHUB_OUTPUT"
+
+      - name: Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull the EUD image
+        id: pull
+        run: |
+          if docker pull "${{ steps.image.outputs.image }}"; then
+            echo "RUSTAK_EUD_IMAGE=${{ steps.image.outputs.image }}" >> "$GITHUB_ENV"
+          elif docker pull "${{ steps.image.outputs.fallback }}"; then
+            echo "The pinned tag is not published yet; falling back to :latest." >&2
+            echo "RUSTAK_EUD_IMAGE=${{ steps.image.outputs.fallback }}" >> "$GITHUB_ENV"
+          else
+            echo "Neither the pinned tag nor :latest could be pulled. Run the" >&2
+            echo "interop-eud-image job (workflow_dispatch) to publish one." >&2
+            exit 1
+          fi
+
+      # Node 24 to match interop/node-tak, whose launcher and bootstrap this
+      # suite shares through interop/shared.
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: interop/eud/package-lock.json
+
+      - name: Install dependencies
+        working-directory: interop/eud
+        run: npm ci
+
+      - name: Typecheck the suite
+        working-directory: interop/eud
+        run: npm run typecheck
+
+      # RUSTAK_EUD_REQUIRE_DOCKER=1 is what makes a runner without a container
+      # runtime fail here rather than reporting a green run in which every
+      # scenario skipped. The log is kept whatever happens, because the rustak
+      # side of a failure is in it.
+      - name: Run the EUD scenarios
+        working-directory: interop/eud
+        env:
+          RUSTAK_EUD_REQUIRE_DOCKER: "1"
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee rustak-eud.log
+
+      - name: Upload the scenario artefacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: eud-artefacts
+          path: |
+            interop/eud/rustak-eud.log
+            interop/eud/artifacts/**
+          if-no-files-found: warn
+          retention-days: 14

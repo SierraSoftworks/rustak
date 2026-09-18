@@ -1,0 +1,10 @@
+{
+  "name": "rustak-interop-shared",
+  "version": "0.0.0",
+  "private": true,
+  "description": "What interop/node-tak and interop/eud both need: the throwaway-server launcher, the /api/v1 bootstrap and the surface probe. Source only — each suite compiles it with its own tsx and typescript.",
+  "type": "module",
+  "engines": {
+    "node": ">= 24"
+  }
+}

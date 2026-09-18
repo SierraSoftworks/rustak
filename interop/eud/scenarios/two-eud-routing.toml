@@ -1,0 +1,61 @@
+# Channel routing, in TAK's own vocabulary: IN is permission to write to a
+# channel and OUT is permission to read from it, which is the opposite way round
+# from what most people guess.
+#
+# ALPHA holds `relay` IN only and BRAVO holds it OUT only, and nothing else:
+# `anon_group_default = false` keeps them out of __ANON__, where they would both
+# see everything and the scenario would prove nothing. So ALPHA's position
+# reports must reach BRAVO, and BRAVO's must reach nobody — which is the
+# assertion in both directions, from inside ATAK's own message pipeline.
+name = "two-eud-routing"
+summary = "Two EUDs with disjoint IN/OUT grants on one channel: traffic flows one way and only one way."
+requires = ["enrollment", "stream", "channels", "clientEndPoints"]
+timeout_seconds = 180
+min_runtime_seconds = 45
+
+[config.auth]
+anon_group_default = false
+
+[[euds]]
+id = "alpha"
+uid = "EUD-ROUTE-ALPHA"
+callsign = "ROUTE-ALPHA"
+username = "eud-route-alpha"
+channels = [{ group = "relay", direction = "IN" }]
+script = [
+  "0",
+  "estream:{truststore}:atakatak:atakatak:atakatak::{username}:{token}:-{host}:{enroll_port}:{stream_port}:rustak-interop",
+  "50",
+  "quit",
+]
+
+[euds.expect]
+log = ["Completed status for enrollment \\d+, adding stream connection"]
+log_any = ["Interface Up"]
+log_absent = ["Interface Error"]
+# Write-only on the channel: nothing on it may come back.
+xml_absent = [{ uid = "EUD-ROUTE-BRAVO" }]
+
+[[euds]]
+id = "bravo"
+uid = "EUD-ROUTE-BRAVO"
+callsign = "ROUTE-BRAVO"
+username = "eud-route-bravo"
+channels = [{ group = "relay", direction = "OUT" }]
+script = [
+  "0",
+  "estream:{truststore}:atakatak:atakatak:atakatak::{username}:{token}:-{host}:{enroll_port}:{stream_port}:rustak-interop",
+  "50",
+  "quit",
+]
+
+[euds.expect]
+log = ["Completed status for enrollment \\d+, adding stream connection"]
+log_any = ["Interface Up", "Contact Added"]
+log_absent = ["Interface Error"]
+# commotest broadcasts its own SA every second, so one that never arrives is a
+# routing failure rather than a timing one.
+xml_present = [{ uid = "EUD-ROUTE-ALPHA", type = "a-f-G-U-C" }]
+
+[expect]
+client_endpoints_present = ["ROUTE-ALPHA", "ROUTE-BRAVO"]

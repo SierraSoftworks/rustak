@@ -23,6 +23,7 @@ use rustak_cot::codec::Mode;
 use rustak_cot::types::cot_type;
 use rustak_cot::{CotTime, Event, negotiate};
 
+use crate::config::stream::NegotiationMode;
 use crate::prelude::*;
 
 /// Where a connection is in its one negotiation.
@@ -57,18 +58,38 @@ pub enum Intercepted {
 pub struct Negotiation {
     state: NegState,
     server_version: String,
+
+    /// What the installation's compatibility switch says to answer.
+    configured: NegotiationMode,
 }
 
 impl Negotiation {
     /// A negotiation that will offer protobuf, or one that will not.
+    ///
+    /// `enabled` is the installation's `[stream.limits] negotiate_protobuf`; the
+    /// mode is [`NegotiationMode::selected`], which is `accept` everywhere
+    /// except under the compatibility-testing switch the EUD interop suite
+    /// drives the two negative outcomes with.
     pub fn new(enabled: bool, server_version: impl Into<String>) -> Self {
+        let mode = if enabled {
+            NegotiationMode::selected()
+        } else {
+            NegotiationMode::Silent
+        };
+
+        Self::with_mode(mode, server_version)
+    }
+
+    /// A negotiation in a named mode, which is how the tests pin each outcome.
+    pub fn with_mode(mode: NegotiationMode, server_version: impl Into<String>) -> Self {
         Self {
-            state: if enabled {
-                NegState::Xml
-            } else {
+            state: if mode == NegotiationMode::Silent {
                 NegState::Disabled
+            } else {
+                NegState::Xml
             },
             server_version: server_version.into(),
+            configured: mode,
         }
     }
 
@@ -134,7 +155,7 @@ impl Negotiation {
             return Some(Intercepted::Silent);
         };
 
-        if version != negotiate::PROTO_VERSION {
+        if version != negotiate::PROTO_VERSION || self.configured == NegotiationMode::Refuse {
             self.state = NegState::Xml;
 
             return Some(Intercepted::Refused(Box::new(negotiate::response(
@@ -157,9 +178,19 @@ mod tests {
         CotTime::from_millis(1_789_646_400_000)
     }
 
+    /// A negotiation in the mode every installation runs.
+    ///
+    /// Written out rather than `Negotiation::new(true, …)` deliberately: `new`
+    /// reads the process-wide selection that `config::stream` publishes, and
+    /// both sets of tests live in one binary, so a test that read it could be
+    /// racing the one that sets it.
+    fn accepting() -> Negotiation {
+        Negotiation::with_mode(NegotiationMode::Accept, "rustak-0.1.0")
+    }
+
     #[test]
     fn a_connection_offers_protobuf_exactly_once() {
-        let mut negotiation = Negotiation::new(true, "rustak-0.1.0");
+        let mut negotiation = accepting();
 
         let offer = negotiation.offer("neg-1", now()).expect("the one offer");
 
@@ -173,6 +204,8 @@ mod tests {
 
     #[test]
     fn an_installation_that_does_not_offer_protobuf_says_nothing() {
+        // `negotiate_protobuf = false` is silence whatever the switch says, so
+        // this one may go through `new`.
         let mut negotiation = Negotiation::new(false, "rustak-0.1.0");
 
         assert!(negotiation.offer("neg-1", now()).is_none());
@@ -180,8 +213,47 @@ mod tests {
     }
 
     #[test]
+    fn the_silent_mode_never_offers_at_all() {
+        // What `negotiate-silent` drives: ATAK waits sixty seconds for an offer
+        // that never comes and continues in XML, keeping the connection.
+        let mut negotiation = Negotiation::with_mode(NegotiationMode::Silent, "rustak-0.1.0");
+
+        assert!(negotiation.offer("neg-1", now()).is_none());
+        assert_eq!(negotiation.state(), &NegState::Disabled);
+        assert_eq!(negotiation.mode(), Mode::Xml);
+    }
+
+    #[test]
+    fn the_refuse_mode_offers_and_then_says_no() {
+        // What `negotiate-refused` drives: the offer goes out, the client asks
+        // for the version we do speak, and it is refused anyway — which is the
+        // only way to reach ATAK's `using xml only` path from a working server.
+        let mut negotiation = Negotiation::with_mode(NegotiationMode::Refuse, "rustak-0.1.0");
+
+        let offer = negotiation
+            .offer("neg-1", now())
+            .expect("refusing still offers");
+
+        assert_eq!(offer.r#type, cot_type::TAKP_V);
+
+        let request = negotiate::request("neg-1", negotiate::PROTO_VERSION, now());
+        let Some(Intercepted::Refused(answer)) = negotiation.on_event(&request, now()) else {
+            panic!("the refusing mode must refuse a version 1 request");
+        };
+
+        assert_eq!(answer.r#type, cot_type::TAKP_R);
+        assert_eq!(answer.uid, "neg-1", "the answer reuses the offer's uid");
+        assert_eq!(negotiate::parse_response(&answer), Some(false));
+        assert_eq!(
+            negotiation.mode(),
+            Mode::Xml,
+            "a refused connection stays in XML for the life of the socket",
+        );
+    }
+
+    #[test]
     fn a_request_for_version_one_switches_the_connection() {
-        let mut negotiation = Negotiation::new(true, "rustak-0.1.0");
+        let mut negotiation = accepting();
         negotiation.offer("neg-1", now());
 
         let request = negotiate::request("neg-1", negotiate::PROTO_VERSION, now());
@@ -197,7 +269,7 @@ mod tests {
 
     #[test]
     fn a_request_for_a_version_we_do_not_speak_is_refused_and_stays_xml() {
-        let mut negotiation = Negotiation::new(true, "rustak-0.1.0");
+        let mut negotiation = accepting();
         negotiation.offer("neg-1", now());
 
         let request = negotiate::request("neg-1", 7, now());
@@ -213,7 +285,7 @@ mod tests {
     fn a_request_with_no_readable_version_gets_no_answer_at_all() {
         // The client then times out at sixty seconds and stays in XML, which is
         // the correct fallback rather than a hang to be fixed.
-        let mut negotiation = Negotiation::new(true, "rustak-0.1.0");
+        let mut negotiation = accepting();
         negotiation.offer("neg-1", now());
 
         let malformed = Event::builder(cot_type::TAKP_Q, "neg-1")
@@ -229,7 +301,7 @@ mod tests {
 
     #[test]
     fn a_request_before_the_offer_is_ignored() {
-        let mut negotiation = Negotiation::new(true, "rustak-0.1.0");
+        let mut negotiation = accepting();
         let request = negotiate::request("neg-1", 1, now());
 
         assert_eq!(
@@ -241,7 +313,7 @@ mod tests {
 
     #[test]
     fn a_second_request_after_the_switch_changes_nothing() {
-        let mut negotiation = Negotiation::new(true, "rustak-0.1.0");
+        let mut negotiation = accepting();
         negotiation.offer("neg-1", now());
         let request = negotiate::request("neg-1", 1, now());
         negotiation.on_event(&request, now());
@@ -255,7 +327,7 @@ mod tests {
 
     #[test]
     fn an_ordinary_message_is_not_the_negotiations_business() {
-        let mut negotiation = Negotiation::new(true, "rustak-0.1.0");
+        let mut negotiation = accepting();
         negotiation.offer("neg-1", now());
 
         let sa = Event::builder("a-f-G-U-C", "UID-A").point(0.0, 0.0).build();

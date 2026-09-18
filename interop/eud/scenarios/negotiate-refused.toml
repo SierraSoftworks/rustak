@@ -1,0 +1,62 @@
+# The first of the two negative negotiation outcomes, driven by the test-only
+# `[stream] negotiation` switch in rustak's configuration.
+#
+# "refuse" makes the server answer the client's `t-x-takp-q` with a
+# `t-x-takp-r status="false"`: the offer was made, the client asked for version
+# 1, and the server said no. ATAK's own state machine must then stay in XML for
+# the life of the connection — and, crucially, keep working. So a second EUD is
+# here purely to keep talking: ALPHA asserting that BRAVO's position reports
+# still arrive is the "XML still flows" half, which is the half a server could
+# break without anybody noticing.
+name = "negotiate-refused"
+summary = "A refused TAK Protocol v1 request falls back to XML, and XML keeps flowing."
+requires = ["enrollment", "stream"]
+timeout_seconds = 180
+min_runtime_seconds = 45
+
+[config.stream]
+negotiation = "refuse"
+
+[[euds]]
+id = "alpha"
+uid = "EUD-REFUSE-ALPHA"
+callsign = "REFUSE-ALPHA"
+username = "eud-refuse-alpha"
+channels = [{ group = "__ANON__", direction = "BOTH" }]
+script = [
+  "0",
+  "estream:{truststore}:atakatak:atakatak:atakatak::{username}:{token}:-{host}:{enroll_port}:{stream_port}:rustak-interop",
+  "50",
+  "quit",
+]
+
+[euds.expect]
+log = [
+  "Proto Negotiate: Server supports protocol versions",
+  "Proto Negotiate: Requesting transition to protocol version 1",
+  "negotiation request denied, using xml only",
+]
+log_absent = [
+  "Interface Error",
+  "swapping proto version",
+  "Timed out waiting for protocol",
+]
+xml_present = [{ uid = "EUD-REFUSE-BRAVO", type = "a-f-G-U-C" }]
+
+[[euds]]
+id = "bravo"
+uid = "EUD-REFUSE-BRAVO"
+callsign = "REFUSE-BRAVO"
+username = "eud-refuse-bravo"
+channels = [{ group = "__ANON__", direction = "BOTH" }]
+script = [
+  "0",
+  "estream:{truststore}:atakatak:atakatak:atakatak::{username}:{token}:-{host}:{enroll_port}:{stream_port}:rustak-interop",
+  "50",
+  "quit",
+]
+
+[euds.expect]
+log = ["Completed status for enrollment \\d+, adding stream connection"]
+log_absent = ["Interface Error", "swapping proto version"]
+xml_present = [{ uid = "EUD-REFUSE-ALPHA", type = "a-f-G-U-C" }]

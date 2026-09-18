@@ -1,0 +1,65 @@
+# GeoChat, unicast: `chatsend:<uid>` builds a `b-t-f` with `__chat`, `chatgrp`
+# and a `<marti><dest>` naming one peer, which is how ATAK addresses a person
+# rather than a channel.
+#
+# Two halves, deliberately in one scenario because the second only means
+# anything if the first worked:
+#
+# 1. **Delivered.** BRAVO is connected when ALPHA speaks at T+20, so the chat
+#    must appear in BRAVO's received events.
+# 2. **Bounced.** BRAVO quits at T+35, and ALPHA speaks to it again at T+50.
+#    A TAK server answers an undeliverable unicast chat with a `b-t-f-s` back to
+#    the sender, and that is what ALPHA asserts on.
+#
+# The second half is the one that is not implemented server-side yet:
+# `rustak-cot` defines `b-t-f-s` (`types.rs` CHAT_FAILED) and nothing in
+# `rustak-server/src/stream` ever sends one. This scenario is what will notice
+# when that changes, and until then it fails here rather than passing quietly.
+name = "chat-direct"
+summary = "A unicast GeoChat reaches a connected peer, and bounces back as b-t-f-s when the peer has gone."
+requires = ["enrollment", "stream"]
+timeout_seconds = 210
+min_runtime_seconds = 60
+
+[[euds]]
+id = "alpha"
+uid = "EUD-CHAT-ALPHA"
+callsign = "CHAT-ALPHA"
+username = "eud-chat-alpha"
+channels = [{ group = "__ANON__", direction = "BOTH" }]
+script = [
+  "0",
+  "estream:{truststore}:atakatak:atakatak:atakatak::{username}:{token}:-{host}:{enroll_port}:{stream_port}:rustak-interop",
+  "20",
+  "chatsend:EUD-CHAT-BRAVO",
+  "30",
+  "chatsend:EUD-CHAT-BRAVO",
+  "20",
+  "quit",
+]
+
+[euds.expect]
+log = ["Completed status for enrollment \\d+, adding stream connection"]
+log_absent = ["Interface Error"]
+# The bounce: the server's answer to a chat addressed to somebody who has gone.
+xml_present = [{ type = "b-t-f-s" }]
+
+[[euds]]
+id = "bravo"
+uid = "EUD-CHAT-BRAVO"
+callsign = "CHAT-BRAVO"
+username = "eud-chat-bravo"
+channels = [{ group = "__ANON__", direction = "BOTH" }]
+script = [
+  "0",
+  "estream:{truststore}:atakatak:atakatak:atakatak::{username}:{token}:-{host}:{enroll_port}:{stream_port}:rustak-interop",
+  "35",
+  "quit",
+]
+
+[euds.expect]
+log = ["Completed status for enrollment \\d+, adding stream connection"]
+log_absent = ["Interface Error"]
+# Addressed to this uid by `<marti><dest>`, so a server that broadcast it
+# instead would still pass this — which is why ALPHA asserts the bounce.
+xml_present = [{ type = "b-t-f" }]
