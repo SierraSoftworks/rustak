@@ -1,66 +1,325 @@
-# config.example.toml — every key shown with its default unless marked (required)
+# rustak server configuration.
+#
+# Every key is shown with its default. A key that is commented out has the
+# default written beside it; a key that is shown uncommented is set to its
+# default, so this file describes a working installation as it stands.
+#
+# Any value may be written as "${{ env.NAME }}", which is substituted from the
+# environment (or from the file passed to --env) before the file is parsed. That
+# is how secrets stay out of a file you commit or attach to a support ticket.
+#
+# Unknown and misplaced keys are refused rather than ignored, so
+# `rustak --config config.toml --check` is a real check of this file.
+#
+# Durations are written as "45s", "15m", "12h" or "3650d".
+
 
 [server]
-name = "rustak"                       # shown to clients (Marti version/config), overridable from the setup wizard
-domains = ["tak.example.com"]        # public host names; first is the canonical one used in QR codes and .pref files
-# base_url = "https://tak.example.com:8446"   # inferred from server.domains / request Host when omitted
-trust_proxy = false                   # honour X-Forwarded-* only behind a trusted proxy
-data_dir = "./data"                   # database, key file, content store, ACME cache live here
+# The name clients see on /Marti/api/version and at the top of the admin UI.
+name = "rustak"
+
+# The public host names this server answers to. The FIRST is canonical: it is
+# the host embedded in enrollment QR codes and device profiles, the subject of
+# the internal server certificate, and the default token issuer. Changing it
+# invalidates what already-enrolled devices hold.
+# Default: [] — the first-run setup wizard is how most installations set this.
+domains = ["tak.example.com"]
+
+# The externally visible base URL. Default: "https://<first domain>". Set it
+# when a proxy publishes rustak on a different port than the one it binds.
+# base_url = "https://tak.example.com:8446"
+
+# Whether X-Forwarded-* headers are believed. Only turn this on behind a proxy
+# that sets them: without one, any client can claim any source address, and the
+# credential rate limiter keys on it.
+trust_proxy = false
+
+# Where the database, the secret key file, the content store, the stream
+# segments and the ACME cache live.
+data_dir = "./data"
+
 
 [storage]
-# database = "<data_dir>/rustak.sqlite"
-# content_dir = "<data_dir>/content"
-reader_connections = 2                # read-only WAL connections; 0 = reads share the writer
+# The SQLite database. Default: "<data_dir>/rustak.sqlite". The key that seals
+# stored secrets lives beside it, so moving this moves both. A relative path is
+# taken against data_dir, not the working directory.
+# database = "rustak.sqlite"
+
+# The content-addressed blob store. Default: "<data_dir>/content".
+# content_dir = "content"
+
+# The append-only CoT history segments. Default: "<data_dir>/streams". History
+# is written here as framed segment files rather than as database rows, so a
+# busy installation's write volume never reaches SQLite.
+# streams_dir = "streams"
+
+# Read-only WAL connections opened alongside the single writer. 0 makes reads
+# share the writer, which serialises them.
+reader_connections = 2
+
+# How long a statement waits for the write lock before returning SQLITE_BUSY.
 busy_timeout = "5s"
-checkpoint_interval = "5m"            # PASSIVE wal_checkpoint job cadence
 
-[web.public]                          # browser UI, /api/v1, /oauth/*, /login/*, /Marti/api/tls/* (enrollment)
-listen = [":8446"]                    # add ":443" for a browser-friendly port (needs CAP_NET_BIND_SERVICE)
+# How often the PASSIVE WAL checkpoint job runs. The WAL is also truncated on a
+# clean shutdown; this is what keeps it bounded on a server that stays up.
+checkpoint_interval = "5m"
+
+
+# The browser- and enrollment-facing listener: the admin UI, /api/v1, /oauth/*,
+# /login/*, /Marti/api/tls/* and the full Marti API for CloudTAK's webtak role.
+[web.public]
+# Addresses to bind, all serving the same routes. Add ":443" for browsers that
+# will not be told a port number, and for the ACME tls-alpn-01 challenge;
+# binding it needs CAP_NET_BIND_SERVICE or a forwarding proxy.
+listen = [":8446"]
+
+# An optional plaintext address, used only for the ACME http-01 challenge and a
+# permanent redirect to HTTPS. It does not serve the API. Default: unset.
+# plain_bind = ":80"
+
+# Permits `[web.public.tls] mode = "none"`. Serving credentials, tokens and
+# certificate enrollment over plaintext HTTP takes this deliberate second
+# statement; development and the end-to-end suites set both.
+allow_insecure_http = false
+
 [web.public.tls]
-mode = "none"                         # "none" (dev / behind a TLS proxy) | "files" | "acme"
-# cert_file = "/etc/rustak/fullchain.pem"
-# key_file  = "/etc/rustak/privkey.pem"
+# Where this listener's certificate comes from:
+#   "internal" — rustak's own CA issues it, and devices are given that CA in
+#                their enrollment package. Needs no public DNS and no open port
+#                80; browsers will not trust it until the CA is installed.
+#   "files"    — cert_file and key_file below, reloaded when they change.
+#   "acme"     — ordered from an ACME authority; see [acme].
+#   "none"     — no TLS, for development or behind a terminating proxy.
+#                Refused unless allow_insecure_http is also set.
+mode = "internal"
 
-[web.marti]                           # full Marti API over the internal CA (M2)
+# Required by mode = "files": the full chain, and its private key, in PEM form.
+# cert_file = "/etc/rustak/fullchain.pem"
+# key_file = "/etc/rustak/privkey.pem"
+
+
+# The mutually authenticated Marti listener. Every caller presents a client
+# certificate rustak issued, which is both its authentication and its device
+# identity.
+[web.marti]
 enabled = true
 listen = ":8443"
-client_cert = "optional"              # "optional" | "required"
 
-[stream.tls]                          # CoT stream, internal CA, client cert required (M1)
+# "required" is the only accepted value. TAK Server allows an optional client
+# certificate here and accepts bearer tokens instead; rustak does not, because a
+# device that cannot present a certificate has not enrolled, and everything it
+# might want is available on [web.public] with a bearer token.
+client_cert = "required"
+
+
+# The CoT streaming listener. A client certificate is always required: there is
+# no plaintext [stream.tcp] section and no anonymous access, by design.
+[stream.tls]
 enabled = true
 listen = ":8089"
+
+# How long a connection may go without traffic before it is closed. TAK clients
+# ping well inside this; the timeout reclaims connections whose device fell off
+# the network without closing its socket.
 idle_timeout = "90s"
 
+
 [auth]
-# oidc = { endpoint = "https://id.example.com", client_id = "rustak", client_secret = "${{ env.RUSTAK_OIDC_CLIENT_SECRET }}",
-#          scopes = ["profile", "email", "offline_access"], username_claim = "preferred_username", groups_claim = "groups" }
-# user_acl  = 'true'                  # filt-rs over method/path/client_ip/headers.*/claims.*; who may sign in to the UI (default: deny)
-# admin_acl = 'claims.groups contains "tak-admins"'   # OR the users.is_admin flag set by the wizard/CLI (default: deny)
+# The `iss` claim of the tokens we issue. Default: the server's base URL.
+# issuer = "https://tak.example.com"
+
+# The `aud` claim we issue and require.
+audience = "rustak"
+
+# How long an access token lasts, and how long a refresh token lasts. Refresh
+# tokens rotate; reuse of a consumed one revokes the whole family.
 access_token_ttl = "1h"
 refresh_token_ttl = "30d"
-# secret_key = "${{ env.RUSTAK_SECRET_KEY }}"        # AES-256 key (base64/hex); generated into <database>.key when absent
+
+# Who may sign in, and who is an administrator. filt-rs expressions over
+# method/path/client_ip/headers.*/claims.*. BOTH DEFAULT TO DENYING EVERYBODY:
+# an installation that configures an identity provider and forgets these admits
+# nobody, rather than admitting the provider's whole directory. The first admin
+# registered by the setup wizard is authorised by the users.is_admin column
+# instead, so a fresh installation is administrable without writing a filter.
+# user_acl = 'true'
+# admin_acl = 'claims.groups contains "tak-admins"'
+
+# Whether a new user joins __ANON__, the default channel TAK clients expect.
+anon_group_default = true
+
+# How long a one-time enrollment token may be used. It is scanned from a QR code
+# or typed into a device within a minute or two of being minted, and it is
+# consumed by the certificate it authorises.
+enrollment_token_ttl = "15m"
+
+# Long-lived client passwords are a COMPATIBILITY credential: CloudTAK
+# authenticates with a username and password against /oauth/token and has no
+# other option today. They are accepted only there and on /Marti/api/tls/*,
+# never for the admin UI or the Marti API. Turn this off if nothing needs them.
+client_passwords_enabled = true
+client_password_ttl = "90d"
+
+# Whether /token/access may hand a caller its own access token (CloudTAK uses
+# it to obtain a token it can present to other services).
+allow_access_token_retrieval = true
+
+# Where the first-run setup token is written, with mode 0600, when an
+# installation has no administrator yet. Default: "<data_dir>/setup-token".
+# setup_token_file = "setup-token"
+
+# The AES-256 key sealing stored secrets, as base64 or hexadecimal. Generated
+# into a file beside the database when absent. Rotated keys stay listed in
+# previous_secret_keys until every record sealed with them has been rewritten.
+# secret_key = "${{ env.RUSTAK_SECRET_KEY }}"
 # previous_secret_keys = []
 
+# The limiter on every endpoint that accepts a secret, keyed on the source
+# address and the identity being attempted. It cannot be disabled: it is what
+# stands between a client password and an offline guessing attack.
+# rate_limit = { attempts = 10, window = "1m", lockout = "15m" }
+
+
+# Federating with an identity provider. Unset by default; the whole section is
+# optional, but endpoint, client_id and client_secret are required within it.
+# [auth.oidc]
+# endpoint = "https://id.example.com"
+# client_id = "rustak"
+# client_secret = "${{ env.RUSTAK_OIDC_CLIENT_SECRET }}"
+#
+# Scopes requested; "openid" is always added. Default:
+# scopes = ["profile", "email", "offline_access"]
+#
+# The claim that becomes the rustak username (falling back to `sub`), and the
+# claim listing group memberships. Choose a username claim that does not change.
+# username_claim = "preferred_username"
+# groups_claim = "groups"
+#
+# Group mapping. Only claimed groups starting with group_prefix are considered
+# (empty considers all of them), and strip_group_prefix decides whether the
+# prefix is removed from the resulting channel name. The suffixes follow the TAK
+# convention: "ops_READ" grants read (OUT), "ops_WRITE" grants write (IN), and a
+# bare "ops" grants both. Members of read_only_group never get write access.
+# group_prefix = ""
+# strip_group_prefix = true
+# read_suffix = "_READ"
+# write_suffix = "_WRITE"
+# read_only_group = "observers"          # default: unset
+#
+# Whether a claimed group that does not exist yet is created.
+# auto_create_groups = true
+#
+# Whether an account whose username matches an existing local user is linked to
+# it. Off by default: on, whoever controls the provider can take over an
+# existing account by claiming its username.
+# link_by_username = false
+#
+# The name on the sign-in button. Default: the provider's URL.
+# display_name = "Home SSO"
+
+
+# The internal certificate authority. These settings are sticky: a device keeps
+# the certificate and the truststore it enrolled with, so changing the CA means
+# re-enrolling every device.
 [pki]
 ca_common_name = "rustak CA"
+
+# The organisation (O) in every subject we issue. Ignored when name_entries is
+# set, which replaces it wholesale.
 organization = "rustak"
-key_type = "rsa-2048"                 # "rsa-2048" | "ecdsa-p256" — RSA by default for TAK ecosystem truststores
+
+# The full, ordered list of relative distinguished names after the common name.
+# [["O", "rustak"], ["OU", "EUD"]] issues CN=<user>,O=rustak,OU=EUD. Order is
+# part of the subject's identity. "CN" is refused: the common name is the
+# username the certificate identifies, and it is never taken from a request.
+# Default: [] — the organization key above is used instead.
+# name_entries = [["O", "rustak"], ["OU", "EUD"]]
+
+# The key algorithm for the CA and the server certificates it issues; client
+# keys are the client's own. "rsa-2048" | "rsa-3072" | "ecdsa-p256". RSA by
+# default because TAK ecosystem truststores are conservative.
+key_type = "rsa-2048"
+
 ca_validity = "3650d"
 client_cert_validity = "365d"
-server_cert_validity = "397d"
 
-[acme]                                # public certificate for [web.public] when tls.mode = "acme" (M2)
+# 397 days is the longest a public authority will issue for, kept here so an
+# internal certificate and a public one expire on the same rhythm.
+server_cert_validity = "397d"
+server_cert_renew_before = "30d"
+
+# Extra names and addresses for the internal server certificate. [server]
+# domains and [acme] domains are included automatically; these are for names
+# only reachable on the local network, and for clients configured by address.
+# server_names = ["tak.lan"]
+# server_ips = ["192.168.1.10"]
+
+# Whether a certificate must be one we have a record of, beyond chaining to our
+# CA. On, so that deleting a certificate stops it working immediately.
+require_known_cert = true
+
+# The smallest RSA key accepted in a signing request, and whether an
+# elliptic-curve request is accepted. csr_min_rsa_bits cannot be lowered below
+# 2048: a certificate issued from a weak key outlives the change that allowed it.
+csr_min_rsa_bits = 2048
+csr_allow_ecdsa = true
+
+# The passphrase on the PKCS#12 bundles produced for manual enrollment, and
+# whether they are written with the legacy algorithms (3DES, SHA-1 MAC) that
+# ATAK's keystore reads. "atakatak" is the passphrase every TAK client tries.
+p12_password = "atakatak"
+p12_legacy = true
+
+# Whether issued client certificates carry the TAK channels marker EKU OID.
+channels_marker_eku = true
+
+
+# The public certificate for [web.public], when tls.mode = "acme". The two
+# switches must agree: enabling one without the other is refused.
+[acme]
 enabled = false
-directory = "https://acme-v02.api.letsencrypt.org/directory"
-# contact_email = "ops@example.com"
-# domains = []                        # defaults to server.domains
-challenge = "http-01"                 # "http-01" | "tls-alpn-01"
+
+# "letsencrypt" | "letsencrypt-staging" | an https:// directory URL. Test a
+# deployment against staging first: production rate limits are unforgiving.
+directory = "letsencrypt"
+
+# The contact the authority warns about expiring certificates. An email address
+# or a mailto: URI; both are accepted. Default: unset.
+# contact = "ops@example.com"
+
+# The authority's terms of service must be accepted before an order is placed.
+# rustak does not accept somebody else's terms on your behalf.
+accept_tos = false
+
+# The names to request. Default: [] — [server] domains is used.
+# domains = ["tak.example.com"]
+
+# How the authority verifies that we control those names:
+#   "tls-alpn-01" — answered in the TLS handshake on port 443, so ":443" must be
+#                   in [web.public] listen. Needs no plaintext port.
+#   "http-01"     — answered over plaintext HTTP on port 80, so [web.public]
+#                   plain_bind must be set.
+# Validation refuses a combination the authority could never complete.
+challenge = "tls-alpn-01"
 renew_before = "30d"
 
+
+# How long things are kept. Where an age and a cap are both given, both are
+# enforced: an age alone lets a busy installation fill the disk inside the
+# window, and a cap alone lets a quiet one keep data indefinitely. Caps are per
+# device or per account, so one noisy source cannot evict everybody else.
 [retention]
+# CoT history. Whole segment files are pruned, so the effective horizon is this
+# plus the tail of the segment that spans it.
 cot_history = "7d"
 cot_history_max_rows = 2000000
+
 audit = "90d"
 audit_max_entries = 100000
+
 archived_missions = "30d"
+
+# How long a stored blob that nothing refers to is kept. Not zero: an upload is
+# referenced a moment after it is stored, and a collector running in between
+# would delete the file out from under the request that wrote it.
 content_orphans = "24h"
