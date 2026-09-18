@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use rustak_api::identity::Direction;
 use rustak_cot::detail::marti::{ALL_STREAMING, Dest, marti_element};
-use rustak_cot::detail::{Element, flow_tags};
+use rustak_cot::detail::{Chat, Element, flow_tags};
 use rustak_cot::types::cot_type;
 use rustak_server::prelude::Services as _;
 
@@ -397,6 +397,94 @@ async fn an_incognito_client_reaches_only_the_people_it_names() {
     echo.expect_none(SETTLE).await.unwrap();
 
     harness.stop().await;
+}
+
+#[tokio::test]
+async fn an_undeliverable_direct_chat_comes_back_to_its_sender() {
+    // The half of `chat-direct` that a server has to implement: a chat typed at
+    // a named person who is not there must not disappear, because the client
+    // shows an unanswered message as sent.
+    let harness = Harness::start().await;
+    let alice = harness
+        .enroll("alice", "UID-ALICE", &[("blue", BOTH)])
+        .await;
+    let bob = harness.enroll("bob", "UID-BOB", &[("blue", BOTH)]).await;
+
+    let mut alpha = harness.eud(&alice, "ALPHA").await;
+    let mut bravo = harness.eud(&bob, "BRAVO").await;
+    harness.await_connected(2).await;
+
+    bravo.send_sa(52.0, -1.0).await.unwrap();
+    harness.await_callsign("BRAVO").await;
+    drain(&mut alpha).await;
+    drain(&mut bravo).await;
+
+    // A callsign the server knows: delivered, and the sender hears nothing.
+    let mut delivered = alpha.sa(51.5, -0.12);
+    delivered.r#type = cot_type::CHAT.to_string();
+    delivered.uid = "UID-CHAT-6".to_string();
+    delivered.detail.push(chat_element("UID-BOB"));
+    delivered
+        .detail
+        .push(marti_element(&[Dest::callsign("BRAVO")]));
+    alpha.send(delivered).await.unwrap();
+
+    bravo
+        .expect(|event| event.uid == "UID-CHAT-6", EXPECT)
+        .await
+        .expect("BRAVO was addressed by a callsign the server knows");
+    alpha
+        .expect_none(SETTLE)
+        .await
+        .expect("a delivered chat owes its sender nothing");
+
+    // A callsign nobody answers to: the sender gets its own message back.
+    let mut undeliverable = alpha.sa(51.5, -0.12);
+    undeliverable.r#type = cot_type::CHAT.to_string();
+    undeliverable.uid = "UID-CHAT-7".to_string();
+    undeliverable.detail.push(chat_element("UID-GHOST"));
+    undeliverable
+        .detail
+        .push(marti_element(&[Dest::callsign("GHOST")]));
+    alpha.send(undeliverable).await.unwrap();
+
+    let bounce = alpha
+        .expect(|event| event.r#type == cot_type::CHAT_FAILED, EXPECT)
+        .await
+        .expect("an undeliverable chat bounces");
+
+    assert_eq!(bounce.uid, "UID-CHAT-7", "the sender's own message back");
+    assert_eq!(
+        bounce.detail.get::<Chat>().and_then(|chat| chat.id),
+        Some("UID-GHOST".to_string()),
+        "carrying the conversation the client files it under",
+    );
+    assert!(
+        bounce.detail.find("marti").is_none(),
+        "the address list never survives, not even on the way back",
+    );
+
+    let server_id = harness.context.config().server.name.clone();
+    assert!(
+        !flow_tags::has_flow_tag(&bounce.detail, &server_id),
+        "a bounce is not a relay and carries no tag of ours",
+    );
+
+    bravo
+        .expect_none(SETTLE)
+        .await
+        .expect("a bounce is for the sender alone");
+
+    harness.stop().await;
+}
+
+/// The `<__chat>` a direct message carries, naming the conversation.
+fn chat_element(conversation: &str) -> Element {
+    Element::new("__chat")
+        .attr("id", conversation)
+        .attr("chatroom", conversation)
+        .attr("senderCallsign", "ALPHA")
+        .attr("messageId", "MSG-0001")
 }
 
 /// Reads whatever a client has already been sent, so that a later assertion is

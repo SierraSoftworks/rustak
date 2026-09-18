@@ -17,14 +17,19 @@
 //! Event uids that a server generates fresh (the disconnect and group-change
 //! notices) are parameters rather than something this crate invents:
 //! `rustak-cot` has no random source and stays deterministic.
+//!
+//! [`chat_delivery_failure`] is the odd one out: it is not a template at all
+//! but the sender's own undeliverable GeoChat handed back with its type
+//! changed, because that is the only form a client can match to the
+//! conversation the message came from.
 
 use std::time::Duration;
 
 use crate::detail::link::{Link, RELATION_P_P};
-use crate::detail::{Element, TypedDetail};
+use crate::detail::{Element, TypedDetail, flow_tags, marti};
 use crate::event::{Event, Point};
 use crate::time::CotTime;
-use crate::types::{cot_type, how};
+use crate::types::{cot_type, how, is_chat};
 
 /// The uid a server's pong always carries.
 pub const PONG_UID: &str = "takPong";
@@ -156,17 +161,108 @@ pub fn incognito_toggle(event: &Event) -> Option<bool> {
     }
 }
 
+/// Whether an undeliverable copy of this message owes its sender a bounce.
+///
+/// The whole GeoChat family bounces — the message and the delivery, read and
+/// pending receipts — with one exception: a [`chat_delivery_failure`] must
+/// never itself bounce, or a sender that left between the chat and the bounce
+/// would set two servers, or a server and its own store, talking in circles.
+/// That is the `b-t-f` prefix minus `b-t-f-s`, which is exactly the test TAK
+/// Server applies.
+#[must_use]
+pub fn bounces_when_undeliverable(event: &Event) -> bool {
+    is_chat(&event.r#type) && event.r#type != cot_type::CHAT_FAILED
+}
+
+/// The sender's own chat handed straight back to it, marked undelivered.
+///
+/// Not a fresh notice: the bounce **is** the original message with its type
+/// changed to [`cot_type::CHAT_FAILED`], and everything a client needs to know
+/// which line to mark is carried by that copy. ATAK matches the bounce to a
+/// conversation the same way it matches any chat — `__chat@id`, falling back to
+/// the dot-separated event uid — so re-deriving a template here instead of
+/// echoing would land the notice in the wrong conversation, or in none.
+///
+/// Two things come off the copy, both because the sender is about to receive a
+/// message it originally sent:
+///
+/// * `<marti>`, because an address list never survives a relay and this one
+///   named the very people who could not be reached; and
+/// * this server's flow tag, so that the bounce is not read as a message that
+///   has already been here — `server_id` is the same identifier
+///   [`flow_tags::add_flow_tag`] stamps with, and other servers' tags stay put.
+///
+/// The bounce is delivered straight to the sender's connection: it is not
+/// brokered, so it is never given a flow tag of its own and asks no channel
+/// question.
+#[must_use]
+pub fn chat_delivery_failure(undelivered: &Event, server_id: &str) -> Event {
+    let mut bounce = undelivered.clone();
+
+    bounce.r#type = cot_type::CHAT_FAILED.to_owned();
+    let _ = marti::take_marti(&mut bounce.detail);
+    flow_tags::remove_flow_tag(&mut bounce.detail, server_id);
+
+    bounce
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::detail::link::links;
+    use crate::detail::{Chat, Node};
     use crate::xml;
 
     /// `2026-09-17T12:00:40.000Z`, the instant the golden fixtures use.
     const NOW: CotTime = CotTime::from_millis(1_789_646_440_000);
 
+    /// The flow-tag key the bounce tests hand to [`chat_delivery_failure`].
+    const SERVER_ID: &str = "rustak-test";
+
     fn rendered(event: &Event) -> String {
         String::from_utf8(xml::write(event).to_vec()).expect("the writer emits UTF-8")
+    }
+
+    /// A direct GeoChat as it looks at the point the router gives up on it:
+    /// ATAK's own shape, already carrying this server's flow tag, still holding
+    /// the `<marti>` that named the peer nobody could reach.
+    fn undelivered_chat() -> Event {
+        let mut event = Event::builder(
+            cot_type::CHAT,
+            "GeoChat.ANDROID-rustak-alpha.ANDROID-rustak-bravo.MSG-0002",
+        )
+        .how(how::H_G_I_G_O)
+        .point(51.5074, -0.1278)
+        .time(NOW)
+        .stale_after(Duration::from_secs(86_400))
+        .push(
+            Element::new("__chat")
+                .attr("id", "ANDROID-rustak-bravo")
+                .attr("chatroom", "BRAVO")
+                .attr("senderCallsign", "ALPHA")
+                .attr("groupOwner", "false")
+                .attr("messageId", "MSG-0002")
+                .with(
+                    Element::new("chatgrp")
+                        .attr("id", "ANDROID-rustak-bravo")
+                        .attr("uid0", "ANDROID-rustak-alpha")
+                        .attr("uid1", "ANDROID-rustak-bravo"),
+                ),
+        )
+        .push(Link::peer("ANDROID-rustak-alpha", "a-f-G-U-C").to_element())
+        .push(marti::marti_element(&[marti::Dest::callsign("BRAVO")]))
+        .push(
+            Element::new("remarks")
+                .attr("source", "BAO.F.ATAK.ANDROID-rustak-alpha")
+                .attr("to", "ANDROID-rustak-bravo")
+                .attr("time", "2026-09-17T12:00:40.000Z")
+                .with(Node::Text("moving to the RV".to_owned())),
+        )
+        .build();
+
+        flow_tags::add_flow_tag(&mut event.detail, SERVER_ID, NOW);
+
+        event
     }
 
     #[test]
@@ -326,6 +422,99 @@ mod tests {
             let text = rendered(&event);
             assert!(text.contains(r#"<point lat="0.0""#), "{text}");
             assert_eq!(event.point, Point::zero());
+        }
+    }
+
+    #[test]
+    fn the_bounce_is_the_senders_own_chat_with_its_type_changed() {
+        // Golden: a client reads this off the wire and has to find the line it
+        // just sent, so every byte except the type is the sender's own.
+        let bounce = chat_delivery_failure(&undelivered_chat(), SERVER_ID);
+
+        assert_eq!(bounce.r#type, cot_type::CHAT_FAILED);
+        assert_eq!(
+            rendered(&bounce),
+            format!(
+                "{}\n{}",
+                xml::DECLARATION,
+                concat!(
+                    r#"<event version="2.0" uid="GeoChat.ANDROID-rustak-alpha.ANDROID-rustak-bravo.MSG-0002" "#,
+                    r#"type="b-t-f-s" how="h-g-i-g-o" time="2026-09-17T12:00:40.000Z" "#,
+                    r#"start="2026-09-17T12:00:40.000Z" stale="2026-09-18T12:00:40.000Z">"#,
+                    r#"<point lat="51.5074" lon="-0.1278" hae="9999999.0" ce="9999999.0" le="9999999.0"/>"#,
+                    r#"<detail>"#,
+                    r#"<__chat id="ANDROID-rustak-bravo" chatroom="BRAVO" senderCallsign="ALPHA" groupOwner="false" messageId="MSG-0002">"#,
+                    r#"<chatgrp id="ANDROID-rustak-bravo" uid0="ANDROID-rustak-alpha" uid1="ANDROID-rustak-bravo"/>"#,
+                    r#"</__chat>"#,
+                    r#"<link uid="ANDROID-rustak-alpha" type="a-f-G-U-C" relation="p-p"/>"#,
+                    r#"<remarks source="BAO.F.ATAK.ANDROID-rustak-alpha" to="ANDROID-rustak-bravo" time="2026-09-17T12:00:40.000Z">moving to the RV</remarks>"#,
+                    r#"<_flow-tags_/>"#,
+                    r#"</detail></event>"#,
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn the_bounce_carries_the_conversation_the_client_matches_on() {
+        // `__chat@id` is how ATAK decides which conversation a `b-t-f…` belongs
+        // to; a bounce that lost it would be filed under nothing.
+        let chat = undelivered_chat();
+        let bounce = chat_delivery_failure(&chat, SERVER_ID);
+
+        let original: Chat = chat.detail.get().expect("the chat we built");
+        let echoed: Chat = bounce.detail.get().expect("the chat the bounce echoes");
+
+        assert_eq!(echoed, original);
+        assert_eq!(echoed.id.as_deref(), Some("ANDROID-rustak-bravo"));
+        assert_eq!(
+            echoed.participants(),
+            vec!["ANDROID-rustak-alpha", "ANDROID-rustak-bravo"]
+        );
+        assert_eq!(bounce.uid, chat.uid, "the uid is the sender's own");
+        assert_eq!(links(&bounce.detail), links(&chat.detail));
+    }
+
+    #[test]
+    fn the_bounce_drops_the_address_list_and_only_our_own_flow_tag() {
+        let mut chat = undelivered_chat();
+        chat.detail.push(
+            Element::new(flow_tags::ELEMENT)
+                .attr(flow_tags::flow_tag_name("somebody-else"), NOW.to_string()),
+        );
+
+        let bounce = chat_delivery_failure(&chat, SERVER_ID);
+
+        assert!(
+            bounce.detail.find("marti").is_none(),
+            "the list named the people who could not be reached"
+        );
+        assert!(!flow_tags::has_flow_tag(&bounce.detail, SERVER_ID));
+        assert!(
+            flow_tags::has_flow_tag(&bounce.detail, "somebody-else"),
+            "another server's tag is not ours to remove"
+        );
+    }
+
+    #[test]
+    fn a_bounce_is_the_one_chat_type_that_never_bounces() {
+        // Without the exception a sender that disconnected between its chat and
+        // the bounce would have the bounce bounce, and so on.
+        for bounces in [
+            cot_type::CHAT,
+            cot_type::CHAT_DELIVERED,
+            cot_type::CHAT_READ,
+            cot_type::CHAT_PENDING,
+        ] {
+            let mut event = undelivered_chat();
+            event.r#type = bounces.to_owned();
+            assert!(bounces_when_undeliverable(&event), "{bounces}");
+        }
+
+        for silent in [cot_type::CHAT_FAILED, "b-f-t-r", "a-f-G-U-C", "t-x-c-t"] {
+            let mut event = undelivered_chat();
+            event.r#type = silent.to_owned();
+            assert!(!bounces_when_undeliverable(&event), "{silent}");
         }
     }
 

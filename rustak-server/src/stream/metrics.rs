@@ -42,6 +42,13 @@ pub struct StreamMetrics {
     pub dropped_incognito: AtomicU64,
     /// Messages nobody was allowed to receive.
     pub no_recipients: AtomicU64,
+    /// Undeliverable GeoChats handed back to their sender as `b-t-f-s`.
+    ///
+    /// A subset of [`no_recipients`](Self::no_recipients), and the one an
+    /// operator can act on: it counts people typing to somebody who is not
+    /// there, which is either a device that has dropped off or a channel
+    /// membership that does not match the contact list somebody is reading.
+    pub chat_bounced: AtomicU64,
     /// Bytes skipped resynchronising a protobuf stream.
     pub proto_resyncs: AtomicU64,
     /// Outbound messages replaced by a `b-f-t-r` pointer for being too large.

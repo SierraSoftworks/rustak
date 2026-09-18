@@ -11,10 +11,12 @@
 #    A TAK server answers an undeliverable unicast chat with a `b-t-f-s` back to
 #    the sender, and that is what ALPHA asserts on.
 #
-# The second half is the one that is not implemented server-side yet:
-# `rustak-cot` defines `b-t-f-s` (`types.rs` CHAT_FAILED) and nothing in
-# `rustak-server/src/stream` ever sends one. This scenario is what will notice
-# when that changes, and until then it fails here rather than passing quietly.
+# Both halves are implemented as of M1-08. The bounce is built by
+# `rustak_cot::msgs::chat_delivery_failure` and sent from `stream/router.rs`
+# when an explicitly addressed chat selects no reachable recipient: it is
+# ALPHA's own message handed back with `type="b-t-f-s"`, `<marti>` off and this
+# server's flow tag removed, so the assertions below are unchanged — the
+# template is the sender's own message, which is what they already described.
 name = "chat-direct"
 summary = "A unicast GeoChat reaches a connected peer, and bounces back as b-t-f-s when the peer has gone."
 requires = ["enrollment", "stream"]

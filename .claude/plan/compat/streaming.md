@@ -179,22 +179,33 @@ raw `0xBF`-prefixed bytes would corrupt its control-character stripping. Verifie
 
 ## 7. Control messages
 
-These types are **consumed at ingest and never relayed** to other clients (05 §5.1–§5.3):
+The control set is **exactly these eleven type strings** (05 §5.1). A message whose type matches one
+of them, **compared case-insensitively**, is **consumed at ingest and never relayed** to other
+clients, and never gets a flow tag (05 §5.1–§5.3). Nothing outside the set is a control message: an
+unrecognised type is ordinary CoT and is brokered normally.
 
 | Type | Action |
 |---|---|
+| `t-b` | TAK Server's subscription control: it reads `detail/subscription/tests/@xpath` and sets that XPath filter on the caller's **own** subscription, or reads `detail/subscription/@publish` as `proto:host:port` and **opens an outbound connection** to it. Both are unauthenticated primitives on the stream socket; rustak implements **neither** and ignores the message |
+| `t-b-a` / `t-b-c` / `t-b-q` | the rest of the subscription-control family: consumed, never relayed, no effect |
 | `t-x-c-t` | reply with pong (§6); do not relay |
 | `t-x-c-t-r` | no-op (some clients echo a stray one back; ignore) |
 | `t-x-takp-q` | handled by the negotiation state machine (§4); never relayed |
 | `t-x-c-i-e` / `t-x-c-i-d` | set/clear incognito on the sender's subscription — see below |
 | `t-x-c-m` | metrics report (`app_framerate`, `battery`, …); safe to parse best-effort or ignore |
 | `t-x-c-f` | client-side geospatial filter update; safe to ignore for M1 |
-| anything else unrecognised as a normal CoT type | treat as a no-op, never error the connection |
+| a case variant of any of the above (`T-X-C-T`) | classified as control — consumed, never relayed — but **not acted on**: TAK Server lower-cases for the set lookup and then switches on the original case, so a shouted ping is swallowed without a pong, and clients are built around that |
+
+**Do not copy TAK Server's fall-through.** Its dispatch `default:` branch calls
+`deleteSubscription(c.getUid())` on the **subscription** uid, so a client that guesses or learns
+another subscription's uid can disconnect it (05 §5.3). rustak's fall-through is a no-op.
 
 **Incognito**: once a client sends `t-x-c-i-e`, its subsequent non-control messages are dropped at
 ingest *unless* they carry at least one `<marti><dest callsign="…"/></marti>` — i.e. an incognito
 client only reaches explicitly-addressed recipients. `t-x-c-i-d` clears it. Incognito subscriptions
-are also skipped by latest-SA replay (§4 step 2). Verified 05 §5.5.
+are also skipped by latest-SA replay (§4 step 2) and by the contact listings built from the live
+registry (`contacts.md`; rustak still shows them to an administrator, who is asking about the
+server rather than about the network). Verified 05 §5.5.
 
 `t-x-d-d` and `t-x-g-c` are **not** control types in this sense — the server *generates* them (§9)
 and a client-sent one is brokered like ordinary CoT.
@@ -237,6 +248,45 @@ keyed by rustak's own server id:
 ```
 If the inbound message already carries `_flow-tags_` with **this server's** key, drop it (loop
 suppression) rather than re-tagging. Verified 05 §5.8.
+
+### Undeliverable GeoChat bounces back (`b-t-f` ⇒ `b-t-f-s`)
+
+GeoChat has **no dedicated router** — a `b-t-f` is brokered by the `<marti><dest>` rules above like
+anything else. The one piece of chat-specific server behaviour is the bounce (05 §8.1, from
+`DistributedSubscriptionManager.getMatches` + `MessagingUtilImpl.sendDeliveryFailure`):
+
+> When explicit brokering selects **zero** reachable recipients and the message type starts with
+> `b-t-f` but is not `b-t-f-s`, hand the message straight back to the sender with
+> `type = "b-t-f-s"`.
+
+The bounce is **not a template**: it is the sender's own message, so the uid, point, times, `how`
+and the whole `<detail>` — `__chat` with its `chatgrp`, the `<link>`, `<remarks>` — are echoed
+unchanged. That is load bearing: ATAK files a `b-t-f…` into a conversation by `__chat/@id`, falling
+back to the dot-separated components of the event uid (07 §7.4), so a bounce built from scratch
+would land in the wrong conversation or in none, and the sender's client would keep showing the
+message as sent. Two things come off the copy:
+
+- `<marti>`, like every relay (it named exactly the people who could not be reached); and
+- **this server's** flow tag, so the bounce is not read as a message that has already been here.
+  Other servers' tags stay.
+
+Delivery is direct to the sender's connection, like the pong (§6): not brokered, so no flow tag of
+its own and no reachability question.
+
+Scope, which is narrower than "explicit":
+
+- **Never bounce a broadcast.** Room chat with no `<marti>` reaching nobody means nobody is
+  connected, which is ordinary.
+- **Bounce only when the sender named people** — `<dest callsign>` or `<dest uid>`. A `<dest group>`
+  or `<dest mission>` that reaches no connected subscriber is not a delivery failure: the mission
+  write was still stored (`missions.md`), and a channel with nobody listening is not something the
+  sender was told otherwise about.
+- `"All Streaming"` has already degraded the message to a broadcast by this point (§8 rule 1), so it
+  never bounces.
+- **A `b-t-f-s` never bounces.** Without that exception, a sender that disconnected between its
+  chat and the bounce would have the bounce bounce.
+- The receipts (`b-t-f-d`, `b-t-f-r`, `b-t-f-p`) are inside the `b-t-f` prefix and **do** bounce,
+  which is TAK Server's own rule.
 
 ## 9. Disconnect and group-change notifications
 
@@ -287,6 +337,12 @@ streaming-endpoint sentinel used in `<contact endpoint>` for relayed traffic is 
   group sets — re-derive per pair, don't cache a flattened "who can see whom" table naively without
   invalidating it on every group-membership change.
 - Oversized (>64 KiB) protobuf frames become a `b-f-t-r` pointer, not a truncated or dropped message.
+- A `b-t-f-s` bounce is the sender's **own** message with the type changed, not a freshly built
+  notice — rebuild it and the client files it under the wrong conversation, or under none (§8).
+- Only chat bounces, and only when the sender named a person. A position report addressed to a
+  callsign that resolves to nobody is dropped in silence, as is room chat and a `<dest mission>`.
+- A `t-b` is not a harmless no-op to "implement later": TAK Server's version sets an XPath filter
+  from an unauthenticated message and can be asked to dial out to an arbitrary host (§7).
 
 ## Verified in
 

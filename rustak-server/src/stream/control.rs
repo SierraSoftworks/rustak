@@ -13,6 +13,18 @@
 //! over one would be a server that drops working clients on their next update.
 //! The connection is never disturbed by something on it that we do not
 //! understand.
+//!
+//! The eleven types are exactly [`CONTROL_TYPES`](rustak_cot::types), which is
+//! what decides that a message comes here instead of to the broker. Two of them
+//! are worth naming for what rustak deliberately does *not* do:
+//!
+//! * the `t-b` family — TAK Server reads a `t-b` as "set an XPath filter on my
+//!   own subscription", or as "open an outbound connection to this host and
+//!   port", from an unauthenticated message on the socket. rustak ignores all
+//!   four; and
+//! * TAK Server's fall-through branch deletes the subscription whose uid the
+//!   message names, which lets a client that guesses a uid disconnect somebody
+//!   else. Ours is a no-op, and that difference is intentional.
 
 use std::sync::Arc;
 
@@ -58,9 +70,21 @@ pub fn handle(hub: &Hub, from: ConnId, event: &Event, now: CotTime) -> ControlAc
         cot_type::METRICS => ControlAction::Ignored("a client metrics report"),
         cot_type::FILTER => ControlAction::Ignored("a client-side geospatial filter"),
         cot_type::TAKP_Q => ControlAction::Ignored("a protocol request outside negotiation"),
+        other if SUBSCRIPTION_CONTROL.contains(&other) => {
+            ControlAction::Ignored("a subscription control message")
+        }
         _ => ControlAction::Ignored("an unrecognised control type"),
     }
 }
+
+/// The `t-b` family, named so that ignoring it reads as a decision.
+///
+/// These are TAK Server's server-side subscription controls: an XPath filter a
+/// client sets on itself, and a request for an outbound connection to an
+/// arbitrary host. rustak offers neither — a subscription's filter is its
+/// channel membership, and nothing on the stream socket may make the server
+/// dial out.
+const SUBSCRIPTION_CONTROL: &[&str] = &[cot_type::SUBSCRIBE, "t-b-a", "t-b-c", "t-b-q"];
 
 /// Answers a keepalive on the connection that sent it.
 ///
@@ -84,6 +108,7 @@ fn pong(hub: &Hub, to: ConnId, now: CotTime) -> ControlAction {
 #[cfg(test)]
 mod tests {
     use rustak_cot::detail::Element;
+    use rustak_cot::types::CONTROL_TYPES;
     use tokio::sync::mpsc;
 
     use super::super::subscription::{ConnHandle, ConnStats, Subscription};
@@ -157,6 +182,78 @@ mod tests {
             .build();
         assert_eq!(handle(&hub, id, &off, now), ControlAction::Incognito(false));
         assert!(!hub.is_incognito(id));
+    }
+
+    #[test]
+    fn every_control_type_is_handled_here_and_only_a_ping_is_answered() {
+        // The audit: `compat/streaming.md` §7 against the set the classifier
+        // actually uses. A type that is in the set but falls off the end of
+        // this match is one that would be consumed with nobody having decided
+        // what consuming it means.
+        for control in CONTROL_TYPES {
+            let (hub, id, mut rx) = hub_with_one();
+            let event = Event::builder(*control, "UID-A").point(0.0, 0.0).build();
+
+            assert!(
+                event.is_control(),
+                "{control} must never reach the broker path"
+            );
+
+            let action = handle(&hub, id, &event, CotTime::now());
+
+            match *control {
+                cot_type::PING => assert_eq!(action, ControlAction::Pong, "{control}"),
+                cot_type::INCOGNITO_ON => {
+                    assert_eq!(action, ControlAction::Incognito(true), "{control}");
+                    assert!(hub.is_incognito(id), "{control}");
+                }
+                cot_type::INCOGNITO_OFF => {
+                    assert_eq!(action, ControlAction::Incognito(false), "{control}");
+                    assert!(!hub.is_incognito(id), "{control}");
+                }
+                _ => assert!(
+                    matches!(action, ControlAction::Ignored(_)),
+                    "{control} is consumed on purpose, not by accident: {action:?}"
+                ),
+            }
+
+            assert_eq!(
+                sent(&mut rx).is_some(),
+                *control == cot_type::PING,
+                "only a keepalive is answered; {control} is not"
+            );
+            assert_eq!(
+                hub.len(),
+                1,
+                "{control} must not take the subscription away"
+            );
+        }
+    }
+
+    #[test]
+    fn the_subscription_control_family_sets_no_filter_and_dials_nobody() {
+        // TAK Server reads `t-b` as "set an XPath on my subscription" or "open
+        // an outbound connection", unauthenticated, from the socket. Ours is a
+        // named no-op so that it stays one.
+        let (hub, id, mut rx) = hub_with_one();
+
+        for family in SUBSCRIPTION_CONTROL {
+            let event = Event::builder(*family, "UID-A")
+                .point(0.0, 0.0)
+                .push(
+                    Element::new("subscription")
+                        .attr("publish", "stcp:127.0.0.1:9999")
+                        .with(Element::new("tests").attr("xpath", "/event")),
+                )
+                .build();
+
+            assert_eq!(
+                handle(&hub, id, &event, CotTime::now()),
+                ControlAction::Ignored("a subscription control message"),
+                "{family}"
+            );
+            assert!(sent(&mut rx).is_none(), "{family}");
+        }
     }
 
     #[test]

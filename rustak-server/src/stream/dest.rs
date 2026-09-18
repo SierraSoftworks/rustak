@@ -71,6 +71,16 @@ pub struct Selection {
     pub handles: Vec<ConnHandle>,
     /// Whether the sender named its recipients.
     pub explicit: bool,
+    /// Whether the sender named *people* — `<dest callsign>` or `<dest uid>` —
+    /// and nothing that keeps a message for later.
+    ///
+    /// This is the case an undeliverable GeoChat bounces on, and the reason it
+    /// is narrower than [`explicit`](Self::explicit). A broadcast reaching
+    /// nobody means nobody is connected; a channel or mission reaching nobody
+    /// means nobody is *reading* it, which for a mission is ordinary because
+    /// the write was still stored. Only somebody typing at a named person has
+    /// been told something that did not happen.
+    pub direct: bool,
 }
 
 /// The destination kinds a message carries, already partitioned.
@@ -110,6 +120,7 @@ pub async fn select_recipients(
         return Ok(Selection {
             handles: hub.reachable_from(from, true),
             explicit: false,
+            direct: false,
         });
     }
 
@@ -143,6 +154,7 @@ pub async fn select_recipients(
     Ok(Selection {
         handles,
         explicit: true,
+        direct: addresses.names_people(),
     })
 }
 
@@ -158,6 +170,16 @@ impl Addresses<'_> {
             || !self.groups.is_empty()
             || !self.missions.is_empty()
             || self.publish
+    }
+
+    /// Whether the sender addressed individual people and nothing else.
+    ///
+    /// A mission on the list disqualifies the whole message: a Data Sync keeps
+    /// what it is sent whether or not anybody is connected to read it, so a
+    /// chat that also went to one is not undelivered even when no subscriber
+    /// was reachable.
+    fn names_people(&self) -> bool {
+        self.missions.is_empty() && (!self.callsigns.is_empty() || !self.uids.is_empty())
     }
 }
 
@@ -317,6 +339,29 @@ mod tests {
 
         assert!(addresses.publish);
         assert!(addresses.has_any());
+    }
+
+    #[test]
+    fn naming_a_person_is_what_an_undeliverable_chat_bounces_on() {
+        assert!(partition(&[Dest::callsign("BRAVO")]).names_people());
+        assert!(partition(&[Dest::uid("UID-B")]).names_people());
+
+        // A channel or a mission reaching nobody is ordinary: the first means
+        // nobody is listening, the second means nobody is subscribed, and the
+        // write was kept either way.
+        assert!(!partition(&[Dest::group("blue")]).names_people());
+        assert!(!partition(&[Dest::mission("Kettle")]).names_people());
+        assert!(!partition(&[Dest::callsign("BRAVO"), Dest::mission("Kettle")]).names_people());
+
+        // And neither "post to all" nor a publish topic is a person.
+        assert!(!partition(&[Dest::callsign(ALL_STREAMING)]).names_people());
+        assert!(
+            !partition(&[Dest {
+                publish: Some("topic".into()),
+                ..Dest::default()
+            }])
+            .names_people()
+        );
     }
 
     #[test]
