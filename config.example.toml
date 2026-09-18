@@ -131,6 +131,38 @@ listen = ":8089"
 idle_timeout = "90s"
 
 
+# What one stream connection may cost the server.
+[stream.limits]
+# The largest inbound message, in bytes, in either encoding. A message past this
+# is consumed and dropped; the connection carries on.
+max_frame = 8388608
+
+# How many messages may be waiting to be written to one connection before
+# deliveries start being dropped.
+queue_len = 256
+
+# How many deliveries in a row may be dropped before the connection is closed.
+# Closing is what makes a permanently-behind client resynchronise: it reconnects
+# and is replayed the latest position of everyone it can see.
+close_after_drops = 512
+
+# How long the TLS handshake has to complete before the socket is closed.
+handshake_timeout = "10s"
+
+# The most connections this listener accepts at once. Further connections wait
+# for a slot rather than being refused.
+max_connections = 1024
+
+# Whether to offer TAK Protocol v1 (protobuf) to clients as they connect. Turn
+# it off for a fleet whose clients mishandle the offer; XML always works.
+negotiate_protobuf = true
+
+# Whether relayed messages are recorded to `cot_latest` and to the append-only
+# history segments. Turning this off leaves /Marti/api/cot/xml/{uid} with
+# nothing to answer.
+record_history = true
+
+
 [auth]
 # The `iss` claim of the tokens we issue. Default: the server's base URL.
 # issuer = "https://tak.example.com"
