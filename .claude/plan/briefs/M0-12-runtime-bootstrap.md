@@ -9,3 +9,5 @@
 **Exit checks:** `cargo test -p rustak-server --features testing --test bootstrap`; manual: `cargo run -- --config config.example.toml` (with a temp data dir) then SIGTERM → exit 0, no telemetry-flush warning; clippy/doc; file-length.
 
 **Status file:** `.claude/plan/status/M0-12-runtime-bootstrap.md`.
+
+**Addendum (from M0-15):** `tracing-batteries` gates even the stdout writer behind `enabled_by_default = false` in debug builds, so nothing logs from `cargo run`. `rustak-client::sidecar::run_with` works around it with `session.enable().store(true, ..)` right after bootstrap. Move that into `rustak_core::telemetry::bootstrap` (one place), make the sidecar call the shared helper, and verify `cargo run -p rustak-server` logs its startup lines in a debug build.
