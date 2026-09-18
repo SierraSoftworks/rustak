@@ -1,9 +1,20 @@
-//! `GET /api/v1/users` and `PATCH /api/v1/users/{username}`.
+//! `GET`/`POST /api/v1/users` and `PATCH /api/v1/users/{username}`.
 //!
-//! Both administrative. The patch is the one lever an administrator has that
-//! does not need the configuration file editing: it can grant or refuse
+//! All three administrative. The patch is the one lever an administrator has
+//! that does not need the configuration file editing: it can grant or refuse
 //! administrative access regardless of what the access-control expression says,
 //! and it can switch an account off.
+//!
+//! # Creating an account hands out nothing
+//!
+//! [`create`] makes a row and stops. rustak has no local passwords, so there is
+//! no secret to return and nothing to leak: the new account signs in with a
+//! passkey it registers itself, arrives again through the identity provider, or
+//! — for a service or an EUD — is given a credential through
+//! `POST /api/v1/credentials`, which is the one endpoint that ever emits one.
+//! Without this endpoint the only ways an account can come into existence are
+//! the first-run wizard and an OIDC sign-in, which leaves an installation with
+//! no identity provider unable to add anybody.
 //!
 //! # Why disabling revokes rather than only refusing
 //!
@@ -12,14 +23,16 @@
 //! request, which covers the access token; the refresh tokens are revoked here
 //! so that a client holding one cannot mint a fresh access token from it.
 
+use actix_web::http::StatusCode;
 use actix_web::web;
-use rustak_api::{AuditCategory, AuditOutcome, User, UserPatch};
+use rustak_api::{AuditCategory, AuditOutcome, CreateUserRequest, User, UserKind, UserPatch};
 
+use crate::db::repos::NewUser;
 use crate::db::{AuditEntry, repos::Page};
-use crate::identity::users;
+use crate::identity::{groups, users};
 use crate::prelude::*;
 
-use super::error::{ApiError, ApiResult, json_ok};
+use super::error::{ApiError, ApiResult, json_ok, json_with};
 use super::extract::Administrative;
 
 /// How many accounts one page carries.
@@ -41,6 +54,93 @@ pub async fn list(context: web::Data<AppContext>, _: Administrative) -> ApiResul
     let users: Vec<User> = rows.iter().map(users::to_dto).collect();
 
     Ok(json_ok(&users))
+}
+
+/// Creates an account.
+///
+/// # Errors
+///
+/// A `409` when the name is taken — checked first and reported again from the
+/// write, because two administrators can ask at the same moment — and a `500`
+/// when a read or write fails.
+pub async fn create(
+    context: web::Data<AppContext>,
+    body: web::Json<CreateUserRequest>,
+    caller: Administrative,
+) -> ApiResult {
+    let db = context.db();
+    let request = body.into_inner();
+
+    if db
+        .users()
+        .get_by_username(&request.username)
+        .await
+        .map_err(|err| failed(&context, &err))?
+        .is_some()
+    {
+        return Err(taken(&request.username));
+    }
+
+    let new = NewUser {
+        display_name: request.display_name.clone(),
+        email: request.email.clone(),
+        ..match request.kind {
+            UserKind::Person => NewUser::person(request.username.clone()),
+            UserKind::Service => NewUser::service(request.username.clone()),
+        }
+    };
+
+    let created = match db.users().create(new).await {
+        Ok(created) => created,
+        // The unique index is the real guard; the read above only turns the
+        // common case into a message an administrator can act on.
+        Err(err) if err.description().contains("UNIQUE") => return Err(taken(&request.username)),
+        Err(err) => return Err(failed(&context, &err)),
+    };
+
+    // Everybody starts in the default channel, for the same reason the wizard's
+    // first administrator does: an account in no channel can neither send nor
+    // receive, and an administrator who has to remember a second step will not.
+    if context.config().auth.anon_group_default
+        && let Err(err) = groups::join_default(db, created.id).await
+    {
+        warn!(error = %err, "Could not put a new account in the default channel.");
+        context.session().record_human_error(&err);
+    }
+
+    created_record(&context, &caller, &created).await;
+
+    Ok(json_with(StatusCode::CREATED, &users::to_dto(&created)))
+}
+
+/// What a name somebody already holds is answered with.
+fn taken(username: &Username) -> ApiError {
+    ApiError::conflict(format!("There is already an account called {username}."))
+}
+
+/// Writes the creation to the audit log.
+async fn created_record(
+    context: &AppContext,
+    caller: &Administrative,
+    user: &crate::db::repos::UserRow,
+) {
+    let entry = AuditEntry::new(
+        AuditCategory::Administration,
+        "user.created",
+        AuditOutcome::Success,
+    )
+    .subject(&user.username)
+    .actor(&caller.user.username)
+    .message(format!(
+        "{} created the account {}.",
+        caller.user.username, user.username
+    ))
+    .detail(serde_json::json!({ "kind": user.kind.as_str() }));
+
+    if let Err(err) = context.db().record(entry).await {
+        warn!(error = %err, "Could not record a new account in the audit log.");
+        context.session().record_human_error(&err);
+    }
 }
 
 /// Changes one account.
@@ -196,6 +296,138 @@ mod tests {
 
         assert_eq!(users.len(), 2);
         assert!(users.iter().any(|user| user.username.as_str() == "grace"));
+    }
+
+    #[actix_web::test]
+    async fn an_administrator_can_add_an_account_and_it_carries_no_secret() {
+        let server = TestServer::start().await;
+        let (_, session) = server.signed_in("ada", true).await;
+
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/v1/users")
+                .insert_header(("authorization", bearer(&session)))
+                .set_json(serde_json::json!({
+                    "username": "grace",
+                    "display_name": "Grace Hopper",
+                }))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let body: serde_json::Value = test::read_body_json(response).await;
+
+        assert_eq!(body["username"], "grace");
+        assert_eq!(body["kind"], "person");
+        assert_eq!(body["is_admin"], false);
+        assert!(
+            body.get("secret").is_none() && body.get("password").is_none(),
+            "creating an account must not hand anybody a credential: {body}",
+        );
+
+        assert!(
+            server
+                .db()
+                .users()
+                .get_by_username(&Username::parse("grace").unwrap())
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[actix_web::test]
+    async fn a_service_account_is_created_as_one() {
+        let server = TestServer::start().await;
+        let (_, session) = server.signed_in("ada", true).await;
+
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let created: User = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/v1/users")
+                .insert_header(("authorization", bearer(&session)))
+                .set_json(serde_json::json!({ "username": "etl", "kind": "service" }))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(created.kind, rustak_api::UserKind::Service);
+        assert_eq!(created.source, rustak_api::UserSource::Service);
+    }
+
+    #[actix_web::test]
+    async fn a_name_that_is_already_taken_is_a_conflict() {
+        let server = TestServer::start().await;
+        let (_, session) = server.signed_in("ada", true).await;
+
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/v1/users")
+                .insert_header(("authorization", bearer(&session)))
+                .set_json(serde_json::json!({ "username": "ada" }))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[actix_web::test]
+    async fn an_ordinary_account_cannot_create_one() {
+        let server = TestServer::start().await;
+        let (_, session) = server.signed_in("ada", false).await;
+
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/v1/users")
+                .insert_header(("authorization", bearer(&session)))
+                .set_json(serde_json::json!({ "username": "grace" }))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[actix_web::test]
+    async fn creating_an_account_is_recorded() {
+        let server = TestServer::start().await;
+        let (_, session) = server.signed_in("ada", true).await;
+
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/v1/users")
+                .insert_header(("authorization", bearer(&session)))
+                .set_json(serde_json::json!({ "username": "grace" }))
+                .to_request(),
+        )
+        .await;
+
+        let records = server
+            .db()
+            .audit(crate::db::AuditQuery::about("grace", 10))
+            .await
+            .unwrap();
+
+        assert!(records.iter().any(
+            |record| record.action == "user.created" && record.actor.as_deref() == Some("ada")
+        ),);
     }
 
     #[actix_web::test]

@@ -107,7 +107,10 @@ mode = "internal"
 
 # The mutually authenticated Marti listener. Every caller presents a client
 # certificate rustak issued, which is both its authentication and its device
-# identity.
+# identity. It serves the TAK surface only — no admin UI and no /api/v1 — and a
+# caller with no certificate is refused at the handshake rather than by a
+# handler, so a device enrols against [web.public] first and uses this port
+# afterwards. Switching it off leaves everything reachable on [web.public].
 [web.marti]
 enabled = true
 listen = ":8443"

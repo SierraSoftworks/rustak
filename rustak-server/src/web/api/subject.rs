@@ -143,7 +143,7 @@ mod tests {
         Identity {
             principal,
             user,
-            claims: crate::auth::AccessClaims {
+            claims: Some(crate::auth::AccessClaims {
                 sub: username.to_string(),
                 aud: "rustak".to_string(),
                 iss: "https://localhost".to_string(),
@@ -153,7 +153,7 @@ mod tests {
                 jti: "a-token".to_string(),
                 scope: "api".to_string(),
                 dev: None,
-            },
+            }),
         }
     }
 

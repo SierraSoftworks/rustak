@@ -79,4 +79,4 @@ pub use setup::{
     AdminCreated, CaKeyType, CaSummary, CreateAdminRequest, InitCaRequest, ServerSettingsRequest,
     SetupStatus,
 };
-pub use user::{User, UserKind, UserPatch, UserSource};
+pub use user::{CreateUserRequest, User, UserKind, UserPatch, UserSource};

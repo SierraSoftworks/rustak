@@ -154,6 +154,41 @@ impl User {
     }
 }
 
+/// The account an administrator asks this server to create.
+///
+/// There is no credential here and no way to add one: rustak has no local
+/// passwords, so a new account signs in with a passkey, arrives through the
+/// identity provider, or — for a service — is given a credential through
+/// `POST /api/v1/credentials` afterwards. An administrator who could set a
+/// secret at creation time would be an administrator who knows it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CreateUserRequest {
+    pub username: Username,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+
+    /// A person or a sidecar. Defaults to a person, which is what an
+    /// administrator adding somebody by hand almost always means.
+    #[serde(default)]
+    pub kind: UserKind,
+}
+
+impl CreateUserRequest {
+    /// A request for an ordinary person's account.
+    pub fn person(username: Username) -> Self {
+        Self {
+            username,
+            display_name: None,
+            email: None,
+            kind: UserKind::Person,
+        }
+    }
+}
+
 /// The changes an administrator may make to an identity.
 ///
 /// Every field is optional and means "leave this alone" when absent. To clear
@@ -285,6 +320,45 @@ mod tests {
 
         assert!(!UserSource::Oidc.is_managed_here());
         assert!(UserSource::Local.is_managed_here());
+    }
+
+    #[test]
+    fn a_create_request_defaults_to_a_person_and_carries_no_secret() {
+        let parsed: CreateUserRequest = serde_json::from_value(serde_json::json!({
+            "username": "grace",
+        }))
+        .unwrap();
+
+        assert_eq!(parsed.kind, UserKind::Person);
+        assert_eq!(parsed, CreateUserRequest::person(parsed.username.clone()));
+
+        let serde_json::Value::Object(rendered) =
+            serde_json::to_value(CreateUserRequest::person(parsed.username)).unwrap()
+        else {
+            panic!("a create request should serialise to an object");
+        };
+
+        let mut fields: Vec<&str> = rendered.keys().map(String::as_str).collect();
+        fields.sort();
+
+        assert_eq!(
+            fields,
+            vec!["kind", "username"],
+            "a field was added to the create request; check it cannot carry a credential",
+        );
+    }
+
+    #[test]
+    fn a_service_account_is_asked_for_by_name() {
+        let parsed: CreateUserRequest = serde_json::from_value(serde_json::json!({
+            "username": "etl",
+            "kind": "service",
+            "display_name": "CloudTAK bridge",
+        }))
+        .unwrap();
+
+        assert_eq!(parsed.kind, UserKind::Service);
+        assert_eq!(parsed.display_name.as_deref(), Some("CloudTAK bridge"));
     }
 
     #[test]

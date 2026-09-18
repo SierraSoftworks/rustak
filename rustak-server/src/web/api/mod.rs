@@ -66,6 +66,7 @@ pub fn configure() -> actix_web::Scope<
             .route("/auth/passkeys", web::get().to(passkey::list))
             .route("/auth/passkeys/{id}", web::delete().to(passkey::remove))
             .route("/users", web::get().to(users::list))
+            .route("/users", web::post().to(users::create))
             .route("/users/{username}", web::patch().to(users::patch))
             .route("/users/{username}/groups", web::get().to(users_groups::get))
             .route("/users/{username}/groups", web::put().to(users_groups::put))
@@ -154,6 +155,7 @@ mod tests {
         ("GET", "/api/v1/auth/passkeys"),
         ("DELETE", "/api/v1/auth/passkeys/1"),
         ("GET", "/api/v1/users"),
+        ("POST", "/api/v1/users"),
         ("PATCH", "/api/v1/users/ada"),
         ("GET", "/api/v1/users/ada/groups"),
         ("PUT", "/api/v1/users/ada/groups"),

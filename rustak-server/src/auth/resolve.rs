@@ -1,25 +1,39 @@
 //! Turning a credential into a [`Principal`].
 //!
-//! In M0 there is one credential to turn: our own bearer token on the public
-//! listener. Client certificates arrive with the Marti and stream listeners in
-//! M2, and Basic on the enrolment endpoints with them; both will be answered
-//! here, beside this, so that "who is this request from" has one answer per
-//! listener policy rather than one per endpoint.
+//! There are three credentials to turn, and [`ListenerAuthPolicy`] says which
+//! of them a given listener accepts: a client certificate (the whole point of
+//! `:8443`), one of our own bearer tokens, and HTTP Basic — the last confined
+//! by `conventions.md`'s security defaults to the enrolment endpoints and
+//! `/oauth/token`, because those are the only places a TAK client has no
+//! alternative.
 //!
-//! The resolution is written against [`Services`] and plain request facts
+//! [`resolve_principal`] tries them in that order, which is deliberate: a
+//! certificate is the strongest thing a caller can present and the only one
+//! that cannot be replayed from a log, so a request carrying both a certificate
+//! and a header is answered as the certificate.
+//!
+//! [`bearer`] itself is written against [`Services`] and plain request facts
 //! rather than against an actix request, so it can be exercised without a
 //! server and reused by the listeners that are not actix at all.
 
+use std::sync::Arc;
+
 use actix_web::http::header::HeaderMap;
+use actix_web::{HttpRequest, web};
 use rustak_core::identity::{AuthMethod, Principal};
 use rustak_core::prelude::*;
 
 use crate::db::repos::UserRow;
 use crate::identity::users;
+use crate::identity::verify::Purpose;
+use crate::pki::PeerCertificate;
 use crate::prelude::Services;
+use crate::web::helpers::request::client_address;
 
 use super::AccessClaims;
 use super::acl::{AuthRequestFilter, evaluate};
+use super::basic::{basic_credential, verify_basic};
+use super::ratelimit::RateLimiter;
 
 /// What a request says about itself, for the access-control expressions.
 pub struct RequestFacts<'a> {
@@ -41,8 +55,20 @@ pub struct Resolved {
     pub principal: Principal,
     /// The account as it is stored.
     pub user: UserRow,
-    /// The claims of the token that was presented.
-    pub claims: AccessClaims,
+    /// The claims of the token that was presented, when one was.
+    ///
+    /// [`None`] for a client certificate and for Basic: neither carries claims,
+    /// and synthesising some would put a `jti` in the audit log that revocation
+    /// could never match.
+    pub claims: Option<AccessClaims>,
+}
+
+impl Resolved {
+    /// The `jti` and expiry of the token behind this request, when there is
+    /// one — which is what signing out revokes.
+    pub fn token(&self) -> Option<&AccessClaims> {
+        self.claims.as_ref()
+    }
 }
 
 /// Why a request could not be answered.
@@ -57,6 +83,8 @@ pub enum AuthFailure {
     /// The credential was good and the answer will not change by presenting
     /// another one.
     Forbidden(&'static str),
+    /// Too many failures from this caller, and how long until the next try.
+    RateLimited(chrono::Duration),
     /// Something of ours failed.
     Unavailable(Error),
 }
@@ -145,8 +173,182 @@ pub async fn bearer<S: Services>(
     Ok(Resolved {
         principal,
         user,
-        claims,
+        claims: Some(claims),
     })
+}
+
+/// Where HTTP Basic is accepted on a listener.
+///
+/// Three values rather than a `bool`, because "only the endpoints that have no
+/// alternative" is the position `conventions.md` takes and there is no way to
+/// express it with two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BasicPolicy {
+    /// Never. A Basic header is ignored.
+    Off,
+
+    /// Only on the paths a TAK client cannot reach any other way:
+    /// [`ENROLLMENT_PREFIX`] and [`OAUTH_TOKEN_PATH`].
+    EnrollmentOnly,
+
+    /// Anywhere on the listener. Nothing selects this today; it exists so that
+    /// an installation that deliberately opts in is a configuration change
+    /// rather than a code change.
+    All,
+}
+
+/// The enrolment paths, which are the only `/Marti` paths Basic reaches.
+pub const ENROLLMENT_PREFIX: &str = "/Marti/api/tls/";
+
+/// The token endpoint, whose whole job is to take a password.
+pub const OAUTH_TOKEN_PATH: &str = "/oauth/token";
+
+/// Which credentials one listener accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListenerAuthPolicy {
+    /// A client certificate this installation's CA issued.
+    pub cert: bool,
+
+    /// One of our own RS256 access tokens.
+    pub bearer: bool,
+
+    /// Where a username and secret are accepted.
+    pub basic: BasicPolicy,
+}
+
+impl ListenerAuthPolicy {
+    /// `[web.public]`: no certificate is asked for at the handshake, so a
+    /// bearer token or — on the two paths that need it — Basic.
+    pub const fn public() -> Self {
+        Self {
+            cert: false,
+            bearer: true,
+            basic: BasicPolicy::EnrollmentOnly,
+        }
+    }
+
+    /// `[web.marti]`: the certificate is the point, and the other two are still
+    /// accepted because CloudTAK points its `webtak` and `api` URLs at whatever
+    /// host answers and we would rather not care which port it picked.
+    pub const fn marti() -> Self {
+        Self {
+            cert: true,
+            bearer: true,
+            basic: BasicPolicy::EnrollmentOnly,
+        }
+    }
+
+    /// Whether Basic may be used for `path`, and for what.
+    ///
+    /// [`None`] means "not here": the header is left unread rather than being
+    /// checked and refused, so a stray Basic header on an ordinary route cannot
+    /// be turned into a password-guessing oracle.
+    pub fn basic_purpose(&self, path: &str) -> Option<Purpose> {
+        match self.basic {
+            BasicPolicy::Off => None,
+            BasicPolicy::All if path.starts_with(ENROLLMENT_PREFIX) => Some(Purpose::Enrollment),
+            BasicPolicy::All if path == OAUTH_TOKEN_PATH => Some(Purpose::OAuthPassword),
+            BasicPolicy::All => Some(Purpose::Marti),
+            BasicPolicy::EnrollmentOnly if path.starts_with(ENROLLMENT_PREFIX) => {
+                Some(Purpose::Enrollment)
+            }
+            BasicPolicy::EnrollmentOnly if path == OAUTH_TOKEN_PATH => Some(Purpose::OAuthPassword),
+            BasicPolicy::EnrollmentOnly => None,
+        }
+    }
+}
+
+/// Who a request is from, given what its listener accepts.
+///
+/// Certificate, then bearer, then Basic — strongest first, so that a request
+/// carrying two credentials is answered as the one that cannot be replayed.
+/// Each arm is skipped entirely when the policy does not allow it, rather than
+/// being tried and refused.
+///
+/// The Basic arm is rate limited per client address and username, through the
+/// [`RateLimiter`] the listener installed as application data. A listener that
+/// installed none refuses Basic outright and says so: an unlimited password
+/// endpoint is worse than one that is temporarily unavailable.
+///
+/// # Errors
+///
+/// [`AuthFailure::Rejected`] when nothing usable was presented;
+/// [`AuthFailure::Forbidden`] when a credential was good and the answer will
+/// not change; [`AuthFailure::RateLimited`] when the caller has guessed too
+/// often; [`AuthFailure::Unavailable`] when a read fails.
+pub async fn resolve_principal<S: Services>(
+    services: &S,
+    request: &HttpRequest,
+    policy: ListenerAuthPolicy,
+) -> Result<Resolved, AuthFailure> {
+    if policy.cert
+        && let Some(peer) = request.conn_data::<PeerCertificate>()
+    {
+        return super::cert::client_cert(services, peer).await;
+    }
+
+    let config = services.config();
+    let address = client_address(
+        config.server.trust_proxy,
+        request.headers(),
+        request.peer_addr(),
+    );
+
+    if policy.bearer
+        && let Some(token) = crate::web::api::middleware::bearer_token(request.headers())
+    {
+        let facts = RequestFacts {
+            method: request.method().as_str(),
+            path: request.path(),
+            client_ip: address.map(|ip| ip.to_string()),
+            headers: request.headers(),
+        };
+
+        // A bearer token that is not one of ours is *not* an identity rather
+        // than a refusal (design 04 D2): the same header carries mission tokens,
+        // and refusing here would break a call that never claimed to be one.
+        match bearer(services, token, &facts).await {
+            Ok(resolved) => return Ok(resolved),
+            Err(AuthFailure::Unavailable(err)) => return Err(AuthFailure::Unavailable(err)),
+            Err(failure) => debug!(reason = ?failure, "A bearer token established no identity."),
+        }
+    }
+
+    let Some(purpose) = policy.basic_purpose(request.path()) else {
+        return Err(AuthFailure::Rejected);
+    };
+
+    let Some(credential) = basic_credential(request.headers()) else {
+        return Err(AuthFailure::Rejected);
+    };
+
+    let Some(limiter) = request.app_data::<web::Data<Arc<RateLimiter>>>() else {
+        error!(
+            path = request.path(),
+            "A listener serving a Basic-authenticated path installed no rate limiter."
+        );
+
+        return Err(AuthFailure::Rejected);
+    };
+
+    let subject = credential.username.as_str();
+
+    limiter
+        .check(address, subject)
+        .map_err(AuthFailure::RateLimited)?;
+
+    match verify_basic(services, &credential, purpose).await {
+        Ok(resolved) => {
+            limiter.record_success(address, subject);
+
+            Ok(resolved)
+        }
+        Err(failure) => {
+            limiter.record_failure(address, subject);
+
+            Err(failure)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -255,6 +457,133 @@ mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn basic_reaches_the_two_paths_that_have_no_alternative_and_no_others() {
+        let policy = ListenerAuthPolicy::public();
+
+        assert_eq!(
+            policy.basic_purpose("/Marti/api/tls/config"),
+            Some(Purpose::Enrollment),
+        );
+        assert_eq!(
+            policy.basic_purpose("/Marti/api/tls/signClient/v2"),
+            Some(Purpose::Enrollment),
+        );
+        assert_eq!(
+            policy.basic_purpose(OAUTH_TOKEN_PATH),
+            Some(Purpose::OAuthPassword),
+        );
+
+        for path in [
+            "/Marti/api/version",
+            "/Marti/api/groups/all",
+            "/api/v1/users",
+            "/oauth/jwks",
+            // Close enough to look right and not one of the two.
+            "/Marti/api/tls",
+        ] {
+            assert_eq!(
+                policy.basic_purpose(path),
+                None,
+                "{path} must not be a password-guessing oracle",
+            );
+        }
+    }
+
+    #[test]
+    fn a_listener_that_refuses_basic_reads_no_password_anywhere() {
+        let policy = ListenerAuthPolicy {
+            basic: BasicPolicy::Off,
+            ..ListenerAuthPolicy::marti()
+        };
+
+        assert_eq!(policy.basic_purpose("/Marti/api/tls/config"), None);
+        assert_eq!(policy.basic_purpose(OAUTH_TOKEN_PATH), None);
+    }
+
+    #[test]
+    fn an_installation_that_opens_basic_up_still_scopes_it_by_path() {
+        // Nothing selects `All` today; when something does, an enrolment path
+        // must still mean `Enrollment` rather than the general Marti purpose,
+        // or a client password would start enrolling devices by accident.
+        let policy = ListenerAuthPolicy {
+            basic: BasicPolicy::All,
+            ..ListenerAuthPolicy::marti()
+        };
+
+        assert_eq!(
+            policy.basic_purpose("/Marti/api/tls/config"),
+            Some(Purpose::Enrollment),
+        );
+        assert_eq!(
+            policy.basic_purpose(OAUTH_TOKEN_PATH),
+            Some(Purpose::OAuthPassword),
+        );
+        assert_eq!(
+            policy.basic_purpose("/Marti/api/groups/all"),
+            Some(Purpose::Marti),
+        );
+    }
+
+    #[test]
+    fn only_the_mutually_authenticated_listener_reads_a_certificate() {
+        assert!(!ListenerAuthPolicy::public().cert);
+        assert!(ListenerAuthPolicy::marti().cert);
+        assert!(ListenerAuthPolicy::public().bearer);
+        assert!(ListenerAuthPolicy::marti().bearer);
+    }
+
+    #[actix_web::test]
+    async fn a_basic_path_with_no_rate_limiter_installed_refuses_rather_than_guesses_freely() {
+        // An unlimited password endpoint is worse than one that is briefly
+        // unavailable, so a listener that forgot the limiter fails closed.
+        let server = TestServer::start().await;
+        let request = actix_web::test::TestRequest::get()
+            .uri("/Marti/api/tls/config")
+            .insert_header(("authorization", "Basic YWRhOnNlY3JldA=="))
+            .app_data(web::Data::new(server.context.clone()))
+            .to_http_request();
+
+        assert!(matches!(
+            resolve_principal(&server.context, &request, ListenerAuthPolicy::public()).await,
+            Err(AuthFailure::Rejected),
+        ));
+    }
+
+    #[actix_web::test]
+    async fn a_bearer_token_is_preferred_where_the_policy_allows_both() {
+        let server = TestServer::start().await;
+        let (user, session) = server.signed_in("ada", false).await;
+        let request = actix_web::test::TestRequest::get()
+            .uri("/Marti/api/tls/config")
+            .insert_header(("authorization", crate::testing::context::bearer(&session)))
+            .app_data(web::Data::new(server.context.clone()))
+            .app_data(web::Data::new(Arc::clone(&server.limiter)))
+            .to_http_request();
+
+        let resolved = resolve_principal(&server.context, &request, ListenerAuthPolicy::public())
+            .await
+            .unwrap();
+
+        assert_eq!(resolved.user.id, user.id);
+        assert!(resolved.claims.is_some());
+    }
+
+    #[actix_web::test]
+    async fn a_request_with_nothing_to_offer_is_rejected() {
+        let server = TestServer::start().await;
+        let request = actix_web::test::TestRequest::get()
+            .uri("/Marti/api/version")
+            .app_data(web::Data::new(server.context.clone()))
+            .app_data(web::Data::new(Arc::clone(&server.limiter)))
+            .to_http_request();
+
+        assert!(matches!(
+            resolve_principal(&server.context, &request, ListenerAuthPolicy::public()).await,
+            Err(AuthFailure::Rejected),
+        ));
     }
 
     #[tokio::test]

@@ -1,11 +1,13 @@
 //! The HTTP surface: the admin API, the embedded UI, and the listeners that
 //! serve them.
 //!
-//! # What is here in M0
+//! # The two listeners
 //!
-//! The public listener and `/api/v1`. The Marti listener, the OAuth2 endpoints
-//! and the TAK-compatible routes arrive with enrolment in M2; the module tree
-//! is laid out so that they are added beside [`api`] rather than through it.
+//! [`build_public`] binds `[web.public]`: the admin UI, `/api/v1`, the OAuth2
+//! endpoints, the enrolment endpoints and the whole TAK surface, with no client
+//! certificate asked for. [`build_marti`] binds `[web.marti]`: the TAK surface
+//! alone, with a client certificate **required** — which is both the
+//! authentication and the device identity on that port.
 //!
 //! # Why the public listener always serves TLS
 //!
@@ -21,8 +23,8 @@
 //! attached by the browser to every request whatever page caused it, which is
 //! the whole of what cross-site request forgery is; a header is not, so there
 //! is no token to double-submit and no `SameSite` to reason about. The
-//! `/login/*` pages that TAK clients expect do use cookies, and they arrive in
-//! M2 scoped to those paths alone.
+//! `/login/*` pages that TAK clients expect do use cookies, and they arrive
+//! scoped to those paths alone.
 
 pub mod api;
 pub mod helpers;
@@ -31,4 +33,4 @@ pub mod telemetry;
 pub mod tls;
 pub mod ui;
 
-pub use server::build_public;
+pub use server::{build_marti, build_public};

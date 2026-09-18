@@ -51,11 +51,13 @@
 pub mod audit_prune;
 pub mod host;
 pub mod job;
+pub mod retention;
 pub mod runnable;
 pub mod wal_checkpoint;
 
 pub use audit_prune::{AUDIT_PRUNE_PARTITION, AuditPruneJob, AuditPruneTask, PRUNE_INTERVAL};
 pub use host::JobHost;
 pub use job::{DEFAULT_JOB_TIMEOUT, Job, JobContext};
+pub use retention::{COT_RETENTION_PARTITION, CotRetentionJob, CotRetentionTask, SWEEP_INTERVAL};
 pub use runnable::{JobRegistration, JobRunnable};
 pub use wal_checkpoint::{WAL_CHECKPOINT_PARTITION, WalCheckpointJob, WalCheckpointTask};

@@ -75,6 +75,15 @@ pub type ContentStore = crate::store::ContentStore;
 /// it carries — and installed with [`AppContext::install_jwt`].
 pub type JwtKeys = crate::auth::jwt::JwtIssuer;
 
+/// The internal certificate authority: enrolment, revocation and the
+/// configurations the mutually authenticated listeners are built from.
+///
+/// Late for the same reason as the signing keys: loading it reads the database
+/// through the secret store the context already carries, so it cannot exist
+/// before the context does. Installed by
+/// [`AppContext::install_pki`](AppContext::install_pki).
+pub type PkiAuthority = crate::pki::Pki;
+
 /// The `User-Agent` every outbound request carries.
 ///
 /// Version included so that a server we talk to (an ACME directory, an identity
@@ -95,6 +104,7 @@ pub struct AppContext {
     secrets: Arc<SecretStore>,
     content: Late<ContentStore>,
     jwt: Late<JwtKeys>,
+    pki: Late<PkiAuthority>,
     session: Arc<Session>,
     http_client: reqwest::Client,
     shutdown: Shutdown,
@@ -134,6 +144,7 @@ impl AppContext {
             secrets: Arc::new(secrets),
             content: Late::new("the content store"),
             jwt: Late::new("the token signing keys"),
+            pki: Late::new("the certificate authority"),
             session,
             http_client,
             shutdown,
@@ -161,6 +172,40 @@ impl AppContext {
         self.jwt.install(jwt)
     }
 
+    /// Installs the certificate authority, once, during start-up.
+    ///
+    /// # Errors
+    ///
+    /// A [`Kind::System`](human_errors::Kind::System) error if it has already
+    /// been installed.
+    pub fn install_pki(&self, pki: Arc<PkiAuthority>) -> Result<(), Error> {
+        self.pki.install(pki)
+    }
+
+    /// The certificate authority, for the enrolment endpoints and the
+    /// mutually authenticated listeners.
+    ///
+    /// An inherent method rather than a [`Services`] one: every caller holds an
+    /// `AppContext` (the Marti handlers take `web::Data<AppContext>`), and
+    /// widening the trait would make every hand-written stand-in implement a
+    /// capability none of them can provide.
+    ///
+    /// # Errors
+    ///
+    /// A [`Kind::System`](human_errors::Kind::System) error when start-up has
+    /// not installed it yet.
+    pub fn pki(&self) -> Result<Arc<PkiAuthority>, Error> {
+        self.pki.require()
+    }
+
+    /// Whether the certificate authority has been installed.
+    ///
+    /// Lets an endpoint answer "enrolment is not available on this
+    /// installation" rather than a bare `500`.
+    pub fn has_pki(&self) -> bool {
+        self.pki.is_installed()
+    }
+
     /// When this process finished starting up, for `/api/v1/health`'s uptime.
     pub fn started_at(&self) -> DateTime<Utc> {
         self.started_at
@@ -178,6 +223,7 @@ impl std::fmt::Debug for AppContext {
             .field("secrets", &self.secrets)
             .field("content", &self.content)
             .field("jwt", &self.jwt)
+            .field("pki", &self.pki)
             .field("shutdown", &self.shutdown)
             .field("started_at", &self.started_at)
             .finish_non_exhaustive()

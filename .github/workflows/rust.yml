@@ -297,19 +297,12 @@ jobs:
   # CloudTAK depends on (`@tak-ps/node-tak`, `@tak-ps/node-cot`). See
   # interop/node-tak/README.md.
   #
-  # TODO(M2-03): this is still `if: false`. The suite runs, bootstraps a server
-  # and reports every scenario it cannot run yet as a *skip* naming the brief
-  # that will serve it, so today it would pass with four scenarios green and the
-  # rest skipped — a green job that proves almost nothing about Marti. What
-  # flips it is M2-03 landing `/oauth/token` and `/Marti/api/tls/*`: at that
-  # point login and enrollment become real gates and this job earns its place in
-  # the required set. Replace `if: false` with the same condition the other jobs
-  # carry:
-  #
-  #     if: github.event_name != 'pull_request' || needs.deduplicate.outputs.cache-hit != 'true'
-  #
-  # and fold INTEROP_NODE_TAK_RESULT back into the `ci` job's loop below, per
-  # the comment there.
+  # A real gate since M2-03 landed `/oauth/token` and `/Marti/api/tls/*`: the
+  # login and enrollment scenarios now run rather than skip, and with them the
+  # mutually authenticated `GET /Marti/api/version` that proves an issued
+  # certificate completes a handshake against our own listener. Scenarios whose
+  # endpoints are still to come (M2-06, M3, M4) report as skips naming the brief
+  # that will serve them, and start running on their own when it lands.
   interop-node-tak:
     name: "Interop: node-tak"
     runs-on: ubuntu-latest
@@ -318,7 +311,7 @@ jobs:
       - deduplicate
       - ui
 
-    if: false
+    if: github.event_name != 'pull_request' || needs.deduplicate.outputs.cache-hit != 'true'
 
     permissions:
       contents: read
@@ -542,6 +535,7 @@ jobs:
             "Test=$TEST_RESULT" \
             "Build UI=$UI_RESULT" \
             "End-to-End Tests=$E2E_RESULT" \
+            "Interop: node-tak=$INTEROP_NODE_TAK_RESULT" \
             "Build=$BUILD_RESULT"
           do
             name="${job%%=*}"
@@ -551,15 +545,6 @@ jobs:
               failed=1
             fi
           done
-
-          # interop-node-tak is a placeholder (`if: false`) until M2, so its
-          # result is always "skipped" for now; that is not a CI failure. Once
-          # it is a real job this line should be folded back into the loop
-          # above so a genuine failure there blocks merges.
-          if [ "$INTEROP_NODE_TAK_RESULT" != "skipped" ] && [ "$INTEROP_NODE_TAK_RESULT" != "success" ]; then
-            echo "::error::Interop: node-tak completed with result '$INTEROP_NODE_TAK_RESULT'."
-            failed=1
-          fi
 
           exit "$failed"
 

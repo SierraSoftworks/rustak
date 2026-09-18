@@ -104,6 +104,15 @@ fn refusal(context: &AppContext, failure: AuthFailure) -> HttpResponse {
         // will not change by presenting another one, so bouncing the browser
         // through a sign-in would only waste somebody's time.
         AuthFailure::Forbidden(message) => json_error(StatusCode::FORBIDDEN, message),
+        // Only the Basic arm rate limits, and `/api/v1` never accepts Basic —
+        // but the shape has to be answered rather than assumed unreachable.
+        AuthFailure::RateLimited(retry_after) => json_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            format!(
+                "Too many attempts. Try again in {} minutes.",
+                retry_after.num_minutes().max(1)
+            ),
+        ),
         AuthFailure::Unavailable(err) => {
             error!(error = %err, "Could not resolve who a request is from.");
             context.session().record_human_error(&err);

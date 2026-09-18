@@ -2,13 +2,14 @@
 //!
 //! [`run_all`] is the second half of start-up: the storage is already open, and
 //! what is left is the things that have a lifetime — the public listener, the
-//! job host, and the housekeeping that neither of them owns. All three share
-//! one [`Shutdown`], so a `SIGTERM`, a failed listener and a test cancelling its
-//! token are the same event as far as the rest of the server is concerned.
+//! CoT stream listener, the job host, and the housekeeping that none of them
+//! owns. All four share one [`Shutdown`], so a `SIGTERM`, a failed listener and
+//! a test cancelling its token are the same event as far as the rest of the
+//! server is concerned.
 //!
 //! # Why the failures are joined rather than awaited in turn
 //!
-//! Each of the three runs until it is told to stop, so awaiting them one after
+//! Each of them runs until it is told to stop, so awaiting them one after
 //! another would mean never noticing that the second had died. They are joined,
 //! and the first failure cancels the token — which is what stops the other two —
 //! so the error that comes back is the one that caused the shutdown rather than
@@ -25,6 +26,7 @@
 //! unfolded, since the migrations that ran before it already wrote to it.
 
 use std::future::Future;
+use std::sync::Arc;
 
 use futures_concurrency::future::Join as _;
 
@@ -90,15 +92,36 @@ async fn listen(context: &AppContext) -> Result<(), Error> {
     let tls = crate::web::tls::resolve(&config, context.db(), context.secrets(), Some(&ca)).await?;
     let server = crate::web::build_public(context.clone(), tls)?;
 
+    // Only when something is going to ask a client for a certificate. Loading
+    // the authority also issues this server's own certificate, which needs a
+    // host name — and an installation with no stream listener, no Marti
+    // listener, no TLS and no configured domain is a development server that
+    // must still start.
+    let pki = match config.stream.tls.enabled || config.web.marti.enabled {
+        true => {
+            let pki = mutual_tls_authority(context).await?;
+            context.install_pki(Arc::clone(&pki))?;
+
+            Some(pki)
+        }
+        false => None,
+    };
+
     info!(
         version = env!("CARGO_PKG_VERSION"),
         name = %config.server.name,
         "rustak is running."
     );
 
+    // Bound after the authority is installed, because its TLS configuration and
+    // its handlers both come from it.
+    let marti = crate::web::build_marti(context.clone())?;
+
     let shutdown = context.shutdown().clone();
-    let (web, jobs, housekeeping) = (
+    let (web, tak, stream, jobs, housekeeping) = (
         stopping_on_exit(&shutdown, serve(context.clone(), server)),
+        stopping_on_exit(&shutdown, serve_marti(context.clone(), marti)),
+        stopping_on_exit(&shutdown, crate::stream::serve(context.clone(), pki)),
         stopping_on_exit(&shutdown, jobs(context.clone())),
         stopping_on_exit(&shutdown, housekeeping(context.clone())),
     )
@@ -108,7 +131,53 @@ async fn listen(context: &AppContext) -> Result<(), Error> {
     // The first failure in start-up order, which is the one that caused the
     // shutdown; the others will be the `Ok(())` of a component that noticed the
     // cancellation and wound down.
-    web.and(jobs).and(housekeeping)
+    web.and(tak).and(stream).and(jobs).and(housekeeping)
+}
+
+/// Runs the Marti listener, when there is one.
+///
+/// An installation that switched `[web.marti] enabled` off waits for the
+/// shutdown instead, so that the component still exists and still ends when
+/// everything else does — rather than returning at once and, through
+/// [`stopping_on_exit`], stopping the whole server.
+async fn serve_marti(
+    context: AppContext,
+    server: Option<actix_web::dev::Server>,
+) -> Result<(), Error> {
+    match server {
+        Some(server) => serve_named(context, server, "Marti").await,
+        None => {
+            context.shutdown().cancelled().await;
+
+            Ok(())
+        }
+    }
+}
+
+/// Loads the authority every mutually authenticated listener is built from.
+///
+/// Separate from the CA material the public listener's own certificate is
+/// issued from, because they want different things from it: that wants signing
+/// material, and this wants a trust anchor plus the revocation cache that
+/// decides whether a certificate still counts. Installed on the context as well
+/// as handed to the stream, so that the enrolment endpoints reach the same
+/// authority and the same cache.
+async fn mutual_tls_authority(context: &AppContext) -> Result<Arc<crate::pki::Pki>, Error> {
+    let config = context.config();
+    let stored = crate::identity::settings::stored(context.db())
+        .await?
+        .domains;
+    let names = crate::web::tls::server_names(&config, &stored);
+
+    crate::pki::Pki::load(
+        context.db(),
+        context.secrets(),
+        &config.pki,
+        &config.server.data_dir,
+        &names,
+        &config.pki.server_ips,
+    )
+    .await
 }
 
 /// Runs `future`, and cancels the shared token however it ends.
@@ -128,18 +197,27 @@ where
 }
 
 /// Runs the public listener, stopping it when the token is cancelled.
+async fn serve(context: AppContext, server: actix_web::dev::Server) -> Result<(), Error> {
+    serve_named(context, server, "public").await
+}
+
+/// Runs one actix listener, stopping it when the token is cancelled.
 ///
 /// actix's `Server` future resolves when the server has stopped, and the only
 /// way to ask it to stop is `ServerHandle::stop` from somewhere else — hence the
 /// handle taken before the future is awaited. The drain is bounded by the
 /// `shutdown_timeout` `web::server` sets, so there is no second timeout here.
-async fn serve(context: AppContext, server: actix_web::dev::Server) -> Result<(), Error> {
+async fn serve_named(
+    context: AppContext,
+    server: actix_web::dev::Server,
+    what: &'static str,
+) -> Result<(), Error> {
     let handle = server.handle();
     let shutdown = context.shutdown().clone();
 
     let stopper = tokio::spawn(async move {
         shutdown.cancelled().await;
-        info!("Draining the public listener.");
+        info!("Draining the {what} listener.");
         // `true`: wait for in-flight requests rather than cutting them off. A
         // request being served when the signal arrives is somebody's upload.
         handle.stop(true).await;
@@ -153,7 +231,7 @@ async fn serve(context: AppContext, server: actix_web::dev::Server) -> Result<()
         "Please report this issue to the development team via GitHub.",
     ])?;
 
-    info!("The public listener has stopped.");
+    info!("The {what} listener has stopped.");
 
     Ok(())
 }

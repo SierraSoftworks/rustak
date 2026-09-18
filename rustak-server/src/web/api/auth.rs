@@ -233,20 +233,22 @@ pub async fn refresh(
 ///
 /// A `500` when the revocation cannot be recorded.
 pub async fn logout(context: web::Data<AppContext>, caller: Authenticated) -> ApiResult {
-    let expires_at = chrono::DateTime::from_timestamp(caller.claims.exp, 0).unwrap_or_else(
+    // Every `/api/v1` session is a bearer token, so this is always present; a
+    // request that reached here another way has no `jti` to revoke and is
+    // answered by revoking nothing rather than by failing.
+    let Some(claims) = caller.token() else {
+        return Ok(HttpResponse::NoContent().finish());
+    };
+
+    let expires_at = chrono::DateTime::from_timestamp(claims.exp, 0).unwrap_or_else(
         // A token whose expiry we cannot read is still one to list; an hour is
         // longer than any we issue.
         || chrono::Utc::now() + chrono::Duration::hours(1),
     );
 
-    tokens::revoke(
-        context.get_ref(),
-        &caller.claims.jti,
-        expires_at,
-        caller.user.id,
-    )
-    .await
-    .map_err(|err| ApiError::from_human(&err))?;
+    tokens::revoke(context.get_ref(), &claims.jti, expires_at, caller.user.id)
+        .await
+        .map_err(|err| ApiError::from_human(&err))?;
 
     record(
         context.get_ref(),

@@ -139,7 +139,7 @@ mod tests {
                 last_seen_at: None,
                 last_login_at: None,
             },
-            claims: AccessClaims {
+            claims: Some(AccessClaims {
                 sub: "ada".to_string(),
                 aud: "rustak".to_string(),
                 iss: "https://tak.example.com".to_string(),
@@ -149,7 +149,7 @@ mod tests {
                 jti: "a-token".to_string(),
                 scope: "api".to_string(),
                 dev: None,
-            },
+            }),
         }
     }
 

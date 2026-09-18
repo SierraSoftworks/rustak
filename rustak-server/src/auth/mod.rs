@@ -16,11 +16,16 @@
 //! endpoint goes through ([`ratelimit`]); and the bearer resolution the admin
 //! API sits behind ([`resolve`]).
 //!
-//! The client-certificate and Basic paths, the OAuth2 endpoints and the
-//! `/login/*` federation arrive with enrolment in M2, all of them beside
-//! [`resolve`] and all resting on the token format pinned here.
+//! # What M2 added
+//!
+//! The client-certificate arm ([`cert`]) and the Basic arm ([`basic`]), and the
+//! [`ListenerAuthPolicy`] that says which of the three a listener accepts.
+//! [`resolve::resolve_principal`] is the one function a listener calls; the
+//! `/login/*` federation is still to come.
 
 pub mod acl;
+pub mod basic;
+pub mod cert;
 pub mod jwt;
 pub mod passkey_store;
 pub mod passkeys;
@@ -30,8 +35,10 @@ pub mod setup;
 pub mod tokens;
 
 pub use acl::{AclOutcome, AuthRequestFilter};
+pub use basic::{BasicCredential, basic_credential};
+pub use cert::client_cert;
 pub use jwt::{AccessClaims, JWT_HEADER_JSON, JwtIssuer};
 pub use passkeys::Passkeys;
 pub use ratelimit::RateLimiter;
-pub use resolve::{AuthFailure, Resolved};
+pub use resolve::{AuthFailure, BasicPolicy, ListenerAuthPolicy, Resolved, resolve_principal};
 pub use setup::SetupToken;

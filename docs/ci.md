@@ -17,7 +17,7 @@ deduplicate ──┬─ version ───────────────�
               ├─ test    (cargo test --workspace, coverage → grcov → codecov)
               ├─ ui      (trunk build → ui-dist-e2e; trunk build --release → ui-dist; lints rustak-ui for wasm32)
               ├─ e2e     (needs ui; cargo build -p rustak-server; Playwright)
-              ├─ interop-node-tak  (placeholder, `if: false` until M2)
+              ├─ interop-node-tak  (needs ui; @tak-ps/node-tak contract suite)
               └─ build   (needs version, ui; crate × target matrix, 10 jobs) ─┬─ ci (aggregator, always())
                                                                                 ├─ docker-build  (per crate × platform)
                                                                                 │     └─ docker-publish (per crate, manifest list)
@@ -46,10 +46,14 @@ deduplicate ──┬─ version ───────────────�
   embed).
 - **`e2e`** downloads the debug UI bundle, builds `rustak-server` and runs the
   Playwright suite in `e2e/`. See `e2e/README.md`.
-- **`interop-node-tak`** is a named placeholder (`if: false`) for the
-  `@tak-ps/node-tak` contract suite that lands in M2; the `ci` aggregator
-  tolerates its `skipped` result until then so it never blocks a merge, while
-  still showing up in the job graph so nobody has to remember it's coming.
+- **`interop-node-tak`** downloads the release UI bundle, builds
+  `rustak-server` and runs the `@tak-ps/node-tak` contract suite in
+  `interop/node-tak` against a throwaway server it starts and bootstraps
+  itself. A real gate since M2-03 landed `/oauth/token` and
+  `/Marti/api/tls/*`: login, enrollment and the mutually authenticated
+  `GET /Marti/api/version` all run. Scenarios whose endpoints are still to come
+  report as skips naming the brief that will serve them, and begin running on
+  their own when it lands. See `interop/node-tak/README.md`.
 - **`build`** is a `crate × target` matrix: `{rustak-server → rustak,
   rustak-plugin-example → rustak-plugin-example}` ×
   `{x86_64-unknown-linux-musl, aarch64-unknown-linux-musl (cross),
@@ -60,8 +64,7 @@ deduplicate ──┬─ version ───────────────�
   one. Artifacts and (on a release) release assets are named
   `<bin>-<os>-<arch>[.exe]`.
 - **`ci`** is the required check: `always()`-gated, it fails the run if any
-  dependency did not succeed (with `interop-node-tak`'s placeholder `skipped`
-  result specifically excepted), then saves the merge-tree success marker for
+  dependency did not succeed, then saves the merge-tree success marker for
   `deduplicate` to find next time.
 - **`docker-build`**/**`docker-publish`** build and publish one multi-arch
   (`linux/amd64` + `linux/arm64`) image per crate to
