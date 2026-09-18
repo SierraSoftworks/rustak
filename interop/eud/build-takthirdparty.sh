@@ -64,12 +64,23 @@ grep -q '^openssl_CONFIG=.* no-asm no-module no-tests$' "target-config/${TARGET}
 
 make TARGET="$TARGET" prebuild
 
+OUT="${PWD}/builds/${TARGET}-release"
+
 for pkg in zlib libiconv libxml2 openssl nghttp2 curl ngtcp2 protobuf libmicrohttpd commoncommo; do
     echo "=== takthirdparty: ${pkg} (-j${JOBS}) ==="
+    if [ "$pkg" = openssl ]; then
+        # mk/openssl.mk installs with an ungrouped multi-target rule
+        # (`$(openssl_out_libs): …` names lib/libssl.a *and* lib/libcrypto.a),
+        # so a parallel make runs `install_sw` once per target, concurrently,
+        # and the two installs trample each other (`install_dev` Error 1).
+        # Ask for one of the two first: that runs the (internally parallel)
+        # OpenSSL build and a single install, which produces both files, and
+        # the package target below then finds nothing left to do.
+        make TARGET="$TARGET" -j"$JOBS" commoncommo_BUILDJAVA= "${OUT}/lib/libcrypto.a"
+    fi
     make TARGET="$TARGET" -j"$JOBS" commoncommo_BUILDJAVA= "$pkg"
 done
 
-OUT="${PWD}/builds/${TARGET}-release"
 test -x "${OUT}/bin/commotest" || {
     echo "build-takthirdparty: ${OUT}/bin/commotest was not produced" >&2
     exit 1
