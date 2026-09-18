@@ -5,6 +5,112 @@ what remains. Brief: `.claude/plan/briefs/CI-01-ci-steward.md`.
 
 ---
 
+## 2026-09-18 — `main` green on `0198065`; nightly 35392357088: **8 passed, 0 skipped, 1 failed**
+
+**`rust.yml` 35390806681 (`0198065`) — green, all 24 jobs.** `1569 passed; 0
+failed`, including `a_certificate_yields_the_identity_the_handshake_proved ...
+ok` — the 1-in-128 serial defect simply did not roll this time, which is what the
+write-up predicts. `enroll_flows` 10/10 in 3.48 s, so §F4 holds. `Test` back to
+11m52s from 13m13s.
+
+**The EUD suite is one scenario away from complete.** `enroll-revoked` **✔** —
+§F3's post-revocation snapshot works, and it is now asserting the thing the
+server was already doing right. `chat-direct`, `disconnect`, `enroll-basic`,
+`mp-upload`, `negotiate-refused`, `negotiate-silent`, `two-eud-routing` all ✔.
+
+### mp-download: the server is fixed, the scenario was wrong
+
+**M3-05's HTTP/2 `:authority` fix works.** The URL rustak now hands the peer is
+
+```
+completed upload to server! 1282 bytes uploaded,
+URL is https://127.0.0.1:8443/Marti/sync/content?hash=e661814544d5…
+```
+
+against `https://rustak-interop-eud-mp-download/…` before it. That closes
+`CI-01-2026-09-18-mission-package-url.md`.
+
+The remaining failure is mine, and the artefacts settle it in one line. From
+`artifacts/mp-download/bravo/commo-log.txt`:
+
+```
+Receive of MP /work/payload.dat from MPDL-ALPHA requested
+  - assigned output file /work/mprx-0-/work/payload.dat
+Download … failed; response code = 23 (Failure writing output to destination,
+                                        passed 1052 returned 0)
+```
+
+`23` is `CURLE_WRITE_ERROR`, and "passed 1052 returned 0" means **curl was handed
+all 1052 bytes and the write callback refused them** — the transfer succeeded and
+the *file* could not be opened. The reason is the path: the name ALPHA sends is
+the name BRAVO receives, and BRAVO builds its output as
+`mprx-<id>-<that name>` inside its mounted directory, so the scenario's
+`mpsend:/work/payload.dat:…` produced `/work/mprx-0-/work/payload.dat`, whose
+`/work/mprx-0-/` directory does not exist.
+
+(The 1282/1052 difference is not a discrepancy: 1282 is what ALPHA uploaded
+including the multipart envelope, 1052 is the stored resource. rustak served
+exactly what it holds.)
+
+**Fixed:** `interop/eud/scenarios/mp-download.toml` now sends
+`mpsend:payload.dat:EUD-MPDL-BRAVO`. The container's `WORKDIR` is `/work`
+(`interop/eud/Dockerfile:110`), so a bare name resolves for the sender and stays
+writable for the receiver. `mp-upload`'s `smpsend:/work/payload.dat:0` is
+untouched and still correct — nothing receives that one, so no output path is
+derived from it.
+
+Verified: typecheck clean, 43/43. **This should be the ninth green scenario.**
+
+### Note: the server's request log is not a witness for these routes
+
+Worth recording, because it cost time here. Every `request{…}` line in the job
+output is a *handler event* rendered inside the request span — so a route whose
+handler emits nothing at INFO leaves no trace at all. `/Marti/sync/content` and
+`/Marti/sync/missionupload` are both such routes, which is why the log showed
+zero sync requests during a scenario that uploaded and served a file
+successfully. For these scenarios the EUD-side artefacts are the evidence, not
+the server log.
+
+---
+
+## 2026-09-18 — wave A, run 35390132588 (`36c1411`): red on `Lint` and `Test`
+
+Seven commits: ACME, the admin API, the operations UI, the HTTP/2 `:authority`
+fix plus p256 0.14, OAuth2/OIDC federation and the services API. **Everything
+expensive passed** — `End-to-End Tests` (29 new Playwright specs),
+`Interop: node-tak`, `Build UI`, all ten `build` matrix jobs, all four
+`docker-build` and both `docker-publish`. Two jobs failed, for unrelated reasons.
+
+**`Lint` — two unused imports.** §F5 in the previous entry; fix ready, two line
+deletions.
+
+**`Test` — one library test out of 1569**, and it is **not a wave A regression**:
+
+```
+---- pki::tls::peer::tests::a_certificate_yields_the_identity_the_handshake_proved ----
+assertion `left == right` failed: a 128-bit serial
+  left: 30    right: 32
+test result: FAILED. 1568 passed; 1 failed; 2 ignored
+```
+
+`pki::issue::random_serial` clears the serial's top bit, so its leading byte is
+uniform over `0x00..=0x7f` and is **zero once in 128**. DER integers are minimal,
+so such a serial is encoded in 15 bytes — and `pki/tls/peer.rs:62` hex-encodes
+`raw_serial()` (15 bytes → 30 chars) while `pki/issue.rs:207` hex-encodes the
+array it generated (16 bytes → 32 chars). The two spellings of the same
+certificate's serial disagree, and the audit trail records the short one
+(`auth/cert.rs:161`). Authentication and revocation are unaffected — both key off
+the fingerprint.
+
+**Written up in `CI-01-2026-09-18-serial-hex-der-minimal.md`**, with the padding
+fix and the deterministic test that would pin it. **The failing test has been
+left red and not relaxed**: it is asserting a true invariant that the product
+violates, which is exactly the case the brief says to write up rather than edit.
+Expect this to reappear about one run in 128 until the fix lands; a re-run is a
+fair response to seeing it, but it is a defect and not a flake.
+
+---
+
 ## 2026-09-18 — nightly 35388998399 (`8b5a31c`): **7 passed, 0 skipped, 2 failed**, in 15m08s
 
 No hang, no skips, all nine scenarios ran. **15m08s** end to end, which both
@@ -296,8 +402,8 @@ and `docs/ci.md`.
 
 | Workflow | On `main` | Verdict |
 |---|---|---|
-| `rust.yml` | green on `973117a` and `1e5e1c3`; **red again on wave A (`36c1411`)** | `Lint` only, two unused imports — §F5, fix ready |
-| `nightly.yml` `interop-eud` | **7 passed, 0 skipped, 2 failed** in 15m08s | `chat-direct` passes for the first time; `enroll-revoked` is §F3 (harness), `mp-download` needs the HTTP/2 fix that landed after this sha |
+| `rust.yml` | **green** on `0198065`, all 24 jobs | the 1-in-128 serial defect remains latent and written up |
+| `nightly.yml` `interop-eud` | **8 passed, 0 skipped, 1 failed** | only `mp-download`, and its fix is ready: the server side is now correct, the scenario sent an absolute path the receiver could not write |
 | `security_audit.yml` | **red, and has never been green** (8 of 8 recorded runs failed) | two advisories, neither fixable from this repository today — needs a decision, §S3 |
 | `changelog.yml` | green | — |
 

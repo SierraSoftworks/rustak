@@ -35,7 +35,16 @@ script = [
   "0",
   "estream:{truststore}:atakatak:atakatak:atakatak::{username}:{token}:-{host}:{enroll_port}:{stream_port}:rustak-interop",
   "25",
-  "mpsend:/work/payload.dat:EUD-MPDL-BRAVO",
+  # `payload.dat`, not `/work/payload.dat`. The name ALPHA sends is the name
+  # BRAVO receives, and BRAVO builds its output file as `mprx-<id>-<that name>`
+  # inside its own mounted directory — so an absolute path here produces
+  # `/work/mprx-0-/work/payload.dat`, whose `/work/mprx-0-/` directory does not
+  # exist. curl then fails the transfer with code 23 (`CURLE_WRITE_ERROR`,
+  # "passed 1052 returned 0") *after* rustak has served every byte correctly,
+  # which is exactly how this read on run 35392357088. The container's WORKDIR
+  # is `/work`, so a bare name resolves for the sender and stays writable for
+  # the receiver.
+  "mpsend:payload.dat:EUD-MPDL-BRAVO",
   "40",
   "quit",
 ]
