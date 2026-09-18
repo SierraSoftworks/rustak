@@ -3,6 +3,17 @@
 //!
 //! `src/main.rs` is a thin CLI entry point; this crate exposes the app
 //! itself so integration tests under `tests/` can build and drive it
-//! in-process. M0 ships an empty crate root — `run()`, `AppContext` and
-//! every module in `.claude/plan/design/01-foundations-storage-ci.md` §3.1
-//! arrive across the rest of the M0 implementation briefs.
+//! in-process. The module tree follows
+//! `.claude/plan/design/01-foundations-storage-ci.md` §3.1; each module is
+//! filled in by its own M0 brief.
+
+pub mod auth;
+pub mod config;
+pub mod crypto;
+pub mod db;
+pub mod identity;
+pub mod jobs;
+pub mod pki;
+pub mod services;
+pub mod store;
+pub mod web;
