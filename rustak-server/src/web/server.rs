@@ -9,6 +9,19 @@
 //! [`Shutdown`] and everything winds down together, rather than actix taking
 //! `SIGINT` for itself and the stream listeners finding out later.
 //!
+//! # The drain is the operator's budget, minus a second
+//!
+//! Both servers are given
+//! [`listener_drain_seconds`](crate::config::ServerConfig::listener_drain_seconds)
+//! rather than a constant of their own. It used to be a flat ten seconds, which
+//! is exactly `docker stop`'s default grace period: an idle HTTP/2 keep-alive
+//! connection would hold the drain open for all ten, the container would be
+//! `SIGKILL`ed at the moment actix gave up, and the WAL checkpoint that runs
+//! after the listeners stop would never run. The budget is
+//! `[server] shutdown_timeout` now, and actix is given a second less than it so
+//! that [`runtime`](crate::runtime)'s own bounded wait is the one which reports
+//! a drain that overran.
+//!
 //! # Why the Marti listener is a second server
 //!
 //! [`build_marti`] binds `[web.marti]` with a different TLS configuration — a
@@ -28,9 +41,6 @@ use crate::config::ClientCertMode;
 use crate::marti;
 use crate::prelude::*;
 use crate::web::{api, telemetry::TracingLogger, tls::PublicTls, ui};
-
-/// How long actix waits for in-flight requests before dropping them.
-const SHUTDOWN_TIMEOUT_SECONDS: u64 = 10;
 
 /// Everything the public listener serves, for one `App`.
 ///
@@ -112,6 +122,7 @@ pub fn build_marti(context: AppContext) -> Result<Option<Server>, Error> {
 
     let pki = context.pki()?;
     let required = matches!(config.web.marti.client_cert, ClientCertMode::Required);
+    let drain = config.server.listener_drain_seconds();
     let tls = pki.marti_server_config(required)?;
     let limiter = Arc::new(RateLimiter::new(&config.auth.rate_limit));
 
@@ -124,7 +135,7 @@ pub fn build_marti(context: AppContext) -> Result<Option<Server>, Error> {
     // verified, and `:8443` would authenticate nobody.
     .on_connect(crate::pki::tls::on_connect_capture)
     .disable_signals()
-    .shutdown_timeout(SHUTDOWN_TIMEOUT_SECONDS);
+    .shutdown_timeout(drain);
 
     for socket in config.web.marti.listen.to_socket_addrs()? {
         server = server
@@ -157,6 +168,7 @@ pub fn build_public(context: AppContext, tls: PublicTls) -> Result<Server, Error
     }
 
     let limiter = Arc::new(RateLimiter::new(&config.auth.rate_limit));
+    let drain = config.server.listener_drain_seconds();
 
     let mut server = HttpServer::new(move || {
         App::new()
@@ -164,7 +176,7 @@ pub fn build_public(context: AppContext, tls: PublicTls) -> Result<Server, Error
             .configure(services(context.clone(), limiter.clone()))
     })
     .disable_signals()
-    .shutdown_timeout(SHUTDOWN_TIMEOUT_SECONDS);
+    .shutdown_timeout(drain);
 
     for address in addresses {
         for socket in address.to_socket_addrs()? {

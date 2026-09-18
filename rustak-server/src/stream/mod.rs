@@ -91,6 +91,7 @@ pub struct StreamRuntime {
     store: tokio::task::JoinHandle<()>,
     handshake_timeout: std::time::Duration,
     max_connections: usize,
+    drain: std::time::Duration,
 }
 
 impl std::fmt::Debug for StreamRuntime {
@@ -193,6 +194,7 @@ impl StreamRuntime {
             store: store_task,
             handshake_timeout: to_std(limits.handshake_timeout),
             max_connections: limits.max_connections,
+            drain: config.server.shutdown_budget(),
         })
     }
 
@@ -213,20 +215,30 @@ impl StreamRuntime {
         self
     }
 
-    /// Accepts connections until `shutdown` is cancelled.
+    /// Accepts connections until `shutdown` is cancelled, then drains.
+    ///
+    /// Both waits — for the connections and then for the store task behind them
+    /// — are bounded by `[server] shutdown_timeout`, the same budget the HTTP
+    /// listeners drain within. It used to be a fixed ten seconds here, which is
+    /// `docker stop`'s whole grace period on its own.
     ///
     /// # Errors
     ///
     /// Whatever [`listener_tls::run`] reports, which is nothing an accept loop
     /// can recover from on its own.
     pub async fn run(self, shutdown: Shutdown) -> Result<(), Error> {
+        let limits = listener_tls::ListenerLimits {
+            handshake_timeout: self.handshake_timeout,
+            max_connections: self.max_connections,
+            drain: self.drain,
+        };
+
         let outcome = listener_tls::run(
             self.bound,
             self.tls,
             self.resolver,
             self.deps,
-            self.handshake_timeout,
-            self.max_connections,
+            limits,
             shutdown,
         )
         .await;
@@ -234,7 +246,7 @@ impl StreamRuntime {
         // The store task stops on its own child token; waiting for it here is
         // what makes "the listener has stopped" mean the history it relayed has
         // been written.
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), self.store).await;
+        let _ = tokio::time::timeout(self.drain, self.store).await;
 
         outcome
     }

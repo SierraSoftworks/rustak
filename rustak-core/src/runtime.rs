@@ -9,16 +9,25 @@
 //! an impatient operator presses Ctrl-C twice, and a bounded wait
 //! ([`with_grace`]) for work that may not stop on its own.
 //!
-//! # Why the second signal exits immediately
+//! # What the second signal does
 //!
 //! The first `SIGINT` or `SIGTERM` starts a graceful shutdown: connections are
 //! drained, in-flight requests finish, the database is checkpointed. That takes
 //! a moment, and an operator watching a container that appears not to be
-//! stopping will press Ctrl-C again. Honouring the second signal by exiting at
-//! once — with the conventional `128 + SIGINT` status — is both what they are
-//! asking for and what every other well-behaved daemon does; ignoring it would
-//! teach them to reach for `kill -9`, which loses the checkpoint we were in the
-//! middle of writing.
+//! stopping will press Ctrl-C again. Ignoring them would teach them to reach
+//! for `kill -9`, so the second signal is honoured — but it ends the *drain*
+//! rather than the process. [`Shutdown::abort`] fires, whoever was waiting on
+//! connections that are still open stops waiting, and the caller still gets to
+//! run the few things that have to happen before the process goes away.
+//!
+//! For rustak that is `Database::close`, whose `TRUNCATE` checkpoint decides
+//! whether the next start has a write-ahead log to fold back in. Exiting from
+//! the signal handler instead — which is what this module used to do — skipped
+//! it, so the impatient operator was the one who got the untidy data directory.
+//!
+//! A third signal is the escape hatch and exits at once with the conventional
+//! `128 + SIGINT` status. It is the only path that skips the checkpoint, and
+//! somebody who has asked three times has said what they mean.
 
 use std::future::Future;
 
@@ -50,32 +59,77 @@ const EXIT_INTERRUPTED: i32 = 130;
 /// # }
 /// ```
 #[derive(Clone, Debug, Default)]
-pub struct Shutdown(CancellationToken);
+pub struct Shutdown {
+    /// "Stop when you can": scoped, so a [`child`](Shutdown::child) can be
+    /// stopped without stopping the rest of the server.
+    stop: CancellationToken,
+    /// "Stop waiting": shared by every clone *and* every child, because running
+    /// out of time is a fact about the process rather than about one listener.
+    abort: CancellationToken,
+}
 
 impl Shutdown {
     /// A fresh, uncancelled signal. One per process, cloned from there.
     pub fn new() -> Self {
-        Self(CancellationToken::new())
+        Self::default()
     }
 
     /// Spawns the task that turns `SIGINT`/`SIGTERM` into a cancellation.
     ///
-    /// The first signal cancels this token; a second one ends the process
-    /// immediately with status 130, for the reason given in the
-    /// [module documentation](self).
+    /// The first signal cancels this token, the second
+    /// [abandons](Shutdown::abort) the drain, and a third ends the process at
+    /// once with status 130 — see the [module documentation](self).
     ///
     /// Call this once, from `main`, after the runtime is up. On platforms
     /// without `SIGTERM` only Ctrl-C is listened for.
     pub fn listen_for_signals(&self) {
-        let token = self.0.clone();
+        let (signals, received) = tokio::sync::mpsc::channel(1);
 
         tokio::spawn(async move {
-            next_signal().await;
-            tracing::info!("Received a shutdown signal; draining connections.");
-            token.cancel();
+            loop {
+                next_signal().await;
 
-            next_signal().await;
-            tracing::warn!("Received a second shutdown signal; exiting immediately.");
+                // The sequencer stops receiving once it has seen its third, at
+                // which point there is nothing left to tell it.
+                if signals.send(()).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        self.sequence(received);
+    }
+
+    /// The sequencing itself, over a channel rather than over the signal
+    /// handlers, so that a test can deliver the second signal without sending
+    /// one to the process running it.
+    fn sequence(&self, mut signals: tokio::sync::mpsc::Receiver<()>) {
+        let shutdown = self.clone();
+
+        tokio::spawn(async move {
+            if signals.recv().await.is_none() {
+                return;
+            }
+
+            tracing::info!("Received a shutdown signal; draining connections.");
+            shutdown.cancel();
+
+            if signals.recv().await.is_none() {
+                return;
+            }
+
+            tracing::warn!(
+                "Received a second shutdown signal; connections that are still open will be cut off. The database is still checkpointed before we exit."
+            );
+            shutdown.abort();
+
+            if signals.recv().await.is_none() {
+                return;
+            }
+
+            tracing::warn!(
+                "Received a third shutdown signal; exiting immediately. The write-ahead log will be folded back in on the next start."
+            );
             std::process::exit(EXIT_INTERRUPTED);
         });
     }
@@ -84,29 +138,61 @@ impl Shutdown {
     ///
     /// This is the branch to `select!` against in any loop that should stop.
     pub async fn cancelled(&self) {
-        self.0.cancelled().await;
+        self.stop.cancelled().await;
     }
 
     /// Requests shutdown. Idempotent, and visible to every clone and child.
     pub fn cancel(&self) {
-        self.0.cancel();
+        self.stop.cancel();
     }
 
     /// Whether shutdown has already been requested.
     pub fn is_cancelled(&self) -> bool {
-        self.0.is_cancelled()
+        self.stop.is_cancelled()
+    }
+
+    /// Gives up on the drain: whatever is still open will not be waited for.
+    ///
+    /// Implies [`cancel`](Shutdown::cancel), so it is also a way to stop a
+    /// server that had not been asked to stop yet. Every clone *and* every
+    /// child sees it, unlike the stop signal — a listener cannot decide on its
+    /// own that the process has run out of time.
+    pub fn abort(&self) {
+        self.stop.cancel();
+        self.abort.cancel();
+    }
+
+    /// Resolves once the drain has been given up on.
+    ///
+    /// The branch to `select!` against wherever a bounded wait for connections
+    /// to close happens, so that an operator who asks twice is answered at once
+    /// rather than at the end of the budget.
+    pub async fn aborted(&self) {
+        self.abort.cancelled().await;
+    }
+
+    /// Whether the drain has been given up on.
+    pub fn is_aborted(&self) -> bool {
+        self.abort.is_cancelled()
     }
 
     /// A signal that stops when this one does, but whose own cancellation stays
     /// local — one listener, one connection, one job.
+    ///
+    /// The abort is shared rather than scoped: a child that outlived the
+    /// process's patience is exactly the thing the abort exists to stop
+    /// waiting for.
     pub fn child(&self) -> Self {
-        Self(self.0.child_token())
+        Self {
+            stop: self.stop.child_token(),
+            abort: self.abort.clone(),
+        }
     }
 
-    /// The underlying token, for the APIs that take one directly
+    /// The underlying stop token, for the APIs that take one directly
     /// (`CancellationToken::run_until_cancelled`, `DropGuard`, and so on).
     pub fn token(&self) -> &CancellationToken {
-        &self.0
+        &self.stop
     }
 }
 
@@ -233,6 +319,69 @@ mod tests {
         assert!(listener.is_cancelled());
         assert!(!other.is_cancelled());
         assert!(!shutdown.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn a_child_shares_the_abort_even_though_it_has_its_own_stop() {
+        // Running out of time is a fact about the process: a connection that is
+        // still open when the operator asks a second time has to find out, and
+        // its own token is a child of the server's.
+        let shutdown = Shutdown::new();
+        let connection = shutdown.child();
+
+        shutdown.abort();
+
+        assert!(connection.is_aborted());
+        assert!(connection.is_cancelled(), "an abort implies a stop");
+    }
+
+    #[tokio::test]
+    async fn aborting_a_child_leaves_the_process_alone() {
+        // The other direction: one listener giving up on its own connections
+        // must not tell the rest of the server that the budget is spent.
+        let shutdown = Shutdown::new();
+        let listener = shutdown.child();
+
+        listener.cancel();
+
+        assert!(!shutdown.is_cancelled());
+        assert!(!shutdown.is_aborted());
+    }
+
+    #[tokio::test]
+    async fn the_first_signal_drains_and_the_second_stops_waiting() {
+        // The sequencing the whole module exists for, driven by a channel
+        // rather than by `kill`: a test that sent itself a real SIGTERM would
+        // be testing the harness as much as the code, and a second real one
+        // used to end the process running it.
+        let shutdown = Shutdown::new();
+        let (signals, received) = tokio::sync::mpsc::channel(4);
+        shutdown.sequence(received);
+
+        signals.send(()).await.unwrap();
+        with_grace(
+            "the first signal",
+            shutdown.cancelled(),
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .expect("the first signal starts the drain");
+        assert!(
+            !shutdown.is_aborted(),
+            "one signal asks for a drain, not for the end of one",
+        );
+
+        signals.send(()).await.unwrap();
+        with_grace(
+            "the second signal",
+            shutdown.aborted(),
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .expect("the second signal ends the wait");
+
+        // Deliberately not a third: that one calls `std::process::exit`, which
+        // would take the test binary with it.
     }
 
     #[tokio::test]

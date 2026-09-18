@@ -15,7 +15,7 @@
 
 use human_errors::Error;
 
-use super::{AcmeChallenge, Config, TlsMode};
+use super::{AcmeChallenge, Config, MAX_SHUTDOWN_TIMEOUT, TlsMode};
 
 /// Advice for a combination the example file shows the right form of.
 const ADVICE_EXAMPLE: &[&str] = &[
@@ -37,12 +37,44 @@ const ADVICE_HTTP_01: &[&str] = &[
 
 /// Checks every cross-section rule, in the order an operator meets them.
 pub(super) fn validate(config: &Config) -> Result<(), Error> {
+    shutdown(config)?;
     public_listener(config)?;
     certificate_source(config)?;
     acme(config)?;
     credentials(config)?;
     pki(config)?;
     distinct_listeners(config)
+}
+
+/// The drain budget has to describe a wait an orchestrator would sit through.
+///
+/// Both ends matter. Zero would cut every connection off the moment a
+/// `SIGTERM` arrived, including the upload somebody was halfway through; longer
+/// than [`MAX_SHUTDOWN_TIMEOUT`] would outlast every default grace period there
+/// is, so the process would be `SIGKILL`ed before the drain it asked for
+/// finished — and the checkpoint that runs after the drain would never run at
+/// all. That is the failure this whole setting exists to prevent, so a budget
+/// which guarantees it is refused rather than warned about.
+fn shutdown(config: &Config) -> Result<(), Error> {
+    let budget = config.server.shutdown_timeout;
+
+    positive(budget, "[server] shutdown_timeout")?;
+
+    if budget > MAX_SHUTDOWN_TIMEOUT {
+        return Err(human_errors::user(
+            format!(
+                "`[server] shutdown_timeout` is {}s, and a drain may be at most {}s.",
+                budget.num_seconds(),
+                MAX_SHUTDOWN_TIMEOUT.num_seconds(),
+            ),
+            &[
+                "Set it to how long connections need to close, inside whatever your orchestrator allows before it sends SIGKILL.",
+                "`docker stop` allows ten seconds in total and the checkpoint after the drain needs two of them, which is why the default is 8s.",
+            ],
+        ));
+    }
+
+    Ok(())
 }
 
 /// `[web.public]` is the listener everything else is reached through.
@@ -430,6 +462,23 @@ mod tests {
         )
         .validate()
         .unwrap();
+    }
+
+    #[test]
+    fn a_drain_nobody_would_wait_out_is_refused() {
+        // The setting exists to keep the shutdown inside an orchestrator's
+        // grace period, so a value that cannot be is the one thing it must not
+        // accept.
+        let message = refusal("[server]\nshutdown_timeout = \"5m\"\n");
+        assert!(message.contains("shutdown_timeout"), "{message}");
+        assert!(message.contains("60s"), "{message}");
+
+        let message = refusal("[server]\nshutdown_timeout = \"0s\"\n");
+        assert!(message.contains("shutdown_timeout"), "{message}");
+
+        parse("[server]\nshutdown_timeout = \"60s\"\n")
+            .validate()
+            .unwrap();
     }
 
     #[test]

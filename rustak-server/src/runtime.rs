@@ -24,6 +24,37 @@
 //! pending writes. It runs after everything else has stopped, and on every exit
 //! path — a listener that would not bind is no reason to leave the log
 //! unfolded, since the migrations that ran before it already wrote to it.
+//!
+//! # The shutdown budget
+//!
+//! Stopping is two waits, and they are bounded separately because only one of
+//! them is the operator's to lengthen.
+//!
+//! The **drain** is `[server] shutdown_timeout`, and it covers all three
+//! listeners at once: the public `HttpServer`, the Marti one and the CoT
+//! stream. They are all told to stop by the same cancellation and they all
+//! wait for the same kind of thing — a connection somebody else has to close —
+//! so one deadline for the lot is the only one an operator could reason about.
+//! The wait for them is bounded here rather than in any one of them, which is
+//! also what makes the actix listeners' own `shutdown_timeout` a second less
+//! than it.
+//!
+//! The **checkpoint** afterwards is [`DATABASE_CLOSE_TIMEOUT`], a fixed two
+//! seconds that is not configurable. It is not waiting for anybody else: the
+//! listeners have stopped, and folding a bounded write-ahead log back into the
+//! database file either takes a moment or is not going to happen at all.
+//!
+//! Together they are the number an orchestrator has to be told, and `docker
+//! stop`'s ten-second default is exactly the 8 + 2 the defaults add up to —
+//! see `docs/deployment.md` and `rustak-server/Dockerfile`.
+//!
+//! # A second signal ends the drain, not the process
+//!
+//! [`Shutdown::abort`] resolves the drain at once instead of waiting the budget
+//! out, and the checkpoint still runs. The components that were still going are
+//! dropped rather than awaited: they have already been told to stop, so what is
+//! dropped is the waiting rather than the stopping, and the process is two
+//! seconds from exiting anyway.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -45,6 +76,17 @@ const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(600);
 /// How often revoked access tokens that have since expired are dropped.
 const JTI_PRUNE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3600);
 
+/// How long the final `TRUNCATE` checkpoint is given once everything has
+/// stopped.
+///
+/// Fixed rather than configurable, and deliberately short. Nothing is being
+/// waited *for* by then — every listener has stopped and the log is capped at
+/// 64 MiB — so a checkpoint that has not finished in two seconds is one that is
+/// blocked rather than slow, and the only thing left to do about it is to leave
+/// the log for the next start to fold in. Two seconds is also what is left of
+/// `docker stop`'s ten-second grace once the default drain has had its eight.
+pub const DATABASE_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Starts every listener and background task, and runs until shutdown.
 ///
 /// Returns `Ok(())` when the [`Shutdown`] in `context` was cancelled and
@@ -60,16 +102,37 @@ const JTI_PRUNE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3
 pub async fn run_all(context: AppContext) -> Result<(), Error> {
     let outcome = listen(&context).await;
 
-    // On every path, including the ones where nothing ever started: a listener
-    // that would not bind still leaves a migrated database with a log to fold
-    // back in. A failure here is worth reporting but not worth replacing the
-    // failure that caused the shutdown, which is the one an operator has to act
-    // on — so it is logged rather than returned.
-    if let Err(err) = context.db().clone().close().await {
-        warn!(error = %err, "The database was not checkpointed cleanly on the way out.");
-    }
+    close_database(&context).await;
 
     outcome
+}
+
+/// Folds the write-ahead log back into the database file, within the cap.
+///
+/// Runs on every path, including the ones where nothing ever started: a
+/// listener that would not bind still leaves a migrated database with a log to
+/// fold back in. It runs after a drain that was given up on, too, which is the
+/// whole point of [`Shutdown::abort`] replacing the `std::process::exit` that
+/// used to answer a second signal.
+///
+/// A failure is worth reporting but not worth replacing the failure that caused
+/// the shutdown — that is the one an operator has to act on — so it is logged
+/// rather than returned. Nothing is lost when it does fail: the log is still
+/// there, and the next start folds it in.
+async fn close_database(context: &AppContext) {
+    let closed = rustak_core::runtime::with_grace(
+        "the database checkpoint",
+        context.db().clone().close(),
+        DATABASE_CLOSE_TIMEOUT,
+    )
+    .await;
+
+    match closed {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) | Err(err) => {
+            warn!(error = %err, "The database was not checkpointed cleanly on the way out.");
+        }
+    }
 }
 
 /// Everything [`run_all`] does before the database is closed.
@@ -118,20 +181,76 @@ async fn listen(context: &AppContext) -> Result<(), Error> {
     let marti = crate::web::build_marti(context.clone())?;
 
     let shutdown = context.shutdown().clone();
-    let (web, tak, stream, jobs, housekeeping) = (
+    let components = (
         stopping_on_exit(&shutdown, serve(context.clone(), server)),
         stopping_on_exit(&shutdown, serve_marti(context.clone(), marti)),
         stopping_on_exit(&shutdown, crate::stream::serve(context.clone(), pki)),
         stopping_on_exit(&shutdown, jobs(context.clone())),
         stopping_on_exit(&shutdown, housekeeping(context.clone())),
     )
-        .join()
-        .await;
+        .join();
+
+    // A drain that was given up on is not an error: the server was asked to
+    // stop and it has, and turning somebody's slow connection into a non-zero
+    // exit status would make every restart look like a failure. The give-up is
+    // logged where it happens.
+    // Boxed: the five components and both `select!` arms live inside this
+    // future, and `clippy::large_futures` is right that a frame that size does
+    // not belong on the stack of every caller up to `main`.
+    let Some((web, tak, stream, jobs, housekeeping)) = Box::pin(drain(
+        &shutdown,
+        components,
+        config.server.shutdown_budget(),
+    ))
+    .await
+    else {
+        return Ok(());
+    };
 
     // The first failure in start-up order, which is the one that caused the
     // shutdown; the others will be the `Ok(())` of a component that noticed the
     // cancellation and wound down.
     web.and(tak).and(stream).and(jobs).and(housekeeping)
+}
+
+/// Runs the components, and bounds the wait once one of them has to stop.
+///
+/// The budget starts when the shutdown is requested rather than when the server
+/// starts, because until then there is nothing to bound — a listener serving
+/// requests is not overrunning anything.
+///
+/// [`None`] when the wait was given up on, either because the budget ran out or
+/// because [`Shutdown::abort`] said not to wait at all. The components are
+/// dropped at that point: each of them has already been *told* to stop, so what
+/// is abandoned is the waiting, and [`close_database`] runs either way.
+async fn drain<F: Future>(
+    shutdown: &Shutdown,
+    components: F,
+    budget: std::time::Duration,
+) -> Option<F::Output> {
+    let mut components = std::pin::pin!(components);
+
+    tokio::select! {
+        outcomes = &mut components => return Some(outcomes),
+        () = shutdown.cancelled() => {}
+    }
+
+    tokio::select! {
+        outcomes = &mut components => Some(outcomes),
+        () = shutdown.aborted() => {
+            warn!("No longer waiting for connections to close; the database is still checkpointed before we exit.");
+
+            None
+        }
+        () = tokio::time::sleep(budget) => {
+            warn!(
+                ?budget,
+                "Connections were still open when the shutdown budget ran out, so they have been cut off. Raise [server] shutdown_timeout if a clean drain needs longer, and raise the orchestrator's own grace period with it."
+            );
+
+            None
+        }
+    }
 }
 
 /// Runs the Marti listener, when there is one.
@@ -205,8 +324,10 @@ async fn serve(context: AppContext, server: actix_web::dev::Server) -> Result<()
 ///
 /// actix's `Server` future resolves when the server has stopped, and the only
 /// way to ask it to stop is `ServerHandle::stop` from somewhere else — hence the
-/// handle taken before the future is awaited. The drain is bounded by the
-/// `shutdown_timeout` `web::server` sets, so there is no second timeout here.
+/// handle taken before the future is awaited. There is no timeout here: actix's
+/// own `shutdown_timeout` bounds the drain, [`drain`] bounds the wait for it a
+/// second later, and a third deadline in between would only decide which of the
+/// two got to log it.
 async fn serve_named(
     context: AppContext,
     server: actix_web::dev::Server,
@@ -325,6 +446,74 @@ async fn announce_setup(context: &AppContext) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn everything_stopping_on_its_own_is_reported_rather_than_waited_out() {
+        // The ordinary path: the components wound down, and what they returned
+        // is what `listen` goes on to fold into one result.
+        let shutdown = Shutdown::new();
+
+        let finished = drain(&shutdown, async { 7 }, std::time::Duration::from_secs(8)).await;
+
+        assert_eq!(finished, Some(7));
+    }
+
+    #[tokio::test]
+    async fn a_drain_that_outlives_its_budget_is_given_up_on() {
+        // What used to be actix's ten seconds and Docker's ten seconds racing
+        // each other: the wait has to end on *our* deadline, with the
+        // checkpoint still to come, rather than on the orchestrator's SIGKILL.
+        let shutdown = Shutdown::new();
+        shutdown.cancel();
+
+        let abandoned = drain(
+            &shutdown,
+            std::future::pending::<()>(),
+            // Short, because what is being tested is that the budget is
+            // enforced rather than how long the default one is.
+            std::time::Duration::from_millis(50),
+        )
+        .await;
+
+        assert!(abandoned.is_none(), "a drain that never ends has to be cut");
+    }
+
+    #[tokio::test]
+    async fn a_second_signal_ends_the_wait_without_waiting_the_budget_out() {
+        // The operator pressing Ctrl-C twice: they are answered now, not in ten
+        // minutes, and `run_all` still gets to run the checkpoint afterwards.
+        let shutdown = Shutdown::new();
+        shutdown.abort();
+
+        let abandoned = rustak_core::runtime::with_grace(
+            "an aborted drain",
+            drain(
+                &shutdown,
+                std::future::pending::<()>(),
+                std::time::Duration::from_secs(600),
+            ),
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .expect("an abort does not wait for the budget");
+
+        assert!(abandoned.is_none());
+    }
+
+    #[tokio::test]
+    async fn the_checkpoint_runs_after_a_drain_that_was_abandoned() {
+        // The whole reason the second signal no longer calls `process::exit`.
+        let context = AppContext::new_mock(|_| {}).await.unwrap();
+        context.shutdown().abort();
+
+        rustak_core::runtime::with_grace(
+            "the checkpoint",
+            close_database(&context),
+            DATABASE_CLOSE_TIMEOUT + std::time::Duration::from_secs(1),
+        )
+        .await
+        .expect("the checkpoint is bounded by its own cap");
+    }
 
     #[tokio::test]
     async fn housekeeping_stops_when_the_server_does() {

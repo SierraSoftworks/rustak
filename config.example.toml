@@ -45,6 +45,17 @@ trust_proxy = false
 # segments and the ACME cache live.
 data_dir = "./data"
 
+# How long connections that are still open are given to close when rustak is
+# asked to stop, before they are cut off. At most "60s".
+#
+# The budget covers the drain only. The WAL checkpoint that follows it — the
+# one that decides whether the next start has a log to fold back in — has its
+# own two-second cap on top, so a stop takes up to this plus two seconds.
+# `docker stop` allows ten in total before it sends SIGKILL, which is where the
+# default comes from: raise both together, or neither. A second SIGINT/SIGTERM
+# ends the drain early and still runs the checkpoint.
+shutdown_timeout = "8s"
+
 
 [storage]
 # The SQLite database. Default: "<data_dir>/rustak.sqlite". The key that seals

@@ -22,6 +22,34 @@ fn default_data_dir() -> PathBuf {
     PathBuf::from("./data")
 }
 
+/// The default drain budget: eight seconds.
+///
+/// Chosen against Docker rather than against anything inside rustak. `docker
+/// stop` sends `SIGTERM`, waits ten seconds and then `SIGKILL`s, and the
+/// checkpoint that makes a stopped installation's data directory tidy runs
+/// *after* the drain — so a budget of ten would be spent at exactly the moment
+/// the container was killed, and the checkpoint would never run. Eight leaves
+/// the two seconds [`DATABASE_CLOSE_TIMEOUT`] needs inside the default grace.
+///
+/// [`DATABASE_CLOSE_TIMEOUT`]: crate::runtime::DATABASE_CLOSE_TIMEOUT
+const DEFAULT_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// [`DEFAULT_SHUTDOWN_TIMEOUT`] as the configuration file spells a duration.
+fn default_shutdown_timeout() -> chrono::Duration {
+    // Provably infallible: eight seconds is inside every range chrono has.
+    chrono::Duration::from_std(DEFAULT_SHUTDOWN_TIMEOUT)
+        .expect("eight seconds is a duration chrono can hold")
+}
+
+/// The longest drain an operator may configure.
+///
+/// Not a technical limit: a minute is already far longer than any orchestrator
+/// waits by default, and a budget beyond it would be one that only ever ends in
+/// the `SIGKILL` it exists to avoid. Anybody who genuinely needs longer has to
+/// raise their orchestrator's own timeout as well, and a refusal here is where
+/// they find that out.
+pub const MAX_SHUTDOWN_TIMEOUT: chrono::Duration = chrono::Duration::minutes(1);
+
 /// `[server]`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -63,6 +91,19 @@ pub struct ServerConfig {
     /// append-only stream segments and the ACME cache live.
     #[serde(default = "default_data_dir")]
     pub data_dir: PathBuf,
+
+    /// How long connections that are still open are given to close on the way
+    /// out, before they are cut off.
+    ///
+    /// The budget covers the drain and nothing else: the database checkpoint
+    /// that follows it has its own short, fixed cap. Both have to fit inside
+    /// whatever `docker stop`, systemd or Kubernetes allows before it sends
+    /// `SIGKILL` — see `docs/deployment.md`.
+    #[serde(
+        default = "default_shutdown_timeout",
+        with = "rustak_core::config::duration::humane"
+    )]
+    pub shutdown_timeout: chrono::Duration,
 }
 
 impl Default for ServerConfig {
@@ -77,11 +118,35 @@ impl Default for ServerConfig {
             base_url: None,
             trust_proxy: false,
             data_dir: default_data_dir(),
+            shutdown_timeout: default_shutdown_timeout(),
         }
     }
 }
 
 impl ServerConfig {
+    /// The drain budget, as the standard library spells a duration.
+    ///
+    /// A value the validator would have refused falls back to the default
+    /// rather than saturating: this is reached from the shutdown path, where a
+    /// panic or a zero-length wait would cost the checkpoint, and every caller
+    /// has already been through [`validate`](crate::config::Config::validate).
+    pub fn shutdown_budget(&self) -> std::time::Duration {
+        self.shutdown_timeout
+            .to_std()
+            .ok()
+            .filter(|budget| !budget.is_zero())
+            .unwrap_or(DEFAULT_SHUTDOWN_TIMEOUT)
+    }
+
+    /// The budget actix is given, in the whole seconds its API takes.
+    ///
+    /// A second less than the budget, so that the runtime's own bounded wait is
+    /// the one that reports a drain which overran — actix's timeout firing at
+    /// the same instant would be a race over which of the two logged it.
+    pub fn listener_drain_seconds(&self) -> u64 {
+        self.shutdown_budget().as_secs().saturating_sub(1).max(1)
+    }
+
     /// The canonical public host name, if one is configured.
     pub fn canonical_domain(&self) -> Option<&str> {
         self.domains.first().map(String::as_str)
@@ -114,6 +179,43 @@ mod tests {
         assert_eq!(parsed, ServerConfig::default());
         assert_eq!(parsed.name, "rustak");
         assert_eq!(parsed.data_dir, PathBuf::from("./data"));
+    }
+
+    #[test]
+    fn the_drain_budget_leaves_room_for_the_checkpoint_inside_dockers_grace() {
+        // Eight, not ten: `docker stop` waits ten seconds in total, and the
+        // WAL truncation that follows the drain needs two of them.
+        let parsed: ServerConfig = toml::from_str("").unwrap();
+
+        assert_eq!(parsed.shutdown_timeout, chrono::Duration::seconds(8));
+        assert_eq!(parsed.shutdown_budget(), std::time::Duration::from_secs(8));
+    }
+
+    #[test]
+    fn actix_is_given_a_second_less_than_the_budget() {
+        // So that the runtime's own wait is the one which reports a drain that
+        // overran, rather than the two racing to log it.
+        let parsed: ServerConfig = toml::from_str(r#"shutdown_timeout = "30s""#).unwrap();
+
+        assert_eq!(parsed.shutdown_budget(), std::time::Duration::from_secs(30));
+        assert_eq!(parsed.listener_drain_seconds(), 29);
+
+        // And never zero, whatever the budget is: actix reads a zero timeout as
+        // "cut every connection off now".
+        let parsed: ServerConfig = toml::from_str(r#"shutdown_timeout = "1s""#).unwrap();
+        assert_eq!(parsed.listener_drain_seconds(), 1);
+    }
+
+    #[test]
+    fn a_budget_the_validator_would_have_refused_falls_back_rather_than_vanishing() {
+        // Reached from the shutdown path, where a zero-length wait would cost
+        // the checkpoint this setting exists to protect.
+        let broken = ServerConfig {
+            shutdown_timeout: chrono::Duration::seconds(-1),
+            ..ServerConfig::default()
+        };
+
+        assert_eq!(broken.shutdown_budget(), std::time::Duration::from_secs(8));
     }
 
     #[test]

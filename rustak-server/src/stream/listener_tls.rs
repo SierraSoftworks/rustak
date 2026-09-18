@@ -37,6 +37,21 @@ use super::connection::{self, ConnDeps};
 use super::metrics::StreamMetrics;
 use super::resolver::CertPrincipalResolver;
 
+/// The bounds that belong to the listener rather than to one connection.
+///
+/// One argument rather than three, because they arrive together, they are all
+/// read from the configuration at bind time, and a `run` that takes eight
+/// positional values is one a caller gets wrong silently.
+#[derive(Debug, Clone, Copy)]
+pub struct ListenerLimits {
+    /// How long a TCP connection has to complete its TLS handshake.
+    pub handshake_timeout: std::time::Duration,
+    /// How many connections may be open — or mid-handshake — at once.
+    pub max_connections: usize,
+    /// How long the connections still open at shutdown are given to close.
+    pub drain: std::time::Duration,
+}
+
 /// A bound socket, before anything has been accepted on it.
 #[derive(Debug)]
 pub struct Bound {
@@ -89,21 +104,30 @@ pub async fn bind(listen: &ListenAddr) -> Result<Bound, Error> {
     })
 }
 
-/// Accepts connections until `shutdown` is cancelled.
+/// Accepts connections until `shutdown` is cancelled, then drains.
 ///
 /// Returns `Ok(())` on a clean shutdown. An accept that fails is logged and the
 /// loop carries on: a per-connection failure — a file-descriptor limit, a peer
 /// that reset before the accept completed — is not a reason to stop serving
 /// every other device.
+///
+/// [`ListenerLimits::drain`] bounds the wait for the connections that are still
+/// open once the socket has stopped accepting. It is the same budget the HTTP
+/// listeners get, because they are stopping at the same time and the process
+/// has one deadline rather than three.
 pub async fn run(
     bound: Bound,
     tls: Arc<rustls::ServerConfig>,
     resolver: Arc<dyn CertPrincipalResolver>,
     deps: ConnDeps,
-    handshake_timeout: std::time::Duration,
-    max_connections: usize,
+    limits: ListenerLimits,
     shutdown: Shutdown,
 ) -> Result<(), Error> {
+    let ListenerLimits {
+        handshake_timeout,
+        max_connections,
+        drain,
+    } = limits;
     let acceptor = TlsAcceptor::from(tls);
     let slots = Arc::new(Semaphore::new(max_connections.max(1)));
 
@@ -158,9 +182,46 @@ pub async fn run(
         });
     }
 
+    drain_connections(&slots, max_connections, drain, &shutdown).await;
+
     info!("The CoT stream listener has stopped.");
 
     Ok(())
+}
+
+/// Waits for the connections that were still open when the socket stopped.
+///
+/// Every connection task holds one permit for its whole life, so acquiring all
+/// of them is the same question as "has everybody finished?" — and it asks it
+/// without a second registry to keep in step with the first.
+///
+/// Giving up is not an error. A device on a flaky link that has not noticed the
+/// `t-x-d-d` yet is the ordinary case, and the alternative to cutting it off is
+/// a process that will not stop.
+async fn drain_connections(
+    slots: &Arc<Semaphore>,
+    max_connections: usize,
+    drain: std::time::Duration,
+    shutdown: &Shutdown,
+) {
+    // `Semaphore::new` above took the same number, so it is one the semaphore
+    // can hold; the conversion only has to not panic.
+    let all = u32::try_from(max_connections.max(1)).unwrap_or(u32::MAX);
+
+    let waited = tokio::select! {
+        biased;
+
+        // An operator who asks a second time is not asking us to keep waiting.
+        () = shutdown.aborted() => false,
+        acquired = tokio::time::timeout(drain, slots.acquire_many(all)) => acquired.is_ok(),
+    };
+
+    if !waited {
+        warn!(
+            ?drain,
+            "Some stream connections were still open when the drain ended; they have been cut off."
+        );
+    }
 }
 
 /// Completes one handshake, resolves the certificate, and serves.

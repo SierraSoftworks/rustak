@@ -76,7 +76,10 @@ for the full comment on every key.
   console reached at `https://192.0.2.10` cannot register a passkey at all),
   `trust_proxy` (only turn on behind a proxy that actually sets
   `X-Forwarded-*`; the credential rate limiter keys on the address it
-  reports), `data_dir` (default `./data` — everything below lives under it).
+  reports), `data_dir` (default `./data` — everything below lives under it),
+  `shutdown_timeout` (default `"8s"`, at most `"60s"` — how long open
+  connections are given to close on the way out; see **Stopping cleanly**
+  below, and raise your orchestrator's grace period with it).
 - **`[storage]`** — where the database, content store and stream segments sit
   relative to `data_dir`, plus the SQLite reader-pool size, busy timeout and
   WAL checkpoint interval.
@@ -198,6 +201,10 @@ services:
     restart: unless-stopped
     volumes:
       - ./data:/data
+    # `[server] shutdown_timeout` (8s) plus the two-second WAL checkpoint after
+    # it. 10s is also the default, so this line only matters if you raise the
+    # one in config.toml — see **Stopping cleanly** below.
+    stop_grace_period: 10s
     ports:
       - "8446:8446"   # admin UI, /api/v1, oauth/login, enrollment, Marti (CloudTAK webtak)
       - "443:443"     # optional: for browsers that assume 443, and ACME tls-alpn-01
@@ -273,6 +280,12 @@ ExecStart=/usr/local/bin/rustak --config /etc/rustak/config.toml
 Restart=on-failure
 RestartSec=5s
 
+# `[server] shutdown_timeout` (8s) plus the two-second WAL checkpoint that runs
+# after it, with a little room. systemd's own default is 90s, so this only
+# tightens things; raise both together if you raise the one in config.toml.
+# See **Stopping cleanly** below.
+TimeoutStopSec=15
+
 # Binding :443 (optional, for browsers/ACME) needs this; :8446/:8443/:8089
 # do not.
 AmbientCapabilities=CAP_NET_BIND_SERVICE
@@ -297,6 +310,49 @@ chown -R rustak:rustak /var/lib/rustak
 systemctl daemon-reload
 systemctl enable --now rustak
 ```
+
+## Stopping cleanly
+
+`SIGTERM` (or Ctrl-C) stops rustak in two bounded steps, and an orchestrator
+has to allow for both of them:
+
+| Step | How long | Configurable |
+|---|---|---|
+| Drain — the public, Marti and CoT stream listeners stop accepting and let open connections close | `[server] shutdown_timeout`, **8s** by default, at most 60s | yes |
+| Checkpoint — `PRAGMA optimize` and a `wal_checkpoint(TRUNCATE)`, so the data directory is left with a database and an empty log | **2s**, fixed | no |
+
+So a stop takes up to `shutdown_timeout + 2s`, and **whatever kills the process
+after a grace period has to allow at least that much**. `docker stop` allows ten
+seconds, which is exactly what the defaults add up to; that is where the 8 comes
+from. Raise one and you have to raise the other:
+
+```sh
+# config.toml: [server] shutdown_timeout = "25s"
+docker stop -t 27 rustak
+```
+
+...or `stop_grace_period: 27s` in compose, or `TimeoutStopSec=27` in the unit
+file. Get it wrong and the part that gets killed is the checkpoint, which is the
+one step that has anything to do with your data: the next start then has a
+write-ahead log to fold back in, and a backup taken from the volume in the
+meantime is `rustak.sqlite` **plus** `rustak.sqlite-wal` rather than a single
+complete file (see **Backup**).
+
+Two other things worth knowing:
+
+- **A second signal ends the drain early.** Connections that are still open are
+  cut off, but the checkpoint still runs — pressing Ctrl-C twice is a way to
+  skip the waiting, not a way to skip the durability. A *third* exits at once
+  and is the only thing short of `SIGKILL` that skips the checkpoint.
+- **An idle browser tab can hold the drain open for the whole budget.** HTTP/2
+  keep-alive connections are not requests in flight, but they are connections,
+  and the listener waits for them. That is what the budget is for; there is
+  nothing to fix.
+
+The drain is logged (`Draining the public listener.`, `The CoT stream listener
+has stopped.`), and so is a budget that ran out — if you see *"Connections were
+still open when the shutdown budget ran out"* on every stop, raise
+`shutdown_timeout` and the orchestrator's grace period together.
 
 ## First-run setup and sign-in
 

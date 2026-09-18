@@ -61,7 +61,7 @@ pub use marti::MartiConfig;
 pub use oidc::OidcConfig;
 pub use pki::{KeyType, PkiConfig};
 pub use retention::RetentionConfig;
-pub use server::ServerConfig;
+pub use server::{MAX_SHUTDOWN_TIMEOUT, ServerConfig};
 pub use storage::StorageConfig;
 pub use stream::{StreamConfig, StreamTlsConfig};
 pub use web::{ClientCertMode, MartiWebConfig, PublicWebConfig, TlsConfig, TlsMode, WebConfig};

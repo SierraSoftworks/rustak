@@ -269,6 +269,26 @@ impl Database {
     /// the data directory a stopped server leaves behind still has a
     /// `-wal` file in it.
     ///
+    /// # What "draining the readers" does and does not mean
+    ///
+    /// `TRUNCATE` is the one checkpoint mode that can be refused outright: it
+    /// needs every other connection to be done with the log, and a reader in
+    /// the middle of a query holds a read mark that the checkpointer will not
+    /// step past. It reports that as `SQLITE_BUSY` on the pragma rather than as
+    /// an error, so a truncation that did not happen looks exactly like one
+    /// that did — which is why this is worth spelling out.
+    ///
+    /// Each pooled read runs as its own statement on its own connection and the
+    /// read mark is released when that statement finishes, so an *idle* reader
+    /// holds nothing. Dropping them here is therefore belt and braces rather
+    /// than the mechanism: what actually guarantees the truncation is that
+    /// [`run_all`](crate::runtime::run_all) calls this after every listener has
+    /// stopped, so there is no query left to be in the middle of. The drop is
+    /// also only effective for the last `Database` handle — the server holds
+    /// one on its context while this runs — and the truncation happens anyway,
+    /// which is the property `the_log_is_truncated_while_the_server_still_holds_a_handle`
+    /// pins down.
+    ///
     /// # Errors
     ///
     /// A [`human_errors::Kind::System`] error if the final checkpoint fails.
@@ -506,6 +526,45 @@ mod tests {
 
         let size = std::fs::metadata(&wal).map(|meta| meta.len()).unwrap_or(0);
         assert_eq!(size, 0, "the log should have been folded back in");
+    }
+
+    #[tokio::test]
+    async fn the_log_is_truncated_while_the_server_still_holds_a_handle() {
+        // How `runtime::run_all` actually calls this: `context.db().clone()`,
+        // with the context's own handle still alive. The `drop(readers)` inside
+        // `close` therefore drops an `Arc` that is not the last one, so if the
+        // truncation depended on the pool being *closed* rather than merely
+        // idle, this is the test that would fail and the plain one above would
+        // keep passing.
+        let (dir, db) = temp_database().await;
+        let wal = dir.path().join("rustak.sqlite-wal");
+
+        db.write(|tx| {
+            tx.execute(
+                "INSERT INTO settings (key, value, updated_at) \
+                 VALUES ('server.name', '\"rustak\"', '2026-01-01T00:00:00.000Z')",
+                [],
+            )
+        })
+        .await
+        .unwrap();
+
+        // A read on every pooled connection, so that each of them has had a
+        // snapshot open at some point before the checkpoint.
+        for _ in 0..DEFAULT_READER_CONNECTIONS {
+            let _: i64 = db
+                .read(|c| c.query_one("SELECT COUNT(*) FROM settings", [], |row| row.get(0)))
+                .await
+                .unwrap();
+        }
+
+        let held = db.clone();
+        db.close().await.unwrap();
+
+        let size = std::fs::metadata(&wal).map(|meta| meta.len()).unwrap_or(0);
+        assert_eq!(size, 0, "an idle read pool must not downgrade the TRUNCATE");
+
+        drop(held);
     }
 
     #[tokio::test]
