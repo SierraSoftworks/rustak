@@ -288,6 +288,47 @@ impl Hub {
             .collect()
     }
 
+    /// Every connection an account has open, with the device each belongs to.
+    ///
+    /// What the channels API asks before it re-authenticates them: the
+    /// effective channel set is per *device*, so the caller has to read one set
+    /// per device — a database read, which cannot happen under this lock.
+    pub fn sessions_for_user(&self, username: &Username) -> Vec<(ConnId, Option<DeviceId>)> {
+        self.inner
+            .read()
+            .conns
+            .values()
+            .filter(|subscription| &subscription.principal.username == username)
+            .map(|subscription| (subscription.id, subscription.device_id))
+            .collect()
+    }
+
+    /// Replaces one connection's effective channels, in place.
+    ///
+    /// `PUT /Marti/api/groups/active` changes what a device may send and
+    /// receive, and a live connection holds the set it authenticated with. Not
+    /// applying the change here would leave the client's own map and the
+    /// server's routing disagreeing until it reconnected.
+    ///
+    /// Answers whether the connection was still registered.
+    pub fn reauth(&self, id: ConnId, groups: Arc<GroupSet>, names: Vec<GroupName>) -> bool {
+        let mut registry = self.inner.write();
+
+        let Some(subscription) = registry.conns.get_mut(&id) else {
+            return false;
+        };
+
+        // `Principal` is shared with whatever is mid-route, so the new rights
+        // replace the `Arc` rather than mutating through it.
+        let mut principal = (*subscription.principal).clone();
+        principal.groups = groups;
+
+        subscription.principal = Arc::new(principal);
+        subscription.groups = names;
+
+        true
+    }
+
     /// Every connection authenticated with a given certificate.
     ///
     /// The revocation hook's question: a certificate that has been taken back

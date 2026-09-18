@@ -25,6 +25,7 @@ use crate::db::{
     Database,
     repos::{GroupRow, Membership},
 };
+use crate::services::{AppContext, Services};
 
 /// A person's channels, named and sorted, for the API.
 ///
@@ -186,6 +187,87 @@ pub async fn set_active(
     }
 
     Ok(applied)
+}
+
+/// Makes a channel change take effect on whatever the account has connected.
+///
+/// Two things happen, in this order and for different reasons.
+///
+/// Every live stream connection is **re-authenticated** against the set it
+/// would get if it connected now. A connection holds the rights it
+/// authenticated with, so without this the server would keep routing by the old
+/// selection until the device reconnected — and the client would be looking at
+/// a channel list that said otherwise.
+///
+/// Then `t-x-g-c` goes to the account's **other** devices (`compat/groups.md`
+/// §3). Never to the device whose own action caused the change: the notice makes
+/// a client discard every map item this server gave it and re-fetch, which would
+/// undo what it had just done. `originating_uid` is [`None`] for an
+/// administrator's change and for a caller that named no device, and then every
+/// device is told — design 04 D9, where TAK Server would send nothing at all.
+///
+/// Returns how many connections were told. Never fails: a notice that could not
+/// be sent is logged, because a client that missed one re-reads its channels on
+/// its next connect and a request that was applied must not be reported as
+/// having failed.
+#[instrument("identity.members.channels_changed", skip_all, fields(user = %username))]
+pub async fn channels_changed(
+    context: &AppContext,
+    user_id: UserId,
+    username: &Username,
+    originating_uid: Option<&str>,
+) -> usize {
+    if !context.has_live() {
+        return 0;
+    }
+
+    let live = match context.live() {
+        Ok(live) => live,
+        Err(err) => {
+            warn!(error = %err, "Could not reach the live connections after a channel change.");
+
+            return 0;
+        }
+    };
+
+    for (conn, device_id) in live.sessions_for_user(username) {
+        if let Err(err) = reauth(context, &live, conn, device_id, user_id).await {
+            warn!(error = %err, "Could not re-authenticate a live connection after a channel change.");
+        }
+    }
+
+    live.groups_changed(username, originating_uid)
+}
+
+/// Replaces one live connection's effective channels with today's answer.
+async fn reauth(
+    context: &AppContext,
+    live: &crate::stream::LiveState,
+    conn: crate::stream::ConnId,
+    device_id: Option<DeviceId>,
+    user_id: UserId,
+) -> Result<(), Error> {
+    let db = context.db();
+
+    let groups = match device_id {
+        Some(device_id) => {
+            effective_for_device(
+                db,
+                user_id,
+                device_id,
+                context.config().auth.anon_group_default,
+            )
+            .await?
+        }
+        None => db.members().group_set(user_id).await?,
+    };
+
+    // The `OUT` names, which is what the contact and endpoint listings render.
+    let names = groups.names(&db.groups().index().await?, Direction::Out);
+
+    live.reauth(conn, std::sync::Arc::new(groups), names);
+
+    Ok(())
 }
 
 /// Every channel a device has an opinion about, named, for the API.

@@ -79,9 +79,11 @@ pub async fn put(
 
     record(&context, &caller, &user.username, &held).await;
 
-    // TODO(M2-08): emit the forced `t-x-g-c` to every one of this account's
-    // connected devices, per `compat/groups.md` §3 — a membership an
-    // administrator changes is the broadcast case, with no device excluded.
+    // The forced case (`compat/groups.md` §3): a membership an administrator
+    // changed is nobody's own action, so every one of the account's devices is
+    // told and none is excluded.
+    members::channels_changed(&context, user.id, &user.username, None).await;
+
     Ok(json_ok(&held))
 }
 

@@ -279,6 +279,13 @@ pub async fn serve(context: AppContext, pki: Option<Arc<Pki>>) -> Result<(), Err
 
     let runtime = StreamRuntime::bind(&context, &pki, mission_hook::no_missions()).await?;
 
+    // Published the moment the registry exists, because the Marti surface reads
+    // it: `/Marti/api/contacts/all`, `/Marti/api/clientEndPoints` and the
+    // `t-x-g-c` the channels API sends all go through `AppContext::live`. An
+    // installation with the listener switched off returns above without
+    // installing anything, and those endpoints answer an empty list.
+    context.install_live(Arc::new(runtime.live().clone()))?;
+
     runtime.run(shutdown).await
 }
 

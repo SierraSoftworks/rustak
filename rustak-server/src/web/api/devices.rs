@@ -151,9 +151,11 @@ pub async fn set_active_groups(
         .await
         .map_err(|err| failed(&context, &err))?;
 
-    // TODO(M2-08): emit `t-x-g-c` to this account's *other* devices and
-    // re-authenticate any live subscription this device holds, per
-    // `compat/groups.md` §3. Nothing streams yet, so there is nothing to tell.
+    // Re-authenticates whatever the account has connected and tells its *other*
+    // devices, naming this one so that it is not told to discard the map it has
+    // just changed (`compat/groups.md` §3).
+    members::channels_changed(&context, row.user_id, &owner, Some(row.uid.as_str())).await;
+
     Ok(json_ok(&state))
 }
 

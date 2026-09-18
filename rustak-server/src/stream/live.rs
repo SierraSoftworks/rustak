@@ -108,6 +108,39 @@ impl LiveState {
         )
     }
 
+    /// The connections an account has open, with the device each belongs to.
+    ///
+    /// The channels API reads one effective channel set per device — a database
+    /// read — and then hands each one back through [`reauth`](Self::reauth).
+    pub fn sessions_for_user(&self, username: &Username) -> Vec<(ConnId, Option<DeviceId>)> {
+        self.hub.sessions_for_user(username)
+    }
+
+    /// Replaces one live connection's effective channels.
+    ///
+    /// What `PUT /Marti/api/groups/active` does to a device that is connected
+    /// while its selection changes: without it the client's own idea of which
+    /// channels it is on and the server's routing would disagree until it
+    /// reconnected.
+    pub fn reauth(&self, id: ConnId, groups: Arc<GroupSet>, names: Vec<GroupName>) -> bool {
+        self.hub.reauth(id, groups, names)
+    }
+
+    /// Re-sends every peer's latest position to each of an account's devices.
+    ///
+    /// `GET /Marti/api/groups/all?sendLatestSA=true` is what ATAK calls after a
+    /// `t-x-g-c`, having just thrown away every map item this server gave it —
+    /// so the replay is how the map comes back, and it has to be computed
+    /// *after* the connections have been re-authenticated or it would be the
+    /// old channel selection's answer.
+    pub fn resend_latest_sa(&self, username: &Username) -> usize {
+        self.hub
+            .handles_for_user(username)
+            .iter()
+            .map(|handle| super::replay::replay_latest_sa(&self.hub, handle.id()))
+            .sum()
+    }
+
     /// Closes every connection a certificate authenticated.
     ///
     /// Registered with `pki.revocations().on_revoked(..)` at start-up, so that

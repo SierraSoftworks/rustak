@@ -84,6 +84,17 @@ pub type JwtKeys = crate::auth::jwt::JwtIssuer;
 /// [`AppContext::install_pki`](AppContext::install_pki).
 pub type PkiAuthority = crate::pki::Pki;
 
+/// The registry of everything connected to the CoT stream right now.
+///
+/// Later than the authority: it is built by the stream listener, which is bound
+/// after the context exists. Installed by
+/// [`AppContext::install_live`](AppContext::install_live).
+///
+/// An installation with `[stream.tls] enabled = false` never installs one, and
+/// [`AppContext::has_live`](AppContext::has_live) is how the contact and
+/// client-endpoint endpoints answer an empty list rather than a `500`.
+pub type LiveConnections = crate::stream::LiveState;
+
 /// The `User-Agent` every outbound request carries.
 ///
 /// Version included so that a server we talk to (an ACME directory, an identity
@@ -105,6 +116,7 @@ pub struct AppContext {
     content: Late<ContentStore>,
     jwt: Late<JwtKeys>,
     pki: Late<PkiAuthority>,
+    live: Late<LiveConnections>,
     session: Arc<Session>,
     http_client: reqwest::Client,
     shutdown: Shutdown,
@@ -145,6 +157,7 @@ impl AppContext {
             content: Late::new("the content store"),
             jwt: Late::new("the token signing keys"),
             pki: Late::new("the certificate authority"),
+            live: Late::new("the live stream connections"),
             session,
             http_client,
             shutdown,
@@ -206,6 +219,41 @@ impl AppContext {
         self.pki.is_installed()
     }
 
+    /// Installs the live stream registry, once, when the listener binds.
+    ///
+    /// # Errors
+    ///
+    /// A [`Kind::System`](human_errors::Kind::System) error if it has already
+    /// been installed.
+    pub fn install_live(&self, live: Arc<LiveConnections>) -> Result<(), Error> {
+        self.live.install(live)
+    }
+
+    /// Everything connected to the CoT stream, for the contact, client-endpoint
+    /// and subscription listings and for the `t-x-g-c` notices the channels API
+    /// sends.
+    ///
+    /// An inherent method rather than a [`Services`] one, for the reason
+    /// [`pki`](Self::pki) gives.
+    ///
+    /// # Errors
+    ///
+    /// A [`Kind::System`](human_errors::Kind::System) error when the stream
+    /// listener is switched off or has not bound yet. Callers that can answer
+    /// without it ask [`has_live`](Self::has_live) first.
+    pub fn live(&self) -> Result<Arc<LiveConnections>, Error> {
+        self.live.require()
+    }
+
+    /// Whether the stream listener has published its registry.
+    ///
+    /// `false` on an installation with `[stream.tls] enabled = false`, where
+    /// nobody can be connected — so the listings answer an empty array rather
+    /// than a failure.
+    pub fn has_live(&self) -> bool {
+        self.live.is_installed()
+    }
+
     /// When this process finished starting up, for `/api/v1/health`'s uptime.
     pub fn started_at(&self) -> DateTime<Utc> {
         self.started_at
@@ -224,6 +272,7 @@ impl std::fmt::Debug for AppContext {
             .field("content", &self.content)
             .field("jwt", &self.jwt)
             .field("pki", &self.pki)
+            .field("live", &self.live)
             .field("shutdown", &self.shutdown)
             .field("started_at", &self.started_at)
             .finish_non_exhaustive()
