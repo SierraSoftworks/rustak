@@ -183,7 +183,9 @@ jobs:
       - name: Install Trunk
         shell: bash
         run: |
-          cargo binstall --no-confirm trunk@0.21.14
+          # Prebuilt only: compiling trunk from source has broken before on
+          # transitive cssparser/lightningcss mismatches, so fail fast instead.
+          cargo binstall --no-confirm --disable-strategies compile trunk@0.21.14
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Setup Cache
@@ -390,7 +392,7 @@ jobs:
         shell: bash
         run: |
           curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
-          cargo binstall --no-confirm cross
+          cargo binstall --no-confirm --disable-strategies compile cross
 
       - name: Setup Cache
         uses: Swatinem/rust-cache@v2
