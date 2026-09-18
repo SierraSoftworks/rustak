@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<event version="2.0" uid="ANDROID-rustak-alpha" type="a-f-G-U-C" how="m-g"
+       time="2026-09-17T12:00:00.000Z" start="2026-09-17T12:00:00.000Z" stale="2026-09-17T12:01:00.000Z">
+  <point lat="51.5074" lon="-0.1278" hae="35.0" ce="9999999.0" le="9999999.0"/>
+  <detail>
+    <contact callsign="ALPHA" endpoint="*:-1:stcp"/>
+    <__group name="Cyan" role="Team Member"/>
+    <precisionlocation geopointsrc="GPS" altsrc="GPS"/>
+    <status battery="87"/>
+    <takv device="Test Handset" platform="rustak-test" os="34" version="0.1.0"/>
+    <track speed="1.5" course="270.0"/>
+    <uid Droid="ALPHA"/>
+    <_flow-tags_ TAK-Server-rustak-test="2026-09-17T12:00:00.000Z"/>
+  </detail>
+</event>

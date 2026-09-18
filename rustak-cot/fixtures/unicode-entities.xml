@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<event version="2.0" uid="ANDROID-rustak-charlie" type="a-f-G-U-C" how="m-g"
+       time="2026-09-17T12:07:00.000Z" start="2026-09-17T12:07:00.000Z" stale="2026-09-17T12:08:00.000Z">
+  <point lat="-33.8688" lon="151.2093" hae="58.0" ce="12.5" le="9999999.0"/>
+  <detail>
+    <contact callsign="CHARLIE &amp; C&#197;T 🛰️" endpoint="*:-1:stcp"/>
+    <remarks source="BAO.F.rustak.ANDROID-rustak-charlie">say &quot;again&quot; &lt;over&gt; &amp; out — ☕ &unknownentity;</remarks>
+  </detail>
+</event>

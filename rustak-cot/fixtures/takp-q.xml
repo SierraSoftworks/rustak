@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<event version="2.0" uid="ANDROID-rustak-alpha" type="t-x-takp-q" how="m-g"
+       time="2026-09-17T12:00:00.500Z" start="2026-09-17T12:00:00.500Z" stale="2026-09-17T12:01:00.500Z">
+  <point lat="0.0" lon="0.0" hae="0.0" ce="999999.0" le="999999.0"/>
+  <detail>
+    <TakControl>
+      <TakRequest version="1"/>
+    </TakControl>
+  </detail>
+</event>

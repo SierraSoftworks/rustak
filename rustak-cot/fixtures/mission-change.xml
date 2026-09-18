@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<event version="2.0" uid="c0ffee00-0000-4000-8000-000000000001" type="t-x-m-c" how="h-g-i-g-o"
+       time="2026-09-17T12:06:00.000Z" start="2026-09-17T12:06:00.000Z" stale="2026-09-17T12:06:20.000Z">
+  <point lat="0.0" lon="0.0" hae="0.0" ce="9999999.0" le="9999999.0"/>
+  <detail>
+    <mission name="Recon" guid="c0ffee00-0000-4000-8000-0000000000aa" type="CHANGE" authorUid="ANDROID-rustak-alpha" tool="public">
+      <MissionChanges>
+        <MissionChange>
+          <type>ADD_CONTENT</type>
+          <isFederatedChange>false</isFederatedChange>
+          <missionName>Recon</missionName>
+          <missionGuid>c0ffee00-0000-4000-8000-0000000000aa</missionGuid>
+          <timestamp>2026-09-17T12:06:00.000Z</timestamp>
+          <creatorUid>ANDROID-rustak-alpha</creatorUid>
+          <contentUid>ANDROID-rustak-alpha-marker-1</contentUid>
+        </MissionChange>
+      </MissionChanges>
+    </mission>
+  </detail>
+</event>

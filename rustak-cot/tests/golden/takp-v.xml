@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<event version="2.0" uid="rustak-test-server" type="t-x-takp-v" how="m-g" time="2026-09-17T12:00:00.000Z" start="2026-09-17T12:00:00.000Z" stale="2026-09-17T12:01:00.000Z"><point lat="0.0" lon="0.0" hae="0.0" ce="999999.0" le="999999.0"/><detail><TakControl><TakProtocolSupport version="1"/><TakServerVersionInfo serverVersion="TAK Server rustak-0.1.0" apiVersion="3"/></TakControl></detail></event>

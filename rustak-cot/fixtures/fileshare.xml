@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<event version="2.0" uid="ANDROID-rustak-alpha-share-0001" type="b-f-t-r" how="h-e"
+       time="2026-09-17T12:00:30.000Z" start="2026-09-17T12:00:30.000Z" stale="2026-09-17T12:00:40.000Z">
+  <point lat="0.0" lon="0.0" hae="0.0" ce="9999999.0" le="9999999.0"/>
+  <detail>
+    <fileshare filename="route.zip" senderUrl="https://tak.example:8443/Marti/sync/content?hash=0f0f0f" sizeInBytes="4096"
+               sha256="0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+               senderUid="ANDROID-rustak-alpha" senderCallsign="ALPHA" name="Route Package"/>
+    <ackrequest uid="ANDROID-rustak-alpha-share-0001" ackrequested="true" tag="Route Package"/>
+  </detail>
+</event>
