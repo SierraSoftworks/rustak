@@ -78,13 +78,40 @@ deduplicate ──┬─ version ───────────────�
 New relative to automate — plan.md's "Interop in CI" table calls for
 `interop/cloudtak` and `interop/eud` to run nightly (plus on demand via
 `workflow_dispatch`) because they are heavy (a full docker-compose stack, or an
-ATAK-side harness). Both jobs are `if: false` placeholders today:
+ATAK-side harness). The workflow has two schedules and three jobs; only one
+job is active today. See [`docs/interop.md`](interop.md) for what each suite
+actually covers — this section only describes the workflow's shape.
 
-- **`interop-cloudtak`** — CloudTAK's own docker-compose stack driven through
-  its REST API. Lands in M4 with the mission API.
-- **`interop-eud`** — an ATAK-side harness (commoncommo build, Android
-  emulator, or a pytak/`takproto` client — the M1 exploration brief decides
-  which). Lands once that brief's recommendation is recorded.
+```
+schedule: "0 4 * * *"  (nightly)  ──┬─ interop-cloudtak   if: false — lands M4
+                                     └─ interop-eud        if: false — lands M2
+schedule: "0 3 * * 1"  (weekly)  ──── interop-eud-image    active
+workflow_dispatch                ──── interop-eud-image    active (manual rebuild)
+```
+
+- **`interop-eud-image`** — **active.** Builds `interop/eud/Dockerfile`
+  (ATAK's own `commoncommo` networking core and its stock `commotest` CLI,
+  compiled from a pinned `atak-civ` commit — nothing GPL vendored into this
+  repository) and pushes it to
+  `ghcr.io/sierrasoftworks/rustak-interop-commoncommo`, tagged
+  `atak-civ-<upstream sha>` (full and short) and `latest`, then smoke-tests
+  the published image by asserting `commotest -h` lists its expected command
+  set. Runs on the Monday 03:00 UTC schedule and on `workflow_dispatch` — not
+  on the nightly 04:00 UTC schedule, since a cold build is ~25–45 minutes and
+  the result only changes when the upstream pin or the build recipe does; the
+  scenario job below consumes the published tag and never rebuilds it. Needs
+  `packages: write`, which the default `GITHUB_TOKEN` already has (see
+  **Required repository secrets and variables** below) — no new secret
+  required. See `.claude/plan/status/M1-00-eud-interop-harness-exploration.md`
+  and `.claude/plan/status/M1-04-interop-eud-image.md`.
+- **`interop-eud`** — `if: false` placeholder for the scenario suite that
+  drives the image above against a live rustak (enrollment, TLS, TAK
+  Protocol v1 negotiation, ping/pong, SA/chat routing, mission-package
+  transfer), asserting on `commotest`'s own log output. Lands in M2, once
+  rustak exposes the Basic-auth enrollment listener the harness needs.
+- **`interop-cloudtak`** — `if: false` placeholder for CloudTAK's own
+  docker-compose stack driven through its REST API. Lands in M4 with the
+  mission API.
 
 `interop/rust` (the `rustak-client` fake-EUD suites) is **not** a separate
 workflow — it is part of `cargo test --workspace` in the `test` job, since
