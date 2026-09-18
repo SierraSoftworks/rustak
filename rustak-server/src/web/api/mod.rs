@@ -22,15 +22,20 @@
 
 pub mod audit;
 pub mod auth;
+pub mod credentials;
+pub mod devices;
 pub mod error;
 pub mod extract;
+pub mod groups;
 pub mod health;
 pub mod me;
 pub mod middleware;
 pub mod passkey;
 pub mod settings;
 pub mod setup;
+pub mod subject;
 pub mod users;
+pub mod users_groups;
 
 use actix_web::body::BoxBody;
 use actix_web::dev::{ServiceRequest, ServiceResponse};
@@ -62,6 +67,26 @@ pub fn configure() -> actix_web::Scope<
             .route("/auth/passkeys/{id}", web::delete().to(passkey::remove))
             .route("/users", web::get().to(users::list))
             .route("/users/{username}", web::patch().to(users::patch))
+            .route("/users/{username}/groups", web::get().to(users_groups::get))
+            .route("/users/{username}/groups", web::put().to(users_groups::put))
+            .route("/groups", web::get().to(groups::list))
+            .route("/groups", web::post().to(groups::create))
+            .route("/groups/{name}", web::patch().to(groups::patch))
+            .route("/groups/{name}", web::delete().to(groups::remove))
+            .route("/credentials", web::get().to(credentials::list))
+            .route("/credentials", web::post().to(credentials::create))
+            .route("/credentials/{id}", web::delete().to(credentials::remove))
+            .route(
+                "/credentials/{id}/enroll-url",
+                web::get().to(credentials::enroll_template),
+            )
+            .route("/devices", web::get().to(devices::list))
+            .route("/devices/{uid}", web::get().to(devices::get))
+            .route("/devices/{uid}", web::delete().to(devices::remove))
+            .route(
+                "/devices/{uid}/active-groups",
+                web::put().to(devices::set_active_groups),
+            )
             .route("/audit", web::get().to(audit::list))
             .route("/settings", web::get().to(settings::get))
             .route("/setup/server", web::post().to(setup::server))
@@ -129,6 +154,20 @@ mod tests {
         ("DELETE", "/api/v1/auth/passkeys/1"),
         ("GET", "/api/v1/users"),
         ("PATCH", "/api/v1/users/ada"),
+        ("GET", "/api/v1/users/ada/groups"),
+        ("PUT", "/api/v1/users/ada/groups"),
+        ("GET", "/api/v1/groups"),
+        ("POST", "/api/v1/groups"),
+        ("PATCH", "/api/v1/groups/Blue"),
+        ("DELETE", "/api/v1/groups/Blue"),
+        ("GET", "/api/v1/credentials"),
+        ("POST", "/api/v1/credentials"),
+        ("DELETE", "/api/v1/credentials/1"),
+        ("GET", "/api/v1/credentials/1/enroll-url"),
+        ("GET", "/api/v1/devices"),
+        ("GET", "/api/v1/devices/ANDROID-1"),
+        ("DELETE", "/api/v1/devices/ANDROID-1"),
+        ("PUT", "/api/v1/devices/ANDROID-1/active-groups"),
         ("GET", "/api/v1/audit"),
         ("GET", "/api/v1/settings"),
         ("POST", "/api/v1/setup/server"),

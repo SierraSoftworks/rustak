@@ -213,6 +213,36 @@ impl fmt::Debug for CredentialCreated {
     }
 }
 
+/// The pieces an enrolment QR code is composed from, without the secret.
+///
+/// ATAK reads `tak://com.atakmap.app/enroll?host=<host>&username=<user>&token=
+/// <token>`, and the token is the credential's secret — which exists outside
+/// the server exactly once, in the [`CredentialCreated`] that minting returned.
+/// So this endpoint hands back everything *except* the token, and the UI
+/// composes the URL from whichever mint response it is still holding. A server
+/// that could re-emit the URL would be a server that stored the secret.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnrollTemplate {
+    pub credential: CredentialId,
+
+    /// The host an enrolling client is pointed at, which is the server's
+    /// canonical domain rather than whatever `Host` header the caller sent.
+    pub host: String,
+
+    pub username: Username,
+
+    /// The URL with `{token}` where the secret goes, so the UI does not have to
+    /// know the scheme.
+    pub url_template: String,
+}
+
+/// The URL an ATAK client reads out of an enrolment QR code.
+///
+/// `{host}`, `{username}` and `{token}` are filled in; all three parameters are
+/// required, and ATAK refuses the link without them.
+pub const ENROLL_URL: &str =
+    "tak://com.atakmap.app/enroll?host={host}&username={username}&token={token}";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,5 +393,31 @@ mod tests {
         assert!(!CredentialKind::ClientPassword.is_single_use());
         assert!(CredentialKind::ClientPassword.is_compatibility_only());
         assert!(!CredentialKind::EnrollmentToken.is_compatibility_only());
+    }
+    #[test]
+    fn the_enrolment_template_carries_everything_except_the_secret() {
+        // The secret exists outside the server once, in the mint response. A
+        // template that could be turned into a working URL on its own would
+        // mean the server had kept it.
+        let template = EnrollTemplate {
+            credential: CredentialId::new(1),
+            host: "tak.example.com".into(),
+            username: Username::parse("alice").unwrap(),
+            url_template: ENROLL_URL
+                .replace("{host}", "tak.example.com")
+                .replace("{username}", "alice"),
+        };
+
+        let json = serde_json::to_string(&template).unwrap();
+        assert_eq!(
+            serde_json::from_str::<EnrollTemplate>(&json).unwrap(),
+            template
+        );
+        assert!(template.url_template.contains("{token}"));
+        assert!(
+            template
+                .url_template
+                .starts_with("tak://com.atakmap.app/enroll?")
+        );
     }
 }

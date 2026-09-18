@@ -1,0 +1,640 @@
+//! Who may reach which channel, and which of those a device has switched on.
+//!
+//! Two questions that look alike and must not be collapsed. A *membership* is a
+//! right, granted by an administrator or mapped from a `groups` claim. The
+//! *active state* is a preference, set by a client through
+//! `PUT /Marti/api/groups/active?clientUid=` and scoped to the device that
+//! asked — switching a channel off on a phone must not switch it off on a
+//! laptop. A subscription's effective rights are the two intersected, which is
+//! what [`effective_for_device`] returns.
+//!
+//! # The default channel
+//!
+//! Every TAK client expects to be able to talk on `__ANON__` the moment it
+//! connects, which is why `[auth] anon_group_default` exists and is on. While it
+//! is on, the grant is not an administrator's to remove: [`replace_manual`] puts
+//! it back, and [`effective_for_device`] adds it to a subscription that somehow
+//! lacks it. An installation that turns the setting off is saying it will grant
+//! every channel by hand, and then nothing here re-adds anything.
+
+use rustak_api::{ActiveGroup, Direction, GroupMembership, GroupName, MembershipSource};
+use rustak_core::identity::GroupSet;
+use rustak_core::prelude::*;
+
+use crate::db::{
+    Database,
+    repos::{GroupRow, Membership},
+};
+
+/// A person's channels, named and sorted, for the API.
+///
+/// # Errors
+///
+/// A [`human_errors::Kind::System`] error if either read fails.
+pub async fn grants_for_user(
+    db: &Database,
+    user_id: UserId,
+) -> Result<Vec<GroupMembership>, Error> {
+    let held = db.members().list_for_user(user_id).await?;
+
+    if held.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let groups = db.groups().list().await?;
+    let mut grants: Vec<GroupMembership> = held
+        .iter()
+        .filter_map(|membership| {
+            groups
+                .iter()
+                .find(|group| group.id == membership.group_id)
+                .map(|group| GroupMembership {
+                    group: group.name.clone(),
+                    direction: membership.direction,
+                    source: Some(membership.source),
+                })
+        })
+        .collect();
+
+    grants.sort_by(|left, right| {
+        (left.group.as_str(), left.direction.as_str())
+            .cmp(&(right.group.as_str(), right.direction.as_str()))
+    });
+
+    Ok(grants)
+}
+
+/// Replaces the grants an administrator made, leaving the provider's alone.
+///
+/// Applied as a delta rather than a delete followed by an insert: a member is
+/// never momentarily in no channels at all, which matters because a live
+/// subscription re-reads these.
+///
+/// A grant whose channel does not exist is refused rather than skipped — an
+/// administrator who mistypes a channel name should be told, not left looking
+/// at a membership list that quietly lost a row.
+///
+/// # Errors
+///
+/// A [`human_errors::Kind::User`] error naming a channel that does not exist,
+/// and a [`human_errors::Kind::System`] error if a read or write fails.
+#[instrument("identity.members.replace_manual", skip_all, fields(user = %user_id), err(Display))]
+pub async fn replace_manual(
+    db: &Database,
+    user_id: UserId,
+    wanted: &[GroupMembership],
+    anon_by_default: bool,
+) -> Result<Vec<GroupMembership>, Error> {
+    let groups = db.groups().list().await?;
+    let mut wanted = resolve(&groups, wanted)?;
+
+    if anon_by_default {
+        // The installation says everybody is on the default channel, so an
+        // administrator taking it away here would only be overruled the next
+        // time anything asked.
+        if let Some(anon) = groups.iter().find(|group| group.name.is_anon()) {
+            for direction in Direction::Both.expand() {
+                if !wanted.contains(&(anon.id, *direction)) {
+                    wanted.push((anon.id, *direction));
+                }
+            }
+        }
+    }
+
+    let held = db.members().list_for_user(user_id).await?;
+
+    for membership in held.iter().filter(is_manual) {
+        if !wanted.contains(&(membership.group_id, membership.direction)) {
+            db.members()
+                .revoke(user_id, membership.group_id, membership.direction)
+                .await?;
+        }
+    }
+
+    for (group_id, direction) in wanted {
+        if !held
+            .iter()
+            .any(|held| held.group_id == group_id && held.direction == direction)
+        {
+            db.members()
+                .grant(user_id, group_id, direction, MembershipSource::Manual)
+                .await?;
+        }
+    }
+
+    grants_for_user(db, user_id).await
+}
+
+/// A subscription's effective rights: what the person holds, minus what this
+/// device has switched off.
+///
+/// A channel the device has said nothing about counts as on, because a client
+/// that has never called the groups endpoint expects everything it is entitled
+/// to.
+///
+/// # Errors
+///
+/// A [`human_errors::Kind::System`] error if a read fails.
+pub async fn effective_for_device(
+    db: &Database,
+    user_id: UserId,
+    device_id: DeviceId,
+    anon_by_default: bool,
+) -> Result<GroupSet, Error> {
+    let mut effective = db.members().effective(user_id, device_id).await?;
+
+    if anon_by_default {
+        add_default_channel(db, device_id, &mut effective).await?;
+    }
+
+    Ok(effective)
+}
+
+/// Records which channels a device currently has switched on.
+///
+/// A state naming a channel that does not exist is dropped rather than
+/// refusing the whole call: ATAK sends back the list it was given, and a
+/// channel deleted between the two would otherwise break every client that
+/// still had it cached.
+///
+/// Returns how many states were applied, so a caller can tell a request that
+/// did nothing from one that did.
+///
+/// # Errors
+///
+/// A [`human_errors::Kind::System`] error if a read or write fails.
+#[instrument("identity.members.set_active", skip_all, fields(device = %device_id), err(Display))]
+pub async fn set_active(
+    db: &Database,
+    device_id: DeviceId,
+    states: &[ActiveGroup],
+) -> Result<usize, Error> {
+    let groups = db.groups().list().await?;
+    let mut applied = 0;
+
+    for state in states.iter().flat_map(ActiveGroup::expand) {
+        let Some(group) = groups.iter().find(|group| group.name == state.group) else {
+            debug!(group = %state.group, "Ignoring an active-channel state for a channel that is not here.");
+            continue;
+        };
+
+        db.members()
+            .set_active(device_id, group.id, state.direction, state.active)
+            .await?;
+
+        applied += 1;
+    }
+
+    Ok(applied)
+}
+
+/// Every channel a device has an opinion about, named, for the API.
+///
+/// # Errors
+///
+/// A [`human_errors::Kind::System`] error if a read fails.
+pub async fn active_for_device(
+    db: &Database,
+    device_id: DeviceId,
+) -> Result<Vec<ActiveGroup>, Error> {
+    let states = db.members().active_for_device(device_id).await?;
+
+    if states.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let groups = db.groups().list().await?;
+    let mut active: Vec<ActiveGroup> = states
+        .iter()
+        .filter_map(|state| {
+            groups
+                .iter()
+                .find(|group| group.id == state.group_id)
+                .map(|group| ActiveGroup {
+                    group: group.name.clone(),
+                    direction: state.direction,
+                    active: state.active,
+                })
+        })
+        .collect();
+
+    active.sort_by(|left, right| {
+        (left.group.as_str(), left.direction.as_str())
+            .cmp(&(right.group.as_str(), right.direction.as_str()))
+    });
+
+    Ok(active)
+}
+
+/// Turns the names an administrator sent into channel identifiers.
+fn resolve(
+    groups: &[GroupRow],
+    wanted: &[GroupMembership],
+) -> Result<Vec<(GroupId, Direction)>, Error> {
+    let mut resolved = Vec::new();
+
+    for grant in wanted.iter().flat_map(GroupMembership::expand) {
+        let group = groups
+            .iter()
+            .find(|group| group.name == grant.group)
+            .ok_or_else(|| unknown_channel(&grant.group))?;
+
+        if !resolved.contains(&(group.id, grant.direction)) {
+            resolved.push((group.id, grant.direction));
+        }
+    }
+
+    Ok(resolved)
+}
+
+/// Adds `__ANON__` to a subscription that the installation says should have it.
+///
+/// The device's own preference still applies: somebody who switched the default
+/// channel off on their phone has switched it off, whatever the default says.
+async fn add_default_channel(
+    db: &Database,
+    device_id: DeviceId,
+    effective: &mut GroupSet,
+) -> Result<(), Error> {
+    let Some(anon) = db.groups().get_by_name(&GroupName::anon()).await? else {
+        warn!("The default channel is missing, so nothing was added to a subscription.");
+        return Ok(());
+    };
+
+    let states = db.members().active_for_device(device_id).await?;
+
+    for direction in Direction::Both.expand() {
+        let switched_off = states.iter().any(|state| {
+            state.group_id == anon.id && state.direction == *direction && !state.active
+        });
+
+        if !switched_off {
+            effective.set(anon.bitpos, *direction);
+        }
+    }
+
+    Ok(())
+}
+
+/// Whether a grant is one an administrator made, and so ours to replace.
+fn is_manual(membership: &&Membership) -> bool {
+    membership.source == MembershipSource::Manual
+}
+
+/// The refusal for a channel name nobody here has.
+fn unknown_channel(name: &GroupName) -> Error {
+    human_errors::user(
+        format!("There is no channel called '{name}'."),
+        &[
+            "Check the spelling, which is case sensitive.",
+            "Create the channel first if it is meant to exist.",
+        ],
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use rustak_api::GroupSource;
+
+    use super::*;
+    use crate::db::repos::{NewDevice, NewGroup, NewUser};
+
+    struct Fixture {
+        db: Database,
+        user: UserId,
+        device: DeviceId,
+        anon: GroupRow,
+        blue: GroupRow,
+        red: GroupRow,
+    }
+
+    async fn fixture() -> Fixture {
+        let db = Database::open_in_memory().await.unwrap();
+        let user = db
+            .users()
+            .create(NewUser::person(Username::parse("alice").unwrap()))
+            .await
+            .unwrap()
+            .id;
+        let device = db
+            .devices()
+            .create(NewDevice::new(DeviceUid::parse("ANDROID-1").unwrap(), user))
+            .await
+            .unwrap()
+            .id;
+
+        let anon = db
+            .groups()
+            .get_by_name(&GroupName::anon())
+            .await
+            .unwrap()
+            .expect("the migration seeds the default channel");
+        let blue = db
+            .groups()
+            .create(NewGroup::manual(GroupName::parse("Blue").unwrap()))
+            .await
+            .unwrap();
+        let red = db
+            .groups()
+            .create(NewGroup::manual(GroupName::parse("Red").unwrap()))
+            .await
+            .unwrap();
+
+        Fixture {
+            db,
+            user,
+            device,
+            anon,
+            blue,
+            red,
+        }
+    }
+
+    fn grant(name: &str, direction: Direction) -> GroupMembership {
+        GroupMembership::new(GroupName::parse(name).unwrap(), direction)
+    }
+
+    #[tokio::test]
+    async fn replacing_grants_adds_what_is_asked_for_and_removes_what_is_not() {
+        let f = fixture().await;
+
+        let after = replace_manual(&f.db, f.user, &[grant("Blue", Direction::Both)], false)
+            .await
+            .unwrap();
+
+        assert_eq!(after.len(), 2, "both directions are stored separately");
+        assert!(after.iter().all(|held| held.group.as_str() == "Blue"));
+
+        let after = replace_manual(&f.db, f.user, &[grant("Red", Direction::Out)], false)
+            .await
+            .unwrap();
+
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].group.as_str(), "Red");
+        assert_eq!(after[0].direction, Direction::Out);
+    }
+
+    #[tokio::test]
+    async fn the_default_channel_survives_a_replacement_while_the_setting_is_on() {
+        // An administrator taking `__ANON__` away would only be overruled the
+        // next time anything asked, so the grant is put back rather than the
+        // request being half-honoured.
+        let f = fixture().await;
+
+        let after = replace_manual(&f.db, f.user, &[grant("Blue", Direction::In)], true)
+            .await
+            .unwrap();
+
+        assert_eq!(after.iter().filter(|held| held.group.is_anon()).count(), 2,);
+
+        let without = replace_manual(&f.db, f.user, &[grant("Blue", Direction::In)], false)
+            .await
+            .unwrap();
+
+        assert!(
+            !without.iter().any(|held| held.group.is_anon()),
+            "an installation that turned the default off grants by hand",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_replacement_leaves_the_identity_providers_grants_alone() {
+        // They are replaced wholesale at each sign-in, so removing one here
+        // would last until the next one and no longer.
+        let f = fixture().await;
+
+        f.db.members()
+            .grant(f.user, f.red.id, Direction::Out, MembershipSource::Oidc)
+            .await
+            .unwrap();
+
+        let after = replace_manual(&f.db, f.user, &[grant("Blue", Direction::In)], false)
+            .await
+            .unwrap();
+
+        assert!(
+            after
+                .iter()
+                .any(|held| held.group.as_str() == "Red"
+                    && held.source == Some(MembershipSource::Oidc)),
+            "{after:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_channel_that_does_not_exist_is_refused_rather_than_dropped() {
+        let f = fixture().await;
+
+        let refused = replace_manual(&f.db, f.user, &[grant("Green", Direction::In)], false)
+            .await
+            .unwrap_err();
+
+        assert!(refused.is(human_errors::Kind::User), "{refused}");
+        assert!(refused.to_string().contains("Green"), "{refused}");
+    }
+
+    #[tokio::test]
+    async fn a_grant_that_has_not_changed_is_not_rewritten() {
+        // The delta is what keeps a member from being momentarily in nothing
+        // while a live subscription is reading their channels.
+        let f = fixture().await;
+        replace_manual(&f.db, f.user, &[grant("Blue", Direction::Both)], false)
+            .await
+            .unwrap();
+
+        let again = replace_manual(
+            &f.db,
+            f.user,
+            &[grant("Blue", Direction::Both), grant("Red", Direction::In)],
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(again.len(), 3);
+        assert!(
+            again
+                .iter()
+                .all(|held| held.source == Some(MembershipSource::Manual))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_subscription_is_what_the_person_holds_minus_what_the_device_switched_off() {
+        let f = fixture().await;
+        replace_manual(
+            &f.db,
+            f.user,
+            &[
+                grant("Blue", Direction::Both),
+                grant("Red", Direction::Both),
+            ],
+            false,
+        )
+        .await
+        .unwrap();
+
+        let all = effective_for_device(&f.db, f.user, f.device, false)
+            .await
+            .unwrap();
+        assert!(all.contains(f.blue.bitpos, Direction::In));
+        assert!(all.contains(f.red.bitpos, Direction::Out));
+
+        set_active(
+            &f.db,
+            f.device,
+            &[ActiveGroup {
+                group: GroupName::parse("Red").unwrap(),
+                direction: Direction::Both,
+                active: false,
+            }],
+        )
+        .await
+        .unwrap();
+
+        let narrowed = effective_for_device(&f.db, f.user, f.device, false)
+            .await
+            .unwrap();
+
+        assert!(narrowed.contains(f.blue.bitpos, Direction::In));
+        assert!(
+            !narrowed.contains(f.red.bitpos, Direction::Out),
+            "a channel the device switched off is not in its subscription",
+        );
+    }
+
+    #[tokio::test]
+    async fn the_default_channel_reaches_a_subscription_that_never_had_the_grant() {
+        // An account created while the setting was off, then the setting turned
+        // on: the subscription has to reflect what the installation now says.
+        let f = fixture().await;
+
+        let effective = effective_for_device(&f.db, f.user, f.device, true)
+            .await
+            .unwrap();
+
+        assert!(effective.contains(f.anon.bitpos, Direction::In));
+        assert!(effective.contains(f.anon.bitpos, Direction::Out));
+
+        assert!(
+            !effective_for_device(&f.db, f.user, f.device, false)
+                .await
+                .unwrap()
+                .contains(f.anon.bitpos, Direction::In),
+        );
+    }
+
+    #[tokio::test]
+    async fn switching_the_default_channel_off_on_a_device_still_works() {
+        // The setting says who holds the channel, not that a client may never
+        // mute it.
+        let f = fixture().await;
+
+        set_active(
+            &f.db,
+            f.device,
+            &[ActiveGroup {
+                group: GroupName::anon(),
+                direction: Direction::Out,
+                active: false,
+            }],
+        )
+        .await
+        .unwrap();
+
+        let effective = effective_for_device(&f.db, f.user, f.device, true)
+            .await
+            .unwrap();
+
+        assert!(!effective.contains(f.anon.bitpos, Direction::Out));
+        assert!(effective.contains(f.anon.bitpos, Direction::In));
+    }
+
+    #[tokio::test]
+    async fn an_active_state_for_a_channel_that_has_gone_is_dropped_rather_than_refused() {
+        // ATAK sends back the list it was given; a channel deleted since would
+        // otherwise break every client that still had it cached.
+        let f = fixture().await;
+
+        let applied = set_active(
+            &f.db,
+            f.device,
+            &[
+                ActiveGroup {
+                    group: GroupName::parse("Blue").unwrap(),
+                    direction: Direction::In,
+                    active: true,
+                },
+                ActiveGroup {
+                    group: GroupName::parse("Vanished").unwrap(),
+                    direction: Direction::In,
+                    active: true,
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(applied, 1);
+    }
+
+    #[tokio::test]
+    async fn a_devices_channel_state_reads_back_named_and_sorted() {
+        let f = fixture().await;
+
+        assert!(active_for_device(&f.db, f.device).await.unwrap().is_empty());
+
+        set_active(
+            &f.db,
+            f.device,
+            &[
+                ActiveGroup {
+                    group: GroupName::parse("Red").unwrap(),
+                    direction: Direction::In,
+                    active: false,
+                },
+                ActiveGroup {
+                    group: GroupName::parse("Blue").unwrap(),
+                    direction: Direction::Both,
+                    active: true,
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+        let state = active_for_device(&f.db, f.device).await.unwrap();
+        let names: Vec<&str> = state.iter().map(|held| held.group.as_str()).collect();
+
+        assert_eq!(names, vec!["Blue", "Blue", "Red"]);
+        assert!(!state.last().unwrap().active);
+    }
+
+    #[tokio::test]
+    async fn the_grants_listing_names_every_channel_and_where_it_came_from() {
+        let f = fixture().await;
+        f.db.members()
+            .grant(f.user, f.blue.id, Direction::In, MembershipSource::Manual)
+            .await
+            .unwrap();
+        f.db.members()
+            .grant(f.user, f.red.id, Direction::Out, MembershipSource::Oidc)
+            .await
+            .unwrap();
+
+        let grants = grants_for_user(&f.db, f.user).await.unwrap();
+
+        assert_eq!(
+            grants
+                .iter()
+                .map(|held| (held.group.as_str(), held.direction, held.source))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Blue", Direction::In, Some(MembershipSource::Manual)),
+                ("Red", Direction::Out, Some(MembershipSource::Oidc)),
+            ],
+        );
+
+        assert_eq!(f.anon.source, GroupSource::System);
+    }
+}

@@ -18,7 +18,7 @@ use crate::db::{
     Database,
     repos::{NewUser, OidcProfile, UserRow},
 };
-use crate::identity::groups;
+use crate::identity::{groups, members};
 
 /// What an identity provider told us about somebody, once verified.
 #[derive(Debug, Clone)]
@@ -185,7 +185,7 @@ pub async fn me(db: &Database, row: &UserRow, principal: &Principal) -> Result<M
         kind: row.kind,
         is_admin: principal.is_admin,
         via: via_of(&principal.via),
-        groups: groups::memberships(db, row.id).await?,
+        groups: members::grants_for_user(db, row.id).await?,
     })
 }
 
@@ -300,7 +300,7 @@ mod tests {
         assert_eq!(row.source, UserSource::Oidc);
         assert_eq!(row.display_name.as_deref(), Some("Ada Lovelace"));
 
-        let held = groups::memberships(&db, row.id).await.unwrap();
+        let held = members::grants_for_user(&db, row.id).await.unwrap();
         assert!(held.iter().any(|held| held.group.is_anon()));
         assert!(held.iter().any(|held| held.group.as_str() == "ops"));
     }

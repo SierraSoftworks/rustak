@@ -162,6 +162,66 @@ impl GroupMembership {
     }
 }
 
+/// A request to create a channel.
+///
+/// The bit position is not here: it is the server's to allocate, and a client
+/// that could choose one could hand an existing channel's traffic to a new set
+/// of members.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateGroupRequest {
+    pub name: GroupName,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// A change to a channel.
+///
+/// Only the description: a channel's name is what every membership, every
+/// `groups` claim and every client's cached selection refers to, so renaming
+/// one is deleting it and making another.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct GroupPatch {
+    /// The new description. An empty string clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+impl GroupPatch {
+    /// Whether this patch would change anything.
+    pub fn is_empty(&self) -> bool {
+        self.description.is_none()
+    }
+}
+
+/// Whether one device currently has a channel switched on.
+///
+/// A membership is a right and this is a preference: switching a channel off on
+/// a phone must not switch it off on a laptop, so the state is scoped to the
+/// device that asked. A channel a device has said nothing about counts as on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveGroup {
+    pub group: GroupName,
+
+    /// The direction being switched. [`Direction::Both`] stands for the two
+    /// rows storage holds, exactly as it does for a membership.
+    pub direction: Direction,
+
+    pub active: bool,
+}
+
+impl ActiveGroup {
+    /// The single-direction states this stands for, which is what storage
+    /// holds.
+    pub fn expand(&self) -> impl Iterator<Item = Self> + '_ {
+        self.direction.expand().iter().map(|direction| Self {
+            group: self.group.clone(),
+            direction: *direction,
+            active: self.active,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,5 +313,63 @@ mod tests {
         assert!(!GroupSource::System.is_editable());
         assert!(GroupSource::Manual.is_editable());
         assert!(!MembershipSource::Oidc.is_editable());
+    }
+    #[test]
+    fn a_request_to_create_a_channel_cannot_choose_its_bit_position() {
+        // Choosing one would let a new channel be handed an existing channel's
+        // traffic, so the field is deliberately absent rather than ignored.
+        let request: CreateGroupRequest = serde_json::from_value(serde_json::json!({
+            "name": "Blue",
+        }))
+        .unwrap();
+
+        assert_eq!(request.description, None);
+        assert_eq!(
+            serde_json::to_string(&request).unwrap(),
+            r#"{"name":"Blue"}"#
+        );
+
+        assert!(
+            serde_json::from_value::<CreateGroupRequest>(serde_json::json!({
+                "name": "Blue",
+                "bitpos": 7,
+            }))
+            .is_ok(),
+            "an unknown field is ignored rather than refused, but must not be read",
+        );
+    }
+
+    #[test]
+    fn an_empty_patch_would_change_nothing() {
+        let patch: GroupPatch = serde_json::from_value(serde_json::json!({})).unwrap();
+
+        assert!(patch.is_empty());
+        assert!(
+            !GroupPatch {
+                description: Some(String::new()),
+            }
+            .is_empty(),
+            "clearing the description is a change",
+        );
+    }
+
+    #[test]
+    fn an_active_state_of_both_directions_expands_to_the_rows_storage_holds() {
+        let both = ActiveGroup {
+            group: GroupName::parse("Blue").unwrap(),
+            direction: Direction::Both,
+            active: false,
+        };
+
+        let expanded: Vec<Direction> = both.expand().map(|state| state.direction).collect();
+        assert_eq!(expanded, vec![Direction::In, Direction::Out]);
+        assert!(both.expand().all(|state| !state.active));
+
+        let json = serde_json::to_string(&both).unwrap();
+        assert_eq!(
+            json,
+            r#"{"group":"Blue","direction":"BOTH","active":false}"#
+        );
+        assert_eq!(serde_json::from_str::<ActiveGroup>(&json).unwrap(), both);
     }
 }

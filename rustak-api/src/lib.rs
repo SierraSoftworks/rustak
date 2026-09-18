@@ -50,10 +50,16 @@ pub use auth::{
     AuthMetadata, AuthMode, AuthVia, Me, TokenExchangeRequest, TokenRefreshRequest, TokenResponse,
 };
 pub use certificate::{Certificate, CertificateKind, CertificateSource};
-pub use credential::{CreateCredentialRequest, Credential, CredentialCreated, CredentialKind};
+pub use credential::{
+    CreateCredentialRequest, Credential, CredentialCreated, CredentialKind, ENROLL_URL,
+    EnrollTemplate,
+};
 pub use device::Device;
 pub use error::ApiErrorBody;
-pub use group::{Group, GroupMembership, GroupSource, MembershipSource};
+pub use group::{
+    ActiveGroup, CreateGroupRequest, Group, GroupMembership, GroupPatch, GroupSource,
+    MembershipSource,
+};
 pub use health::{ComponentStatus, Health};
 pub use identity::{
     CertificateId, CredentialId, DeviceId, DeviceUid, DeviceUidError, Direction, GroupId,

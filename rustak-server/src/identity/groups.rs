@@ -1,11 +1,16 @@
-//! Channels: what a `groups` claim means, and what a person is a member of.
+//! Channels themselves: creating them, describing them, and what a `groups`
+//! claim means.
 //!
-//! A thin layer over the `groups` and `group_members` repositories. It exists
-//! so that the two places which need "this person's channels" — the admin API's
-//! `/me` and the identity-provider sign-in — agree on the mapping rules rather
-//! than each inventing their own.
+//! A thin layer over the `groups` repository. It exists so that the places
+//! which need "which channels are there" — the admin API, the
+//! identity-provider sign-in, the Marti groups endpoints — agree on the naming
+//! and mapping rules rather than each inventing their own. Who is *in* a
+//! channel is [`super::members`]; this module is about the channels.
 
-use rustak_api::{Direction, GroupMembership, GroupName, GroupSource, MembershipSource, UserId};
+use rustak_api::{
+    CreateGroupRequest, Direction, Group, GroupName, GroupPatch, GroupSource, MembershipSource,
+    UserId,
+};
 use rustak_core::prelude::*;
 
 use crate::config::OidcConfig;
@@ -14,39 +19,119 @@ use crate::db::{
     repos::{GroupRow, NewGroup},
 };
 
-/// A person's channels, named, for the admin API.
+/// Every channel that has not been deleted.
 ///
 /// # Errors
 ///
-/// A [`human_errors::Kind::System`] error if either read fails.
-pub async fn memberships(db: &Database, user_id: UserId) -> Result<Vec<GroupMembership>, Error> {
-    let held = db.members().list_for_user(user_id).await?;
+/// A [`human_errors::Kind::System`] error if the read fails.
+pub async fn list(db: &Database) -> Result<Vec<GroupRow>, Error> {
+    db.groups().list().await
+}
 
-    if held.is_empty() {
-        return Ok(Vec::new());
+/// Creates a channel an administrator asked for.
+///
+/// The bit position is the repository's to allocate: it is what the router
+/// indexes on, and a reused one would hand an existing channel's traffic to a
+/// new set of members.
+///
+/// # Errors
+///
+/// A [`human_errors::Kind::User`] error when the name is already taken, when it
+/// is not a name we can store, or when every bit position is in use; a
+/// [`human_errors::Kind::System`] error if a read or write fails.
+#[instrument("identity.groups.create", skip_all, fields(group = %request.name), err(Display))]
+pub async fn create(db: &Database, request: &CreateGroupRequest) -> Result<GroupRow, Error> {
+    if db.groups().get_by_name(&request.name).await?.is_some() {
+        return Err(human_errors::user(
+            format!("There is already a channel called '{}'.", request.name),
+            &["Channel names are case sensitive, so check for one that differs only by case."],
+        ));
     }
 
-    let groups = db.groups().list().await?;
-    let mut memberships: Vec<GroupMembership> = held
-        .iter()
-        .filter_map(|membership| {
-            groups
-                .iter()
-                .find(|group| group.id == membership.group_id)
-                .map(|group| GroupMembership {
-                    group: group.name.clone(),
-                    direction: membership.direction,
-                    source: Some(membership.source),
-                })
+    let created = db
+        .groups()
+        .create(NewGroup {
+            name: request.name.clone(),
+            description: description(request.description.as_deref()),
+            source: GroupSource::Manual,
         })
-        .collect();
+        .await?;
 
-    memberships.sort_by(|left, right| {
-        (left.group.as_str(), left.direction.as_str())
-            .cmp(&(right.group.as_str(), right.direction.as_str()))
-    });
+    info!(group = %created.name, bitpos = created.bitpos, "Created a channel.");
 
-    Ok(memberships)
+    Ok(created)
+}
+
+/// Changes a channel's description.
+///
+/// The name is not changeable: it is what every membership, every `groups`
+/// claim and every client's cached selection refers to, so renaming a channel
+/// is deleting it and making another.
+///
+/// # Errors
+///
+/// A [`human_errors::Kind::System`] error if a read or write fails.
+#[instrument("identity.groups.patch", skip_all, fields(group = %name), err(Display))]
+pub async fn patch(
+    db: &Database,
+    name: &GroupName,
+    change: &GroupPatch,
+) -> Result<Option<GroupRow>, Error> {
+    let Some(group) = db.groups().get_by_name(name).await? else {
+        return Ok(None);
+    };
+
+    if let Some(text) = change.description.as_deref() {
+        db.groups()
+            .set_description(group.id, description(Some(text)))
+            .await?;
+    }
+
+    db.groups().get(group.id).await
+}
+
+/// Deletes a channel, keeping its bit position reserved.
+///
+/// Soft rather than hard: a live subscription holds bit positions rather than
+/// names, so freeing one before every subscription has been refreshed would
+/// hand this channel's traffic to whichever channel took the bit next.
+///
+/// # Errors
+///
+/// A [`human_errors::Kind::User`] error when asked to delete the default
+/// channel, and a [`human_errors::Kind::System`] error if a read or write
+/// fails.
+#[instrument("identity.groups.delete", skip_all, fields(group = %name), err(Display))]
+pub async fn delete(db: &Database, name: &GroupName) -> Result<bool, Error> {
+    let Some(group) = db.groups().get_by_name(name).await? else {
+        return Ok(false);
+    };
+
+    let deleted = db.groups().soft_delete(group.id).await?;
+
+    if deleted {
+        info!(group = %name, "Deleted a channel; its bit position stays reserved.");
+    }
+
+    Ok(deleted)
+}
+
+/// A channel as the API describes it.
+pub fn to_dto(row: &GroupRow) -> Group {
+    Group {
+        id: row.id,
+        name: row.name.clone(),
+        bitpos: row.bitpos,
+        description: row.description.clone(),
+        source: row.source,
+    }
+}
+
+/// Trims a description, treating an empty one as absent.
+fn description(text: Option<&str>) -> Option<String> {
+    text.map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
 }
 
 /// Puts a new account in the default channel, when the installation wants that.
@@ -179,6 +264,7 @@ async fn lookup_or_create(
 mod tests {
     use super::*;
     use crate::db::repos::NewUser;
+    use crate::identity::members;
 
     async fn database() -> Database {
         Database::open_in_memory().await.unwrap()
@@ -261,7 +347,7 @@ mod tests {
         .await
         .unwrap();
 
-        let held = memberships(&db, user).await.unwrap();
+        let held = members::grants_for_user(&db, user).await.unwrap();
 
         assert_eq!(held.len(), 2);
         assert_eq!(held[0].group.as_str(), "ops");
@@ -283,7 +369,7 @@ mod tests {
             .await
             .unwrap();
 
-        let names: Vec<_> = memberships(&db, user)
+        let names: Vec<_> = members::grants_for_user(&db, user)
             .await
             .unwrap()
             .into_iter()
@@ -312,7 +398,7 @@ mod tests {
         .await
         .unwrap();
 
-        let held = memberships(&db, user).await.unwrap();
+        let held = members::grants_for_user(&db, user).await.unwrap();
 
         assert_eq!(held.len(), 1);
         assert_eq!(
@@ -335,7 +421,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(memberships(&db, user).await.unwrap().is_empty());
+        assert!(
+            members::grants_for_user(&db, user)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert!(
             db.groups()
                 .get_by_name(&GroupName::parse("ops").unwrap())
@@ -352,7 +443,7 @@ mod tests {
 
         join_default(&db, user).await.unwrap();
 
-        let held = memberships(&db, user).await.unwrap();
+        let held = members::grants_for_user(&db, user).await.unwrap();
 
         assert_eq!(held.len(), 2, "the default channel is granted both ways");
         assert!(held.iter().all(|held| held.group.is_anon()));
@@ -370,7 +461,7 @@ mod tests {
             .await
             .unwrap();
 
-        let held = memberships(&db, user).await.unwrap();
+        let held = members::grants_for_user(&db, user).await.unwrap();
 
         assert!(held.iter().any(|held| held.group.is_anon()));
         assert!(held.iter().any(|held| held.group.as_str() == "ops"));
