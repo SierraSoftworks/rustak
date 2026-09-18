@@ -10,10 +10,18 @@
 //     cd .. && cargo build -p rustak-server
 //
 // Everything the server writes — the SQLite database, the encryption key
-// beside it, the content store, the configuration itself — goes into a fresh
-// temporary directory that is removed when the process exits, so a run never
-// sees another run's records and never touches a developer's own
-// `config.toml` or `data/` directory.
+// beside it, the content store, the CA it generates, the setup token, the
+// configuration itself — goes into a scratch directory that is emptied before
+// each run and removed when the process exits, so a run never sees another
+// run's records and never touches a developer's own `config.toml` or `data/`
+// directory.
+//
+// The scratch directory's path is *derived from the port* rather than randomly
+// generated, because the tests have to find the setup token inside it: a
+// first-run installation's only credential is a file on the server's own
+// filesystem, and `tests/helpers.ts` reads it to bootstrap the first
+// administrator. `playwright.config.ts` computes the same path and exports it
+// as `RUSTAK_E2E_WORKSPACE`, which wins here when it is set.
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -25,6 +33,28 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..", "..");
 
 const PORT = Number(process.env.RUSTAK_E2E_PORT ?? 18446);
+
+/**
+ * The address the listener binds.
+ *
+ * Loopback by IP, while the *browser* reaches it by name — see `HOST` below.
+ * Binding `localhost` instead would make start-up depend on whether this
+ * machine resolves it to `::1`, `127.0.0.1` or both, and a bind of a family
+ * the host does not have is a start-up failure rather than a fallback.
+ */
+const BIND = process.env.RUSTAK_E2E_BIND ?? "127.0.0.1";
+
+/**
+ * The host name the suite addresses the server by, and therefore the WebAuthn
+ * relying party.
+ *
+ * It has to be a *name*: WebAuthn identifies a relying party by domain, so a
+ * console reached at `http://127.0.0.1:18446` cannot register a passkey at all
+ * (`rustak-server`'s `Passkeys::for_base_url` refuses it in as many words).
+ * `localhost` is the one name a browser treats as a secure context over plain
+ * HTTP, which is what lets this suite skip TLS and still run real ceremonies.
+ */
+const HOST = process.env.RUSTAK_E2E_HOST ?? "localhost";
 
 /**
  * The server binary to run.
@@ -91,9 +121,10 @@ function resolveBinary() {
  * The cleanup below handles every ordinary exit, but a run that was
  * SIGKILLed — a cancelled CI job, a crash — leaves its directory (and the
  * database encryption key inside it) behind. Only directories old enough
- * that no live run could own them are touched.
+ * that no live run could own them are touched; this run's own directory is
+ * emptied outright by `prepareWorkspace`.
  */
-function sweepStaleWorkspaces() {
+function sweepStaleWorkspaces(mine) {
   const cutoff = Date.now() - 6 * 60 * 60 * 1000;
 
   let entries;
@@ -109,6 +140,10 @@ function sweepStaleWorkspaces() {
     }
 
     const stale = path.join(os.tmpdir(), entry);
+    if (stale === mine) {
+      continue;
+    }
+
     try {
       if (fs.statSync(stale).mtimeMs < cutoff) {
         fs.rmSync(stale, { recursive: true, force: true });
@@ -120,25 +155,54 @@ function sweepStaleWorkspaces() {
   }
 }
 
+/** Where this run keeps everything it writes. */
+function workspacePath() {
+  return (
+    process.env.RUSTAK_E2E_WORKSPACE ??
+    path.join(os.tmpdir(), `rustak-e2e-${PORT}`)
+  );
+}
+
 /**
- * A fresh directory holding this run's configuration, database and content
- * store.
+ * An empty directory holding this run's configuration, database, certificate
+ * authority, setup token and content store.
  *
- * `[server].data_dir` is where the database, its encryption key file and the
- * content-addressed store all live, so the whole lot has to sit somewhere
- * disposable or a run would leave a key behind in the repository.
+ * It is emptied rather than reused, because almost everything this suite
+ * asserts about the first run is **one-shot**: the setup wizard closes itself
+ * for good, `POST /setup/admin` answers `409` once an administrator exists,
+ * and the setup token is deleted when the wizard completes. A run that
+ * inherited a previous run's database would be testing a different server
+ * from the one the specs describe.
  *
- * The config deliberately does not open a TLS or plaintext TAK stream
- * listener, and disables the Marti listener entirely: this suite exercises
- * the admin UI and `/api/v1` only, over plain HTTP, the same way automate's
- * e2e config admits every request with `user_acl = 'true'` /
- * `admin_acl = 'true'`. `allow_insecure_http = true` is required because
- * rustak refuses to serve `[web.public]` over plaintext otherwise — see
- * design 01 §7.1 / plan.md's config-naming delta.
+ * `[server].data_dir` is where the database, its encryption key file, the
+ * generated CA and the content-addressed store all live, so the whole lot has
+ * to sit somewhere disposable or a run would leave a key behind in the
+ * repository.
+ *
+ * The configuration deliberately does not open a TLS or TAK stream listener,
+ * and disables the Marti listener entirely: this suite exercises the admin UI
+ * and `/api/v1` only, over plain HTTP, the same way automate's e2e config
+ * admits every request with `user_acl = 'true'` / `admin_acl = 'true'`.
+ * `allow_insecure_http = true` (on `[web.public]`, beside the `[web.public.tls]`
+ * table rather than inside it) is required because rustak refuses to serve
+ * `[web.public]` over plaintext otherwise — see design 01 §7.1 and
+ * `rustak-server/src/config/validate.rs`.
+ *
+ * `[server] base_url` is the load-bearing one. It is what
+ * `identity::settings::base_url` returns — in preference to anything the
+ * wizard later stores — and therefore what `auth::passkeys::Passkeys` derives
+ * the WebAuthn relying party from. Pointing it at `http://localhost:<port>`
+ * is what makes the relying party `localhost`, which is the only thing a
+ * browser will run a ceremony for here.
  */
 function prepareWorkspace() {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "rustak-e2e-"));
+  const directory = workspacePath();
+
+  fs.rmSync(directory, { recursive: true, force: true });
+  fs.mkdirSync(directory, { recursive: true });
+
   const configPath = path.join(directory, "config.toml");
+  const setupTokenFile = path.join(directory, "setup-token");
 
   fs.writeFileSync(
     configPath,
@@ -147,13 +211,17 @@ function prepareWorkspace() {
       "[server]",
       'name = "rustak-e2e"',
       `data_dir = ${JSON.stringify(directory)}`,
+      // Not `domains`: leaving it empty is what lets the setup wizard's
+      // "Server name" step be a step, since `[server] domains` in the file
+      // wins over whatever the wizard stores.
+      `base_url = ${JSON.stringify(`http://${HOST}:${PORT}`)}`,
       "",
       "[web.public]",
-      `listen = ["127.0.0.1:${PORT}"]`,
+      `listen = ["${BIND}:${PORT}"]`,
+      "allow_insecure_http = true",
       "",
       "[web.public.tls]",
       'mode = "none"',
-      "allow_insecure_http = true",
       "",
       "[web.marti]",
       "enabled = false",
@@ -164,21 +232,29 @@ function prepareWorkspace() {
       "[auth]",
       "user_acl  = 'true'",
       "admin_acl = 'true'",
+      // Named explicitly although it is also the default, because the suite
+      // reads this file to bootstrap the first administrator and a default
+      // that moved would be a test failure nobody could read.
+      `setup_token_file = ${JSON.stringify(setupTokenFile)}`,
       "",
     ].join("\n"),
     "utf8",
   );
 
-  return { directory, configPath };
+  return { directory, configPath, setupTokenFile };
 }
 
 const binary = resolveBinary();
-sweepStaleWorkspaces();
-const { directory, configPath } = prepareWorkspace();
+const { directory, configPath, setupTokenFile } = prepareWorkspace();
+sweepStaleWorkspaces(directory);
 
-console.log(`[e2e] server binary: ${binary}`);
-console.log(`[e2e] workspace:     ${directory}`);
-console.log(`[e2e] listening on:  http://127.0.0.1:${PORT}`);
+// On stderr rather than stdout, because `playwright.config.ts` only pipes the
+// server's stdout when it is asked to (the request log is enormous) and these
+// four lines are the ones somebody reads when a run will not start.
+console.error(`[e2e] server binary: ${binary}`);
+console.error(`[e2e] workspace:     ${directory}`);
+console.error(`[e2e] setup token:   ${setupTokenFile}`);
+console.error(`[e2e] listening on:  http://${HOST}:${PORT} (bound ${BIND}:${PORT})`);
 
 // `--env` is not optional here, and it must point at a path that does not
 // exist. rustak_core::config::load_env_file guards against exactly this (it
@@ -209,6 +285,15 @@ function cleanUp() {
 
   if (child.exitCode === null && child.signalCode === null) {
     child.kill("SIGTERM");
+  }
+
+  // `RUSTAK_E2E_KEEP` leaves the database, the log and the CA behind for
+  // somebody debugging a failure. It is off by default because the directory
+  // holds this installation's secret key and its certificate authority's
+  // private key, and neither belongs in a temporary directory indefinitely.
+  if (process.env.RUSTAK_E2E_KEEP) {
+    console.error(`[e2e] keeping ${directory} (RUSTAK_E2E_KEEP is set)`);
+    return;
   }
 
   try {
