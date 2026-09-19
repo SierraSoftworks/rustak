@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::group::GroupMembership;
 use crate::identity::Username;
-use crate::user::UserKind;
+use crate::user::{UserKind, UserSource};
 
 /// How this installation expects people to sign in.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -226,6 +226,15 @@ pub struct Me {
     /// How this request authenticated.
     pub via: AuthVia,
 
+    /// Where the account came from: made here, or by the identity provider.
+    #[serde(default)]
+    pub source: UserSource,
+
+    /// The issuer of the identity provider this account is linked to, when it
+    /// is linked to one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_provider: Option<String>,
+
     /// The channels this identity may use.
     ///
     /// Looked up per request rather than carried in the token, so that removing
@@ -358,6 +367,8 @@ mod tests {
             kind: UserKind::Person,
             is_admin: true,
             via: AuthVia::Bearer,
+            source: UserSource::Oidc,
+            identity_provider: Some("https://id.example.com".into()),
             groups: vec![GroupMembership::new(GroupName::anon(), Direction::Both)],
         };
 

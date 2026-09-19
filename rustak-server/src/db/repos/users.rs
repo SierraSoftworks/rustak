@@ -7,7 +7,10 @@
 //! The display name and email an administrator types are written by [`profile`],
 //! a child module, because this file is at `conventions.md`'s length limit.
 
+pub mod oidc;
 pub mod profile;
+
+pub use oidc::OidcProfile;
 
 use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension as _;
@@ -21,9 +24,9 @@ use crate::db::{
 };
 
 /// The columns [`UserRow::from_row`] expects, in order.
-const COLUMNS: &str = "id, username, kind, display_name, email, is_admin, admin_override, \
+pub(super) const COLUMNS: &str = "id, username, kind, display_name, email, is_admin, admin_override, \
                        disabled, source, oidc_issuer, oidc_subject, created_at, updated_at, \
-                       last_seen_at, last_login_at";
+                       last_seen_at, last_login_at, oidc_claims";
 
 /// One row of `users`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +44,9 @@ pub struct UserRow {
     pub source: UserSource,
     pub oidc_issuer: Option<String>,
     pub oidc_subject: Option<String>,
+    /// The provider's filterable claims as of the last sign-in, as JSON. What
+    /// the access-control expressions are evaluated against between sign-ins.
+    pub oidc_claims: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub last_seen_at: Option<DateTime<Utc>>,
@@ -65,6 +71,7 @@ impl UserRow {
             updated_at: ts(row, 12)?,
             last_seen_at: opt_ts(row, 13)?,
             last_login_at: opt_ts(row, 14)?,
+            oidc_claims: row.get(15)?,
         })
     }
 
@@ -110,14 +117,6 @@ impl NewUser {
             ..Self::person(username)
         }
     }
-}
-
-/// What an identity provider told us about somebody.
-#[derive(Debug, Clone, Default)]
-pub struct OidcProfile {
-    pub display_name: Option<String>,
-    pub email: Option<String>,
-    pub is_admin: bool,
 }
 
 /// Reads and writes `users`.
@@ -222,61 +221,6 @@ impl<'a> UsersRepo<'a> {
                     UserRow::from_row,
                 )
                 .optional()
-            })
-            .await
-    }
-
-    /// Creates or refreshes the account behind an identity-provider subject.
-    ///
-    /// The subject is the identity, not the username: a provider that lets
-    /// somebody rename themselves must not strand their account or let them
-    /// walk into another one.
-    ///
-    /// # Errors
-    ///
-    /// A [`human_errors::Kind::System`] error if the write fails.
-    pub async fn upsert_oidc(
-        &self,
-        issuer: &str,
-        subject: &str,
-        username: &Username,
-        profile: OidcProfile,
-    ) -> Result<UserRow, Error> {
-        let (issuer, subject) = (issuer.to_owned(), subject.to_owned());
-        let username = username.as_str().to_owned();
-
-        self.db
-            .write(move |tx| {
-                let now = crate::db::row::Timestamp::now();
-
-                tx.query_one(
-                    &format!(
-                        "INSERT INTO users \
-                           (username, kind, display_name, email, is_admin, source, \
-                            oidc_issuer, oidc_subject, created_at, updated_at, last_login_at) \
-                         VALUES (?1, 'person', ?2, ?3, ?4, 'oidc', ?5, ?6, ?7, ?7, ?7) \
-                         ON CONFLICT (oidc_issuer, oidc_subject) \
-                           WHERE oidc_subject IS NOT NULL DO UPDATE SET \
-                           username = excluded.username, \
-                           display_name = excluded.display_name, \
-                           email = excluded.email, \
-                           is_admin = excluded.is_admin, \
-                           source = 'oidc', \
-                           updated_at = excluded.updated_at, \
-                           last_login_at = excluded.last_login_at \
-                         RETURNING {COLUMNS}"
-                    ),
-                    rusqlite::params![
-                        username,
-                        profile.display_name,
-                        profile.email,
-                        i64::from(profile.is_admin),
-                        issuer,
-                        subject,
-                        now,
-                    ],
-                    UserRow::from_row,
-                )
             })
             .await
     }

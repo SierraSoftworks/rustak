@@ -35,6 +35,22 @@ pub struct VerifiedIdentity {
     pub email: Option<String>,
     /// The raw `groups` claim, before any of it is interpreted.
     pub groups: Vec<String>,
+    /// Every claim the access-control expressions may look at, kept on the
+    /// account so that later requests are judged by what the provider last
+    /// said (the sessions we issue carry none of them).
+    pub claims: serde_json::Map<String, serde_json::Value>,
+}
+
+impl VerifiedIdentity {
+    /// What of this identity the account stores.
+    fn profile(&self, is_admin: bool) -> OidcProfile {
+        OidcProfile {
+            display_name: self.display_name.clone(),
+            email: self.email.clone(),
+            is_admin,
+            claims: serde_json::to_string(&self.claims).ok(),
+        }
+    }
 }
 
 /// Creates or refreshes the account behind a verified identity.
@@ -56,30 +72,30 @@ pub async fn provision(
     is_admin: bool,
     anon_by_default: bool,
 ) -> Result<UserRow, Error> {
-    let existing = db
+    let profile = identity.profile(is_admin);
+    let known = db
         .users()
         .get_by_oidc(&identity.issuer, &identity.subject)
-        .await?;
+        .await?
+        .is_some();
 
-    if existing.is_none() {
-        refuse_takeover(db, oidc, identity).await?;
-    }
+    let (row, created) = if known {
+        (upsert(db, identity, profile).await?, false)
+    } else {
+        // The subject is new to us, so the name is the question: whose is it?
+        match db.users().get_by_username(&identity.username).await? {
+            // Somebody's, and the operator said the provider may have it. An
+            // upsert would insert a second row under the same name and trip the
+            // unique index; the account is handed over instead.
+            Some(existing) if oidc.link_by_username => {
+                (adopt(db, &existing, identity, profile).await?, false)
+            }
+            Some(existing) => return Err(takeover_refused(&existing, identity)),
+            None => (upsert(db, identity, profile).await?, true),
+        }
+    };
 
-    let row = db
-        .users()
-        .upsert_oidc(
-            &identity.issuer,
-            &identity.subject,
-            &identity.username,
-            OidcProfile {
-                display_name: identity.display_name.clone(),
-                email: identity.email.clone(),
-                is_admin,
-            },
-        )
-        .await?;
-
-    if existing.is_none() {
+    if created {
         info!(username = %row.username, "Created an account from an identity provider sign-in.");
 
         if anon_by_default {
@@ -92,28 +108,154 @@ pub async fn provision(
     Ok(row)
 }
 
-/// Refuses to hand a provider an account it did not create.
+/// Binds the caller's own account to the identity the provider just vouched
+/// for — the self-service half of a migration from passkeys to single sign-on,
+/// which needs no `link_by_username` because the person has proved they hold
+/// both: they are signed in here, and they just signed in there.
+///
+/// From then on the account is the provider's: its username follows the
+/// provider's, as does every other provider-backed account's. The passkeys,
+/// credentials and channels it had are kept.
+///
+/// # Errors
+///
+/// A [`human_errors::Kind::User`] error when the account is a service's, is
+/// already linked to a different identity, when that identity already signs in
+/// as somebody else, or when the provider's name for the person is another
+/// account here; a [`human_errors::Kind::System`] error if a read or write
+/// fails.
+#[instrument("identity.users.link", skip_all, fields(username = %current.username), err(Display))]
+pub async fn link_identity(
+    db: &Database,
+    oidc: &OidcConfig,
+    current: &UserRow,
+    identity: &VerifiedIdentity,
+    is_admin: bool,
+) -> Result<UserRow, Error> {
+    if current.kind == UserKind::Service {
+        return Err(human_errors::user(
+            "A service account cannot be linked to an identity provider.",
+            &["Sign in as a person to link that account."],
+        ));
+    }
+
+    let profile = identity.profile(is_admin);
+    let same_identity = current.oidc_issuer.as_deref() == Some(&identity.issuer)
+        && current.oidc_subject.as_deref() == Some(&identity.subject);
+
+    if same_identity {
+        // Already linked to exactly this identity: refresh it, as a sign-in would.
+        let row = upsert(db, identity, profile).await?;
+        groups::apply_claims(db, oidc, row.id, &identity.groups).await?;
+        return Ok(row);
+    }
+
+    if current.oidc_subject.is_some() {
+        return Err(human_errors::user(
+            "Your account is already linked to a different identity at your provider.",
+            &["Ask an administrator to remove the existing link before making another."],
+        ));
+    }
+
+    if let Some(other) = db
+        .users()
+        .get_by_oidc(&identity.issuer, &identity.subject)
+        .await?
+    {
+        return Err(human_errors::user(
+            format!(
+                "That identity already signs in here as '{}'.",
+                other.username
+            ),
+            &["Sign in as that account instead, or ask an administrator to remove it."],
+        ));
+    }
+
+    if identity.username != current.username
+        && db
+            .users()
+            .get_by_username(&identity.username)
+            .await?
+            .is_some()
+    {
+        return Err(human_errors::user(
+            format!(
+                "Your identity provider knows you as '{}', which is already another account here.",
+                identity.username
+            ),
+            &["Ask an administrator to rename or remove that account, then try again."],
+        ));
+    }
+
+    let row = adopt(db, current, identity, profile).await?;
+    groups::apply_claims(db, oidc, row.id, &identity.groups).await?;
+
+    Ok(row)
+}
+
+/// The ordinary write: insert a stranger, refresh somebody known by subject.
+async fn upsert(
+    db: &Database,
+    identity: &VerifiedIdentity,
+    profile: OidcProfile,
+) -> Result<UserRow, Error> {
+    db.users()
+        .upsert_oidc(
+            &identity.issuer,
+            &identity.subject,
+            &identity.username,
+            profile,
+        )
+        .await
+}
+
+/// Hands an existing account to the provider, keeping what it had.
+///
+/// The administrative flag is about to become what `admin_acl` decides on every
+/// sign-in. A standing granted *here* — by the wizard, or by an administrator —
+/// must not silently end because the directory started vouching for the name,
+/// so it is recorded as the explicit override that outranks the expression.
+/// The Users page shows that as "set here", and an administrator can undo it.
+async fn adopt(
+    db: &Database,
+    existing: &UserRow,
+    identity: &VerifiedIdentity,
+    profile: OidcProfile,
+) -> Result<UserRow, Error> {
+    if existing.is_admin && existing.admin_override.is_none() {
+        db.users()
+            .set_admin_override(existing.id, Some(true))
+            .await?;
+    }
+
+    let row = db
+        .users()
+        .link_oidc(
+            existing.id,
+            &identity.issuer,
+            &identity.subject,
+            &identity.username,
+            profile,
+        )
+        .await?;
+
+    info!(username = %row.username, "Linked an existing account to an identity provider.");
+
+    Ok(row)
+}
+
+/// Why a provider is not handed an account it did not create.
 ///
 /// Turning `link_by_username` on means whoever controls the directory can take
 /// over any account by claiming its name, which is a decision an operator makes
 /// deliberately rather than something that happens by default.
-async fn refuse_takeover(
-    db: &Database,
-    oidc: &OidcConfig,
-    identity: &VerifiedIdentity,
-) -> Result<(), Error> {
-    if oidc.link_by_username {
-        return Ok(());
-    }
-
-    let Some(clash) = db.users().get_by_username(&identity.username).await? else {
-        return Ok(());
-    };
-
-    if clash.source == UserSource::Oidc && clash.oidc_issuer.as_deref() == Some(&identity.issuer) {
+fn takeover_refused(existing: &UserRow, identity: &VerifiedIdentity) -> Error {
+    if existing.source == UserSource::Oidc
+        && existing.oidc_issuer.as_deref() == Some(&identity.issuer)
+    {
         // Same provider, different subject: the directory reissued the name.
         // That is a rename to sort out by hand, not a takeover.
-        return Err(human_errors::user(
+        return human_errors::user(
             format!(
                 "The account '{}' belongs to a different identity in your provider.",
                 identity.username
@@ -122,19 +264,19 @@ async fn refuse_takeover(
                 "Rename or remove the existing account, then sign in again.",
                 "This usually means the account was recreated in your directory.",
             ],
-        ));
+        );
     }
 
-    Err(human_errors::user(
+    human_errors::user(
         format!(
             "The account '{}' already exists and was not created by your identity provider.",
             identity.username
         ),
         &[
-            "Sign in with a different account, or ask an administrator to remove the existing one.",
+            "Sign in with a passkey and link your single sign-on account from the Credentials page.",
             "Set 'link_by_username' under [auth.oidc] only if you intend your provider to take over existing accounts.",
         ],
-    ))
+    )
 }
 
 /// Builds the principal a request is answered under.
@@ -214,6 +356,8 @@ pub async fn me(db: &Database, row: &UserRow, principal: &Principal) -> Result<M
         kind: row.kind,
         is_admin: principal.is_admin,
         via: via_of(&principal.via),
+        source: row.source,
+        identity_provider: row.oidc_issuer.clone(),
         groups: members::grants_for_user(db, row.id).await?,
     })
 }
@@ -315,6 +459,10 @@ mod tests {
             display_name: Some("Ada Lovelace".to_string()),
             email: Some("ada@example.com".to_string()),
             groups: vec!["ops_WRITE".to_string()],
+            claims: serde_json::json!({ "groups": ["ops_WRITE"] })
+                .as_object()
+                .cloned()
+                .unwrap(),
         }
     }
 
@@ -361,7 +509,69 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn linking_by_name_is_available_for_installations_that_ask_for_it() {
+    async fn linking_by_name_hands_the_existing_account_to_the_provider() {
+        let db = database().await;
+        let before = create_admin(&db, Username::parse("ada").unwrap(), None, None, true)
+            .await
+            .unwrap();
+
+        let oidc = OidcConfig {
+            link_by_username: true,
+            ..oidc()
+        };
+
+        let linked = provision(&db, &oidc, &identity("ada", "subject-1"), false, true)
+            .await
+            .unwrap();
+
+        assert_eq!(linked.id, before.id, "the same row, not a second one");
+        assert_eq!(linked.source, UserSource::Oidc);
+        assert_eq!(linked.oidc_subject.as_deref(), Some("subject-1"));
+        assert!(
+            linked
+                .oidc_claims
+                .as_deref()
+                .unwrap_or("")
+                .contains("ops_WRITE"),
+            "the claims it was judged by are kept: {:?}",
+            linked.oidc_claims
+        );
+        assert_eq!(
+            linked.admin_override,
+            Some(true),
+            "the standing the wizard granted outlives the link"
+        );
+        assert!(linked.is_effective_admin());
+
+        let held = members::grants_for_user(&db, linked.id).await.unwrap();
+        assert!(held.iter().any(|held| held.group.as_str() == "ops"));
+    }
+
+    #[tokio::test]
+    async fn linking_by_name_does_not_invent_a_standing_the_account_never_had() {
+        let db = database().await;
+        let before = db
+            .users()
+            .create(NewUser::person(Username::parse("grace").unwrap()))
+            .await
+            .unwrap();
+
+        let oidc = OidcConfig {
+            link_by_username: true,
+            ..oidc()
+        };
+
+        let linked = provision(&db, &oidc, &identity("grace", "subject-2"), false, true)
+            .await
+            .unwrap();
+
+        assert_eq!(linked.id, before.id);
+        assert_eq!(linked.admin_override, None);
+        assert!(!linked.is_effective_admin());
+    }
+
+    #[tokio::test]
+    async fn a_linked_account_is_found_by_subject_on_the_next_sign_in() {
         let db = database().await;
         create_admin(&db, Username::parse("ada").unwrap(), None, None, true)
             .await
@@ -372,13 +582,125 @@ mod tests {
             ..oidc()
         };
 
-        // The upsert keys on the provider's subject, so this creates the
-        // provider-backed account; what matters is that we did not refuse.
-        assert!(
-            provision(&db, &oidc, &identity("ada.l", "subject-1"), false, true)
-                .await
-                .is_ok()
+        let first = provision(&db, &oidc, &identity("ada", "subject-1"), false, true)
+            .await
+            .unwrap();
+        let again = provision(&db, &oidc, &identity("ada", "subject-1"), false, true)
+            .await
+            .unwrap();
+
+        assert_eq!(first.id, again.id);
+    }
+
+    #[tokio::test]
+    async fn a_person_can_link_their_own_account_without_the_flag() {
+        let db = database().await;
+        let before = create_admin(&db, Username::parse("ada").unwrap(), None, None, true)
+            .await
+            .unwrap();
+
+        let linked = link_identity(&db, &oidc(), &before, &identity("ada", "subject-1"), false)
+            .await
+            .unwrap();
+
+        assert_eq!(linked.id, before.id);
+        assert_eq!(linked.source, UserSource::Oidc);
+        assert_eq!(linked.admin_override, Some(true));
+
+        let again = link_identity(&db, &oidc(), &linked, &identity("ada", "subject-1"), false)
+            .await
+            .unwrap();
+        assert_eq!(
+            again.id, before.id,
+            "linking the same identity again is a refresh"
         );
+    }
+
+    #[tokio::test]
+    async fn an_account_follows_the_providers_name_for_the_person() {
+        let db = database().await;
+        let before = create_admin(&db, Username::parse("ada").unwrap(), None, None, true)
+            .await
+            .unwrap();
+
+        let linked = link_identity(
+            &db,
+            &oidc(),
+            &before,
+            &identity("ada.l", "subject-1"),
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(linked.id, before.id);
+        assert_eq!(linked.username.as_str(), "ada.l");
+    }
+
+    #[tokio::test]
+    async fn an_account_cannot_be_linked_to_a_second_identity() {
+        let db = database().await;
+        let before = create_admin(&db, Username::parse("ada").unwrap(), None, None, true)
+            .await
+            .unwrap();
+        let linked = link_identity(&db, &oidc(), &before, &identity("ada", "subject-1"), false)
+            .await
+            .unwrap();
+
+        let refused =
+            link_identity(&db, &oidc(), &linked, &identity("ada", "subject-2"), false).await;
+
+        assert!(refused.is_err(), "{refused:?}");
+    }
+
+    #[tokio::test]
+    async fn an_identity_that_already_signs_in_as_somebody_else_is_refused() {
+        let db = database().await;
+        provision(&db, &oidc(), &identity("grace", "subject-1"), false, true)
+            .await
+            .unwrap();
+        let ada = create_admin(&db, Username::parse("ada").unwrap(), None, None, true)
+            .await
+            .unwrap();
+
+        let refused =
+            link_identity(&db, &oidc(), &ada, &identity("grace", "subject-1"), false).await;
+
+        assert!(refused.is_err(), "{refused:?}");
+        let still = db.users().get(ada.id).await.unwrap().unwrap();
+        assert_eq!(still.source, UserSource::Local, "nothing was written");
+    }
+
+    #[tokio::test]
+    async fn a_providers_name_that_is_another_account_here_is_refused() {
+        let db = database().await;
+        db.users()
+            .create(NewUser::person(Username::parse("grace").unwrap()))
+            .await
+            .unwrap();
+        let ada = create_admin(&db, Username::parse("ada").unwrap(), None, None, true)
+            .await
+            .unwrap();
+
+        let refused =
+            link_identity(&db, &oidc(), &ada, &identity("grace", "subject-9"), false).await;
+
+        assert!(refused.is_err(), "{refused:?}");
+    }
+
+    #[tokio::test]
+    async fn a_service_account_cannot_be_linked() {
+        let db = database().await;
+        let bot = db
+            .users()
+            .create(NewUser::service(Username::parse("relay").unwrap()))
+            .await
+            .unwrap();
+
+        let refused =
+            link_identity(&db, &oidc(), &bot, &identity("relay", "subject-1"), false).await;
+
+        assert!(refused.is_err(), "{refused:?}");
     }
 
     #[tokio::test]

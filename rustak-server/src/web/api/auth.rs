@@ -22,7 +22,7 @@ use rustak_api::{
     AuditCategory, AuditOutcome, AuthMetadata, AuthMode, TokenExchangeRequest, TokenRefreshRequest,
 };
 
-use crate::auth::acl::{AuthRequestFilter, evaluate};
+use crate::auth::acl::{AclOutcome, AuthRequestFilter, evaluate};
 use crate::auth::{RateLimiter, tokens};
 use crate::db::AuditEntry;
 use crate::identity::users;
@@ -34,7 +34,7 @@ use super::error::{ApiError, ApiResult, json_ok};
 use super::extract::Authenticated;
 
 /// The rate-limiter subject the token endpoints share.
-const SUBJECT: &str = "auth-token";
+pub(super) const SUBJECT: &str = "auth-token";
 
 /// `GET /auth/metadata`: what sign-in methods this installation offers.
 ///
@@ -115,6 +115,55 @@ async fn sign_in(
     body: &TokenExchangeRequest,
 ) -> ApiResult {
     let config = context.config();
+    let (identity, acl) = verify_code(context, provider, request, body).await?;
+
+    if !acl.allowed {
+        record(context, "login", AuditOutcome::Denied, &identity.username).await;
+
+        return Err(ApiError::forbidden(
+            "Your account is not permitted to sign in to this server.",
+        ));
+    }
+
+    let user = users::provision(
+        context.db(),
+        provider,
+        &identity,
+        acl.is_admin,
+        config.auth.anon_group_default,
+    )
+    .await
+    .map_err(|err| ApiError::from_human(&err))?;
+
+    let is_admin = user.is_effective_admin() || acl.is_admin;
+    let session = tokens::issue_session(context, &user, is_admin, Some("admin-ui"))
+        .await
+        .map_err(|err| ApiError::from_human(&err))?;
+
+    record(context, "login", AuditOutcome::Success, &user.username).await;
+
+    Ok(json_ok(&session))
+}
+
+/// Redeems an authorization code and decides who the provider vouched for.
+///
+/// Shared by the sign-in and by `POST /me/oidc-link`, which does everything a
+/// sign-in does up to the point of deciding which account the identity
+/// belongs to. The access-control outcome is returned rather than enforced,
+/// because the two callers refuse in different words and audit under
+/// different names.
+///
+/// # Errors
+///
+/// `502` when the provider cannot be reached, and `400` when the exchange or
+/// the token is refused.
+pub(super) async fn verify_code(
+    context: &AppContext,
+    provider: &crate::config::OidcConfig,
+    request: &HttpRequest,
+    body: &TokenExchangeRequest,
+) -> Result<(users::VerifiedIdentity, AclOutcome), ApiError> {
+    let config = context.config();
     let discovery = oidc::discovery(context, provider).await.map_err(|err| {
         context.session().record_human_error(&err);
 
@@ -165,32 +214,7 @@ async fn sign_in(
         },
     );
 
-    if !acl.allowed {
-        record(context, "login", AuditOutcome::Denied, &identity.username).await;
-
-        return Err(ApiError::forbidden(
-            "Your account is not permitted to sign in to this server.",
-        ));
-    }
-
-    let user = users::provision(
-        context.db(),
-        provider,
-        &identity,
-        acl.is_admin,
-        config.auth.anon_group_default,
-    )
-    .await
-    .map_err(|err| ApiError::from_human(&err))?;
-
-    let is_admin = user.is_effective_admin() || acl.is_admin;
-    let session = tokens::issue_session(context, &user, is_admin, Some("admin-ui"))
-        .await
-        .map_err(|err| ApiError::from_human(&err))?;
-
-    record(context, "login", AuditOutcome::Success, &user.username).await;
-
-    Ok(json_ok(&session))
+    Ok((identity, acl))
 }
 
 /// `POST /auth/refresh`: exchanges a refresh token for a new pair.
@@ -262,8 +286,13 @@ pub async fn logout(context: web::Data<AppContext>, caller: Authenticated) -> Ap
     Ok(HttpResponse::NoContent().finish())
 }
 
-/// Writes a sign-in or sign-out to the audit log.
-async fn record(context: &AppContext, action: &'static str, outcome: AuditOutcome, who: &Username) {
+/// Writes a sign-in, sign-out or link to the audit log.
+pub(super) async fn record(
+    context: &AppContext,
+    action: &'static str,
+    outcome: AuditOutcome,
+    who: &Username,
+) {
     let entry = AuditEntry::new(AuditCategory::Authentication, action, outcome).subject(who);
 
     if let Err(err) = context.db().record(entry).await {
@@ -273,12 +302,12 @@ async fn record(context: &AppContext, action: &'static str, outcome: AuditOutcom
 }
 
 /// The failure for an installation with no identity provider.
-fn not_configured() -> ApiError {
+pub(super) fn not_configured() -> ApiError {
     ApiError::not_found("This server does not federate to an identity provider.")
 }
 
 /// The failure for somebody who has been guessing.
-fn too_many(retry_after: chrono::Duration) -> ApiError {
+pub(super) fn too_many(retry_after: chrono::Duration) -> ApiError {
     ApiError::new(
         actix_web::http::StatusCode::TOO_MANY_REQUESTS,
         format!(

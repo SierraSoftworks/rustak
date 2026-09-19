@@ -30,6 +30,8 @@ use actix_web::{HttpRequest, web};
 use rustak_core::identity::{AuthMethod, Principal};
 use rustak_core::prelude::*;
 
+use rustak_api::UserSource;
+
 use crate::db::repos::UserRow;
 use crate::identity::users;
 use crate::identity::verify::{Grace, Purpose};
@@ -144,21 +146,29 @@ pub async fn bearer<S: Services>(
         _ => return Err(AuthFailure::Rejected),
     };
 
+    // Our own token carries no provider claims, so the expressions see the
+    // ones the account's last sign-in recorded — which is what `claims.groups
+    // contains "…"` has to be judged against, or it would be null here and
+    // refuse everybody between sign-ins.
+    let recorded = user.oidc_claims.as_deref().and_then(stored_claims);
     let filter = AuthRequestFilter {
         method: facts.method,
         path: facts.path,
         client_ip: facts.client_ip.clone(),
         headers: facts.headers,
-        // Our own token carries no provider claims; `user_acl` is evaluated
-        // against them where they exist, which is the sign-in itself.
-        claims: None,
+        claims: recorded.as_ref(),
         username: user.username.as_str(),
         source: user.source.as_str(),
     };
 
     let outcome = evaluate(&config.auth, &filter);
 
-    if config.auth.user_acl.is_some() && !outcome.allowed {
+    // `user_acl` says who the *provider* may sign in. A local account was
+    // admitted when the wizard or an administrator made it here, and a service
+    // account when it was registered; neither has claims for the expression
+    // to look at, and an expression written for the directory must not lock
+    // out the passkey that exists precisely for when the directory is wrong.
+    if user.source == UserSource::Oidc && config.auth.user_acl.is_some() && !outcome.allowed {
         info!(
             username = %user.username,
             path = facts.path,
@@ -182,6 +192,21 @@ pub async fn bearer<S: Services>(
         user,
         claims: Some(claims),
     })
+}
+
+/// The claims an account's last sign-in recorded, if they still parse.
+///
+/// A row whose stored claims cannot be read is treated as one with none rather
+/// than refused outright: the expression then decides, exactly as it would for
+/// a sign-in that carried no such claim.
+fn stored_claims(raw: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
+    match serde_json::from_str::<serde_json::Value>(raw) {
+        Ok(serde_json::Value::Object(map)) => Some(map),
+        Ok(_) | Err(_) => {
+            warn!("An account's stored identity-provider claims could not be read.");
+            None
+        }
+    }
 }
 
 /// Where HTTP Basic is accepted on a listener.
@@ -446,7 +471,10 @@ mod tests {
     use actix_web::test::TestRequest;
 
     use super::*;
+    use crate::db::repos::OidcProfile;
     use crate::testing::TestServer;
+    use crate::testing::context::session_for;
+    use rustak_api::TokenResponse;
 
     fn facts(headers: &HeaderMap) -> RequestFacts<'_> {
         RequestFacts {
@@ -610,19 +638,89 @@ mod tests {
         ));
     }
 
+    /// A provider-backed account, signed in, with `groups` as its last sign-in
+    /// recorded them.
+    async fn federated_session(server: &TestServer, groups: &[&str]) -> TokenResponse {
+        let claims = serde_json::json!({ "groups": groups }).to_string();
+        let user = server
+            .db()
+            .users()
+            .upsert_oidc(
+                "https://id.example.com",
+                "subject-1",
+                &Username::parse("ada").unwrap(),
+                OidcProfile {
+                    claims: Some(claims),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        // Issued with administrative scope, so the scope ceiling is not what
+        // decides and the expressions are.
+        session_for(&server.context, &user, true).await
+    }
+
     #[tokio::test]
     async fn a_configured_expression_can_refuse_a_request_it_does_not_like() {
         let server = TestServer::start_with(|config| {
             config.auth.user_acl = Some(filt_rs::Filter::new(r#"path != "/api/v1/me""#).unwrap());
         })
         .await;
-        let (_, session) = server.signed_in("ada", false).await;
+        let session = federated_session(&server, &[]).await;
         let headers = HeaderMap::new();
 
         assert!(matches!(
             bearer(&server.context, &session.token, &facts(&headers)).await,
             Err(AuthFailure::Forbidden(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn a_provider_account_is_judged_by_the_claims_its_sign_in_recorded() {
+        let server = TestServer::start_with(|config| {
+            config.auth.user_acl =
+                Some(filt_rs::Filter::new(r#"claims.groups contains "tak-users""#).unwrap());
+            config.auth.admin_acl =
+                Some(filt_rs::Filter::new(r#"claims.groups contains "tak-admins""#).unwrap());
+        })
+        .await;
+        let headers = HeaderMap::new();
+
+        let refused = federated_session(&server, &["something-else"]).await;
+        assert!(matches!(
+            bearer(&server.context, &refused.token, &facts(&headers)).await,
+            Err(AuthFailure::Forbidden(_))
+        ));
+
+        let admitted = federated_session(&server, &["tak-users", "tak-admins"]).await;
+        let resolved = bearer(&server.context, &admitted.token, &facts(&headers))
+            .await
+            .expect("the recorded claims satisfy the expression");
+        assert!(
+            resolved.principal.is_admin,
+            "and `admin_acl` is answered from the same claims"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_expression_written_for_the_directory_does_not_lock_out_a_passkey() {
+        // The administrator's passkey exists for when the directory is wrong or
+        // away, so `claims.*` — which a local account never has — must not be
+        // the thing that refuses them.
+        let server = TestServer::start_with(|config| {
+            config.auth.user_acl =
+                Some(filt_rs::Filter::new(r#"claims.groups contains "tak-users""#).unwrap());
+        })
+        .await;
+        let (_, session) = server.signed_in("ada", true).await;
+        let headers = HeaderMap::new();
+
+        let resolved = bearer(&server.context, &session.token, &facts(&headers))
+            .await
+            .expect("a local account is not gated by user_acl");
+        assert!(resolved.principal.is_admin);
     }
 
     #[tokio::test]

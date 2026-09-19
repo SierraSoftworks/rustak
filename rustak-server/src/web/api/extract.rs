@@ -134,6 +134,7 @@ mod tests {
                 source: UserSource::Local,
                 oidc_issuer: None,
                 oidc_subject: None,
+                oidc_claims: None,
                 created_at: now,
                 updated_at: now,
                 last_seen_at: None,

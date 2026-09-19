@@ -94,6 +94,8 @@ pub fn me() -> Me {
         kind: UserKind::Person,
         is_admin: true,
         via: AuthVia::Bearer,
+        source: UserSource::Local,
+        identity_provider: None,
         groups: memberships(),
     }
 }

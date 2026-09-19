@@ -97,6 +97,7 @@ pub fn identity_from_claims(
             .or_else(|| string_claim(claims, FALLBACK_USERNAME_CLAIM)),
         email: string_claim(claims, "email"),
         groups: groups_from_claims(oidc, claims),
+        claims: filterable_claims(claims),
     })
 }
 

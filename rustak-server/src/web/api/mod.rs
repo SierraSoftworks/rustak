@@ -91,6 +91,7 @@ pub fn configure() -> actix_web::Scope<
         web::scope("")
             .wrap(from_fn(middleware::api_auth))
             .route("/me", web::get().to(me::me))
+            .route("/me/oidc-link", web::post().to(me::link_oidc))
             .route("/auth/logout", web::post().to(auth::logout))
             .route("/auth/passkeys", web::get().to(passkey::list))
             .route("/auth/passkeys/{id}", web::delete().to(passkey::remove))
@@ -216,6 +217,7 @@ mod tests {
     /// Every route that must not be reachable without a session.
     const PROTECTED: &[(&str, &str)] = &[
         ("GET", "/api/v1/me"),
+        ("POST", "/api/v1/me/oidc-link"),
         ("POST", "/api/v1/auth/logout"),
         ("GET", "/api/v1/auth/passkeys"),
         ("DELETE", "/api/v1/auth/passkeys/1"),

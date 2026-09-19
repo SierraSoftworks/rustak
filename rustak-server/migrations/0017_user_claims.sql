@@ -1,0 +1,15 @@
+-- The identity provider's claims, as of the account's last sign-in.
+--
+-- `[auth] user_acl` and `admin_acl` are written in terms of the provider's
+-- claims (`claims.groups contains "tak-admins"`), and they are evaluated on
+-- every request so that an edit to the configuration takes effect at once. But
+-- the sessions we issue carry none of the provider's claims, so until now the
+-- per-request evaluation saw `claims.*` as null and a claims-based `user_acl`
+-- refused every request from everybody — including the passkey accounts it was
+-- never meant to gate.
+--
+-- The filterable claims (everything but the protocol ones: exp, iss, aud …)
+-- are kept here at sign-in, so a later request from a provider-backed account
+-- is judged against what the provider last said about them. NULL for an
+-- account the provider has never vouched for.
+ALTER TABLE users ADD COLUMN oidc_claims TEXT;

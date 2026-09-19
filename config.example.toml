@@ -297,11 +297,21 @@ access_token_ttl = "1h"
 refresh_token_ttl = "30d"
 
 # Who may sign in, and who is an administrator. filt-rs expressions over
-# method/path/client_ip/headers.*/claims.*. BOTH DEFAULT TO DENYING EVERYBODY:
-# an installation that configures an identity provider and forgets these admits
-# nobody, rather than admitting the provider's whole directory. The first admin
-# registered by the setup wizard is authorised by the users.is_admin column
-# instead, so a fresh installation is administrable without writing a filter.
+# method/path/client_ip/headers.*/claims.*/username/source. BOTH DEFAULT TO
+# DENYING EVERYBODY: an installation that configures an identity provider and
+# forgets these admits nobody, rather than admitting the provider's whole
+# directory. The first admin registered by the setup wizard is authorised by the
+# users.is_admin column instead, so a fresh installation is administrable
+# without writing a filter.
+#
+# `user_acl` gates accounts the identity provider vouches for: at sign-in, and
+# on every later request, judged against the claims that sign-in recorded. It
+# does not apply to accounts made here (passkeys) or to services — they were
+# admitted when they were created, and the passkey exists precisely so that an
+# administrator keeps a way in when the directory is wrong or away.
+#
+# `admin_acl` is evaluated the same way, and is ORed with the administrator
+# flag on the account, so an administrator made here stays one.
 # user_acl = 'true'
 # admin_acl = 'claims.groups contains "tak-admins"'
 
@@ -405,8 +415,11 @@ allow_access_token_retrieval = true
 # auto_create_groups = true
 #
 # Whether an account whose username matches an existing local user is linked to
-# it. Off by default: on, whoever controls the provider can take over an
-# existing account by claiming its username.
+# it on sign-in — the account keeps its passkeys, devices, channels and (as an
+# explicit override) its administrative standing, and is the provider's from
+# then on. Off by default: on, whoever controls the provider can take over an
+# existing account by claiming its username. Somebody can always link their
+# own account without this, from the Credentials page while signed in.
 # link_by_username = false
 #
 # The name on the sign-in button. Default: the provider's URL.
