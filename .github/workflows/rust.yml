@@ -751,3 +751,13 @@ jobs:
           private-key: ${{ secrets.TAP_APP_PRIVATE_KEY }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           aliases: major minor
+          # A Homebrew formula must carry a `desc`, and the action derives one
+          # from the source repository's description. This repository has none
+          # set, so the token above finds an empty string and the job fails with
+          # "No usable description for rustak" — which is what happened on the
+          # v0.0.1 release, after every other job in the run had passed. Stating
+          # it here fixes it without depending on a repository setting that only
+          # an administrator can change, and keeps the formula's description in
+          # the same review as the code. It is the README's one-line summary;
+          # Homebrew wants a short noun phrase with no trailing full stop.
+          desc: Single-binary TAK server for ATAK and CloudTAK, secure by default

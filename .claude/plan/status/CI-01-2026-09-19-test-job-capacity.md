@@ -26,11 +26,48 @@ applied to itself):
 | 35411593505 | `b58ce8e` (M1-10, stream robustness) | 13m35s |
 | 35411906247 | `6af709c` (docs) | 14m30s |
 
-Four samples now: **11m40s, 13m35s, 14m30s** and the single **27m02s**. The
-normal band is 11–15 minutes and the outlier stands alone, which is what §2
-predicts and what §4's withdrawal rests on. It also means the suite's own growth
-is visible and slow — `6af709c` carries the most tests of the four and sits at
-the top of the normal band, not outside it.
+Six samples now: **11m40s, 13m35s, 14m30s, 15m26s, 16m12s** and the single
+**27m02s**.
+
+Those five normal samples are **monotonically increasing**, which looked like the
+suite growing — so I checked before saying so, and it is not. In-test seconds
+against test count:
+
+| Commit | In-test | Tests |
+|---|---:|---:|
+| `e101336` | 491 s | 2698 |
+| `b58ce8e` | 577 s | 2718 |
+| `6af709c` | 611 s | 2718 |
+| `6baf409` | 667 s | 2723 |
+| `f4fb037` | 731 s | 2723 |
+
+**Test count grew 0.9% while time grew 49%**, and the two pairs that share an
+identical test count still differ by 6% and 10%. So the count explains none of
+it.
+
+The per-binary comparison between the fastest and slowest of the five says the
+rest plainly — the slowdown is **uniform and multiplicative across every binary,
+including ones neither landing touched**:
+
+| Binary | `e101336` | `f4fb037` | |
+|---|---:|---:|---:|
+| `bootstrap` (3 tests, untouched) | 14.4 s | 48.5 s | +237% |
+| `mission_dest` | 28.1 s | 65.6 s | +133% |
+| `marti_channels` | 54.4 s | 99.4 s | +83% |
+| `enroll_flows` (untouched) | 4.9 s | 8.1 s | +65% |
+| `stream_session` | 62.0 s | 101.0 s | +63% |
+| `rustak_server` lib | 102.2 s | 117.2 s | +15% |
+
+If M1-10's stream work had added waits, the cost would sit in the stream suites.
+Instead the *smallest* suites are hit hardest, which is the signature of a fixed
+per-binary overhead on a slower host — process start and the `.profraw` each
+instrumented binary writes on exit. Environmental, not ours.
+
+**So there is still no trend, and no action.** A monotonic run of five is
+striking, and it is also what you get by sampling six shared hosts of varying
+speed in some order. The trigger in §4 stands unchanged: another run past ~20
+minutes, with the per-binary shape showing the cost landing *where the code
+changed*, would be the thing worth acting on.
 
 Per binary, the same tests:
 

@@ -5,6 +5,133 @@ what remains. Brief: `.claude/plan/briefs/CI-01-ci-steward.md`.
 
 ---
 
+## 2026-09-19 — **release v0.0.1**: everything published except the Homebrew formula
+
+Run [35431552415](https://github.com/SierraSoftworks/rustak/actions/runs/35431552415),
+`event=release`, tag `v0.0.1`, sha `08d61bb`. The first exercise of the release
+path. **24 of 25 jobs green**; one failed, and it is the last link in the chain.
+
+**What was published, verified:**
+
+- **Ten release assets**, each named `<bin>-<os>-<arch>[.exe]` as designed:
+  `rustak-{darwin,linux}-{amd64,arm64}`, `rustak-windows-amd64.exe`, and the
+  same five for `rustak-plugin-example`.
+- **Docker tags, exactly the four intended**, from the job's own log:
+  `ghcr.io/sierrasoftworks/rustak:0.0.1`, `:0.0`, `:0`, `:latest` — patch,
+  minor, major, latest. Both `Docker Publish` jobs succeeded, both multi-arch.
+- The version rewrite from the tag, the whole build matrix, `e2e` and
+  `interop-node-tak` all passed on the tag.
+
+### F9 — `Update Homebrew Tap` failed, and the formula was never written
+
+```
+##[error]No usable description for rustak. Pass `github-token` so the source
+repository description can be read, or set `desc`.
+```
+
+`github-token` **is** already passed. The problem is upstream of it: the
+repository's own description is **empty** (`gh api repos/SierraSoftworks/rustak
+-q .description` → `""`), so the action reads an empty string and a Homebrew
+formula cannot be written without a `desc`. The binary had already been resolved
+(`Resolved darwin-amd64 (40668448 bytes, e8e9d9de…)`), so this failed at the
+last step with everything else in place.
+
+**Fixed** in `.github/workflows/rust.yml`: the tap step now sets `desc`
+explicitly, to the README's one-line summary — *Single-binary TAK server for
+ATAK and CloudTAK, secure by default* (a short noun phrase, no trailing stop, as
+Homebrew wants). Stating it in the workflow rather than asking for the
+repository description to be set keeps the formula's text in the same review as
+the code, and does not depend on a repository setting only an administrator can
+change. `actionlint` reports the same nine pre-existing shellcheck findings
+before and after, so the change adds none.
+
+**The tap is the one thing v0.0.1 did not publish**, so once this lands the
+release wants re-running — `gh run rerun --failed 35431552415` will do it, since
+every other job succeeded and the assets are already up. Worth noting the `ci`
+aggregator went **green** despite this, because `tap` is not in its `needs:`
+list. That is defensible (the tap is not a gate on the code) but it does mean a
+release can report success with no formula published, which is exactly what
+happened here.
+
+---
+
+## 2026-09-19 — the scheduled nightly did fire, **four hours and nineteen minutes late**
+
+Correcting the entry below: run **35431683381**, `event=schedule`, created
+**08:19:17 UTC** for the `0 4 * * *` cron, on `08d61bb`. Not dropped — delayed.
+And **green**: `[eud] 9 passed, 0 skipped, 0 failed` and `[cloudtak] 9 passed,
+0 skipped, 0 failed`, with `interop-eud-image` correctly skipped (it selects the
+Monday cron). So the first unattended run of both suites passed, which is the
+thing that needed proving.
+
+Two delays now measured on this repository: the `0 0 * * *` audit at **+1h57m**,
+the `0 4 * * *` nightly at **+4h19m**. Both are top-of-the-hour crons, which
+GitHub documents as the congested case. The proposal below stands and is worth
+doing: move to `17 4 * * *` and `17 3 * * 1`, changing the cron strings **and**
+the two `if:` expressions that select on `github.event.schedule` together.
+
+A four-hour delay is survivable for a nightly; it matters because it makes the
+suites' result arrive in the middle of the next working day rather than before
+it, and because a delay long enough to collide with the following day's run
+would be a real problem.
+
+---
+
+## 2026-09-19 — `security_audit.yml` is green, and its history was never what it looked like
+
+**Green, confirmed on a dispatch:** run 35431711765 on `9b18c9e4` reports
+**`No vulnerabilities were found`**. So `rustsec/audit-check@v2.0.0` **does**
+honour `.cargo/audit.toml` — the `ignore:` input is not needed and I am not
+proposing it. `662e920` landed the file; note it touches no `Cargo.lock`, so the
+workflow's own `paths:` push trigger would never have fired on it and
+`workflow_dispatch` is what made the confirmation possible.
+
+**The correction that matters more.** My §S3 read of this workflow — "red, and
+has never been green, 8 of 8 runs failed" — was true but drew the wrong
+conclusion, because `rustsec/audit-check` behaves differently per event:
+
+- on **`push`** it fails the check (`Critical vulnerabilities were found,
+  marking check as failed`);
+- on **`schedule`** it **opens a GitHub issue per advisory and succeeds**.
+
+Every red run was a `push`. The first scheduled run to appear in this session,
+35414225640 at 01:57, reported the same `2 vulnerabilities found!` and concluded
+**success**, having created **issues #4 and #5**. So the workflow was never
+"permanently red" in the way I described — it was red on pushes and filing
+issues on schedules, which is the action's design and is closer to the user's
+stated preference for raising security findings through GitHub's own interfaces
+than my summary implied.
+
+Issues **#4** (`RUSTSEC-2026-0258`) and **#5** (`RUSTSEC-2023-0071`) are now
+stale: they were filed hours before the decision to ignore those two advisories,
+and a future scheduled run will not re-create them because `cargo audit` no
+longer reports them. Closing them is a public action, so it is the user's; I
+have flagged rather than done it.
+
+---
+
+## 2026-09-19 — the 04:00 scheduled nightly did not fire
+
+At 08:19 UTC there was no `schedule`-event nightly run. The workflow is
+`active`, `nightly.yml` is on the default branch and its cron is well-formed, so
+the configuration is not at fault.
+
+The discriminator is the other schedule in this repository: `security_audit.yml`
+(`0 0 * * *`) **did** fire — at **01:57 UTC**, nearly two hours late. So
+schedules here work and are heavily delayed; the 04:00 slot, one of the most
+contended on GitHub, appears to have been dropped rather than delayed.
+
+GitHub documents exactly this and recommends avoiding the top of the hour.
+Proposed, once the release is through — I am not editing a workflow while a
+release runs through it: move the nightly cron from `0 4 * * *` to something
+like `17 4 * * *`, and the image cron from `0 3 * * 1` likewise. It costs
+nothing and removes the most likely cause. The jobs' `if:` guards select on
+`github.event.schedule`, so **both the cron strings and the two `if:`
+expressions must change together** or the jobs will stop selecting themselves —
+that is the one trap in this change.
+
+---
+
 ## 2026-09-19 — post-review-fix confirmation: both suites 9/9 again
 
 Nightly [35412478320](https://github.com/SierraSoftworks/rustak/actions/runs/35412478320)
@@ -734,7 +861,7 @@ and `docs/ci.md`.
 | `rust.yml` | **green** through `6af709c` | `Test` 11–15m across four samples; one 27m run was runner variance, not capacity |
 | `nightly.yml` `interop-eud` | **green — 9/9**, twice running | 12m20s, post-review-fix |
 | `nightly.yml` `interop-cloudtak` | **green — 9/9**, twice running | 7m11s, post-review-fix |
-| `security_audit.yml` | **red, and has never been green** (8 of 8 recorded runs failed) | two advisories, neither fixable from this repository today — needs a decision, §S3 |
+| `security_audit.yml` | **green** | `.cargo/audit.toml` (`662e920`) is honoured; the old red runs were all `push` events — on `schedule` the action files issues and passes |
 | `changelog.yml` | green | — |
 
 ---
