@@ -74,7 +74,9 @@ test("a package is uploaded, given a channel, downloaded and deleted", async ({ 
 
   // --- editing -----------------------------------------------------------
 
-  await row.getByRole("button", { name: "Edit" }).click();
+  // Downloading is the row's own button; editing is behind the caret beside it.
+  await row.getByRole("button", { name: "More actions for" }).click();
+  await row.getByRole("menuitem", { name: "Edit" }).click();
 
   // Scoped to the editor: the channel's name appears twice on an open row —
   // once in the metadata saying where the package is, and once as the switch

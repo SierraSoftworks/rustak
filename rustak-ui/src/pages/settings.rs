@@ -86,13 +86,11 @@ pub fn settings() -> Html {
 
             <FilesCard />
 
-            <Card
+            <PasskeysPanel
                 title="Your passkeys"
                 subtitle="Registering a second one is how you keep a way in when the first \
                     device is lost. The rest of how you sign in is on the Credentials page."
-            >
-                <PasskeysPanel />
-            </Card>
+            />
         </>
     }
 }

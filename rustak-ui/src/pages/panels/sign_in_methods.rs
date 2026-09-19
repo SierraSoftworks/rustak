@@ -15,7 +15,7 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::auth;
-use crate::components::{Alert, AlertKind, Button, ButtonKind, LoadingNote};
+use crate::components::{Alert, AlertKind, Button, ButtonKind, Card, LoadingNote};
 use crate::pages::load::use_resource;
 
 #[derive(Properties, PartialEq)]
@@ -26,7 +26,8 @@ pub struct SignInMethodsProps {
     pub on_changed: Callback<()>,
 }
 
-/// The identity-provider half of "how you sign in".
+/// The identity-provider half of "how you sign in", as a card of its own: the
+/// link to the provider is the card's one action, and it lives in the footer.
 #[function_component(SignInMethods)]
 pub fn sign_in_methods(props: &SignInMethodsProps) -> Html {
     let metadata = use_resource(api::auth::metadata);
@@ -57,8 +58,25 @@ pub fn sign_in_methods(props: &SignInMethodsProps) -> Html {
         })
     };
 
+    let card = |body: Html, footer: Option<Html>| {
+        html! {
+            <Card
+                title="How you sign in"
+                subtitle="Single sign-on, passkeys, or both. Keep a second way in."
+                {footer}
+            >
+                <div class="sign-in-methods">{ body }</div>
+            </Card>
+        }
+    };
+
     let provider = match (&metadata.data, &metadata.error) {
-        (None, None) => return html! { <LoadingNote label="Checking how you can sign in…" /> },
+        (None, None) => {
+            return card(
+                html! { <LoadingNote label="Checking how you can sign in…" /> },
+                None,
+            );
+        }
         (Some(metadata), _) => match &metadata.mode {
             AuthMode::Oidc { .. } => Some(metadata),
             _ => None,
@@ -94,29 +112,36 @@ pub fn sign_in_methods(props: &SignInMethodsProps) -> Html {
                    identity provider configured to link it to." }
             </p>
         },
-        (UserSource::Local, Some(_)) => html! {
-            <>
-                <p>
-                    { "This account was made here and signs in with a passkey. Signing in through \
-                       single sign-on would create a second account under your name — link this \
-                       one instead. You keep your devices, credentials, channels and passkeys; \
-                       your username will follow what the provider calls you." }
-                </p>
-                if let Some(message) = &*error {
-                    <Alert
-                        kind={AlertKind::Error}
-                        title="The account could not be linked"
-                        message={message.clone()}
-                    />
-                }
-                <div class="auth-card__actions">
-                    <Button kind={ButtonKind::Primary} busy={*busy} onclick={on_link}>
-                        { "Link your single sign-on account" }
-                    </Button>
-                </div>
-            </>
-        },
+        (UserSource::Local, Some(_)) => {
+            let footer = html! {
+                <Button kind={ButtonKind::Primary} busy={*busy} onclick={on_link}>
+                    { "Link your single sign-on account" }
+                </Button>
+            };
+
+            return card(
+                html! {
+                    <>
+                        <p>
+                            { "This account was made here and signs in with a passkey. Signing \
+                               in through single sign-on would create a second account under \
+                               your name — link this one instead. You keep your devices, \
+                               credentials, channels and passkeys; your username will follow \
+                               what the provider calls you." }
+                        </p>
+                        if let Some(message) = &*error {
+                            <Alert
+                                kind={AlertKind::Error}
+                                title="The account could not be linked"
+                                message={message.clone()}
+                            />
+                        }
+                    </>
+                },
+                Some(footer),
+            );
+        }
     };
 
-    html! { <div class="sign-in-methods">{ body }</div> }
+    card(body, None)
 }

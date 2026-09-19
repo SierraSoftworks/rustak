@@ -11,15 +11,15 @@
 //! "Revoked" on its own does not tell an administrator six months later
 //! whether a device was lost or a certificate simply replaced, and the two lead
 //! to different actions — one is an incident and the other is housekeeping. So
-//! the reason is chosen before the confirmation rather than defaulted, stored
-//! on the row, written to the audit log and shown here afterwards.
+//! the reason is part of what is chosen rather than defaulted: the plain
+//! "Revoke" on the row's button is an administrator's decision, and the menu
+//! beside it offers the three that say more. Each is stored on the row, written
+//! to the audit log and shown here afterwards.
 
 use rustak_api::{Certificate, CertificateState, RevocationReason};
-use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
-use crate::api;
-use crate::components::{ConfirmButton, Select, SelectOption, StatusPill, StatusTone};
+use crate::components::{MenuAction, MenuItem, StatusPill, StatusTone};
 use crate::util::{format_iso8601, short_relative};
 
 /// The tone a certificate's state is shown in.
@@ -31,22 +31,53 @@ fn tone(state: CertificateState) -> StatusTone {
     }
 }
 
-/// The reasons worth offering.
+/// The reasons offered in the menu beside the plain "Revoke", and what each is
+/// called there.
 ///
-/// `credential_revoked` and `user_disabled` are left out: the server sets both
-/// itself when the cascade runs, so choosing one here would be describing a
-/// cause rather than the one being applied.
-fn reason_options() -> Vec<SelectOption> {
-    RevocationReason::ALL
+/// `admin_action` is the button itself, not a menu item. `credential_revoked`
+/// and `user_disabled` are left out: the server sets both itself when the
+/// cascade runs, so choosing one here would be describing a cause rather than
+/// the one being applied.
+const MENU_REASONS: &[(RevocationReason, &str)] = &[
+    (RevocationReason::UserRequest, "Revoke (user requested)"),
+    (RevocationReason::DeviceLost, "Revoke (device lost)"),
+    (RevocationReason::Superseded, "Revoke (cert replaced)"),
+];
+
+/// The revocation actions for a certificate: the plain one for the row's
+/// button, and the reasoned ones for the menu beside it. `None` when there is
+/// nothing left to revoke.
+///
+/// Every one asks first, naming the subject, because a revocation is refused
+/// at the next handshake and drops any connection already holding it.
+pub fn revoke_actions(
+    certificate: &Certificate,
+    revoke: &Callback<RevocationReason>,
+) -> Option<(MenuAction, Vec<MenuItem>)> {
+    if certificate.state(chrono::Utc::now()) == CertificateState::Revoked {
+        return None;
+    }
+
+    let question = format!(
+        "Revoke the certificate for '{}'? It is refused at the next handshake and any \
+         connection already holding it is dropped.",
+        certificate.subject_cn,
+    );
+
+    let action = |label: &'static str, reason: RevocationReason| {
+        let revoke = revoke.clone();
+        MenuAction::new(label, Callback::from(move |()| revoke.emit(reason)))
+            .danger()
+            .confirm(question.clone(), "Revoke it")
+    };
+
+    let primary = action("Revoke", RevocationReason::AdminAction);
+    let items = MENU_REASONS
         .iter()
-        .filter(|reason| {
-            !matches!(
-                reason,
-                RevocationReason::CredentialRevoked | RevocationReason::UserDisabled
-            )
-        })
-        .map(|reason| SelectOption::new(reason.as_str(), reason.label()))
-        .collect()
+        .map(|(reason, label)| MenuItem::Action(action(label, *reason)))
+        .collect();
+
+    Some((primary, items))
 }
 
 #[derive(Properties, PartialEq)]
@@ -57,17 +88,13 @@ pub struct CertificateDetailsProps {
     /// Whether this device has ever presented one at all, which is not the
     /// same as our not being able to read it.
     pub had_one: bool,
-
-    pub on_changed: Callback<()>,
 }
 
+/// What a device's certificate is and how long it is good for. The actions on
+/// it live on the row, beside the device's own — see [`revoke_actions`].
 #[function_component(CertificateDetails)]
 pub fn certificate_details(props: &CertificateDetailsProps) -> Html {
-    let reason = use_state(|| RevocationReason::AdminAction);
-    let busy = use_state(|| false);
-    let error = use_state(|| None::<String>);
-
-    let Some(certificate) = props.certificate.clone() else {
+    let Some(certificate) = &props.certificate else {
         return html! {
             <span class="certificate" title={match props.had_one {
                 true => "This device presented a certificate we could not read. \
@@ -80,28 +107,6 @@ pub fn certificate_details(props: &CertificateDetailsProps) -> Html {
     };
 
     let state = certificate.state(chrono::Utc::now());
-
-    let revoke = {
-        let (id, reason) = (certificate.id, reason.clone());
-        let (busy, error, on_changed) = (busy.clone(), error.clone(), props.on_changed.clone());
-
-        Callback::from(move |_| {
-            let chosen = *reason;
-            let (busy, error, on_changed) = (busy.clone(), error.clone(), on_changed.clone());
-
-            busy.set(true);
-            spawn_local(async move {
-                match api::certificates::revoke(id, chosen).await {
-                    Ok(_) => {
-                        error.set(None);
-                        on_changed.emit(());
-                    }
-                    Err(err) => error.set(Some(err.to_string())),
-                }
-                busy.set(false);
-            });
-        })
-    };
 
     html! {
         <div class="certificate">
@@ -128,41 +133,6 @@ pub fn certificate_details(props: &CertificateDetailsProps) -> Html {
             </span>
 
             <span title="Where this certificate came from">{ certificate.source.label() }</span>
-
-            if state != CertificateState::Revoked {
-                <Select
-                    id={format!("certificate-reason-{}", certificate.id.get())}
-                    value={Some(AttrValue::from(reason.as_str()))}
-                    options={reason_options()}
-                    disabled={*busy}
-                    onchange={
-                        let reason = reason.clone();
-                        Callback::from(move |chosen: Option<String>| {
-                            if let Some(chosen) =
-                                chosen.as_deref().and_then(RevocationReason::parse)
-                            {
-                                reason.set(chosen);
-                            }
-                        })
-                    }
-                />
-
-                <ConfirmButton
-                    label="Revoke"
-                    confirm_label="Revoke it"
-                    question={format!(
-                        "Revoke the certificate for '{}'? It is refused at the next handshake \
-                         and any connection already holding it is dropped.",
-                        certificate.subject_cn,
-                    )}
-                    busy={*busy}
-                    onconfirm={revoke}
-                />
-            }
-
-            if let Some(message) = &*error {
-                <p class="certificate__error" role="alert">{ message.clone() }</p>
-            }
         </div>
     }
 }
@@ -184,16 +154,25 @@ mod tests {
 
     #[test]
     fn the_two_reasons_the_server_sets_itself_are_not_offered() {
-        let offered: Vec<String> = reason_options()
-            .into_iter()
-            .map(|option| option.value.to_string())
-            .collect();
+        let offered: Vec<RevocationReason> =
+            MENU_REASONS.iter().map(|(reason, _)| *reason).collect();
 
-        assert!(offered.contains(&"device_lost".to_string()));
+        assert!(offered.contains(&RevocationReason::DeviceLost));
         assert!(
-            !offered.contains(&"credential_revoked".to_string()),
+            !offered.contains(&RevocationReason::CredentialRevoked),
             "naming it here would describe a cause rather than apply one",
         );
-        assert!(!offered.contains(&"user_disabled".to_string()));
+        assert!(!offered.contains(&RevocationReason::UserDisabled));
+        assert!(
+            !offered.contains(&RevocationReason::AdminAction),
+            "the plain button already is this one",
+        );
+
+        for (_, label) in MENU_REASONS {
+            assert!(
+                label.starts_with("Revoke ("),
+                "{label} should read as a kind of revoke"
+            );
+        }
     }
 }

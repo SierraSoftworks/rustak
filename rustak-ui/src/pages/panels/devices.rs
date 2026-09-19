@@ -12,18 +12,22 @@
 //! certificate back is the *other* action on the row — see
 //! [`super::certificate`] — and it is separate because the two have different
 //! consequences: forgetting loses a record, revoking drops a live connection
-//! and refuses the next handshake.
+//! and refuses the next handshake. Both sit on one split button, the revocation
+//! on its face and the rest behind the caret, with a rule between the two kinds
+//! of thing.
 
-use rustak_api::{Certificate, Device, DeviceUid, Username};
+use rustak_api::{Certificate, Device, DeviceUid, RevocationReason, Username};
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
 use crate::api;
-use crate::components::{Alert, AlertKind, Card, ConfirmButton, Field, LoadingNote, TextInput};
+use crate::components::{
+    Alert, AlertKind, Card, Field, LoadingNote, MenuAction, MenuItem, SplitButton, TextInput,
+};
 use crate::util::{format_iso8601, short_relative};
 
 use super::super::load::use_resource;
-use super::certificate::CertificateDetails;
+use super::certificate::{CertificateDetails, revoke_actions};
 
 #[derive(Properties, PartialEq)]
 pub struct DevicesPanelProps {
@@ -200,7 +204,7 @@ fn device_row(props: &DeviceRowProps) -> Html {
     let forget = {
         let (busy, error, on_changed) = (busy.clone(), error.clone(), props.on_changed.clone());
         let uid: DeviceUid = props.device.uid.clone();
-        Callback::from(move |_| {
+        Callback::from(move |()| {
             let (busy, error, on_changed) = (busy.clone(), error.clone(), on_changed.clone());
             let uid = uid.clone();
             busy.set(true);
@@ -215,6 +219,53 @@ fn device_row(props: &DeviceRowProps) -> Html {
                 busy.set(false);
             });
         })
+    };
+
+    let revoke = {
+        let (busy, error, on_changed) = (busy.clone(), error.clone(), props.on_changed.clone());
+        let id = props.certificate.as_ref().map(|certificate| certificate.id);
+        Callback::from(move |reason: RevocationReason| {
+            let Some(id) = id else {
+                return;
+            };
+            let (busy, error, on_changed) = (busy.clone(), error.clone(), on_changed.clone());
+            busy.set(true);
+            spawn_local(async move {
+                match api::certificates::revoke(id, reason).await {
+                    Ok(_) => {
+                        error.set(None);
+                        on_changed.emit(());
+                    }
+                    Err(err) => error.set(Some(err.to_string())),
+                }
+                busy.set(false);
+            });
+        })
+    };
+
+    let forget = MenuAction::new("Forget", forget).danger().confirm(
+        format!(
+            "Forget '{}'? Its certificate stays valid — revoke the credential it enrolled \
+             with to take that back.",
+            props.device.display(),
+        ),
+        "Forget it",
+    );
+
+    // Revoking is the face of the button while there is a certificate to
+    // revoke; once there is not, forgetting is all that is left, and it takes
+    // the face with no caret beside it.
+    let (primary, items) = match props
+        .certificate
+        .as_ref()
+        .and_then(|c| revoke_actions(c, &revoke))
+    {
+        Some((primary, mut items)) => {
+            items.push(MenuItem::Separator);
+            items.push(MenuItem::Action(forget));
+            (primary, items)
+        }
+        None => (forget, Vec::new()),
     };
 
     html! {
@@ -245,19 +296,13 @@ fn device_row(props: &DeviceRowProps) -> Html {
             <CertificateDetails
                 certificate={props.certificate.clone()}
                 had_one={props.device.last_certificate_id.is_some()}
-                on_changed={props.on_changed.clone()}
             />
 
-            <ConfirmButton
-                label="Forget"
-                confirm_label="Forget it"
-                question={format!(
-                    "Forget '{}'? Its certificate stays valid — revoke the credential it \
-                     enrolled with to take that back.",
-                    props.device.display(),
-                )}
+            <SplitButton
                 busy={*busy}
-                onconfirm={forget}
+                menu_label={format!("More actions for {}", props.device.display())}
+                {primary}
+                {items}
             />
 
             if let Some(message) = &*error {

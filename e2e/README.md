@@ -128,7 +128,7 @@ Two things make that work here:
 |---|---|
 | `setup.spec.ts` | The first-run wizard, through the UI: token → administrator → passkey → server name → authority (which already exists, so the step shows its fingerprint and offers the certificate) → finish, and then that every `/setup/*` route answers `410` and the token file is gone. |
 | `auth.spec.ts` | Passkey sign-in and sign-out; a browser with no passkey; a passkey offered at the wrong host; the username-assisted fallback for a passkey the browser cannot offer on its own. |
-| `navigation.spec.ts` | Every destination in the navigation strip, the SPA deep-link fallback, the not-found page, and the landing page getting out of the way. |
+| `navigation.spec.ts` | Every destination in the navigation sidebar, the SPA deep-link fallback, the not-found page, and the landing page getting out of the way. |
 | `smoke.spec.ts` | `robots.txt` ahead of the catch-all, `/api/v1/health`, and the bundle booting. |
 
 `setup.spec.ts` is its **own Playwright project**, which the `chromium` project

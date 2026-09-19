@@ -253,10 +253,23 @@ fn create_profile(props: &CreateProfileProps) -> Html {
         })
     };
 
+    let footer = html! {
+        <Button
+            kind={ButtonKind::Primary}
+            busy={*busy}
+            disabled={name.trim().is_empty()}
+            title={name.trim().is_empty().then_some("Give it a name first.")}
+            onclick={submit}
+        >
+            { "Create profile" }
+        </Button>
+    };
+
     html! {
         <Card
             title="Create a profile"
             subtitle="Add its preferences and files once it exists."
+            {footer}
         >
             if let Some(message) = &*error {
                 <Alert
@@ -316,18 +329,6 @@ fn create_profile(props: &CreateProfileProps) -> Html {
                         }
                     />
                 </Field>
-
-                <div class="inline-form__action">
-                    <Button
-                        kind={ButtonKind::Primary}
-                        busy={*busy}
-                        disabled={name.trim().is_empty()}
-                        title={name.trim().is_empty().then_some("Give it a name first.")}
-                        onclick={submit}
-                    >
-                        { "Create profile" }
-                    </Button>
-                </div>
             </div>
         </Card>
     }

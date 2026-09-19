@@ -90,10 +90,33 @@ pub fn create_user(props: &CreateUserProps) -> Html {
         .map(|kind| SelectOption::new(kind.as_str(), kind.label()))
         .collect();
 
+    let footer = html! {
+        <ButtonGroup label="Create">
+            <Button
+                kind={ButtonKind::Primary}
+                busy={*busy}
+                disabled={parsed.is_err()}
+                title={parsed.is_err().then_some("Give it a valid username first.")}
+                onclick={submit}
+            >
+                { "Create account" }
+            </Button>
+            <Button
+                busy={*busy}
+                disabled={parsed.is_err()}
+                title={parsed.is_err().then_some("Give it a valid username first.")}
+                onclick={onboard}
+            >
+                { "Create CloudTAK account" }
+            </Button>
+        </ButtonGroup>
+    };
+
     html! {
         <Card
             title="Add an account"
             subtitle="No password is set here, because there are none to set."
+            {footer}
         >
             if let Some(message) = &*error {
                 <Alert
@@ -169,27 +192,6 @@ pub fn create_user(props: &CreateUserProps) -> Html {
                     />
                 </Field>
 
-                <div class="inline-form__action">
-                    <ButtonGroup label="Create">
-                        <Button
-                            kind={ButtonKind::Primary}
-                            busy={*busy}
-                            disabled={parsed.is_err()}
-                            title={parsed.is_err().then_some("Give it a valid username first.")}
-                            onclick={submit}
-                        >
-                            { "Create account" }
-                        </Button>
-                        <Button
-                            busy={*busy}
-                            disabled={parsed.is_err()}
-                            title={parsed.is_err().then_some("Give it a valid username first.")}
-                            onclick={onboard}
-                        >
-                            { "Create CloudTAK account" }
-                        </Button>
-                    </ButtonGroup>
-                </div>
             </div>
         </Card>
     }

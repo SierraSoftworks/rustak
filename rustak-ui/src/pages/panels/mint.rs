@@ -91,10 +91,23 @@ pub fn mint_form(props: &MintFormProps) -> Html {
         .map(|kind| SelectOption::new(kind.as_str(), kind.label()))
         .collect();
 
+    let footer = html! {
+        <Button
+            kind={ButtonKind::Primary}
+            busy={*busy}
+            disabled={label.trim().is_empty()}
+            title={label.trim().is_empty().then_some("Give it a label first.")}
+            onclick={submit}
+        >
+            { "Mint" }
+        </Button>
+    };
+
     html! {
         <Card
             title="Mint a credential"
             subtitle="Shown once, and only at the moment it is made."
+            {footer}
         >
             if kind.is_compatibility_only() {
                 <Alert
@@ -139,18 +152,6 @@ pub fn mint_form(props: &MintFormProps) -> Html {
                 >
                     <NumberInput id="mint-days" value={*days} min=1 max=3650 onchange={on_days} />
                 </Field>
-
-                <div class="mint-form__action">
-                    <Button
-                        kind={ButtonKind::Primary}
-                        busy={*busy}
-                        disabled={label.trim().is_empty()}
-                        title={label.trim().is_empty().then_some("Give it a label first.")}
-                        onclick={submit}
-                    >
-                        { "Mint" }
-                    </Button>
-                </div>
             </div>
 
             if let Some(message) = &*error {

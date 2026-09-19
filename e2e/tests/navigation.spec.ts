@@ -7,24 +7,24 @@
  * client-side link that routes to the wrong page, and a deep link or a reload
  * that never reaches the router at all because the server 404'd it first.
  *
- * Every destination in the navigation strip is here from M0, even the ones
+ * Every destination in the navigation sidebar is here from M0, even the ones
  * whose pages arrive in a later milestone, because a link that goes nowhere is
  * worse than one that says what it is waiting for.
  *
  * Since M2 three of them are real pages rather than stubs — Devices, Channels
  * and Credentials — and one destination is reachable only from inside another:
  * an account's own page, at `/admin/users/{username}`. It has no link in the
- * strip on purpose, because it is about one row rather than one area, so it is
+ * sidebar on purpose, because it is about one row rather than one area, so it is
  * tested as a deep link instead.
  */
 
 import { bootstrapAdmin, expect, gotoApp, signIn, test, waitForApp } from "./helpers";
 
 /**
- * The navigation strip's label, and the heading the page it opens announces
+ * The navigation sidebar's label, and the heading the page it opens announces
  * itself with.
  *
- * They differ on purpose in two places: the strip has room for "Packages" and
+ * They differ on purpose in two places: the sidebar has room for "Packages" and
  * "Profiles" where the page can afford "Data packages" and "Device profiles".
  * Asserting both is what proves the link opened the page it claimed to.
  */
@@ -47,7 +47,7 @@ test.beforeEach(async ({ page }) => {
   await signIn(page, session);
 });
 
-test("every destination in the navigation strip opens the page it names", async ({ page }) => {
+test("every destination in the navigation sidebar opens the page it names", async ({ page }) => {
   await gotoApp(page, "/admin");
   await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
 
@@ -57,7 +57,7 @@ test("every destination in the navigation strip opens the page it names", async 
   }
 });
 
-test("an account's own page is a deep link, and the strip still says where it is", async ({
+test("an account's own page is a deep link, and the sidebar still says where it is", async ({
   page,
 }) => {
   // `Route::UserDetail` carries the username as a path segment, so this is both
@@ -71,8 +71,8 @@ test("an account's own page is a deep link, and the strip still says where it is
   await expect(page.getByRole("tab", { name: "Profile" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Channels" })).toBeVisible();
 
-  // One account's page is somewhere inside Users, so the strip must not read as
-  // though nothing is selected while it is open.
+  // One account's page is somewhere inside Users, so the sidebar must not read
+  // as though nothing is selected while it is open.
   await expect(page.getByRole("link", { name: "Users", exact: true })).toHaveClass(
     /admin-nav__link--active/,
   );
