@@ -168,7 +168,7 @@ fn default_max_frame() -> usize {
 /// Deep enough to ride out a burst of position reports, shallow enough that a
 /// stalled connection is noticed in seconds rather than minutes.
 fn default_queue_len() -> usize {
-    256
+    1024
 }
 
 fn default_close_after_drops() -> u64 {
@@ -344,7 +344,7 @@ mod tests {
 
         assert_eq!(parsed.limits, StreamLimits::default());
         assert_eq!(parsed.limits.max_frame, rustak_cot::codec::MAX_MESSAGE);
-        assert_eq!(parsed.limits.queue_len, 256);
+        assert_eq!(parsed.limits.queue_len, 1024);
         assert!(parsed.limits.negotiate_protobuf);
         assert!(parsed.limits.record_history);
     }
@@ -362,7 +362,10 @@ mod tests {
         .unwrap();
 
         assert!(!parsed.limits.negotiate_protobuf);
-        assert_eq!(parsed.limits.queue_len, 256, "the rest keep their defaults");
+        assert_eq!(
+            parsed.limits.queue_len, 1024,
+            "the rest keep their defaults"
+        );
     }
 
     #[test]

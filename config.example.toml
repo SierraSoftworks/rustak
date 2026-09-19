@@ -248,7 +248,7 @@ max_frame = 8388608
 # but the wait is paid by every device after a restart, so keep this at or above
 # max_connections on an installation that expects a full house. Below it, rustak
 # warns at start-up naming both numbers.
-queue_len = 256
+queue_len = 1024
 
 # How many deliveries in a row may be dropped before the connection is closed.
 # Closing is what makes a permanently-behind client resynchronise: it reconnects
