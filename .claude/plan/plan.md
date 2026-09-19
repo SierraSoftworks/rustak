@@ -1,8 +1,9 @@
 # rustak — a lightweight Rust-native TAK server
 
-> Status: IN PROGRESS (2026-09-19). M0–M6 landed; both interop suites 9/9; all three independent reviews
-> (`.claude/plan/reviews/`) actioned and landed. Remaining: loose ends (M2-14), the first pre-release tag (user
-> decision), running the manual checklists in `docs/compat/` on real devices, and `.claude/plan/backlog.md`.
+> Status: FEATURE-COMPLETE FOR THE PLANNED SCOPE (2026-09-19). M0–M6 landed; both interop suites 9/9 (re-confirmed
+> after the review fixes); all three independent reviews actioned; loose ends closed. Open: the first pre-release
+> tag (user decision), making the ghcr package public, the security-audit ignore list, running the manual
+> checklists in `docs/compat/` on real devices, and `.claude/plan/backlog.md`.
 
 ## Context
 

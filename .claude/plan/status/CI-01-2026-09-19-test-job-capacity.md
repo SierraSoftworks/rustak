@@ -18,6 +18,20 @@ replaced.
 Both green. The second run has **more** tests and takes **less than half** the
 time — so the cost is not the test count and not the new suites.
 
+**Two further samples, added as they arrived** (the rule this note ends with,
+applied to itself):
+
+| Run | Commit | `Test` wall |
+|---|---|---:|
+| 35411593505 | `b58ce8e` (M1-10, stream robustness) | 13m35s |
+| 35411906247 | `6af709c` (docs) | 14m30s |
+
+Four samples now: **11m40s, 13m35s, 14m30s** and the single **27m02s**. The
+normal band is 11–15 minutes and the outlier stands alone, which is what §2
+predicts and what §4's withdrawal rests on. It also means the suite's own growth
+is visible and slow — `6af709c` carries the most tests of the four and sits at
+the top of the normal band, not outside it.
+
 Per binary, the same tests:
 
 | Binary | `789a2bd` | `e101336` | Ratio |

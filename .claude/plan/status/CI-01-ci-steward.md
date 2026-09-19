@@ -5,6 +5,34 @@ what remains. Brief: `.claude/plan/briefs/CI-01-ci-steward.md`.
 
 ---
 
+## 2026-09-19 — post-review-fix confirmation: both suites 9/9 again
+
+Nightly [35412478320](https://github.com/SierraSoftworks/rustak/actions/runs/35412478320)
+on `6af709c`, dispatched once M1-10 was green, so that every review fix was in
+the tree at once:
+
+```
+[eud]      surfaces missing: (none)      9 passed, 0 skipped, 0 failed.   12m20s
+[cloudtak] surfaces missing: (none)      9 passed, 0 skipped, 0 failed.    7m11s
+```
+
+This is the confirmation that mattered. The wire-compatibility fixes (`7832a3e`),
+the security fixes (`789a2bd`), the authorization work and M1-10's stream
+robustness (`b58ce8e`) all landed on the Marti routes, the authorization path
+and the stream — which is exactly the surface these two suites drive. Eighteen
+scenarios and steps, nothing skipped, nothing moved. The review pass went in
+without changing observable behaviour for ATAK's own `commoncommo` or for
+CloudTAK's real container.
+
+Both suites are also faster than their previous clean run — EUD 12m20s against
+13m43s, CloudTAK 7m11s against 9m21s — which is the same runner variance §2 of
+the capacity note describes, in the helpful direction.
+
+**All four `rust.yml` landings in this window were green on the first attempt**:
+`b58ce8e`, `6af709c`, and `e101336`/`660ccf6` before them.
+
+---
+
 ## 2026-09-19 — the review landings are green, and the `Test` job is nearly full
 
 `7c8ce50` (the UI fixture hotfix) and `789a2bd` (the wire-compatibility and
@@ -703,9 +731,9 @@ and `docs/ci.md`.
 
 | Workflow | On `main` | Verdict |
 |---|---|---|
-| `rust.yml` | **green** on `7c8ce50`, `789a2bd`, `660ccf6`, `e101336` | `Test` normally ~12m; one 27m run was runner variance, not capacity |
-| `nightly.yml` `interop-eud` | **green — 9 passed, 0 skipped, 0 failed** | 13m43s |
-| `nightly.yml` `interop-cloudtak` | **green — 9 passed, 0 skipped, 0 failed** | 9m21s, second run ever |
+| `rust.yml` | **green** through `6af709c` | `Test` 11–15m across four samples; one 27m run was runner variance, not capacity |
+| `nightly.yml` `interop-eud` | **green — 9/9**, twice running | 12m20s, post-review-fix |
+| `nightly.yml` `interop-cloudtak` | **green — 9/9**, twice running | 7m11s, post-review-fix |
 | `security_audit.yml` | **red, and has never been green** (8 of 8 recorded runs failed) | two advisories, neither fixable from this repository today — needs a decision, §S3 |
 | `changelog.yml` | green | — |
 
