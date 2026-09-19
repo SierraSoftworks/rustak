@@ -314,9 +314,9 @@ fn resend(context: &AppContext, username: &Username) {
 
     match context.live() {
         Ok(live) => {
-            let sent = live.resend_latest_sa(username);
+            let started = live.resend_latest_sa(username);
 
-            debug!(user = %username, events = sent, "Replayed the map after a channel change.");
+            debug!(user = %username, connections = started, "Started a map replay after a channel change.");
         }
         Err(err) => warn!(error = %err, "Could not reach the live connections to replay a map."),
     }

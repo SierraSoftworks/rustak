@@ -133,21 +133,30 @@ impl Hub {
     ) -> Option<SaUpdate> {
         let mut registry = self.inner.write();
         let subscription = registry.conns.get_mut(&id)?;
+
+        let was_uid = subscription.client_uid.clone();
+        let was_callsign = subscription.callsign.clone();
+
         let update = subscription.apply_event(event, encoded);
 
-        if update.first_identity {
-            // Cloned out because `index` needs the registry mutably and the
-            // subscription is borrowed from it.
-            let uid = subscription.client_uid.clone();
-            let callsign = subscription.callsign.clone();
+        // Cloned out because `reindex` needs the registry mutably and the
+        // subscription is borrowed from it.
+        let uid = subscription.client_uid.clone();
+        let callsign = subscription.callsign.clone();
 
-            if let Some(uid) = uid {
-                registry.by_uid.entry(uid).or_default().push(id);
-            }
-            if let Some(callsign) = callsign {
-                registry.by_callsign.entry(callsign).or_default().push(id);
-            }
-        }
+        // Every identifying message, not only the first: a device that has been
+        // renamed carries its new callsign from then on, and an index written
+        // once at `first_identity` would answer under the old one for ever.
+        // Both are compared before anything is written, so the ordinary case —
+        // a client reporting the same name it reported two seconds ago — costs
+        // two string comparisons and no map work at all. R-03 M2.
+        registry.reindex(Index::Uid, id, was_uid.as_deref(), uid.as_deref());
+        registry.reindex(
+            Index::Callsign,
+            id,
+            was_callsign.as_deref(),
+            callsign.as_deref(),
+        );
 
         Some(update)
     }
@@ -593,6 +602,63 @@ mod tests {
             hub.resolve_callsigns(outsider, &["INSIDE".to_string()])
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn renaming_a_device_moves_it_in_the_callsign_index() {
+        // R-03 M2. Renaming a device mid-session is routine in ATAK, and every
+        // situational-awareness message after it carries the new callsign — but
+        // the index was only written on the *first* identifying message. So
+        // chat to the new name reached nobody (or bounced as `b-t-f-s`, which
+        // is worse: the sender is told the person is not there while looking at
+        // them on the map), and the old name still resolved to the right
+        // connection under a name nobody is using.
+        let hub = Hub::new();
+        let (alpha, _alpha_rx) = join(&hub, "alpha", &[(7, Direction::Both)]);
+        let (bravo, _bravo_rx) = join(&hub, "bravo", &[(7, Direction::Both)]);
+
+        identify(&hub, bravo, "UID-B", "BRAVO");
+        assert_eq!(
+            hub.resolve_callsigns(alpha, &["BRAVO".to_string()]).len(),
+            1
+        );
+
+        identify(&hub, bravo, "UID-B", "CHARLIE");
+
+        assert_eq!(
+            hub.resolve_callsigns(alpha, &["CHARLIE".to_string()]).len(),
+            1,
+            "the new name resolves",
+        );
+        assert!(
+            hub.resolve_callsigns(alpha, &["BRAVO".to_string()])
+                .is_empty(),
+            "and the old one resolves to nobody",
+        );
+    }
+
+    #[test]
+    fn a_rename_leaves_nothing_behind_in_the_index() {
+        // The leak in the same place: `unindex` only removes the callsign a
+        // subscription is *currently* carrying, so a stale entry with a dead
+        // `ConnId` in it would never empty and never be dropped — one map entry
+        // per rename, for the life of the process.
+        let hub = Hub::new();
+        let (bravo, _bravo_rx) = join(&hub, "bravo", &[(7, Direction::Both)]);
+
+        for round in 0..16 {
+            identify(&hub, bravo, "UID-B", &format!("NAME-{round}"));
+        }
+
+        hub.unregister(bravo);
+
+        let registry = hub.inner.read();
+        assert!(
+            registry.by_callsign.is_empty(),
+            "every name this connection ever reported is gone: {:?}",
+            registry.by_callsign,
+        );
+        assert!(registry.by_uid.is_empty());
     }
 
     #[test]

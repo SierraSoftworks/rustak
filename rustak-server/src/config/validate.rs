@@ -46,6 +46,9 @@ const ADVICE_PUBLIC_NAME: &[&str] = &[
 /// Checks every cross-section rule, in the order an operator meets them.
 pub(super) fn validate(config: &Config) -> Result<(), Error> {
     shutdown(config)?;
+    // Within one section rather than across two, so the rule lives beside the
+    // schema it is about.
+    config.stream.limits.validate()?;
     public_listener(config)?;
     certificate_source(config)?;
     acme(config)?;

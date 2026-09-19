@@ -19,6 +19,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use rustak_cot::Event;
@@ -159,6 +160,38 @@ impl ConnHandle {
                     SendResult::Dropped
                 }
             }
+        }
+    }
+
+    /// Queues a connect-time replay, waiting for room rather than discarding it.
+    ///
+    /// Two differences from [`send`](Self::send), and each one is a bug this
+    /// method exists to fix (R-03 C1).
+    ///
+    /// It **waits**. The caller here is the *receiving* connection's own task,
+    /// not somebody else's: a replay that awaits room applies backpressure to
+    /// one new client instead of throwing away its map. The `try_send` loop
+    /// this replaced pushed one event per connected peer with no await point
+    /// between them, so above `queue_len` peers the rest were discarded and the
+    /// client's map started out half empty.
+    ///
+    /// It is **exempt from the close counter**. Those discards were consecutive
+    /// drops, so past `close_after_drops` of them the handle closed the
+    /// connection the client had not yet read a byte from — turning a fleet
+    /// restart above ~770 devices into a reconnect loop that looks like a
+    /// network fault.
+    ///
+    /// `within` bounds the wait. A peer whose writer is not draining is one the
+    /// idle timeout and `write_timeout` will reclaim; the replay does not wait
+    /// on it.
+    pub async fn send_replay(&self, outbound: Outbound, within: Duration) -> SendResult {
+        match tokio::time::timeout(within, self.tx.send(outbound)).await {
+            Ok(Ok(())) => {
+                self.stats.tx_msgs.fetch_add(1, Ordering::Relaxed);
+                SendResult::Sent
+            }
+            Ok(Err(_)) => SendResult::Closed,
+            Err(_) => SendResult::Dropped,
         }
     }
 

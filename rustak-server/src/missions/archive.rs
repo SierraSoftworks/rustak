@@ -497,7 +497,7 @@ mod tests {
         let record = crate::cot_store::CotRecord {
             // No account row in a mock context, and the foreign key is real.
             user_id: None,
-            ..crate::cot_store::CotRecord::new(&encoded, &principal, None)
+            ..crate::cot_store::CotRecord::new(std::sync::Arc::new(encoded), &principal, None)
         };
 
         crate::cot_store::latest::upsert_batch(context.db(), vec![record])

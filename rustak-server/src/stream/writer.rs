@@ -20,6 +20,7 @@
 //! after the message that told it to stop expecting any.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::SinkExt;
 use rustak_cot::codec::{EncodedEvent, MAX_PROTO_PAYLOAD, Mode, TakCodec};
@@ -66,17 +67,41 @@ pub struct WriterContext {
     /// The base URL an oversize message's pointer sends a client to. Without
     /// one there is nowhere to point, and an oversize message is dropped.
     pub public_url: Option<String>,
+    /// How long one write may take before the peer is given up on.
+    ///
+    /// `[stream.limits] write_timeout`. See [`run`].
+    pub write_timeout: Duration,
 }
 
 /// Runs a connection's writer until its queue closes or the socket fails.
+///
+/// # A half-dead peer does not get to keep a socket
+///
+/// Two bounds, because the writer can stall in two different places (R-03 H1).
+///
+/// It can stall **waiting**: `rx.recv()` only ends when every sender has been
+/// dropped, and a `ConnHandle` clone held by something mid-route keeps one
+/// alive. `shutdown` — the connection's own token, cancelled by
+/// [`ConnHandle::close`] — ends that wait.
+///
+/// It can stall **writing**: a peer that completed the handshake and then
+/// stopped reading leaves `flush()` parked on a socket whose window is zero,
+/// with no timeout of its own and nothing to interrupt it. Because
+/// `tokio::io::split` closes the socket only when *both* halves drop, that one
+/// task holds the file descriptor and the TLS session for the life of the
+/// process. `context.write_timeout` is the deadline on each write, and
+/// `connection::run` aborts whatever is left after the drain.
+///
+/// [`ConnHandle::close`]: super::subscription::ConnHandle::close
 pub async fn run<W: AsyncWrite + Unpin>(
     mut rx: mpsc::Receiver<Outbound>,
     mut sink: FramedWrite<W, TakCodec>,
     context: WriterContext,
+    shutdown: Shutdown,
 ) {
     let mut batch: Vec<Outbound> = Vec::with_capacity(DRAIN_BURST);
 
-    while let Some(first) = rx.recv().await {
+    while let Some(first) = next(&mut rx, &shutdown).await {
         batch.push(first);
 
         while batch.len() < DRAIN_BURST {
@@ -88,38 +113,74 @@ pub async fn run<W: AsyncWrite + Unpin>(
 
         for outbound in batch.drain(..) {
             if !write(&mut sink, outbound, &context).await {
-                close(&mut sink).await;
+                close(&mut sink, context.write_timeout).await;
 
                 return;
             }
         }
 
-        if let Err(err) = flush(&mut sink).await {
-            debug!(error = %err, "A stream connection's writer could not flush.");
-
+        if !flush(&mut sink, context.write_timeout).await {
             return;
         }
     }
 
     // The queue closed, which is the connection task saying it has finished.
-    let _ = flush(&mut sink).await;
-    close(&mut sink).await;
+    flush(&mut sink, context.write_timeout).await;
+    close(&mut sink, context.write_timeout).await;
 }
 
-/// Flushes the framer.
+/// The next thing to write, or [`None`] when there will not be another.
+///
+/// A cancelled connection still writes whatever is *already* queued: the close
+/// is a statement about the future, and the router counted those messages as
+/// delivered a moment ago. What cancellation ends is the **wait** — see [`run`].
+async fn next(rx: &mut mpsc::Receiver<Outbound>, shutdown: &Shutdown) -> Option<Outbound> {
+    if shutdown.is_cancelled() {
+        return rx.try_recv().ok();
+    }
+
+    tokio::select! {
+        next = rx.recv() => next,
+        () = shutdown.cancelled() => rx.try_recv().ok(),
+    }
+}
+
+/// Flushes the framer, giving up on a socket that will not take the bytes.
 ///
 /// `TakCodec` encodes two different item types, so `SinkExt::flush` cannot work
 /// out which `Sink` implementation is meant; the fan-out one is named here
 /// once rather than at every call site.
+///
+/// `false` means stop.
 async fn flush<W: AsyncWrite + Unpin>(
     sink: &mut FramedWrite<W, TakCodec>,
-) -> Result<(), CodecError> {
-    <FramedWrite<W, TakCodec> as SinkExt<&EncodedEvent>>::flush(sink).await
+    within: Duration,
+) -> bool {
+    let flushing = <FramedWrite<W, TakCodec> as SinkExt<&EncodedEvent>>::flush(sink);
+
+    match tokio::time::timeout(within, flushing).await {
+        Ok(Ok(())) => true,
+        Ok(Err(err)) => {
+            debug!(error = %err, "A stream connection's writer could not flush.");
+
+            false
+        }
+        Err(_) => {
+            debug!(
+                seconds = within.as_secs(),
+                "A stream connection stopped accepting writes and was given up on."
+            );
+
+            false
+        }
+    }
 }
 
 /// Flushes and shuts the framer down, ignoring a socket that has already gone.
-async fn close<W: AsyncWrite + Unpin>(sink: &mut FramedWrite<W, TakCodec>) {
-    let _ = <FramedWrite<W, TakCodec> as SinkExt<&EncodedEvent>>::close(sink).await;
+async fn close<W: AsyncWrite + Unpin>(sink: &mut FramedWrite<W, TakCodec>, within: Duration) {
+    let closing = <FramedWrite<W, TakCodec> as SinkExt<&EncodedEvent>>::close(sink);
+
+    let _ = tokio::time::timeout(within, closing).await;
 }
 
 /// Writes one queued item. `false` means stop.
@@ -137,9 +198,7 @@ async fn write<W: AsyncWrite + Unpin>(
                 return false;
             }
 
-            if let Err(err) = flush(sink).await {
-                debug!(error = %err, "Could not flush the protocol answer.");
-
+            if !flush(sink, context.write_timeout).await {
                 return false;
             }
 
@@ -164,16 +223,36 @@ async fn feed<W: AsyncWrite + Unpin>(
             Some(pointer) => {
                 StreamMetrics::incr(&context.metrics.oversize_substituted);
 
-                sink.feed(&pointer).await.is_ok()
+                fed(sink.feed(&pointer), context.write_timeout).await
             }
             None => true,
         };
     }
 
-    match sink.feed(encoded.as_ref()).await {
-        Ok(()) => true,
-        Err(err) => {
+    fed(sink.feed(encoded.as_ref()), context.write_timeout).await
+}
+
+/// Waits for one `feed`, under the same deadline the flush is held to.
+///
+/// `feed` buffers rather than writing, but `FramedWrite` writes through once
+/// its buffer is past the high-water mark — so on a socket that has stopped
+/// draining this awaits too, and needs the deadline just as much.
+async fn fed(
+    feeding: impl std::future::Future<Output = Result<(), CodecError>>,
+    within: Duration,
+) -> bool {
+    match tokio::time::timeout(within, feeding).await {
+        Ok(Ok(())) => true,
+        Ok(Err(err)) => {
             debug!(error = %err, "A stream connection's writer could not encode a message.");
+
+            false
+        }
+        Err(_) => {
+            debug!(
+                seconds = within.as_secs(),
+                "A stream connection stopped accepting writes and was given up on."
+            );
 
             false
         }
@@ -273,6 +352,7 @@ mod tests {
         WriterContext {
             metrics: Arc::new(StreamMetrics::default()),
             public_url: public_url.map(str::to_owned),
+            write_timeout: Duration::from_secs(5),
         }
     }
 
@@ -295,6 +375,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_peer_that_stops_reading_is_given_up_on_within_the_write_timeout() {
+        // R-03 H1. The socket takes sixteen bytes and its peer never reads, so
+        // the flush parks with nowhere to put the rest. Without a deadline the
+        // task, the file descriptor and the TLS session behind it survive for
+        // the life of the process — and this test does not terminate.
+        let (client, server) = tokio::io::duplex(16);
+        let (tx, rx) = mpsc::channel(8);
+        let sink = FramedWrite::new(server, TakCodec::new(Mode::Xml));
+
+        let mut context = context(None);
+        context.write_timeout = Duration::from_millis(100);
+
+        for uid in 0..8 {
+            tx.send(Outbound::Event(event(&format!("UID-{uid}"))))
+                .await
+                .unwrap();
+        }
+        drop(tx);
+
+        let started = std::time::Instant::now();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            run(rx, sink, context, Shutdown::new()),
+        )
+        .await
+        .expect("the writer gives up rather than parking for ever");
+
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "it gave up after {:?}, not after its 100ms budget",
+            started.elapsed(),
+        );
+
+        // Held to the end, so the socket is not closed from under the writer
+        // and the test is about the deadline rather than about an error.
+        drop(client);
+    }
+
+    #[tokio::test]
+    async fn a_closed_connection_stops_the_writer_even_with_a_sender_still_held() {
+        // The other half of H1: `rx.recv()` only ends when *every* sender has
+        // been dropped, and a `ConnHandle` clone held by something mid-route
+        // keeps one alive. The shutdown arm is what ends the wait.
+        let (_client, server) = tokio::io::duplex(1 << 20);
+        let (tx, rx) = mpsc::channel(8);
+        let sink = FramedWrite::new(server, TakCodec::new(Mode::Xml));
+        let closing = Shutdown::new();
+
+        let writing = tokio::spawn(run(rx, sink, context(None), closing.clone()));
+
+        // Queued before the close, and still written: the close is a statement
+        // about the future, and the router counted this one as delivered.
+        tx.send(Outbound::Event(event("UID-LAST"))).await.unwrap();
+        closing.cancel();
+
+        tokio::time::timeout(Duration::from_secs(5), writing)
+            .await
+            .expect("the writer stops without waiting for the last sender")
+            .expect("and does not panic");
+
+        drop(tx);
+    }
+
+    #[tokio::test]
     async fn messages_are_written_in_the_order_they_were_queued() {
         let (client, server) = tokio::io::duplex(1 << 20);
         let (tx, rx) = mpsc::channel(8);
@@ -304,7 +448,7 @@ mod tests {
         tx.send(Outbound::Event(event("UID-2"))).await.unwrap();
         drop(tx);
 
-        run(rx, sink, context(None)).await;
+        run(rx, sink, context(None), Shutdown::new()).await;
 
         let mut reader = FramedRead::new(client, TakCodec::new(Mode::Xml));
         let uids: Vec<String> = vec![
@@ -333,7 +477,7 @@ mod tests {
         tx.send(Outbound::Event(event("UID-1"))).await.unwrap();
         drop(tx);
 
-        run(rx, sink, context(None)).await;
+        run(rx, sink, context(None), Shutdown::new()).await;
 
         let mut reader = FramedRead::new(client, TakCodec::new(Mode::Xml));
         let first = reader.next().await.unwrap().unwrap();
@@ -360,7 +504,7 @@ mod tests {
         tx.send(Outbound::Event(oversize)).await.unwrap();
         drop(tx);
 
-        run(rx, sink, context.clone()).await;
+        run(rx, sink, context.clone(), Shutdown::new()).await;
 
         let mut reader = FramedRead::new(client, TakCodec::new(Mode::Proto));
         let frame = reader.next().await.unwrap().unwrap();
@@ -411,7 +555,13 @@ mod tests {
         tx.send(Outbound::Event(huge("UID-BIG"))).await.unwrap();
         drop(tx);
 
-        run(rx, sink, context(Some("https://tak.example.com"))).await;
+        run(
+            rx,
+            sink,
+            context(Some("https://tak.example.com")),
+            Shutdown::new(),
+        )
+        .await;
 
         let mut reader = FramedRead::new(client, TakCodec::new(Mode::Xml));
         let frame = reader.next().await.unwrap().unwrap();
@@ -429,7 +579,7 @@ mod tests {
         tx.send(Outbound::Event(event("UID-SMALL"))).await.unwrap();
         drop(tx);
 
-        run(rx, sink, context(None)).await;
+        run(rx, sink, context(None), Shutdown::new()).await;
 
         let mut reader = FramedRead::new(client, TakCodec::new(Mode::Proto));
         let frame = reader.next().await.unwrap().unwrap();
@@ -451,7 +601,7 @@ mod tests {
         tx.send(Outbound::Close).await.unwrap();
         tx.send(Outbound::Event(event("UID-1"))).await.unwrap();
 
-        run(rx, sink, context(None)).await;
+        run(rx, sink, context(None), Shutdown::new()).await;
 
         let mut reader = FramedRead::new(client, TakCodec::new(Mode::Xml));
         assert!(

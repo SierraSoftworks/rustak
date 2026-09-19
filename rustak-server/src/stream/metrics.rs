@@ -55,6 +55,27 @@ pub struct StreamMetrics {
     pub oversize_substituted: AtomicU64,
     /// Connections closed for falling too far behind.
     pub closed_slow: AtomicU64,
+    /// Cached peer positions a new connection never received.
+    ///
+    /// Separate from [`dropped_queue`](Self::dropped_queue) because it means
+    /// something different and is acted on differently: a replay drop is a
+    /// client whose map started out incomplete, and the number of them is how
+    /// far `[stream.limits] queue_len` is below the fleet size. Non-zero here
+    /// with `dropped_queue` at zero is a configuration to change, not a network
+    /// to investigate. R-03 C1.
+    pub replay_dropped: AtomicU64,
+    /// Writer tasks that would not stop on their own and were aborted.
+    ///
+    /// Each one is a socket and a TLS session reclaimed from a peer that
+    /// stopped reading — see `[stream.limits] write_timeout`. A steady rate is
+    /// ordinary on a mobile fleet; a rate that tracks the connection count is a
+    /// network path that is black-holing.
+    pub writer_aborted: AtomicU64,
+    /// `<dest>` elements discarded for being past the per-message cap.
+    ///
+    /// Only a client that is broken or hostile reaches this: no real one
+    /// addresses more than a handful of people. R-03 H2.
+    pub dests_truncated: AtomicU64,
 }
 
 impl StreamMetrics {

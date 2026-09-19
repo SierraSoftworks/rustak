@@ -56,9 +56,19 @@ pub struct ConnLimits {
     pub close_after_drops: u64,
     /// How long it may go silent.
     pub idle_timeout: Duration,
+    /// How long one write to it may take, and the budget its connect-time
+    /// replay sends within.
+    pub write_timeout: Duration,
     /// How it answers the TAK Protocol v1 negotiation.
     pub negotiate: NegotiationMode,
 }
+
+/// How long the writer is given to finish once the read side has ended.
+///
+/// Past this it is **aborted**, because a `timeout` around a `JoinHandle` stops
+/// waiting without stopping anything, and the writer still here is one parked
+/// on a socket whose peer has stopped reading. R-03 H1.
+const WRITER_DRAIN: Duration = Duration::from_secs(5);
 
 /// Everything a connection task shares with the rest of the listener.
 #[derive(Clone, Debug)]
@@ -120,16 +130,21 @@ pub async fn run<IO>(
         write,
         TakCodec::with_limit(Mode::Xml, deps.limits.max_frame),
     );
-    let writing = tokio::spawn(writer::run(
+    let mut writing = tokio::spawn(writer::run(
         rx,
         sink,
         writer::WriterContext {
             metrics: Arc::clone(&deps.metrics),
             public_url: deps.public_url.clone(),
+            write_timeout: deps.limits.write_timeout,
         },
+        closing.clone(),
     ));
 
-    replay::replay_latest_sa(&hub, id);
+    // Awaited, and awaited *after* the writer has been spawned, because it is
+    // one message per connected peer into a queue that is shallower than the
+    // fleet: it has to be able to wait for its own writer. See `replay`.
+    replay::replay_latest_sa(&hub, id, deps.limits.write_timeout, &deps.metrics).await;
 
     let mut negotiation =
         Negotiation::with_mode(deps.limits.negotiate, deps.server_version.clone());
@@ -161,7 +176,21 @@ pub async fn run<IO>(
     handle.close();
     drop(handle);
 
-    let _ = tokio::time::timeout(Duration::from_secs(5), writing).await;
+    if tokio::time::timeout(WRITER_DRAIN, &mut writing)
+        .await
+        .is_err()
+    {
+        // The writer has had its drain and is still here, which means it is
+        // parked inside a write on a socket its peer has stopped reading.
+        // `tokio::io::split` closes the socket only when *both* halves drop,
+        // so leaving the task alive leaks the descriptor, the TLS session and
+        // the task itself for the life of the process. R-03 H1.
+        writing.abort();
+        let _ = writing.await;
+
+        StreamMetrics::incr(&deps.metrics.writer_aborted);
+        debug!("A stream connection's writer would not stop and was aborted.");
+    }
 
     info!(
         rx = stats.rx_msgs.load(std::sync::atomic::Ordering::Relaxed),

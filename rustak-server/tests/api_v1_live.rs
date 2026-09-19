@@ -23,6 +23,8 @@
 
 #![cfg(feature = "testing")]
 
+use std::sync::Arc;
+
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
 use chrono::{Duration, Utc};
@@ -75,7 +77,7 @@ fn record(
             .build(),
     );
 
-    let mut record = CotRecord::new(&encoded, &principal, None);
+    let mut record = CotRecord::new(Arc::new(encoded), &principal, None);
     // No account row exists in a fresh test database for the foreign key to
     // point at, and none of these reads is about the sender's row.
     record.user_id = None;

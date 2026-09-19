@@ -343,6 +343,8 @@ fn far_future() -> DateTime<Utc> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use rustak_cot::CotTime;
     use rustak_cot::codec::EncodedEvent;
     use rustak_cot::detail::{Contact, Group, contact::STREAMING_ENDPOINT};
@@ -383,7 +385,11 @@ mod tests {
     }
 
     fn record(uid: &str, kind: &str, callsign: &str, at: DateTime<Utc>, bits: &[u32]) -> CotRecord {
-        let mut record = CotRecord::new(&event(uid, kind, callsign, at), &principal(bits), None);
+        let mut record = CotRecord::new(
+            Arc::new(event(uid, kind, callsign, at)),
+            &principal(bits),
+            None,
+        );
         // The foreign key points at accounts this in-memory database has none
         // of, and none of these reads is about the sender's row.
         record.user_id = None;

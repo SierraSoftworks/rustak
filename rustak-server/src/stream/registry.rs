@@ -74,6 +74,44 @@ impl Registry {
         }
     }
 
+    /// Moves one connection's entry in an index from `old` to `new`.
+    ///
+    /// Neither a callsign nor a `clientUid` is fixed for the life of a
+    /// connection. Renaming a device mid-session is routine in ATAK, and every
+    /// situational-awareness message after the rename carries the new name —
+    /// but the index was only ever written when the *first* identifying message
+    /// arrived. So `<dest callsign="BRAVO">` resolved to nobody while
+    /// `<dest callsign="ALPHA">` still resolved to the right connection under
+    /// the wrong name: a direct chat that silently vanishes, or bounces as
+    /// `b-t-f-s` while the sender is looking at the person on the map.
+    ///
+    /// The stale entry was a leak as well as a fault, because
+    /// [`unindex`](Self::unindex) only ever removes the name a subscription is
+    /// *currently* carrying — one dead entry per rename, for the life of the
+    /// process. R-03 M2.
+    pub fn reindex(&mut self, index: Index, id: ConnId, old: Option<&str>, new: Option<&str>) {
+        if old == new {
+            return;
+        }
+
+        let map = match index {
+            Index::Uid => &mut self.by_uid,
+            Index::Callsign => &mut self.by_callsign,
+        };
+
+        if let Some(old) = old {
+            remove(map, old, id);
+        }
+
+        if let Some(new) = new {
+            let ids = map.entry(new.to_owned()).or_default();
+
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+    }
+
     /// The handles for a list of ids, skipping any that have since gone.
     pub fn handles(&self, ids: &[ConnId]) -> Vec<ConnHandle> {
         ids.iter()

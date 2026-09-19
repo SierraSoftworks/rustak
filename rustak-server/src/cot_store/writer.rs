@@ -175,7 +175,7 @@ async fn write(
     if options.history {
         for record in batch.iter().filter(|record| record.is_historic()) {
             if let Err(err) = history
-                .append(&record.uid, record.received_at, &record.proto)
+                .append(&record.uid, record.received_at, record.proto())
                 .await
             {
                 warn!(uid = %record.uid, error = %err, "Could not append a message to the CoT history.");
@@ -202,6 +202,8 @@ async fn write(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use rustak_cot::Event;
     use rustak_cot::codec::EncodedEvent;
     use rustak_cot::detail::{Contact, contact::STREAMING_ENDPOINT};
@@ -229,7 +231,7 @@ mod tests {
 
         // No account row: an in-memory database has none, and the foreign
         // key is what would otherwise refuse the insert.
-        let mut record = CotRecord::new(&encoded, &principal(), None);
+        let mut record = CotRecord::new(Arc::new(encoded), &principal(), None);
         record.user_id = None;
         record
     }
@@ -324,7 +326,7 @@ mod tests {
         // row is keyed on.
         let ping = EncodedEvent::new(rustak_cot::msgs::ping("UID-P", rustak_cot::CotTime::now()));
         let uid = ping.event().uid.clone();
-        let mut control = CotRecord::new(&ping, &principal(), None);
+        let mut control = CotRecord::new(Arc::new(ping), &principal(), None);
         control.user_id = None;
         handle.record(control);
         assert!(eventually(&db, &uid).await);

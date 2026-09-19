@@ -17,6 +17,7 @@
 //! | [`registry`] | the map of connections and the two indexes over it |
 //! | [`router`] | flow tags, `<marti>` stripping, incognito, fan-out |
 //! | [`dest`] | `<dest>` → a list of connections |
+//! | [`groups`] | the channel name → bit position map, cached |
 //! | [`control`] | the types consumed here and never relayed |
 //! | [`replay`] | the latest position of everyone a newcomer may see |
 //! | [`notify`] | `t-x-d-d`, `t-x-g-c`, and closing a revoked session |
@@ -48,6 +49,7 @@
 pub mod connection;
 pub mod control;
 pub mod dest;
+pub mod groups;
 pub mod hub;
 pub mod listener_tls;
 pub mod live;
@@ -72,7 +74,8 @@ use crate::pki::Pki;
 use crate::prelude::*;
 
 pub use connection::{ConnDeps, ConnLimits};
-pub use dest::{DropReason, Selection};
+pub use dest::{DropReason, MAX_DESTS, Selection};
+pub use groups::GroupCache;
 pub use hub::Hub;
 pub use live::LiveState;
 pub use metrics::StreamMetrics;
@@ -98,6 +101,22 @@ pub struct StreamRuntime {
     resolver: Arc<dyn CertPrincipalResolver>,
     deps: ConnDeps,
     store: tokio::task::JoinHandle<()>,
+    /// The CoT store's own stop signal.
+    ///
+    /// **Not** `context.shutdown().child()`, which is what it used to be and
+    /// what R-03 M4 is about. A child is cancelled with its parent, so on
+    /// `SIGTERM` the store's writer broke its loop, drained what was already
+    /// queued and closed its segments — while connection tasks were still
+    /// finishing. A connection inside `handle_inbound` at that moment reaches
+    /// `Router::record` after the receiver has gone, and its message is relayed
+    /// and never written: the one thing this module's invariant says cannot
+    /// happen, since what it holds has by definition already been sent to
+    /// somebody.
+    ///
+    /// It is cancelled in [`run`](StreamRuntime::run) once
+    /// [`listener_tls::run`] has returned, which is the moment every connection
+    /// task has finished and nothing can route anything else.
+    store_shutdown: Shutdown,
     handshake_timeout: std::time::Duration,
     max_connections: usize,
     drain: std::time::Duration,
@@ -135,12 +154,13 @@ impl StreamRuntime {
         let bound = listener_tls::bind(&config.stream.tls.listen).await?;
         let tls = Arc::new(pki.stream_server_config()?);
 
+        let store_shutdown = Shutdown::new();
         let (store, store_task) = if limits.record_history {
             let (handle, task) = cot_store::start(
                 context.db().clone(),
                 config.streams_dir(),
                 CotStoreOptions::default().with_open_history_logs(config.storage.open_history_logs),
-                context.shutdown().child(),
+                store_shutdown.clone(),
             );
 
             (handle, task)
@@ -169,7 +189,8 @@ impl StreamRuntime {
             Arc::clone(&router),
             store,
             Arc::clone(&metrics),
-        );
+        )
+        .with_replay_budget(to_std(limits.write_timeout));
 
         let closing = live.clone();
         pki.revocations()
@@ -187,6 +208,7 @@ impl StreamRuntime {
                 queue_len: limits.queue_len,
                 close_after_drops: limits.close_after_drops,
                 idle_timeout: to_std(config.stream.tls.idle_timeout),
+                write_timeout: to_std(limits.write_timeout),
                 // `negotiate_protobuf = false` is the operational way to turn
                 // the offer off; `[stream] negotiation` is the compatibility
                 // switch, and it never overrides the operational one.
@@ -208,6 +230,7 @@ impl StreamRuntime {
             )),
             deps,
             store: store_task,
+            store_shutdown,
             handshake_timeout: to_std(limits.handshake_timeout),
             max_connections: limits.max_connections,
             drain: config.server.shutdown_budget(),
@@ -259,9 +282,14 @@ impl StreamRuntime {
         )
         .await;
 
-        // The store task stops on its own child token; waiting for it here is
-        // what makes "the listener has stopped" mean the history it relayed has
-        // been written.
+        // Only now: the listener has returned, so nothing can relay anything
+        // else, so everything the store still holds is everything there will
+        // ever be. Stopping it with the rest of the server would have thrown
+        // away whatever the drain relayed (R-03 M4).
+        self.store_shutdown.cancel();
+
+        // Waiting for it here is what makes "the listener has stopped" mean the
+        // history it relayed has been written.
         let _ = tokio::time::timeout(self.drain, self.store).await;
 
         outcome

@@ -119,6 +119,12 @@ pub async fn upsert_batch(db: &Database, records: Vec<CotRecord>) -> Result<usiz
 
         for record in &records {
             let (lat, lon, hae, ce, le) = record.point;
+            // `cot_latest.xml` is a TEXT column, and this is where the XML is
+            // produced for a record that never went to an XML client —
+            // on the writer's own task rather than on the sender's (R-03 M7).
+            // Borrowed, not copied, whenever the bytes are valid UTF-8, which
+            // they are unless a client sent something this server re-encoded.
+            let xml = String::from_utf8_lossy(record.xml());
 
             written += statement.execute(params![
                 record.uid,
@@ -135,7 +141,7 @@ pub async fn upsert_batch(db: &Database, records: Vec<CotRecord>) -> Result<usiz
                 hae,
                 ce,
                 le,
-                record.xml,
+                xml.as_ref(),
                 Timestamp::from(record.received_at),
             ])?;
         }
@@ -244,6 +250,8 @@ pub async fn prune_stale(db: &Database, before: DateTime<Utc>) -> Result<usize, 
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use rustak_cot::Event;
     use rustak_cot::codec::EncodedEvent;
     use rustak_cot::detail::{Contact, contact::STREAMING_ENDPOINT};
@@ -278,7 +286,7 @@ mod tests {
         // The account row the foreign key points at is the one the shared
         // `db()` helper creates, so the record names it rather than a row id
         // that happens to be free.
-        let mut record = CotRecord::new(&encoded, &principal(grants), None);
+        let mut record = CotRecord::new(Arc::new(encoded), &principal(grants), None);
         record.user_id = None;
         record
     }

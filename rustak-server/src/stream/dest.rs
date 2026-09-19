@@ -29,9 +29,27 @@ use rustak_cot::detail::marti::{ALL_STREAMING, Dest, DestKind};
 use crate::db::Database;
 use crate::prelude::*;
 
+use super::groups::GroupCache;
 use super::hub::Hub;
+use super::metrics::StreamMetrics;
 use super::mission_hook::{MissionIngest, MissionRef};
 use super::subscription::{ConnHandle, ConnId};
+
+/// The most `<dest>` elements one message may address.
+///
+/// `take_marti` collects **every** `<dest>` child of every `<marti>` with no
+/// cap of its own, and `rustak_cot::xml` caps nesting depth but not sibling
+/// count — so an 8 MiB frame carries around a quarter of a million of them, and
+/// every one used to be a database read or a key looked up under the registry's
+/// read lock (R-03 H2).
+///
+/// Sixty-four is far past any real client. ATAK's "send to contacts" list is
+/// bounded by what a person can select on a phone, and "post to all" is a
+/// single `<dest callsign="All Streaming"/>` rather than a list of everybody.
+/// The excess is dropped and counted, not refused: a message from a client this
+/// server does not recognise is still worth delivering to the sixty-four people
+/// it named first.
+pub const MAX_DESTS: usize = 64;
 
 /// Why a message reached nobody.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,6 +79,31 @@ impl DropReason {
             Self::NoSuchGroup(_) => "no-such-group",
             Self::NoRecipients => "no-recipients",
         }
+    }
+}
+
+/// What choosing recipients needs, beyond the message and who sent it.
+///
+/// A struct rather than five more parameters: the five are the same for every
+/// message the listener routes, and the router holds all of them.
+pub struct Selecting<'a> {
+    /// The registry every address is resolved against.
+    pub hub: &'a Hub,
+    /// Read only when [`groups`](Self::groups) has to refresh.
+    pub db: &'a Database,
+    /// The channel name → bit position map.
+    pub groups: &'a GroupCache,
+    /// Where a `<dest mission>` write goes.
+    pub missions: &'a dyn MissionIngest,
+    /// The listener's counters.
+    pub metrics: &'a StreamMetrics,
+}
+
+impl std::fmt::Debug for Selecting<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Selecting")
+            .field("connections", &self.hub.len())
+            .finish_non_exhaustive()
     }
 }
 
@@ -106,15 +149,14 @@ struct Addresses<'a> {
 /// separately; an empty [`Selection`] is not an error, because a broadcast on a
 /// server with one client connected is ordinary.
 pub async fn select_recipients(
-    hub: &Hub,
-    db: &Database,
-    missions: &dyn MissionIngest,
+    context: &Selecting<'_>,
     from: ConnId,
     sender: &Principal,
     dests: &[Dest],
     encoded: &Arc<EncodedEvent>,
 ) -> Result<Selection, DropReason> {
-    let addresses = partition(dests);
+    let hub = context.hub;
+    let addresses = partition(dests, context.metrics);
 
     if !addresses.has_any() {
         return Ok(Selection {
@@ -140,14 +182,14 @@ pub async fn select_recipients(
     for group in &addresses.groups {
         extend(
             &mut handles,
-            group_recipients(hub, db, from, sender, group).await?,
+            group_recipients(context, from, sender, group).await?,
         );
     }
 
     for mission in &addresses.missions {
         extend(
             &mut handles,
-            mission_recipients(hub, missions, from, sender, *mission, encoded).await,
+            mission_recipients(hub, context.missions, from, sender, *mission, encoded).await,
         );
     }
 
@@ -184,17 +226,35 @@ impl Addresses<'_> {
 }
 
 /// Sorts the destinations by what each one addresses.
-fn partition(dests: &[Dest]) -> Addresses<'_> {
+///
+/// Past [`MAX_DESTS`] the rest are discarded and counted, and each list is
+/// deduplicated: a name repeated a thousand times is one lookup, and the same
+/// person named by callsign *and* uid receives one copy either way (`extend`
+/// already saw to the second half of that). R-03 H2.
+fn partition<'a>(dests: &'a [Dest], metrics: &StreamMetrics) -> Addresses<'a> {
     let mut addresses = Addresses::default();
 
-    for dest in dests {
+    if dests.len() > MAX_DESTS {
+        StreamMetrics::add(&metrics.dests_truncated, (dests.len() - MAX_DESTS) as u64);
+        debug!(
+            dests = dests.len(),
+            cap = MAX_DESTS,
+            "A message addressed more destinations than any client sends; the excess was dropped.",
+        );
+    }
+
+    for dest in dests.iter().take(MAX_DESTS) {
         match dest.kind() {
             Some(DestKind::Callsign(callsign)) if callsign == ALL_STREAMING => {
                 addresses.all_streaming = true;
             }
-            Some(DestKind::Callsign(callsign)) => addresses.callsigns.push(callsign.to_owned()),
-            Some(DestKind::Uid(uid)) => addresses.uids.push(uid.to_owned()),
-            Some(DestKind::Group(group)) => addresses.groups.push(group),
+            Some(DestKind::Callsign(callsign)) => push(&mut addresses.callsigns, callsign),
+            Some(DestKind::Uid(uid)) => push(&mut addresses.uids, uid),
+            Some(DestKind::Group(group)) => {
+                if !addresses.groups.contains(&group) {
+                    addresses.groups.push(group);
+                }
+            }
             Some(DestKind::Mission { name, path, after }) => addresses.missions.push(MissionRef {
                 name: Some(name),
                 guid: None,
@@ -229,10 +289,24 @@ fn partition(dests: &[Dest]) -> Addresses<'_> {
     addresses
 }
 
+/// Adds a name to a list that holds each one once.
+///
+/// A linear scan rather than a set, because the list is at most
+/// [`MAX_DESTS`] long: sixty-four comparisons beat a hash and an allocation,
+/// and this runs per message.
+fn push(into: &mut Vec<String>, name: &str) {
+    if !into.iter().any(|held| held == name) {
+        into.push(name.to_owned());
+    }
+}
+
 /// The readers of one channel, when the sender may publish into it.
+///
+/// Resolved through [`GroupCache`] rather than `db.groups().get_by_name(..)`.
+/// The lookup is on the routing path, which is the one place this server cannot
+/// afford a database read (R-03 H2).
 async fn group_recipients(
-    hub: &Hub,
-    db: &Database,
+    context: &Selecting<'_>,
     from: ConnId,
     sender: &Principal,
     group: &str,
@@ -241,21 +315,15 @@ async fn group_recipients(
         return Err(DropReason::NoSuchGroup(group.to_owned()));
     };
 
-    let row = db
-        .groups()
-        .get_by_name(&name)
-        .await
-        .map_err(|err| {
-            warn!(group, error = %err, "Could not resolve a <dest group>.");
-            DropReason::NoSuchGroup(group.to_owned())
-        })?
-        .ok_or_else(|| DropReason::NoSuchGroup(group.to_owned()))?;
+    let Some(bitpos) = context.groups.bitpos(context.db, &name).await else {
+        return Err(DropReason::NoSuchGroup(group.to_owned()));
+    };
 
-    if !sender.has_group(row.bitpos, Direction::In) {
+    if !sender.has_group(bitpos, Direction::In) {
         return Err(DropReason::GroupNotMember(group.to_owned()));
     }
 
-    Ok(hub.reachable_in_group(from, row.bitpos))
+    Ok(context.hub.reachable_in_group(from, bitpos))
 }
 
 /// The subscribers a mission write should also be pushed to.
@@ -311,10 +379,74 @@ fn extend(into: &mut Vec<ConnHandle>, more: Vec<ConnHandle>) {
 mod tests {
     use super::*;
 
+    /// `partition` against counters nothing reads.
+    fn sorted(dests: &[Dest]) -> Addresses<'_> {
+        partition(dests, &StreamMetrics::default())
+    }
+
+    #[test]
+    fn a_hostile_destination_list_is_capped_and_deduplicated() {
+        // R-03 H2. An 8 MiB frame holds around a quarter of a million
+        // `<dest>` elements and `take_marti` collects every one of them. Each
+        // was a sequential SQLite read for the same row, against a read pool
+        // two connections deep — a denial of service from one enrolled device,
+        // and cheap, because the frame compresses to nothing on the wire.
+        let dests: Vec<Dest> = std::iter::repeat_with(|| Dest::group("__ANON__"))
+            .take(250_000)
+            .collect();
+        let metrics = StreamMetrics::default();
+
+        let started = std::time::Instant::now();
+        let addresses = partition(&dests, &metrics);
+        let took = started.elapsed();
+
+        assert_eq!(
+            addresses.groups.len(),
+            1,
+            "a quarter of a million copies of one name is one lookup",
+        );
+        assert_eq!(
+            StreamMetrics::get(&metrics.dests_truncated),
+            (250_000 - MAX_DESTS) as u64,
+            "and the excess is counted rather than silently ignored",
+        );
+        assert!(
+            took < std::time::Duration::from_millis(50),
+            "sorting the list took {took:?}; it should not depend on how long the list is",
+        );
+    }
+
+    #[test]
+    fn a_name_repeated_is_a_name_resolved_once() {
+        let callsigns: Vec<Dest> = (0..MAX_DESTS).map(|_| Dest::callsign("ALPHA")).collect();
+        assert_eq!(sorted(&callsigns).callsigns, vec!["ALPHA".to_string()]);
+
+        let uids: Vec<Dest> = (0..MAX_DESTS).map(|_| Dest::uid("UID-B")).collect();
+        assert_eq!(sorted(&uids).uids, vec!["UID-B".to_string()]);
+    }
+
+    #[test]
+    fn a_list_past_the_cap_keeps_the_ones_the_sender_named_first() {
+        // Truncated, not refused: a client this server does not recognise is
+        // still worth delivering to the people it named first.
+        let dests: Vec<Dest> = (0..MAX_DESTS * 4)
+            .map(|n| Dest::callsign(format!("CS-{n}")))
+            .collect();
+
+        let addresses = sorted(&dests);
+
+        assert_eq!(addresses.callsigns.len(), MAX_DESTS);
+        assert_eq!(addresses.callsigns[0], "CS-0");
+        assert_eq!(
+            addresses.callsigns[MAX_DESTS - 1],
+            format!("CS-{}", MAX_DESTS - 1)
+        );
+    }
+
     #[test]
     fn a_message_with_no_usable_destination_is_a_broadcast() {
         let dests = [Dest::default()];
-        let addresses = partition(&dests);
+        let addresses = sorted(&dests);
 
         assert!(
             !addresses.has_any(),
@@ -331,7 +463,7 @@ mod tests {
             Dest::callsign(ALL_STREAMING),
             Dest::callsign("ECHO"),
         ];
-        let addresses = partition(&dests);
+        let addresses = sorted(&dests);
 
         assert!(addresses.callsigns.is_empty());
         assert!(
@@ -348,7 +480,7 @@ mod tests {
             publish: Some("topic".into()),
             ..Dest::default()
         }];
-        let addresses = partition(&dests);
+        let addresses = sorted(&dests);
 
         assert!(addresses.publish);
         assert!(addresses.has_any());
@@ -356,20 +488,20 @@ mod tests {
 
     #[test]
     fn naming_a_person_is_what_an_undeliverable_chat_bounces_on() {
-        assert!(partition(&[Dest::callsign("BRAVO")]).names_people());
-        assert!(partition(&[Dest::uid("UID-B")]).names_people());
+        assert!(sorted(&[Dest::callsign("BRAVO")]).names_people());
+        assert!(sorted(&[Dest::uid("UID-B")]).names_people());
 
         // A channel or a mission reaching nobody is ordinary: the first means
         // nobody is listening, the second means nobody is subscribed, and the
         // write was kept either way.
-        assert!(!partition(&[Dest::group("blue")]).names_people());
-        assert!(!partition(&[Dest::mission("Kettle")]).names_people());
-        assert!(!partition(&[Dest::callsign("BRAVO"), Dest::mission("Kettle")]).names_people());
+        assert!(!sorted(&[Dest::group("blue")]).names_people());
+        assert!(!sorted(&[Dest::mission("Kettle")]).names_people());
+        assert!(!sorted(&[Dest::callsign("BRAVO"), Dest::mission("Kettle")]).names_people());
 
         // And neither "post to all" nor a publish topic is a person.
-        assert!(!partition(&[Dest::callsign(ALL_STREAMING)]).names_people());
+        assert!(!sorted(&[Dest::callsign(ALL_STREAMING)]).names_people());
         assert!(
-            !partition(&[Dest {
+            !sorted(&[Dest {
                 publish: Some("topic".into()),
                 ..Dest::default()
             }])
@@ -387,7 +519,7 @@ mod tests {
             uid: Some("UID-B".into()),
             ..Dest::default()
         }];
-        let addresses = partition(&dests);
+        let addresses = sorted(&dests);
 
         assert_eq!(addresses.callsigns, vec!["BRAVO".to_string()]);
         assert!(addresses.uids.is_empty());
@@ -396,7 +528,7 @@ mod tests {
     #[test]
     fn a_mission_is_read_by_either_identifier() {
         let dests = [Dest::mission("Kettle"), Dest::mission_guid("4d0f")];
-        let addresses = partition(&dests);
+        let addresses = sorted(&dests);
 
         assert_eq!(addresses.missions.len(), 2);
         assert_eq!(addresses.missions[0].name, Some("Kettle"));

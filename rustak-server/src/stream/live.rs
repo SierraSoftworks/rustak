@@ -112,6 +112,12 @@ impl std::fmt::Debug for ConnectionWatcher {
     }
 }
 
+/// How long a replay started from here waits for one connection's queue.
+///
+/// Replaced by `[stream.limits] write_timeout` where the listener builds the
+/// state; this is what the two test constructions get.
+const DEFAULT_REPLAY_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Everything that is connected, as the rest of the server sees it.
 #[derive(Clone, Debug)]
 pub struct LiveState {
@@ -119,6 +125,7 @@ pub struct LiveState {
     router: Arc<Router>,
     store: CotStoreHandle,
     metrics: Arc<StreamMetrics>,
+    replay_budget: std::time::Duration,
 }
 
 impl LiveState {
@@ -134,7 +141,15 @@ impl LiveState {
             router,
             store,
             metrics,
+            replay_budget: DEFAULT_REPLAY_BUDGET,
         }
+    }
+
+    /// Sets how long a replay started from here waits for one connection.
+    #[must_use]
+    pub fn with_replay_budget(mut self, budget: std::time::Duration) -> Self {
+        self.replay_budget = budget;
+        self
     }
 
     /// The registry itself, for code that genuinely needs it.
@@ -156,6 +171,16 @@ impl LiveState {
     /// The listener's counters.
     pub fn metrics(&self) -> &Arc<StreamMetrics> {
         &self.metrics
+    }
+
+    /// Tells the routing path that the channel table has changed.
+    ///
+    /// The name → bit position map `<dest group>` resolves against is cached,
+    /// because reading it per destination element was a denial of service
+    /// (R-03 H2). It refreshes itself within a second either way; this is for
+    /// whatever creates, renames or deletes a channel and would rather not wait.
+    pub fn channels_changed(&self) {
+        self.router.channels_changed();
     }
 
     /// How many clients are connected.
@@ -218,12 +243,41 @@ impl LiveState {
     /// so the replay is how the map comes back, and it has to be computed
     /// *after* the connections have been re-authenticated or it would be the
     /// old channel selection's answer.
+    ///
+    /// Returns how many connections a replay was **started** for, not how many
+    /// events it sent. The replay now applies backpressure rather than
+    /// discarding what will not fit (R-03 C1), so it is a wait of up to
+    /// `[stream.limits] write_timeout` per connection — and the caller is an
+    /// HTTP handler answering the device that asked. It is spawned, because the
+    /// map arriving is a side effect on the stream and the response has no
+    /// reason to sit behind somebody else's slow radio.
     pub fn resend_latest_sa(&self, username: &Username) -> usize {
-        self.hub
-            .handles_for_user(username)
-            .iter()
-            .map(|handle| super::replay::replay_latest_sa(&self.hub, handle.id()))
-            .sum()
+        let handles = self.hub.handles_for_user(username);
+        let started = handles.len();
+
+        if started == 0 {
+            return 0;
+        }
+
+        let hub = Arc::clone(&self.hub);
+        let metrics = Arc::clone(&self.metrics);
+        let budget = self.replay_budget;
+
+        tokio::spawn(async move {
+            let mut sent = 0;
+
+            for handle in handles {
+                sent += super::replay::replay_latest_sa(&hub, handle.id(), budget, &metrics).await;
+            }
+
+            tracing::debug!(
+                connections = started,
+                events = sent,
+                "Replayed the map after a channel change."
+            );
+        });
+
+        started
     }
 
     /// Closes every connection a certificate authenticated.

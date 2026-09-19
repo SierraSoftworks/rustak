@@ -67,17 +67,36 @@ pub struct CotRecord {
     pub stale: DateTime<Utc>,
     /// Where it says it is.
     pub point: (f64, f64, f64, f64, f64),
-    /// The XML the recipients were sent.
-    pub xml: String,
-    /// The protobuf payload, which is what the history segments hold.
-    pub proto: Vec<u8>,
+    /// The message itself, exactly as the recipients were sent it.
+    ///
+    /// Shared with every recipient's writer rather than copied. `EncodedEvent`
+    /// produces each wire form on first request and caches it, so the two
+    /// stores take the one they need — protobuf for the history segments, XML
+    /// for `cot_latest` — on the **writer's** task, once.
+    ///
+    /// This used to be an owned `String` and an owned `Vec<u8>`, both produced
+    /// in [`new`](Self::new) on the *sending client's* task, before
+    /// [`CotStoreHandle::record`] had a chance to `try_send` and possibly drop
+    /// the record. So an all-XML fleet paid a protobuf encode per message it
+    /// would never transmit, and every one of those encodes was wasted when the
+    /// store queue was full — which is exactly when the server is already under
+    /// pressure. R-03 M7.
+    pub encoded: Arc<EncodedEvent>,
     /// When this server handled it.
     pub received_at: DateTime<Utc>,
 }
 
 impl CotRecord {
     /// Builds a record from a message that is about to be relayed.
-    pub fn new(encoded: &EncodedEvent, principal: &Principal, device_id: Option<DeviceId>) -> Self {
+    ///
+    /// Takes the `Arc` the fan-out is already holding: building a record costs
+    /// a refcount, some small strings and the sender's channel bits, and no
+    /// encoding at all.
+    pub fn new(
+        encoded: Arc<EncodedEvent>,
+        principal: &Principal,
+        device_id: Option<DeviceId>,
+    ) -> Self {
         let event = encoded.event();
 
         Self {
@@ -97,10 +116,20 @@ impl CotRecord {
                 event.point.ce,
                 event.point.le,
             ),
-            xml: String::from_utf8_lossy(encoded.xml()).into_owned(),
-            proto: encoded.proto().to_vec(),
             received_at: Utc::now(),
+            encoded,
         }
+    }
+
+    /// The XML the recipients were sent, encoded now if it was not already.
+    pub fn xml(&self) -> &[u8] {
+        self.encoded.xml()
+    }
+
+    /// The protobuf payload the history segments hold, encoded now if it was
+    /// not already.
+    pub fn proto(&self) -> &[u8] {
+        self.encoded.proto()
     }
 
     /// Whether this message is worth keeping in the history.
@@ -203,6 +232,8 @@ impl CotStoreHandle {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use rustak_cot::Event;
     use rustak_cot::detail::{Contact, contact::STREAMING_ENDPOINT};
 
@@ -229,22 +260,65 @@ mod tests {
 
     #[test]
     fn a_record_carries_what_the_recipients_were_sent() {
-        let record = CotRecord::new(&sa(), &principal(), Some(DeviceId::from(9)));
+        let record = CotRecord::new(Arc::new(sa()), &principal(), Some(DeviceId::from(9)));
 
         assert_eq!(record.uid, "UID-A");
         assert_eq!(record.callsign.as_deref(), Some("ALPHA"));
         assert_eq!(record.user_id, Some(UserId::from(3)));
         assert_eq!(record.device_id, Some(DeviceId::from(9)));
-        assert!(record.xml.contains("<event"));
-        assert!(!record.proto.is_empty());
+        assert!(String::from_utf8_lossy(record.xml()).contains("<event"));
+        assert!(!record.proto().is_empty());
         assert!(record.is_historic());
+    }
+
+    #[test]
+    fn a_record_shares_the_relayed_encoding_rather_than_copying_it() {
+        // R-03 M7. It used to hold an owned `String` and an owned `Vec<u8>`,
+        // so every recorded message cost two full copies on top of the two
+        // encodes.
+        let encoded = Arc::new(sa());
+        let record = CotRecord::new(Arc::clone(&encoded), &principal(), None);
+
+        assert_eq!(record.xml().as_ptr(), encoded.xml().as_ptr());
+        assert_eq!(record.proto().as_ptr(), encoded.proto().as_ptr());
+    }
+
+    #[test]
+    fn building_a_record_encodes_nothing() {
+        // The half that matters under load. Both encodings used to be forced in
+        // `new`, on the *sending client's* task, before `CotStoreHandle::record`
+        // had a chance to `try_send` and possibly drop the record — so an
+        // all-XML fleet paid a protobuf encode per message it would never
+        // transmit, and every one of them was wasted exactly when the store was
+        // behind, which is when the server is already under pressure. R-03 M7.
+        let events: Vec<Arc<EncodedEvent>> = (0..2_000).map(|_| Arc::new(sa())).collect();
+
+        let started = std::time::Instant::now();
+        for encoded in &events {
+            std::hint::black_box(CotRecord::new(Arc::clone(encoded), &principal(), None));
+        }
+        let building = started.elapsed();
+
+        // The same events, encoded once each, from cold `OnceLock`s — which is
+        // what the loop above would have paid for if it still forced them.
+        let started = std::time::Instant::now();
+        for encoded in &events {
+            std::hint::black_box(encoded.xml().len());
+        }
+        let encoding = started.elapsed();
+
+        assert!(
+            building < encoding,
+            "building 2,000 records took {building:?} and encoding them once took {encoding:?}; \
+             the records are still paying for an encode",
+        );
     }
 
     #[test]
     fn control_traffic_is_not_history() {
         // A segment full of pings is a segment nobody will ever read back.
         let ping = EncodedEvent::new(rustak_cot::msgs::ping("UID-A", rustak_cot::CotTime::now()));
-        let record = CotRecord::new(&ping, &principal(), None);
+        let record = CotRecord::new(Arc::new(ping), &principal(), None);
 
         assert!(!record.is_historic());
     }
@@ -253,7 +327,7 @@ mod tests {
     fn a_disabled_store_counts_nothing_and_never_blocks() {
         let handle = CotStoreHandle::disabled();
 
-        handle.record(CotRecord::new(&sa(), &principal(), None));
+        handle.record(CotRecord::new(Arc::new(sa()), &principal(), None));
 
         assert!(!handle.is_enabled());
         assert_eq!(handle.recorded(), 0);
@@ -265,8 +339,8 @@ mod tests {
         let (tx, _rx) = mpsc::channel(1);
         let handle = CotStoreHandle::new(tx);
 
-        handle.record(CotRecord::new(&sa(), &principal(), None));
-        handle.record(CotRecord::new(&sa(), &principal(), None));
+        handle.record(CotRecord::new(Arc::new(sa()), &principal(), None));
+        handle.record(CotRecord::new(Arc::new(sa()), &principal(), None));
 
         assert_eq!(handle.recorded(), 1);
         assert_eq!(handle.dropped(), 1);

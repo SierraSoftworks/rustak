@@ -384,6 +384,46 @@ async fn an_oversize_message_reaches_an_xml_peer_whole() {
 }
 
 /// Waits for the store's writer task to have committed a uid, or gives up.
+#[tokio::test]
+async fn what_the_stream_relayed_is_written_before_the_server_finishes_stopping() {
+    // R-03 M4. The store used to stop on a *child* of the server's own
+    // shutdown, so on `SIGTERM` its writer broke its loop and closed its
+    // segments while the listener was still draining connections — against a
+    // module whose whole invariant is that what it holds has already happened.
+    // It now has its own token, cancelled only once `listener_tls::run` has
+    // returned and nothing can relay anything else.
+    //
+    // Deliberately no `await_stored` before the stop: "stopping flushes what
+    // was relayed" is the assertion, so waiting for it first would assert
+    // nothing.
+    let harness = Harness::start().await;
+    let alice = harness
+        .enroll("alice", "UID-ALICE", &[("blue", BOTH)])
+        .await;
+
+    let mut alpha = harness.eud(&alice, "ALPHA").await;
+    harness.await_connected(1).await;
+    alpha.send_sa(51.5, -0.12).await.unwrap();
+
+    // Pumped, so the message has certainly been read and routed — and so
+    // `Router::record` has certainly queued it — before anything stops.
+    settle(&mut alpha).await;
+
+    // Cloned, because stopping consumes the harness and the database outlives
+    // the listener that wrote to it.
+    let context = harness.context.clone();
+    harness.stop().await;
+
+    let stored = cot_store::latest_xml(context.db(), "UID-ALICE")
+        .await
+        .expect("the store is readable after the listener has gone");
+
+    assert!(
+        stored.is_some_and(|xml| xml.contains("ALPHA")),
+        "a message the stream relayed is missing from the record",
+    );
+}
+
 async fn await_stored(harness: &Harness, uid: &str) -> String {
     for _ in 0..200 {
         if let Some(xml) = cot_store::latest_xml(harness.context.db(), uid)

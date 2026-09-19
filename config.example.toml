@@ -240,18 +240,38 @@ max_frame = 8388608
 
 # How many messages may be waiting to be written to one connection before
 # deliveries start being dropped.
+#
+# It is also the floor under a new client's map. A client that has just
+# connected is sent one cached position per peer it may see, before it has read
+# a byte, so on a fleet larger than this the replay has to wait for its own
+# writer part-way through. It does wait — the map is never silently truncated —
+# but the wait is paid by every device after a restart, so keep this at or above
+# max_connections on an installation that expects a full house. Below it, rustak
+# warns at start-up naming both numbers.
 queue_len = 256
 
 # How many deliveries in a row may be dropped before the connection is closed.
 # Closing is what makes a permanently-behind client resynchronise: it reconnects
-# and is replayed the latest position of everyone it can see.
+# and is replayed the latest position of everyone it can see. The connect-time
+# replay is exempt: a client is never closed over its own map.
 close_after_drops = 512
 
 # How long the TLS handshake has to complete before the socket is closed.
 handshake_timeout = "10s"
 
+# How long one write to a connected client may take before the connection is
+# given up on, and the budget a new client's map replay is sent within.
+#
+# This is the bound on a device that completes the handshake and then stops
+# reading — a phone that sleeps, a NAT that silently blackholes. Without it the
+# writer parks on a socket whose window is zero and holds the file descriptor,
+# the TLS session and the task for the life of the process, while the connection
+# count still reads healthy. A device on a poor link takes seconds to accept a
+# burst; one that has taken none of a single flush in half a minute is gone.
+write_timeout = "30s"
+
 # The most connections this listener accepts at once. Further connections wait
-# for a slot rather than being refused.
+# for a slot rather than being refused. See queue_len above.
 max_connections = 1024
 
 # Whether to offer TAK Protocol v1 (protobuf) to clients as they connect. Turn

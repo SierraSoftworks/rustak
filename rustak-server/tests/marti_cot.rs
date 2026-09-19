@@ -59,7 +59,7 @@ async fn store(server: &TestServer, uid: &str, kind: &str, lat: f64, lon: f64, b
     )
     .with_groups(Arc::new(groups));
 
-    let mut record = CotRecord::new(&EncodedEvent::new(event), &principal, None);
+    let mut record = CotRecord::new(Arc::new(EncodedEvent::new(event)), &principal, None);
     // The sender is not one of this test server's accounts, and none of these
     // reads is about its row.
     record.user_id = None;

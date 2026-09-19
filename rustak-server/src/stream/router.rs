@@ -36,6 +36,7 @@ use crate::prelude::*;
 
 use super::control::{self, ControlAction};
 use super::dest::{self, DropReason};
+use super::groups::GroupCache;
 use super::hub::Hub;
 use super::metrics::StreamMetrics;
 use super::mission_hook::MissionIngest;
@@ -65,6 +66,9 @@ pub struct Router {
     store: CotStoreHandle,
     missions: Arc<dyn MissionIngest>,
     metrics: Arc<StreamMetrics>,
+    /// The channel name → bit position map, shared by every connection routing
+    /// through this router. See [`GroupCache`].
+    groups: Arc<GroupCache>,
     server_id: String,
 }
 
@@ -93,8 +97,19 @@ impl Router {
             store,
             missions,
             metrics,
+            groups: Arc::new(GroupCache::new()),
             server_id: server_id.into(),
         }
+    }
+
+    /// Forgets the cached channel map, so the next `<dest group>` re-reads it.
+    ///
+    /// For whatever creates, renames or deletes a channel. Without it a change
+    /// takes effect on the routing path within a second rather than at once,
+    /// which is correct but is a second an administrator watching for their new
+    /// channel does not have to wait. See [`GroupCache`].
+    pub fn channels_changed(&self) {
+        self.groups.invalidate();
     }
 
     /// The registry this router delivers through.
@@ -149,9 +164,13 @@ impl Router {
         self.record(from, &sender, &encoded);
 
         let selection = match dest::select_recipients(
-            &self.hub,
-            &self.db,
-            self.missions.as_ref(),
+            &dest::Selecting {
+                hub: &self.hub,
+                db: &self.db,
+                groups: &self.groups,
+                missions: self.missions.as_ref(),
+                metrics: &self.metrics,
+            },
             from,
             &sender,
             &dests,
@@ -254,8 +273,11 @@ impl Router {
             return;
         }
 
-        self.store
-            .record(CotRecord::new(encoded, sender, self.hub.device_id(from)));
+        self.store.record(CotRecord::new(
+            Arc::clone(encoded),
+            sender,
+            self.hub.device_id(from),
+        ));
     }
 }
 
