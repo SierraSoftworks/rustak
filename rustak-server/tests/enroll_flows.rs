@@ -72,56 +72,6 @@ impl Harness {
     }
 }
 
-/// How many times [`harness`] will pick a different port before giving up.
-///
-/// Each attempt builds a whole `TestServer`, so this is deliberately small: the
-/// window it covers is microseconds wide and a second collision would mean
-/// something other than bad luck.
-const BIND_ATTEMPTS: usize = 5;
-
-/// A port nothing else is using, **still held**.
-///
-/// The configuration has to name a port before `build_marti` binds it, and a
-/// listener on `:0` only reports its port once it is already bound — so the port
-/// is found by binding `:0` here and the listener is handed back rather than
-/// dropped. Holding it is the point: this used to return the number and close
-/// the socket immediately, leaving the port unclaimed for the whole of
-/// `TestServer::start_with` plus `Pki::load` — hundreds of milliseconds under
-/// `cargo test --workspace`, during which any other test binding `:0` could take
-/// it and this suite would fail on a port it had been promised. (M6-01 traced
-/// the flake here.) The caller now releases it in the instruction before
-/// `build_marti` binds it, and retries on the vanishingly small window that
-/// remains.
-fn reserve_port() -> (TcpListener, u16) {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a free port");
-    let port = listener
-        .local_addr()
-        .expect("the port we just bound")
-        .port();
-
-    (listener, port)
-}
-
-/// Starts a server with a real authority and a bound Marti listener.
-///
-/// # Panics
-///
-/// If the Marti listener cannot be bound on [`BIND_ATTEMPTS`] different ports,
-/// which is no longer a race but a machine with no ports to give.
-async fn harness() -> Harness {
-    for attempt in 1..=BIND_ATTEMPTS {
-        match try_harness().await {
-            Ok(harness) => return harness,
-            Err(err) if attempt < BIND_ATTEMPTS => {
-                eprintln!("enroll_flows: the reserved port was taken ({err}); trying another");
-            }
-            Err(err) => panic!("the Marti listener would not bind on {BIND_ATTEMPTS} ports: {err}"),
-        }
-    }
-
-    unreachable!("the loop either returns or panics on its last iteration")
-}
-
 /// How long to wait for the Marti listener to start answering.
 const MARTI_READY_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -130,15 +80,15 @@ const MARTI_PROBE: Duration = Duration::from_millis(250);
 
 /// Waits until the Marti listener stops closing connections as they arrive.
 ///
-/// `build_marti` **binds** the socket, and only the spawned `Server` future
-/// starts the workers that serve it — so a connection arriving in between is
-/// completed by the kernel from the backlog and then dropped by actix, which
-/// has no worker to hand it to. `reqwest` reports that as `connection closed`
-/// part-way through the handshake. On a quiet machine the gap is too small to
-/// hit and this suite passes; under a loaded `cargo test --workspace` the
-/// spawned task is starved and M5-02 measured the two real-mTLS tests failing
-/// four runs in five. CI has not shown it, which is consistent — the runner is
-/// slow but not contended.
+/// `build_marti_on` is handed a socket that is already **bound**, and only the
+/// spawned `Server` future starts the workers that serve it — so a connection
+/// arriving in between is completed by the kernel from the backlog and then
+/// dropped by actix, which has no worker to hand it to. `reqwest` reports that
+/// as `connection closed` part-way through the handshake. On a quiet machine
+/// the gap is too small to hit and this suite passes; under a loaded
+/// `cargo test --workspace` the spawned task is starved and M5-02 measured the
+/// two real-mTLS tests failing four runs in five. CI has not shown it, which is
+/// consistent — the runner is slow but not contended.
 ///
 /// The probe sits deliberately *below* TLS, because that is the layer the
 /// failure is at. A listener with a worker holds the connection open waiting
@@ -179,9 +129,30 @@ async fn await_marti(port: u16) {
     }
 }
 
-/// One attempt at [`harness`], which fails only when the port was taken.
-async fn try_harness() -> Result<Harness, human_errors::Error> {
-    let (reservation, port) = reserve_port();
+/// Starts a server with a real authority and a Marti listener on a real socket.
+///
+/// The socket is bound **here**, on `:0`, and handed to the server rather than
+/// described to it. Binding `:0` is the only way to be given a free port, and
+/// serving on the socket that claimed it is the only way to serve on that port
+/// with no gap in which anything else can take it. This used to bind `:0`,
+/// read the port, release it and have `build_marti` bind the number again,
+/// retrying if the bind failed — which covered a bind that *failed*, and
+/// nothing else that a loaded `cargo test --workspace` could fit into the gap.
+/// (M6-01 traced one flake to the gap; M5-02 saw the two real-mTLS tests fail
+/// four runs in five under load.)
+///
+/// # Panics
+///
+/// If the socket cannot be bound or the server cannot be built on it. Neither
+/// is a race: the first is a machine with no loopback ports to give, and the
+/// second is the authority or actix refusing a socket that is already ours.
+async fn harness() -> Harness {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a free port on loopback");
+    let port = listener
+        .local_addr()
+        .expect("the port we just bound")
+        .port();
+
     let server = TestServer::start_with(move |config| {
         // Elliptic curve rather than the RSA default: this suite creates an
         // authority, a server certificate and a client key per test, and RSA
@@ -189,6 +160,8 @@ async fn try_harness() -> Result<Harness, human_errors::Error> {
         // `pki::` unit tests do not already cover.
         config.pki.key_type = KeyType::EcdsaP256;
         config.pki.server_ips = vec![IpAddr::V4(Ipv4Addr::LOCALHOST)];
+        // Not what binds the listener — the socket above is — but the
+        // configuration should still say where it is.
         config.web.marti.listen = ListenAddr::new("127.0.0.1", port);
     })
     .await;
@@ -210,24 +183,19 @@ async fn try_harness() -> Result<Harness, human_errors::Error> {
         .install_pki(Arc::clone(&pki))
         .expect("the authority is installed once");
 
-    // Released here and nowhere earlier: everything above this line runs while
-    // the port is still ours, so the gap another test could slip into is the two
-    // instructions between this drop and the bind below.
-    drop(reservation);
+    let marti = rustak_server::web::build_marti_on(server.context.clone(), listener)
+        .expect("the Marti listener serves on the socket it was handed");
+    let handle = marti.handle();
 
-    let listener = rustak_server::web::build_marti(server.context.clone())?
-        .expect("the Marti listener is enabled");
-    let handle = listener.handle();
-
-    actix_web::rt::spawn(listener);
+    actix_web::rt::spawn(marti);
     await_marti(port).await;
 
-    Ok(Harness {
+    Harness {
         server,
         pki,
         port,
         handle,
-    })
+    }
 }
 
 /// An account and a credential of `kind`, as an administrator would mint one.
