@@ -1,0 +1,16 @@
+# cargo-audit configuration, honoured by `cargo audit` locally and by the
+# `security_audit.yml` workflow (rustsec/audit-check runs `cargo audit`).
+#
+# Only advisories with no available fix are ignored, each with the date and
+# the reason. Remove an entry as soon as a fixed version is reachable — the
+# job is meant to fail on anything new.
+[advisories]
+ignore = [
+    # 2026-09-19: `rsa` (via jsonwebtoken/RS256 and CSR handling) — Marvin
+    # timing side channel on PKCS#1 v1.5 decryption. rustak never decrypts
+    # with RSA (signing and verification only), and upstream ships no fix.
+    "RUSTSEC-2023-0071",
+    # 2026-09-19: `h2 0.3` reached only through actix-http/actix-web 4, which
+    # pins h2 ^0.3. actix-web 4 has no release on h2 0.4; revisit at actix-web 5.
+    "RUSTSEC-2026-0258",
+]
