@@ -1,6 +1,6 @@
 # rustak — a lightweight Rust-native TAK server
 
-> Status: FEATURE-COMPLETE FOR THE PLANNED SCOPE (2026-09-19). M0–M6 landed; both interop suites 9/9 (re-confirmed
+> Status: FEATURE-COMPLETE FOR THE PLANNED SCOPE (2026-09-19). M0–M7 landed (M7 = backlog closure, same day); both interop suites 9/9 (re-confirmed
 > after the review fixes); all three independent reviews actioned; loose ends closed. Open: the first pre-release
 > tag (user decision), making the ghcr package public, the security-audit ignore list, running the manual
 > checklists in `docs/compat/` on real devices, and `.claude/plan/backlog.md`.
@@ -270,6 +270,7 @@ are the file-level source of truth for implementation briefs. Decisions they int
 | M4 | Data Sync: full mission API, tokens, subscriptions, changes, `t-x-m-*`, `<dest mission>`, layers, logs, invitations, archive, `/cot`; node-tak suite extended to missions; **`interop/cloudtak` compose nightly** | node-tak mission scenarios green; CloudTAK compose Data Sync round-trip green |
 | M5 | OAuth2 server + OIDC federation (`/oauth/authorize`, `/login/*`), group claim mapping, admin UI polish | CloudTAK login with client password (node-tak + compose); browser SSO + passkeys for Yew UI (e2e) |
 | M6 | Services API + example sidecar, docs, release pipeline (tap, docker, cross) | Sidecar publishes CoT to a channel (interop/rust); `brew install` works |
+| M7 | Backlog closure (2026-09-19): `plain_bind` HTTP listener + ACME handles + wildcard refusal, CloudTAK hand-over sweep job, OIDC channel-cache invalidation, UI unit tests in CI + demo TLS sources, stdout ANSI (upstream in tracing-batteries) | Each `.claude/plan/backlog.md` line it names removed with tests; CI green |
 
 ## Verification
 
