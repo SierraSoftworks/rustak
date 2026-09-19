@@ -5,6 +5,23 @@
 //! not match a route is answered with `index.html` rather than a 404, because
 //! the UI routes on the client and a deep link reloaded in the browser has to
 //! reach the shell before it can decide what to draw.
+//!
+//! # Why a build with no UI in it still answers `200`
+//!
+//! `rustak-server/build.rs` creates `rustak-ui/dist` so that [`include_dir!`]
+//! resolves in a tree where `trunk` has never run — a fresh clone, and every
+//! job in `.github/workflows/rust.yml`, none of which builds the UI. `ASSETS`
+//! is then empty and `shell` has no `index.html` to serve.
+//!
+//! That used to be a `500`, and it made the fall-through a different thing in
+//! CI from the thing it is in a release: `cloudtak_onboarding.rs`'s probe test
+//! asserted the `200 text/html` it saw on a developer's machine and was handed
+//! `500 text/html` by the runner (CI-01). Nothing about the *request* failed —
+//! whether the UI was compiled in is a property of the binary, identical for
+//! every request it will ever answer — so the status now says what it always
+//! said and the body says what is missing. Every test that pins the
+//! fall-through then pins the same contract in both kinds of build, which is
+//! the only way such a test can mean anything.
 
 use actix_web::{HttpRequest, HttpResponse, http::header::ContentType};
 use include_dir::{Dir, include_dir};
@@ -14,6 +31,10 @@ static ASSETS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../rustak-ui/dist");
 
 /// The shell served for anything that is not a file we hold.
 const INDEX: &str = "index.html";
+
+/// What stands in for the shell in a binary built without the UI.
+const PLACEHOLDER: &[u8] =
+    b"<!DOCTYPE html><title>rustak</title><p>The user interface has not been built.</p>";
 
 /// Serves an embedded asset, or the shell.
 pub async fn serve(request: HttpRequest) -> HttpResponse {
@@ -46,16 +67,19 @@ fn asset(path: &str, contents: &'static [u8]) -> HttpResponse {
 
 /// The shell, or an honest placeholder when the UI has not been built.
 fn shell() -> HttpResponse {
-    match ASSETS.get_file(INDEX) {
-        Some(file) => HttpResponse::Ok()
-            .content_type(ContentType::html())
-            .body(file.contents()),
-        None => HttpResponse::InternalServerError()
-            .content_type(ContentType::html())
-            .body(
-                "<!DOCTYPE html><title>rustak</title><p>The user interface has not been built.</p>",
-            ),
-    }
+    shell_of(ASSETS.get_file(INDEX).map(include_dir::File::contents))
+}
+
+/// The shell response, given whatever `index.html` this binary compiled in.
+///
+/// Taken as an argument rather than read here so that both halves can be
+/// exercised whether or not `trunk` has run in this tree — a test that can only
+/// reach one of them is a test that proves nothing on the machine where the
+/// other one is taken.
+fn shell_of(index: Option<&'static [u8]>) -> HttpResponse {
+    HttpResponse::Ok()
+        .content_type(ContentType::html())
+        .body(index.unwrap_or(PLACEHOLDER))
 }
 
 /// What to serve a file as.
@@ -135,10 +159,52 @@ mod tests {
         )
         .await;
 
-        assert_ne!(
+        assert_eq!(
             response.status(),
-            StatusCode::NOT_FOUND,
+            StatusCode::OK,
             "the UI routes on the client, so the shell has to answer a reload",
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok()),
+            Some("text/html; charset=utf-8"),
+        );
+    }
+
+    #[actix_web::test]
+    async fn the_fall_through_is_the_same_answer_whether_or_not_the_ui_was_built() {
+        // The one assertion in this crate that a job which never runs `trunk`
+        // could not make for itself. `.github/workflows/rust.yml` builds no UI,
+        // so `ASSETS` is empty there and the `None` arm is the *only* one CI
+        // ever takes — while a developer's tree only ever takes the other. A
+        // fall-through that answered differently in the two would make every
+        // test that pins it a test of the machine it ran on, which is exactly
+        // how CI-01 happened: `500 text/html` on the runner, `200 text/html`
+        // here, and an assertion that could not be true in both places.
+        for index in [None, Some(&b"<!DOCTYPE html><title>built</title>"[..])] {
+            let response = shell_of(index);
+
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "a binary compiled without the UI has not failed at anything",
+            );
+            assert_eq!(
+                response
+                    .headers()
+                    .get("content-type")
+                    .and_then(|value| value.to_str().ok()),
+                Some("text/html; charset=utf-8"),
+            );
+        }
+
+        // And the placeholder says what is missing, because somebody who opens
+        // it needs to be told rather than shown an empty page.
+        assert!(
+            String::from_utf8_lossy(PLACEHOLDER).contains("has not been built"),
+            "the placeholder names the reason it is not the UI",
         );
     }
 }

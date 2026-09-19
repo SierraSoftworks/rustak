@@ -9,16 +9,30 @@
  *
  * Two things mean "not served yet":
  *
- * - **`404`.** An unmatched route inside a mounted scope.
- * - **HTML on a success status.** rustak serves the admin UI from the same
- *   listener and answers anything it does not recognise with the single-page
- *   shell rather than a `404`, because the UI routes on the client and a
- *   reloaded deep link has to reach it (`rustak-server/src/web/ui.rs`). So an
- *   unimplemented Marti route answers `200 text/html`, not `404`.
+ * - **`404`.** What every path under `/api/v1` that no route claims answers,
+ *   from the admin API's own default service
+ *   (`rustak-server/src/web/api/mod.rs`), in the same `{"error": …}` shape as
+ *   any other failure there.
+ * - **HTML on a success status.** Outside `/api/v1`, rustak serves the admin UI
+ *   from the same listener and answers anything it does not recognise with the
+ *   single-page shell, because the UI routes on the client and a reloaded deep
+ *   link has to reach it (`rustak-server/src/web/ui.rs`). So an unimplemented
+ *   Marti route answers `200 text/html`, not `404`. The status is `200` in a
+ *   release and in a build where `trunk` never ran, which is what every CI job
+ *   is — that used to differ, and it cost a red build (CI-01).
  *
  * Anything else — `400`, `401`, `403`, `500` — means somebody is listening on
  * that path and the scenario should run and say what it found. A probe is never
  * a pass; it only decides whether to skip.
+ *
+ * **Never probe a path that only answers a method other than `GET`.** rustak's
+ * route table is built with `actix_web::Scope::route`, which hoists the method
+ * guard onto the resource, so a resource whose method does not match never
+ * matches at all: there is no `405` anywhere on this server, and a POST-only
+ * path probed with a `GET` is a `404` — indistinguishable from a path that does
+ * not exist, and read here as absent. A surface whose only route is a `POST` is
+ * therefore probed through something it can be reached by, the way
+ * `cloudtakOnboarding` probes the download rather than the preparation.
  */
 
 import net from "node:net";
@@ -92,9 +106,9 @@ export async function probeSurfaces<S extends Record<string, SurfaceProbe>>(
 /** Whether anything answers that path with something other than "no such route". */
 async function served(target: ProbeTarget, route: string): Promise<boolean> {
   try {
-    // GET everywhere: a POST-only endpoint answers `405`, which is as good a
-    // sign of existence as a `200`, and a GET cannot change anything on a route
-    // the suite has not yet been taught the shape of.
+    // GET everywhere, because a GET cannot change anything on a route the suite
+    // has not yet been taught the shape of. What it cannot do is find a
+    // POST-only route — see the note on probing those in this file's header.
     const response = await target.client.request(route, {
       method: "GET",
       token: target.token,

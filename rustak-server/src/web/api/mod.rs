@@ -26,6 +26,31 @@
 //! The credential is a header the browser attaches only when our own code asks
 //! it to. A cross-site page can cause a request to these routes but cannot make
 //! the browser authenticate it, so there is no token to double-submit.
+//!
+//! # A path no route here claims is a JSON `404`, never the shell
+//!
+//! [`crate::web::server::services`] answers everything it does not recognise
+//! with the admin UI's single-page shell, which is right for a deep link and
+//! wrong for an API: a caller that asked for `/api/v1/…` and was handed
+//! `200 text/html` parses HTML as JSON, exactly as
+//! [`crate::web::server::marti_services`] already refuses to let a TAK client
+//! do. So the guarded scope carries a default service of its own and
+//! `unmatched` answers in the same `{"error": …}` shape every other failure
+//! on this surface uses.
+//!
+//! Two consequences worth stating, because the interop probes depend on both
+//! (`interop/shared/src/probe.ts`):
+//!
+//! * **There is no `405` here, and there cannot be.** [`actix_web::Scope::route`]
+//!   hoists a route's method guard onto the resource it builds, so a resource
+//!   whose method does not match never matches at all — a known path addressed
+//!   with the wrong method is indistinguishable from a path that does not
+//!   exist, and both get the same `404`.
+//! * **The gate still answers first.** [`middleware::api_auth`] wraps the whole
+//!   guarded scope including its default service, so an unmatched path
+//!   presented without a credential is a `401` rather than a `404`. That is the
+//!   right way round: the API does not tell an unauthenticated caller which of
+//!   its paths exist.
 
 pub mod audit;
 pub mod auth;
@@ -59,14 +84,30 @@ pub mod users_groups;
 
 use actix_web::body::BoxBody;
 use actix_web::dev::{ServiceRequest, ServiceResponse};
+use actix_web::http::StatusCode;
 use actix_web::middleware::from_fn;
-use actix_web::web;
+use actix_web::{HttpResponse, web};
 
 pub use error::{ApiError, ApiResult, json_error, json_ok};
 pub use extract::{Administrative, Authenticated, Identity};
 
 /// The version prefix every route here sits under.
 pub const API_ROOT: &str = "/api/v1";
+
+/// What a caller is told when no route here claims the path they asked for.
+///
+/// It names neither the path nor the methods it might answer to: the same
+/// sentence for a path that does not exist and for one addressed with the wrong
+/// method, so the surface is not a map of itself.
+const NO_SUCH_ROUTE: &str = "There is no such endpoint on this server.";
+
+/// Answers a path inside `/api/v1` that no route claims.
+///
+/// See the module documentation for why this exists rather than the single-page
+/// shell, and why it is a `404` rather than a `405`.
+async fn unmatched() -> HttpResponse {
+    json_error(StatusCode::NOT_FOUND, NO_SUCH_ROUTE)
+}
 
 /// The largest JSON body any `/api/v1` route will read.
 ///
@@ -157,7 +198,11 @@ pub fn configure() -> actix_web::Scope<
             // otherwise swallow them.
             .configure(packages::routes)
             .configure(clients::routes)
-            .configure(cot::routes),
+            .configure(cot::routes)
+            // Last, and reached by every path the routes above did not claim:
+            // `web::scope("")` matches any prefix, so this is where `/api/v1`
+            // stops rather than falling on to the admin UI's catch-all.
+            .default_service(web::to(unmatched)),
     )
 }
 
@@ -308,6 +353,80 @@ mod tests {
                 test::call_service(&app, request).await.status(),
                 StatusCode::UNAUTHORIZED,
                 "{method} {uri} answered without a session",
+            );
+        }
+    }
+
+    /// Paths inside `/api/v1` that no route claims.
+    ///
+    /// The first four are *known* paths addressed with the method they do not
+    /// answer to, which is the case with a history: `interop/shared/src/probe.ts`
+    /// reads a surface as absent on a `404` or on HTML with a success status, so
+    /// probing a POST-only path with a `GET` reads as "not served yet" and
+    /// silently skips every scenario for the brief that owns it. That is the
+    /// trap `tests/cloudtak_onboarding.rs` documents, and it is why the probes
+    /// aim at the download rather than at the preparation.
+    const UNMATCHED: &[(&str, &str)] = &[
+        ("GET", "/api/v1/users/ada/cloudtak-onboarding"),
+        ("GET", "/api/v1/auth/logout"),
+        ("POST", "/api/v1/certificates"),
+        ("DELETE", "/api/v1/audit"),
+        ("GET", "/api/v1/no-such-thing"),
+        ("GET", "/api/v1/users/ada/no-such-thing"),
+    ];
+
+    #[actix_web::test]
+    async fn a_path_no_route_claims_is_a_json_not_found_rather_than_the_shell() {
+        // The whole application, not `configure()` alone: what is being proved
+        // is that `/api/v1` stops here rather than falling on to the single-page
+        // shell that `web::server::services` mounts behind it, and only the
+        // assembled routes can show that.
+        let server = crate::testing::TestServer::start().await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+        let (_, session) = server.signed_in("ada", true).await;
+        let token = crate::testing::context::bearer(&session);
+
+        for (method, uri) in UNMATCHED {
+            let request = test::TestRequest::default()
+                .method(method.parse().unwrap())
+                .uri(uri)
+                .insert_header(("authorization", token.clone()))
+                .to_request();
+            let response = test::call_service(&app, request).await;
+            let status = response.status();
+            let content_type = response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+
+            assert_eq!(status, StatusCode::NOT_FOUND, "{method} {uri}");
+            assert_eq!(
+                content_type.as_deref(),
+                Some("application/json"),
+                "{method} {uri} answered with something a JSON client cannot read",
+            );
+        }
+    }
+
+    #[actix_web::test]
+    async fn an_unmatched_path_is_refused_before_it_is_looked_for() {
+        // `api_auth` wraps the guarded scope's default service too, so a caller
+        // with no credential cannot use the difference between `401` and `404`
+        // to learn which paths this surface has.
+        let server = crate::testing::TestServer::start().await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        for (method, uri) in UNMATCHED {
+            let request = test::TestRequest::default()
+                .method(method.parse().unwrap())
+                .uri(uri)
+                .to_request();
+
+            assert_eq!(
+                test::call_service(&app, request).await.status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} {uri} told an anonymous caller whether it exists",
             );
         }
     }

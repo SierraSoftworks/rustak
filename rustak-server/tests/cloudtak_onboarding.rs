@@ -341,22 +341,58 @@ async fn a_bundle_that_has_expired_is_swept_and_refused() {
 async fn preparing_a_hand_over_sweeps_the_one_before_it() {
     let (server, token) = harness().await;
     let app = app!(server);
-    account(&server, "cloudtak").await;
+    let user = account(&server, "cloudtak").await;
 
-    let first = prepared!(app, &token, "cloudtak");
+    // A bundle from a hand-over nobody collected, backdated past its window.
+    //
+    // Stashed through the same function a hand-over stashes through rather than
+    // through a second `POST`, because the only thing a second `POST` would add
+    // is the RSA-2048 key it generates for the client — and that one line is
+    // very nearly the whole cost of this suite. Generating one is a random
+    // prime search: measured here between 0.18 s and 1.38 s with the
+    // optimisation the root `Cargo.toml` already gives the `rsa` crate, and
+    // roughly twelve times that on the instrumented two-vCPU runner. Two draws
+    // from that distribution in one test is why libtest reported *this* test as
+    // "running for over 60 seconds" on CI run 35449569084, while the other
+    // eighteen, which draw once each, did not. There is no sleep and no
+    // real-time wait anywhere in this flow; the window is closed by rewriting
+    // the stored expiry, below.
+    let (stale, _) = cloudtak::stash(
+        &server.context,
+        &user.username,
+        CertificateId::new(1),
+        b"a keystore nobody ever collected".to_vec(),
+    )
+    .await
+    .expect("a bundle waiting from an earlier hand-over");
 
-    // Backdate the first, as if nobody collected it and ten minutes passed.
-    expire(&server, &first).await;
+    backdate(&server, &stale).await;
 
-    let second = prepared!(app, &token, "cloudtak");
+    let fresh = prepared!(app, &token, "cloudtak");
+
+    // The row is *gone*, which the refusal below does not prove on its own:
+    // `take` deletes before it checks the window, so an expired bundle the
+    // sweep had missed would answer `410` just the same. This is the assertion
+    // that says the preparation swept it.
+    let stored: Vec<(String, serde_json::Value)> =
+        server.db().list(cloudtak::BUNDLE_PARTITION).await.unwrap();
 
     assert_eq!(
-        fetch!(app, &token, &first.p12_download_url).status(),
-        StatusCode::GONE,
+        stored.len(),
+        1,
         "the stale bundle went when the next one was prepared",
     );
     assert_eq!(
-        fetch!(app, &token, &second.p12_download_url).status(),
+        fetch!(
+            app,
+            &token,
+            &format!("/api/v1/cloudtak-onboarding/{stale}.p12")
+        )
+        .status(),
+        StatusCode::GONE,
+    );
+    assert_eq!(
+        fetch!(app, &token, &fresh.p12_download_url).status(),
         StatusCode::OK,
     );
 }
@@ -843,18 +879,14 @@ async fn both_halves_are_written_down_and_neither_carries_a_secret() {
 }
 
 /// Rewrites a stashed bundle so that its window has already closed.
-async fn expire(server: &TestServer, onboarding: &CloudTakOnboarding) {
-    let id = onboarding
-        .p12_download_url
-        .rsplit('/')
-        .next()
-        .and_then(|segment| segment.strip_suffix(".p12"))
-        .expect("the download URL ends in the identifier")
-        .to_string();
-
+///
+/// The window is ten minutes of wall clock, and no test waits it out: what
+/// makes a bundle stale here is the stored timestamp, so every expiry case runs
+/// in the time one database write takes and none of them depends on a clock.
+async fn backdate(server: &TestServer, id: &str) {
     let mut stored: serde_json::Value = server
         .db()
-        .get(cloudtak::BUNDLE_PARTITION, id.clone())
+        .get(cloudtak::BUNDLE_PARTITION, id.to_string())
         .await
         .unwrap()
         .expect("the bundle is waiting");
@@ -863,7 +895,7 @@ async fn expire(server: &TestServer, onboarding: &CloudTakOnboarding) {
 
     server
         .db()
-        .set(cloudtak::BUNDLE_PARTITION, id, stored)
+        .set(cloudtak::BUNDLE_PARTITION, id.to_string(), stored)
         .await
         .unwrap();
 }
@@ -1011,13 +1043,14 @@ async fn the_rebuild_that_made_room_keeps_every_row_and_both_links() {
 #[actix_web::test]
 async fn the_surface_the_interop_suites_probe_for_answers_something_they_can_read() {
     // `interop/shared/src/probe.ts` decides a surface is absent on a `404` or
-    // on HTML with a success status, because rustak answers anything it does
-    // not recognise with the admin UI's single-page shell rather than a `404`.
+    // on HTML with a success status.
     //
     // That is why the probe path is the *download* and not the POST that
-    // creates a hand-over: a `GET` on a POST-only route is not a `405` here,
-    // it falls through to the shell and reads as "not served yet" — which
-    // would skip every interop scenario for this brief in silence.
+    // creates a hand-over: there is no `405` anywhere in this API — a route's
+    // method guard is hoisted onto its resource, so a `GET` on a POST-only path
+    // matches nothing and is answered by the scope's default service, exactly
+    // as a path that does not exist is. It reads as "not served yet", and
+    // probing it would skip every interop scenario for this brief in silence.
     let (server, token) = harness().await;
     let app = app!(server);
 
@@ -1033,7 +1066,15 @@ async fn the_surface_the_interop_suites_probe_for_answers_something_they_can_rea
         "the probe reads a success with HTML as absence",
     );
 
-    // And the POST really does fall through, which is the trap this documents.
+    // And the preparation really does read as absent, which is the trap this
+    // documents. It used to read as absent by falling through to the admin UI's
+    // shell, and on CI run 35449569084 that shell was a `500`: the `Test` job
+    // never runs `trunk`, `rustak-ui/dist` is empty there, and the placeholder
+    // `web::ui` served in its place carried an `Internal Server Error` status.
+    // The same request on a developer's machine was a `200`, so this assertion
+    // could not be true in both places (CI-01). `/api/v1` no longer falls
+    // through to the shell at all, which is an answer that does not depend on
+    // whether the UI was built — or on anything else about the run.
     let post_path = fetch!(app, &token, "/api/v1/users/probe/cloudtak-onboarding");
 
     let status = post_path.status();
@@ -1044,26 +1085,22 @@ async fn the_surface_the_interop_suites_probe_for_answers_something_they_can_rea
         .map(str::to_owned);
 
     // The body is read before the assertion rather than after, because a status
-    // that is neither the shell nor a refusal is the interesting case and the
-    // body is the only thing that says why. On CI run 35449569084 this answered
-    // `500` and the panic said nothing but `left: 500, right: 200` — the
-    // server's own error never reaches the log, because libtest captures it and
-    // prints only the panic. Whatever the next occurrence is, it will name it.
+    // the contract does not allow is the interesting case and the body is the
+    // only thing that says why — libtest captures the server's own output and
+    // prints nothing but the panic.
     let body = String::from_utf8_lossy(&test::read_body(post_path).await).into_owned();
 
     assert_eq!(
         status,
-        StatusCode::OK,
-        "a GET on the POST-only route should fall through to the single-page \
-         shell; it answered {status} with content-type {content_type:?} and \
+        StatusCode::NOT_FOUND,
+        "a GET on the POST-only route is answered by the API's own default \
+         service; it answered {status} with content-type {content_type:?} and \
          body: {}",
         body.chars().take(400).collect::<String>(),
     );
-    assert!(
-        content_type
-            .as_deref()
-            .is_some_and(|value| value.starts_with("text/html")),
-        "a GET on the POST-only route is the single-page shell, not a 405; \
-         content-type was {content_type:?}",
+    assert_eq!(
+        content_type.as_deref(),
+        Some("application/json"),
+        "the refusal is the API's own shape, not the single-page shell",
     );
 }
