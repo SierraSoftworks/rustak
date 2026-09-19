@@ -15,7 +15,7 @@ use yew_router::prelude::*;
 use crate::api;
 use crate::app::{AuthHandle, Route};
 use crate::components::{
-    Alert, AlertKind, Button, ButtonGroup, ButtonKind, Card, LoadingNote, StatusPill, StatusTone,
+    Alert, AlertKind, Card, LoadingNote, MenuAction, MenuItem, SplitButton, StatusPill, StatusTone,
 };
 use crate::util::{nav_href, optional_relative, urlencode};
 
@@ -131,7 +131,7 @@ fn user_row(props: &UserRowProps) -> Html {
 
     let toggle_disabled = {
         let (apply, disabled) = (apply.clone(), props.user.disabled);
-        Callback::from(move |_: MouseEvent| {
+        Callback::from(move |()| {
             apply.emit(UserPatch {
                 disabled: Some(!disabled),
                 ..UserPatch::default()
@@ -141,7 +141,7 @@ fn user_row(props: &UserRowProps) -> Html {
 
     let toggle_admin = {
         let (apply, is_admin) = (apply.clone(), props.user.is_admin);
-        Callback::from(move |_: MouseEvent| {
+        Callback::from(move |()| {
             apply.emit(UserPatch {
                 is_admin: Some(!is_admin),
                 ..UserPatch::default()
@@ -182,31 +182,27 @@ fn user_row(props: &UserRowProps) -> Html {
 
             <StatusPill {tone} label={status} title={admin_source} />
 
-            <ButtonGroup label="Account actions">
-                <Button
-                    small=true
-                    busy={*busy}
-                    disabled={is_self || props.user.source == UserSource::Service}
-                    title={if is_self {
-                        Some("You cannot change your own administrator flag here.")
-                    } else {
-                        None
-                    }}
-                    onclick={toggle_admin}
-                >
-                    { if props.user.is_admin { "Demote" } else { "Promote" } }
-                </Button>
-                <Button
-                    small=true
-                    busy={*busy}
-                    disabled={is_self}
-                    kind={if props.user.disabled { ButtonKind::Default } else { ButtonKind::Danger }}
-                    title={is_self.then_some("You cannot suspend your own account.")}
-                    onclick={toggle_disabled}
-                >
-                    { if props.user.disabled { "Restore" } else { "Suspend" } }
-                </Button>
-            </ButtonGroup>
+            // One button on the row: the flag change on its face, and the
+            // suspension — the one that locks somebody out — a click further.
+            <SplitButton
+                busy={*busy}
+                menu_label={format!("More actions for {}", props.user.username)}
+                primary={MenuAction::new(
+                    if props.user.is_admin { "Demote" } else { "Promote" },
+                    toggle_admin,
+                )
+                .disabled(is_self || props.user.source == UserSource::Service)
+                .title(is_self.then_some("You cannot change your own administrator flag here."))}
+                items={vec![MenuItem::Action({
+                    let suspend = MenuAction::new(
+                        if props.user.disabled { "Restore" } else { "Suspend" },
+                        toggle_disabled,
+                    )
+                    .disabled(is_self)
+                    .title(is_self.then_some("You cannot suspend your own account."));
+                    if props.user.disabled { suspend } else { suspend.danger() }
+                })]}
+            />
 
             if let Some(message) = &*error {
                 <p class="user-row__error" role="alert">{ message.clone() }</p>

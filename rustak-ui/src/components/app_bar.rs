@@ -1,10 +1,10 @@
-//! The persistent bar across the top of every admin view: the brand, and who is
-//! signed in.
+//! The persistent bar across the top of every admin view: the brand, who is
+//! signed in, and — on a screen too narrow for the sidebar — the button that
+//! opens the navigation.
 //!
-//! The navigation is not here. There are eleven destinations and a top bar has
-//! room for about five, so the links live in their own strip underneath (see
-//! [`crate::components::AdminShell`]) where they can wrap without pushing the
-//! user chip off the end.
+//! The navigation itself is not here. There are thirteen destinations and a
+//! top bar has room for about five, so the links live in a sidebar beside the
+//! page (see [`crate::components::AdminShell`]), which this bar only opens.
 
 use yew::prelude::*;
 
@@ -13,9 +13,14 @@ use crate::util::{initials, nav_href};
 
 #[derive(Properties, PartialEq)]
 pub struct AppBarProps {
-    /// The navigation strip, rendered below the bar's own row.
+    /// Whether the navigation drawer is open, for the button that toggles it
+    /// to say so.
     #[prop_or_default]
-    pub children: Html,
+    pub menu_open: bool,
+
+    /// Asked to open or close the navigation drawer.
+    #[prop_or_default]
+    pub on_menu: Callback<()>,
 }
 
 #[function_component(AppBar)]
@@ -50,9 +55,35 @@ pub fn app_bar(props: &AppBarProps) -> Html {
         None => html! {},
     };
 
+    let on_menu = {
+        let on_menu = props.on_menu.clone();
+        Callback::from(move |_: MouseEvent| on_menu.emit(()))
+    };
+
     html! {
         <header class="app-bar">
             <div class="app-bar__inner">
+                <button
+                    type="button"
+                    class="app-bar__menu"
+                    aria-label={if props.menu_open { "Close the navigation" } else { "Open the navigation" }}
+                    aria-controls="admin-nav"
+                    aria-expanded={if props.menu_open { "true" } else { "false" }}
+                    onclick={on_menu}
+                >
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+                        stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                        aria-hidden="true">
+                        if props.menu_open {
+                            <line x1="6" y1="6" x2="18" y2="18" />
+                            <line x1="18" y1="6" x2="6" y2="18" />
+                        } else {
+                            <line x1="4" y1="7" x2="20" y2="7" />
+                            <line x1="4" y1="12" x2="20" y2="12" />
+                            <line x1="4" y1="17" x2="20" y2="17" />
+                        }
+                    </svg>
+                </button>
                 <a class="app-bar__brand" href={nav_href("/admin")}>
                     <img
                         src="/logo.svg"
@@ -62,7 +93,6 @@ pub fn app_bar(props: &AppBarProps) -> Html {
                 </a>
                 { user }
             </div>
-            { props.children.clone() }
         </header>
     }
 }

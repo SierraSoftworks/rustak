@@ -111,6 +111,8 @@ fn source_note(source: TlsSource) -> &'static str {
 pub fn tls_card() -> Html {
     let tls = use_resource(api::settings::tls);
 
+    // The loaded card is `Details`' own to render: the button in its footer
+    // belongs to the request state that lives there.
     let body = match (&tls.data, &tls.error) {
         (None, None) => html! { <LoadingNote /> },
         (None, Some(message)) => html! {
@@ -120,18 +122,18 @@ pub fn tls_card() -> Html {
                 message={message.clone()}
             />
         },
-        (Some(status), _) => html! {
-            <Details status={status.clone()} on_changed={tls.reload.clone()} />
-        },
+        (Some(status), _) => {
+            return html! {
+                <Details status={status.clone()} on_changed={tls.reload.clone()} />
+            };
+        }
     };
 
-    let subtitle = tls
-        .data
-        .as_ref()
-        .map(|status| source_note(status.source))
-        .unwrap_or("What the public listener presents.");
-
-    html! { <Card title="Transport security" {subtitle}>{ body }</Card> }
+    html! {
+        <Card title="Transport security" subtitle="What the public listener presents.">
+            { body }
+        </Card>
+    }
 }
 
 #[derive(Properties, PartialEq)]
@@ -168,20 +170,38 @@ fn details(props: &DetailsProps) -> Html {
     // and `html!` has nowhere to put a `let`.
     let (renew_action, renew_explanation, renew_failure) = renew_label(status.source);
 
+    let subtitle = source_note(status.source);
+
     if status.source == TlsSource::None {
         return html! {
-            <Alert
-                kind={AlertKind::Warning}
-                title="This server is not serving TLS."
-                message="Every credential a client sends — an enrolment token, a client \
-                         password, a bearer token — travels in the clear. Set \
-                         `[web.public.tls] mode` in the configuration file."
-            />
+            <Card title="Transport security" {subtitle}>
+                <Alert
+                    kind={AlertKind::Warning}
+                    title="This server is not serving TLS."
+                    message="Every credential a client sends — an enrolment token, a client \
+                             password, a bearer token — travels in the clear. Set \
+                             `[web.public.tls] mode` in the configuration file."
+                />
+            </Card>
         };
     }
 
+    // The one action on the card, in the card's own bar for it. Sources that
+    // do not fetch a certificate have no bar at all rather than an empty one.
+    let footer = is_fetched(status.source).then(|| {
+        html! {
+            <Button
+                busy={*busy}
+                title={Some(AttrValue::from(renew_explanation))}
+                onclick={renew}
+            >
+                { renew_action }
+            </Button>
+        }
+    });
+
     html! {
-        <>
+        <Card title="Transport security" {subtitle} {footer}>
             if let Some(message) = &*error {
                 <Alert
                     kind={AlertKind::Error}
@@ -283,17 +303,7 @@ fn details(props: &DetailsProps) -> Html {
                     </dd>
                 }
             </dl>
-
-            if is_fetched(status.source) {
-                <Button
-                    busy={*busy}
-                    title={Some(AttrValue::from(renew_explanation))}
-                    onclick={renew}
-                >
-                    { renew_action }
-                </Button>
-            }
-        </>
+        </Card>
     }
 }
 

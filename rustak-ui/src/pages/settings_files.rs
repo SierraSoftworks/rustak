@@ -34,6 +34,30 @@ pub fn files_card() -> Html {
     let files = use_resource(api::settings::files);
     let marti = use_resource(api::settings::marti);
 
+    let marti = match &marti.data {
+        None => html! {},
+        Some(marti) => html! {
+            <dl class="detail-list">
+                <dt>{ "Public host" }</dt>
+                <dd>
+                    { marti.public_host.clone().unwrap_or_else(
+                        || "— inferred from the request —".to_string(),
+                    ) }
+                </dd>
+
+                <dt>{ "Cross-origin" }</dt>
+                <dd>
+                    { match marti.allow_all_origins {
+                        true => "Any origin may read a Marti response.",
+                        false => "Same origin only.",
+                    } }
+                </dd>
+            </dl>
+        },
+    };
+
+    // The loaded card is `UploadLimit`'s own to render: the button in its
+    // footer belongs to the draft that lives there.
     let body = match (&files.data, &files.error) {
         (None, None) => html! { <LoadingNote /> },
         (None, Some(message)) => html! {
@@ -43,36 +67,41 @@ pub fn files_card() -> Html {
                 message={message.clone()}
             />
         },
-        (Some(settings), _) => html! {
-            <UploadLimit settings={*settings} on_changed={files.reload.clone()} />
-        },
+        (Some(settings), _) => {
+            return html! {
+                <UploadLimit settings={*settings} on_changed={files.reload.clone()}>
+                    { marti }
+                </UploadLimit>
+            };
+        }
     };
 
+    html! {
+        <FilesCardFrame>
+            { body }
+            { marti }
+        </FilesCardFrame>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+struct FilesCardFrameProps {
+    #[prop_or_default]
+    footer: Option<Html>,
+    #[prop_or_default]
+    children: Html,
+}
+
+/// The card itself, so the loading, failed and loaded states share one title.
+#[function_component(FilesCardFrame)]
+fn files_card_frame(props: &FilesCardFrameProps) -> Html {
     html! {
         <Card
             title="Enterprise Sync"
             subtitle="What clients may upload, and what this server tells them about itself."
+            footer={props.footer.clone()}
         >
-            { body }
-
-            if let Some(marti) = &marti.data {
-                <dl class="detail-list">
-                    <dt>{ "Public host" }</dt>
-                    <dd>
-                        { marti.public_host.clone().unwrap_or_else(
-                            || "— inferred from the request —".to_string(),
-                        ) }
-                    </dd>
-
-                    <dt>{ "Cross-origin" }</dt>
-                    <dd>
-                        { match marti.allow_all_origins {
-                            true => "Any origin may read a Marti response.",
-                            false => "Same origin only.",
-                        } }
-                    </dd>
-                </dl>
-            }
+            { props.children.clone() }
         </Card>
     }
 }
@@ -81,6 +110,9 @@ pub fn files_card() -> Html {
 struct UploadLimitProps {
     settings: FileSettings,
     on_changed: Callback<()>,
+    /// The rest of the card, under the field.
+    #[prop_or_default]
+    children: Html,
 }
 
 #[function_component(UploadLimit)]
@@ -125,8 +157,24 @@ fn upload_limit(props: &UploadLimitProps) -> Html {
         })
     };
 
+    let footer = html! {
+        <Button
+            kind={ButtonKind::Primary}
+            busy={*busy}
+            disabled={pinned || !changed}
+            title={match (pinned, changed) {
+                (true, _) => Some("The configuration file pins this value."),
+                (false, false) => Some("Nothing has changed."),
+                _ => None,
+            }}
+            onclick={save}
+        >
+            { "Save limit" }
+        </Button>
+    };
+
     html! {
-        <>
+        <FilesCardFrame {footer}>
             if let Some(message) = &*error {
                 <Alert
                     kind={AlertKind::Error}
@@ -157,19 +205,7 @@ fn upload_limit(props: &UploadLimitProps) -> Html {
                 />
             </Field>
 
-            <Button
-                kind={ButtonKind::Primary}
-                busy={*busy}
-                disabled={pinned || !changed}
-                title={match (pinned, changed) {
-                    (true, _) => Some("The configuration file pins this value."),
-                    (false, false) => Some("Nothing has changed."),
-                    _ => None,
-                }}
-                onclick={save}
-            >
-                { "Save limit" }
-            </Button>
-        </>
+            { props.children.clone() }
+        </FilesCardFrame>
     }
 }

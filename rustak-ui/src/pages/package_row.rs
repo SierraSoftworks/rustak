@@ -20,7 +20,8 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Button, ButtonGroup, ConfirmButton, StatusPill, StatusTone, Switch, TextInput,
+    Button, ConfirmButton, MenuAction, MenuItem, SplitButton, StatusPill, StatusTone, Switch,
+    TextInput,
 };
 use crate::util::short_relative;
 
@@ -164,27 +165,20 @@ pub fn package_row(props: &PackageRowProps) -> Html {
                 }
             </div>
 
-            <ButtonGroup>
-                <Button
-                    small=true
-                    busy={download.busy}
-                    onclick={
-                        let start = download.start.clone();
-                        Callback::from(move |_: MouseEvent| start.emit(()))
-                    }
-                >
-                    { "Download" }
-                </Button>
-                <Button
-                    small=true
-                    onclick={
+            // Fetching the bytes is what a row is usually there for; the
+            // editor, which changes what the row says, opens from the menu.
+            <SplitButton
+                busy={download.busy}
+                menu_label={format!("More actions for {}", package.name)}
+                primary={MenuAction::new("Download", download.start.clone())}
+                items={vec![MenuItem::Action(MenuAction::new(
+                    if *open { "Close" } else { "Edit" },
+                    {
                         let open = open.clone();
-                        Callback::from(move |_: MouseEvent| open.set(!*open))
-                    }
-                >
-                    { if *open { "Close" } else { "Edit" } }
-                </Button>
-            </ButtonGroup>
+                        Callback::from(move |()| open.set(!*open))
+                    },
+                ))]}
+            />
 
             if let Some(message) = &download.error {
                 <p class="package-row__error" role="alert">{ message.clone() }</p>

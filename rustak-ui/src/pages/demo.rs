@@ -12,8 +12,8 @@ use yew::prelude::*;
 
 use crate::components::{
     Alert, AlertKind, Button, ButtonGroup, ButtonKind, Card, Center, EmptyState, Field, FileDrop,
-    Layout, LoadingNote, NumberInput, RoleBadge, SecretInput, Select, SelectOption, Stat,
-    StatusPill, StatusTone, Switch, TextArea, TextInput, XmlView,
+    Layout, LoadingNote, MenuAction, MenuItem, NumberInput, RoleBadge, SecretInput, Select,
+    SelectOption, SplitButton, Stat, StatusPill, StatusTone, Switch, TextArea, TextInput, XmlView,
 };
 
 #[function_component(DemoControls)]
@@ -60,10 +60,35 @@ fn buttons() -> Html {
             <div class="gallery__row">
                 <ButtonGroup label="Grouped actions">
                     <Button small=true onclick={noop.clone()}>{ "Promote" }</Button>
-                    <Button small=true kind={ButtonKind::Danger} onclick={noop}>
+                    <Button small=true kind={ButtonKind::Danger} onclick={noop.clone()}>
                         { "Suspend" }
                     </Button>
                 </ButtonGroup>
+            </div>
+            <div class="gallery__row">
+                <SplitButton
+                    menu_label="More actions for QUINN"
+                    primary={MenuAction::new("Revoke", Callback::noop())
+                        .danger()
+                        .confirm("Revoke the certificate for 'QUINN'?", "Revoke it")}
+                    items={vec![
+                        MenuItem::Action(MenuAction::new("Revoke (user requested)", Callback::noop()).danger()),
+                        MenuItem::Action(MenuAction::new("Revoke (device lost)", Callback::noop()).danger()),
+                        MenuItem::Action(MenuAction::new("Revoke (cert replaced)", Callback::noop()).danger()),
+                        MenuItem::Separator,
+                        MenuItem::Action(MenuAction::new("Forget", Callback::noop()).danger()),
+                    ]}
+                />
+                <SplitButton
+                    primary={MenuAction::new("Download", Callback::noop())}
+                    items={vec![MenuItem::Action(MenuAction::new("Edit", Callback::noop()))]}
+                />
+                <SplitButton
+                    busy=true
+                    primary={MenuAction::new("Save", Callback::noop())}
+                    items={vec![MenuItem::Action(MenuAction::new("Delete", Callback::noop()).danger())]}
+                />
+                <SplitButton primary={MenuAction::new("Alone", Callback::noop())} />
             </div>
         </Card>
     }

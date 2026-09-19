@@ -8,7 +8,7 @@
 //   1. Design tokens (variables, mixins)
 //   2. Base / reset
 //   3. Primitives (buttons, fields, alerts, pills, chips)
-//   4. Layout chrome (app bar, navigation, shell, footer)
+//   4. Layout chrome (app bar, sidebar navigation, shell, footer)
 //   5. Pages (landing, auth, wizard, dashboard, lists, control gallery)
 //   6. Responsive
 // =============================================================================
@@ -139,13 +139,6 @@ pre {
   color: $text-secondary;
   font-size: 0.9rem;
   margin: 0;
-}
-
-// A heading that divides one card into two subjects.
-.card__section-title {
-  font-size: 0.95rem;
-  font-weight: 600;
-  margin: 1.5rem 0 0.75rem;
 }
 
 .sign-in-methods {
@@ -313,6 +306,100 @@ pre {
     &:focus-visible {
       z-index: 1;
     }
+  }
+}
+
+// One action on its face and the rest behind a caret. `position: relative` is
+// what the menu hangs off; the backdrop is what closes it when anything else
+// on the page is clicked, without a document-wide listener to forget.
+.split-btn {
+  position: relative;
+  display: inline-flex;
+
+  > .btn {
+    position: relative;
+
+    &:first-child {
+      border-radius: $radius-sm 0 0 $radius-sm;
+    }
+
+    &:only-child {
+      border-radius: $radius-sm;
+    }
+
+    &:hover:not(:disabled),
+    &:focus-visible {
+      z-index: 1;
+    }
+  }
+
+  &__toggle {
+    margin-left: -1px;
+    border-radius: 0 $radius-sm $radius-sm 0;
+    padding-left: 0.45rem;
+    padding-right: 0.45rem;
+  }
+
+  &__backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 19;
+  }
+}
+
+.menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 13rem;
+  padding: 0.3rem;
+  @include card;
+  box-shadow: $shadow-md;
+
+  &__item {
+    appearance: none;
+    width: 100%;
+    padding: 0.45rem 0.7rem;
+    border: none;
+    border-radius: $radius-sm;
+    background: none;
+    font: inherit;
+    font-size: 0.82rem;
+    text-align: left;
+    white-space: nowrap;
+    color: $text-regular;
+    cursor: pointer;
+
+    &:hover:not(:disabled),
+    &:focus-visible {
+      outline: none;
+      background: $brand-tint;
+      color: $brand;
+    }
+
+    &:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    &--danger {
+      color: $danger;
+
+      &:hover:not(:disabled),
+      &:focus-visible {
+        background: $danger-bg;
+        color: $danger;
+      }
+    }
+  }
+
+  &__separator {
+    height: 1px;
+    margin: 0.3rem 0;
+    background: $border-lighter;
   }
 }
 
@@ -740,13 +827,38 @@ pre {
 
   &__inner {
     width: 100%;
-    max-width: $container-width;
-    margin: 0 auto;
-    padding: 0 2.5rem;
+    padding: 0 1.5rem;
     height: 60px;
     display: flex;
     align-items: center;
-    gap: 1.5rem;
+    gap: 1rem;
+  }
+
+  // Opens the navigation on a phone. Present in the markup at every width so
+  // the sidebar it controls always has something to be controlled by; shown
+  // only where the sidebar is hidden.
+  &__menu {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    margin-left: -0.5rem;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: $radius-sm;
+    background: none;
+    color: $text-regular;
+    cursor: pointer;
+
+    &:hover {
+      background: $fill-light;
+      color: $brand;
+    }
+
+    &:focus-visible {
+      @include focus-ring;
+    }
   }
 
   &__brand {
@@ -772,41 +884,75 @@ pre {
   }
 }
 
-// The navigation strip below the bar. There are eleven destinations, which is
-// more than a single row beside the brand can hold, so they get a row of their
-// own where they can wrap.
-.admin-nav {
-  border-top: 1px solid $border-lighter;
+// Everything under the bar: the sidebar down the left, the page beside it.
+.app-body {
+  display: flex;
+  flex: 1;
+  align-items: stretch;
+}
 
+// The navigation, down the left. Thirteen destinations are more than a bar
+// can hold and more than a flat list is easy to scan, so they are grouped by
+// what somebody is there to do — and the column has the height for it.
+.sidebar {
+  flex: none;
+  width: 15rem;
+  background: $bg-white;
+  border-right: 1px solid $border-lighter;
+
+  // Sits under the sticky bar and stays put while the page scrolls.
   &__inner {
-    width: 100%;
-    max-width: $container-width;
-    margin: 0 auto;
-    padding: 0 2.5rem;
+    position: sticky;
+    top: 60px;
+    max-height: calc(100vh - 60px);
+    overflow-y: auto;
+  }
+
+  &__backdrop {
+    display: none;
+  }
+}
+
+.admin-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+  padding: 1.25rem 0.75rem;
+
+  &__group {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.15rem;
+    flex-direction: column;
+    gap: 0.1rem;
+  }
+
+  &__heading {
+    padding: 0 0.75rem 0.35rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: $text-placeholder;
   }
 
   &__link {
-    display: inline-flex;
+    display: flex;
     align-items: center;
-    padding: 0.55rem 0.75rem;
-    font-size: 0.82rem;
+    padding: 0.45rem 0.75rem;
+    border-radius: $radius;
+    font-size: 0.85rem;
     font-weight: 500;
-    color: $text-secondary;
+    color: $text-regular;
     text-decoration: none;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-    transition: color $transition, border-color $transition;
+    transition: color $transition, background $transition;
 
     &:hover {
       color: $brand;
+      background: $fill-light;
     }
 
     &--active {
       color: $brand;
-      border-bottom-color: $brand;
+      background: $brand-tint;
     }
   }
 }
@@ -864,8 +1010,10 @@ pre {
 }
 
 .app-main {
+  display: flex;
+  flex-direction: column;
   flex: 1;
-  width: 100%;
+  min-width: 0;
 }
 
 .app-container {
@@ -876,6 +1024,7 @@ pre {
 }
 
 .app-footer {
+  margin-top: auto;
   padding: 1.5rem 0;
   text-align: center;
   font-size: 0.8rem;
@@ -1144,6 +1293,24 @@ footer {
     padding: 1.25rem;
   }
 
+  // The bar the card's own action lives in. Set apart from the body so a
+  // "Save" reads as the thing done to the fields above it rather than as one
+  // more of them.
+  &__footer {
+    display: flex;
+    align-items: center;
+    padding: 0.85rem 1.25rem;
+    border-top: 1px solid $border-lighter;
+    background: $fill-lighter;
+    border-radius: 0 0 $radius-lg $radius-lg;
+
+    > .card__actions {
+      flex: 1;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+  }
+
   &__status {
     display: flex;
     flex-wrap: wrap;
@@ -1156,6 +1323,10 @@ footer {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
   gap: 1.5rem;
+  // The grid owns the spacing between its own cards, so they give theirs up —
+  // but whatever comes after the grid still needs the gap a card would have
+  // left.
+  margin-bottom: 1.5rem;
 
   .card {
     margin-bottom: 0;
@@ -1331,7 +1502,7 @@ footer {
 // Passkeys, on the settings page.
 .passkey-list {
   list-style: none;
-  margin: 0 0 1.25rem;
+  margin: 0;
   padding: 0;
 }
 
@@ -1364,6 +1535,8 @@ footer {
   display: flex;
   align-items: flex-start;
   gap: 0.6rem;
+  // Takes the whole footer, so the label box can stretch beside the button.
+  flex: 1;
 
   .field__input {
     min-width: 0;
@@ -1532,13 +1705,6 @@ footer {
     min-width: 0;
   }
 
-  &__action {
-    display: flex;
-    align-items: center;
-    // Clears the label row above it, so the button sits on the line the inputs
-    // are on rather than above them.
-    padding-top: 1.55rem;
-  }
 }
 
 .credential-list {
@@ -2134,22 +2300,6 @@ footer {
     overflow-wrap: anywhere;
   }
 
-  // The reason is a choice made before the confirmation, not a field somebody
-  // fills in, so it takes the width of its longest option rather than the
-  // width of the row.
-  .field__select {
-    width: auto;
-    max-width: 14rem;
-    font-size: 0.78rem;
-    padding-top: 0.2rem;
-    padding-bottom: 0.2rem;
-  }
-
-  &__error {
-    flex-basis: 100%;
-    margin: 0;
-    color: $danger;
-  }
 }
 
 // The typed preference list. Three controls and a button per row, with the
@@ -2542,7 +2692,6 @@ footer {
 
 @media (max-width: 860px) {
   .app-bar__inner,
-  .admin-nav__inner,
   .app-container {
     padding-left: 1.25rem;
     padding-right: 1.25rem;
@@ -2553,8 +2702,58 @@ footer {
     display: none;
   }
 
-  .admin-nav__link {
-    padding: 0.5rem 0.55rem;
+  .app-bar__menu {
+    display: inline-flex;
+  }
+
+  // The sidebar becomes a drawer: off the left edge until the bar's button
+  // slides it in, over the page rather than beside it, with a backdrop that
+  // closes it when the page is tapped.
+  .sidebar {
+    position: fixed;
+    top: 60px;
+    bottom: 0;
+    left: 0;
+    z-index: 15;
+    width: min(18rem, 85vw);
+    border-right: none;
+    transform: translateX(-100%);
+    transition: transform 160ms ease;
+
+    &--open {
+      transform: none;
+      box-shadow: $shadow-md;
+    }
+
+    &__inner {
+      position: static;
+      max-height: 100%;
+    }
+
+    &__backdrop {
+      display: block;
+      position: fixed;
+      inset: 60px 0 0;
+      z-index: 14;
+      background: rgba(48, 49, 51, 0.3);
+    }
+  }
+
+  // A row's action sits at the row's left edge here, so a menu hanging off
+  // its right edge would open off the screen.
+  .split-btn .menu {
+    right: auto;
+    left: 0;
+  }
+
+  .card__footer {
+    flex-direction: column;
+    align-items: stretch;
+
+    > .card__actions {
+      flex-direction: column;
+      align-items: stretch;
+    }
   }
 
   .page-title {
@@ -2586,7 +2785,8 @@ footer {
     // A grid item stretches to its column by default, which turns a pill into a
     // banner; both of these want to sit at their own width.
     .status-pill,
-    .btn-group {
+    .btn-group,
+    .split-btn {
       grid-column: 1 / -1;
       justify-self: start;
     }
@@ -2613,6 +2813,7 @@ footer {
     > .btn,
     > .status-pill,
     > .btn-group,
+    > .split-btn,
     > .confirm,
     > .switch {
       justify-self: start;

@@ -26,9 +26,15 @@ pub struct CardProps {
     #[prop_or_default]
     pub subtitle: Option<AttrValue>,
 
-    /// Controls aligned to the end of the heading row.
+    /// Controls aligned to the end of the heading row: a link out, a filter —
+    /// something about the card rather than something the card does.
     #[prop_or_default]
     pub actions: Html,
+
+    /// The action the card exists for — a "Save", a "Mint" — in a bar of its
+    /// own under the body, so it is never lost among the fields it acts on.
+    #[prop_or_default]
+    pub footer: Option<Html>,
 
     #[prop_or_default]
     pub children: Html,
@@ -58,6 +64,11 @@ pub fn card(props: &CardProps) -> Html {
         <section class="card">
             { header }
             <div class="card__body">{ props.children.clone() }</div>
+            if let Some(footer) = &props.footer {
+                <div class="card__footer">
+                    <div class="card__actions">{ footer.clone() }</div>
+                </div>
+            }
         </section>
     }
 }
