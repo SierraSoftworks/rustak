@@ -84,3 +84,16 @@ invisible to CI while being the first thing a real device does.
    and connecting seconds later in CI all along, so "the cache is refreshed on an interval"
    was not what happened here. What rustak could genuinely be faulted for is that its own
    refusal was invisible: a failed stream handshake is now reported with its reason.
+
+## Follow-up observation (2026-09-19, same device)
+
+After the 401, the device worked for the rest of that ATAK session but showed the
+"Enter Credentials" dialog and a certificate-invalid notice on the next start.
+ATAK persists a connection's client certificate only when the enrolment completes,
+so the failed profile step left the stored connection without one; on restart the
+"enroll for certificate with trust" flag re-ran enrolment and, with no cached
+credentials, prompted. The server had not restarted and the CA was unchanged.
+Re-enrolling against the build carrying the grace-window fix completed all three
+steps and the behaviour did not reproduce. Consequence for the checklist: an
+enrolment that reports any error on the device should be repeated with a fresh
+token, even if the stream comes up.

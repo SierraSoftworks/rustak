@@ -201,3 +201,5 @@ Confirm these *do not* work, so nobody designs a feature around them:
   suites already prove, and what they explicitly cannot (the app UI).
 - Items marked **to confirm** have no verified source and must be settled by running this checklist;
   update this page with the outcome once observed.
+
+> If ATAK reports any error during enrolment (even if the stream then connects), repeat the enrolment with a fresh token: ATAK persists the connection's certificate only when the whole sequence completes, and a half-completed enrolment prompts for credentials on the next start.
