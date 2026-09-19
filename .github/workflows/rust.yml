@@ -12,6 +12,11 @@ env:
   VERSION: "0.0.0-dev"
   REGISTRY: ghcr.io
   ORG: sierrasoftworks
+  # One place to bump it: the cache key and the install below both read this,
+  # and a mismatch between them would serve a stale binary from the cache.
+  # 0.22 was still beta when this pipeline was written — bump deliberately, not
+  # via dependabot, which cannot see cargo-binstall installs.
+  TRUNK_VERSION: "0.21.14"
 
 concurrency:
   group: rust-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
@@ -199,23 +204,36 @@ jobs:
       # Pinned to the current stable release (0.21.14); 0.22 is still beta at
       # the time this pipeline was written. Bump deliberately, not via
       # dependabot (it has no visibility into cargo-binstall installs).
+      # Cached, because the install is a network fetch on the release
+      # critical path and the network is the least reliable thing in this
+      # pipeline. Four fetch failures in one day — the darwin artifact upload,
+      # `cross` in the build matrix, and trunk twice — and one of the trunk
+      # ones published an **empty v0.0.2**: `Build UI` died, `build` needs
+      # `ui`, and everything behind it skipped.
+      #
+      # A retry alone was not enough. Run 35457004854 exhausted all three
+      # attempts over four minutes while run 35457023736, on another runner at
+      # the same moment, installed it without trouble — so the fault is
+      # runner-local rather than an outage, and the only real fix is to stop
+      # needing the network at all on most runs.
+      - name: Cache Trunk
+        id: trunk-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/trunk
+          key: trunk-${{ env.TRUNK_VERSION }}-${{ runner.os }}
+
       - name: Install Trunk
+        if: steps.trunk-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          # Prebuilt only, and retried: this is a network fetch and nothing
-          # else. The identical step failed the **v0.0.2 release** (run
-          # 35454908767) when every one of cargo-binstall's fetchers timed out
-          # — and because `build` needs `ui`, the whole pipeline behind it
-          # skipped and the release published **nothing**: no assets, no
-          # images, no formula. The same shape had already cost `cross` a
-          # build-matrix job earlier the same day.
-          #
           # `--disable-strategies compile` stays: compiling trunk from source
           # has broken before on transitive cssparser/lightningcss mismatches,
           # so a slow success is not a better outcome than a fast failure.
-          # Retrying is.
+          # Retrying is — it covers the brief blip, and the cache above covers
+          # the sustained one.
           for attempt in 1 2 3; do
-            if cargo binstall --no-confirm --disable-strategies compile trunk@0.21.14; then
+            if cargo binstall --no-confirm --disable-strategies compile "trunk@${TRUNK_VERSION}"; then
               installed=1
               break
             fi
@@ -228,7 +246,10 @@ jobs:
             echo "::error::cargo binstall could not fetch trunk after three attempts."
             exit 1
           fi
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Put Trunk on the path
+        shell: bash
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Setup Cache
         uses: Swatinem/rust-cache@v2
