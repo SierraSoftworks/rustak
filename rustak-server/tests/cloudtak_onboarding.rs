@@ -1036,13 +1036,34 @@ async fn the_surface_the_interop_suites_probe_for_answers_something_they_can_rea
     // And the POST really does fall through, which is the trap this documents.
     let post_path = fetch!(app, &token, "/api/v1/users/probe/cloudtak-onboarding");
 
-    assert_eq!(post_path.status(), StatusCode::OK);
+    let status = post_path.status();
+    let content_type = post_path
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+
+    // The body is read before the assertion rather than after, because a status
+    // that is neither the shell nor a refusal is the interesting case and the
+    // body is the only thing that says why. On CI run 35449569084 this answered
+    // `500` and the panic said nothing but `left: 500, right: 200` — the
+    // server's own error never reaches the log, because libtest captures it and
+    // prints only the panic. Whatever the next occurrence is, it will name it.
+    let body = String::from_utf8_lossy(&test::read_body(post_path).await).into_owned();
+
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a GET on the POST-only route should fall through to the single-page \
+         shell; it answered {status} with content-type {content_type:?} and \
+         body: {}",
+        body.chars().take(400).collect::<String>(),
+    );
     assert!(
-        post_path
-            .headers()
-            .get("content-type")
-            .and_then(|value| value.to_str().ok())
+        content_type
+            .as_deref()
             .is_some_and(|value| value.starts_with("text/html")),
-        "a GET on the POST-only route is the single-page shell, not a 405",
+        "a GET on the POST-only route is the single-page shell, not a 405; \
+         content-type was {content_type:?}",
     );
 }
