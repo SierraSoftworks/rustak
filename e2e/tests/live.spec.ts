@@ -63,10 +63,11 @@ test("the situational-awareness browser is empty rather than broken", async ({ p
   await expect(page.getByText("Nothing matches.", { exact: false })).toBeVisible();
 });
 
-test("both live pages are reachable from the navigation strip", async ({ page }) => {
+test("both live pages are reachable from the navigation sidebar", async ({ page }) => {
   await gotoApp(page, "/admin/");
 
-  await page.getByRole("link", { name: "Live", exact: true }).click();
+  // Under the sidebar's "Live" heading the link is called what the page is.
+  await page.getByRole("link", { name: "Clients", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Clients", level: 1 })).toBeVisible();
 
   await page.getByRole("link", { name: "Situation", exact: true }).click();

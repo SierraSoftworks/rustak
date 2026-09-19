@@ -213,9 +213,12 @@ test("a channel is created and granted to an account", async ({ page }) => {
   await expect(reloaded.getByRole("checkbox", { name: "Read" })).not.toBeChecked();
 
   // And the channel's own page shows the same membership from the other side.
+  // The row's selector is named after the channel and its bit position; the
+  // row's action menu is named after the channel too, so the bit is what tells
+  // the two apart.
   await gotoApp(page, "/admin/groups");
   await page.locator(".channel-row").filter({ hasText: channel }).getByRole("button", {
-    name: channel,
+    name: `${channel} bit`,
   }).click();
   const member = page.locator(".member-row").filter({ hasText: username });
   await expect(member.getByRole("checkbox", { name: "Write" })).toBeChecked();
