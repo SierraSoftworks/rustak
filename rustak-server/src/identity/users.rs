@@ -19,6 +19,7 @@ use crate::db::{
     repos::{NewUser, OidcProfile, UserRow},
 };
 use crate::identity::{groups, members};
+use crate::services::{AppContext, Services};
 
 /// What an identity provider told us about somebody, once verified.
 #[derive(Debug, Clone)]
@@ -59,6 +60,11 @@ impl VerifiedIdentity {
 /// is stored so that the Marti and stream listeners, which never see the
 /// provider's claims, can still tell who administers the installation.
 ///
+/// Takes the context rather than the database because a sign-in is one of the
+/// ways channels and memberships change, and both the routing cache and the
+/// account's live connections have to be told — see
+/// [`groups::apply_claims`] and [`members::channels_changed`].
+///
 /// # Errors
 ///
 /// A [`human_errors::Kind::User`] error when the account name is already held
@@ -66,12 +72,13 @@ impl VerifiedIdentity {
 /// [`human_errors::Kind::System`] error if a read or write fails.
 #[instrument("identity.users.provision", skip_all, fields(username = %identity.username), err(Display))]
 pub async fn provision(
-    db: &Database,
+    context: &AppContext,
     oidc: &OidcConfig,
     identity: &VerifiedIdentity,
     is_admin: bool,
     anon_by_default: bool,
 ) -> Result<UserRow, Error> {
+    let db = context.db();
     let profile = identity.profile(is_admin);
     let known = db
         .users()
@@ -103,9 +110,39 @@ pub async fn provision(
         }
     }
 
-    groups::apply_claims(db, oidc, row.id, &identity.groups).await?;
+    claims_applied(context, oidc, &row, &identity.groups).await?;
 
     Ok(row)
+}
+
+/// Maps the `groups` claim onto memberships and makes the result take effect.
+///
+/// The mapping is [`groups::apply_claims`], which invalidates the routing cache
+/// itself when a claim created a channel. What it cannot do is the *person*
+/// half: a membership this sign-in added or took away has to reach whatever
+/// that account already has connected, because a live stream connection holds
+/// the rights it authenticated with and would otherwise keep them until it
+/// reconnected. That is exactly what the channels API does after an
+/// administrator's change, so it is the same call rather than a second one.
+///
+/// `None` as the originating device: a sign-in is not one connected device's
+/// action, so every device the account has open is told.
+///
+/// # Errors
+///
+/// A [`human_errors::Kind::System`] error if a channel cannot be read or
+/// created, or the write fails. Telling the connections never fails.
+async fn claims_applied(
+    context: &AppContext,
+    oidc: &OidcConfig,
+    row: &UserRow,
+    claimed: &[String],
+) -> Result<(), Error> {
+    if groups::apply_claims(context, oidc, row.id, claimed).await? {
+        members::channels_changed(context, row.id, &row.username, None).await;
+    }
+
+    Ok(())
 }
 
 /// Binds the caller's own account to the identity the provider just vouched
@@ -126,12 +163,14 @@ pub async fn provision(
 /// fails.
 #[instrument("identity.users.link", skip_all, fields(username = %current.username), err(Display))]
 pub async fn link_identity(
-    db: &Database,
+    context: &AppContext,
     oidc: &OidcConfig,
     current: &UserRow,
     identity: &VerifiedIdentity,
     is_admin: bool,
 ) -> Result<UserRow, Error> {
+    let db = context.db();
+
     if current.kind == UserKind::Service {
         return Err(human_errors::user(
             "A service account cannot be linked to an identity provider.",
@@ -146,7 +185,7 @@ pub async fn link_identity(
     if same_identity {
         // Already linked to exactly this identity: refresh it, as a sign-in would.
         let row = upsert(db, identity, profile).await?;
-        groups::apply_claims(db, oidc, row.id, &identity.groups).await?;
+        claims_applied(context, oidc, &row, &identity.groups).await?;
         return Ok(row);
     }
 
@@ -188,7 +227,7 @@ pub async fn link_identity(
     }
 
     let row = adopt(db, current, identity, profile).await?;
-    groups::apply_claims(db, oidc, row.id, &identity.groups).await?;
+    claims_applied(context, oidc, &row, &identity.groups).await?;
 
     Ok(row)
 }
@@ -428,8 +467,8 @@ pub async fn create_admin(
 mod tests {
     use super::*;
 
-    async fn database() -> Database {
-        Database::open_in_memory().await.unwrap()
+    async fn context() -> AppContext {
+        AppContext::new_mock(|_| {}).await.unwrap()
     }
 
     fn oidc() -> OidcConfig {
@@ -468,10 +507,17 @@ mod tests {
 
     #[tokio::test]
     async fn a_first_sign_in_creates_the_account_and_its_channels() {
-        let db = database().await;
-        let row = provision(&db, &oidc(), &identity("ada", "subject-1"), false, true)
-            .await
-            .unwrap();
+        let context = context().await;
+        let db = context.db().clone();
+        let row = provision(
+            &context,
+            &oidc(),
+            &identity("ada", "subject-1"),
+            false,
+            true,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(row.username.as_str(), "ada");
         assert_eq!(row.source, UserSource::Oidc);
@@ -484,13 +530,25 @@ mod tests {
 
     #[tokio::test]
     async fn a_rename_in_the_directory_follows_the_subject_rather_than_the_name() {
-        let db = database().await;
-        let first = provision(&db, &oidc(), &identity("ada", "subject-1"), false, true)
-            .await
-            .unwrap();
-        let renamed = provision(&db, &oidc(), &identity("ada.l", "subject-1"), false, true)
-            .await
-            .unwrap();
+        let context = context().await;
+        let first = provision(
+            &context,
+            &oidc(),
+            &identity("ada", "subject-1"),
+            false,
+            true,
+        )
+        .await
+        .unwrap();
+        let renamed = provision(
+            &context,
+            &oidc(),
+            &identity("ada.l", "subject-1"),
+            false,
+            true,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(first.id, renamed.id, "the same person keeps the same row");
         assert_eq!(renamed.username.as_str(), "ada.l");
@@ -498,19 +556,28 @@ mod tests {
 
     #[tokio::test]
     async fn a_provider_cannot_walk_into_an_account_it_did_not_create() {
-        let db = database().await;
+        let context = context().await;
+        let db = context.db().clone();
         create_admin(&db, Username::parse("ada").unwrap(), None, None, true)
             .await
             .unwrap();
 
-        let refused = provision(&db, &oidc(), &identity("ada", "subject-1"), false, true).await;
+        let refused = provision(
+            &context,
+            &oidc(),
+            &identity("ada", "subject-1"),
+            false,
+            true,
+        )
+        .await;
 
         assert!(refused.is_err(), "{refused:?}");
     }
 
     #[tokio::test]
     async fn linking_by_name_hands_the_existing_account_to_the_provider() {
-        let db = database().await;
+        let context = context().await;
+        let db = context.db().clone();
         let before = create_admin(&db, Username::parse("ada").unwrap(), None, None, true)
             .await
             .unwrap();
@@ -520,7 +587,7 @@ mod tests {
             ..oidc()
         };
 
-        let linked = provision(&db, &oidc, &identity("ada", "subject-1"), false, true)
+        let linked = provision(&context, &oidc, &identity("ada", "subject-1"), false, true)
             .await
             .unwrap();
 
@@ -549,7 +616,8 @@ mod tests {
 
     #[tokio::test]
     async fn linking_by_name_does_not_invent_a_standing_the_account_never_had() {
-        let db = database().await;
+        let context = context().await;
+        let db = context.db().clone();
         let before = db
             .users()
             .create(NewUser::person(Username::parse("grace").unwrap()))
@@ -561,9 +629,15 @@ mod tests {
             ..oidc()
         };
 
-        let linked = provision(&db, &oidc, &identity("grace", "subject-2"), false, true)
-            .await
-            .unwrap();
+        let linked = provision(
+            &context,
+            &oidc,
+            &identity("grace", "subject-2"),
+            false,
+            true,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(linked.id, before.id);
         assert_eq!(linked.admin_override, None);
@@ -572,7 +646,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_linked_account_is_found_by_subject_on_the_next_sign_in() {
-        let db = database().await;
+        let context = context().await;
+        let db = context.db().clone();
         create_admin(&db, Username::parse("ada").unwrap(), None, None, true)
             .await
             .unwrap();
@@ -582,10 +657,10 @@ mod tests {
             ..oidc()
         };
 
-        let first = provision(&db, &oidc, &identity("ada", "subject-1"), false, true)
+        let first = provision(&context, &oidc, &identity("ada", "subject-1"), false, true)
             .await
             .unwrap();
-        let again = provision(&db, &oidc, &identity("ada", "subject-1"), false, true)
+        let again = provision(&context, &oidc, &identity("ada", "subject-1"), false, true)
             .await
             .unwrap();
 
@@ -594,22 +669,35 @@ mod tests {
 
     #[tokio::test]
     async fn a_person_can_link_their_own_account_without_the_flag() {
-        let db = database().await;
+        let context = context().await;
+        let db = context.db().clone();
         let before = create_admin(&db, Username::parse("ada").unwrap(), None, None, true)
             .await
             .unwrap();
 
-        let linked = link_identity(&db, &oidc(), &before, &identity("ada", "subject-1"), false)
-            .await
-            .unwrap();
+        let linked = link_identity(
+            &context,
+            &oidc(),
+            &before,
+            &identity("ada", "subject-1"),
+            false,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(linked.id, before.id);
         assert_eq!(linked.source, UserSource::Oidc);
         assert_eq!(linked.admin_override, Some(true));
 
-        let again = link_identity(&db, &oidc(), &linked, &identity("ada", "subject-1"), false)
-            .await
-            .unwrap();
+        let again = link_identity(
+            &context,
+            &oidc(),
+            &linked,
+            &identity("ada", "subject-1"),
+            false,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             again.id, before.id,
             "linking the same identity again is a refresh"
@@ -618,13 +706,14 @@ mod tests {
 
     #[tokio::test]
     async fn an_account_follows_the_providers_name_for_the_person() {
-        let db = database().await;
+        let context = context().await;
+        let db = context.db().clone();
         let before = create_admin(&db, Username::parse("ada").unwrap(), None, None, true)
             .await
             .unwrap();
 
         let linked = link_identity(
-            &db,
+            &context,
             &oidc(),
             &before,
             &identity("ada.l", "subject-1"),
@@ -639,32 +728,58 @@ mod tests {
 
     #[tokio::test]
     async fn an_account_cannot_be_linked_to_a_second_identity() {
-        let db = database().await;
+        let context = context().await;
+        let db = context.db().clone();
         let before = create_admin(&db, Username::parse("ada").unwrap(), None, None, true)
             .await
             .unwrap();
-        let linked = link_identity(&db, &oidc(), &before, &identity("ada", "subject-1"), false)
-            .await
-            .unwrap();
+        let linked = link_identity(
+            &context,
+            &oidc(),
+            &before,
+            &identity("ada", "subject-1"),
+            false,
+        )
+        .await
+        .unwrap();
 
-        let refused =
-            link_identity(&db, &oidc(), &linked, &identity("ada", "subject-2"), false).await;
+        let refused = link_identity(
+            &context,
+            &oidc(),
+            &linked,
+            &identity("ada", "subject-2"),
+            false,
+        )
+        .await;
 
         assert!(refused.is_err(), "{refused:?}");
     }
 
     #[tokio::test]
     async fn an_identity_that_already_signs_in_as_somebody_else_is_refused() {
-        let db = database().await;
-        provision(&db, &oidc(), &identity("grace", "subject-1"), false, true)
-            .await
-            .unwrap();
+        let context = context().await;
+        let db = context.db().clone();
+        provision(
+            &context,
+            &oidc(),
+            &identity("grace", "subject-1"),
+            false,
+            true,
+        )
+        .await
+        .unwrap();
         let ada = create_admin(&db, Username::parse("ada").unwrap(), None, None, true)
             .await
             .unwrap();
 
-        let refused =
-            link_identity(&db, &oidc(), &ada, &identity("grace", "subject-1"), false).await;
+        let refused = link_identity(
+            &context,
+            &oidc(),
+            &ada,
+            &identity("grace", "subject-1"),
+            false,
+        )
+        .await;
 
         assert!(refused.is_err(), "{refused:?}");
         let still = db.users().get(ada.id).await.unwrap().unwrap();
@@ -673,7 +788,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_providers_name_that_is_another_account_here_is_refused() {
-        let db = database().await;
+        let context = context().await;
+        let db = context.db().clone();
         db.users()
             .create(NewUser::person(Username::parse("grace").unwrap()))
             .await
@@ -682,33 +798,53 @@ mod tests {
             .await
             .unwrap();
 
-        let refused =
-            link_identity(&db, &oidc(), &ada, &identity("grace", "subject-9"), false).await;
+        let refused = link_identity(
+            &context,
+            &oidc(),
+            &ada,
+            &identity("grace", "subject-9"),
+            false,
+        )
+        .await;
 
         assert!(refused.is_err(), "{refused:?}");
     }
 
     #[tokio::test]
     async fn a_service_account_cannot_be_linked() {
-        let db = database().await;
+        let context = context().await;
+        let db = context.db().clone();
         let bot = db
             .users()
             .create(NewUser::service(Username::parse("relay").unwrap()))
             .await
             .unwrap();
 
-        let refused =
-            link_identity(&db, &oidc(), &bot, &identity("relay", "subject-1"), false).await;
+        let refused = link_identity(
+            &context,
+            &oidc(),
+            &bot,
+            &identity("relay", "subject-1"),
+            false,
+        )
+        .await;
 
         assert!(refused.is_err(), "{refused:?}");
     }
 
     #[tokio::test]
     async fn the_stored_flag_and_the_expression_each_grant_administration() {
-        let db = database().await;
-        let row = provision(&db, &oidc(), &identity("ada", "subject-1"), false, true)
-            .await
-            .unwrap();
+        let context = context().await;
+        let db = context.db().clone();
+        let row = provision(
+            &context,
+            &oidc(),
+            &identity("ada", "subject-1"),
+            false,
+            true,
+        )
+        .await
+        .unwrap();
 
         let ordinary = principal(&db, &row, AuthMethod::SetupToken, false)
             .await
@@ -723,8 +859,9 @@ mod tests {
 
     #[tokio::test]
     async fn an_administrators_explicit_decision_outranks_the_expression() {
-        let db = database().await;
-        let row = provision(&db, &oidc(), &identity("ada", "subject-1"), true, true)
+        let context = context().await;
+        let db = context.db().clone();
+        let row = provision(&context, &oidc(), &identity("ada", "subject-1"), true, true)
             .await
             .unwrap();
 
@@ -746,8 +883,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_disabled_account_administers_nothing() {
-        let db = database().await;
-        let row = provision(&db, &oidc(), &identity("ada", "subject-1"), true, true)
+        let context = context().await;
+        let db = context.db().clone();
+        let row = provision(&context, &oidc(), &identity("ada", "subject-1"), true, true)
             .await
             .unwrap();
 
@@ -767,8 +905,9 @@ mod tests {
         // R-01 H1. The account may administer; the credential presented on this
         // request was not granted it, and the narrower of the two is what the
         // request is answered under.
-        let db = database().await;
-        let row = provision(&db, &oidc(), &identity("ada", "subject-1"), true, true)
+        let context = context().await;
+        let db = context.db().clone();
+        let row = provision(&context, &oidc(), &identity("ada", "subject-1"), true, true)
             .await
             .unwrap();
 
@@ -806,8 +945,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_scope_that_merely_starts_with_admin_is_not_the_admin_scope() {
-        let db = database().await;
-        let row = provision(&db, &oidc(), &identity("ada", "subject-1"), true, true)
+        let context = context().await;
+        let db = context.db().clone();
+        let row = provision(&context, &oidc(), &identity("ada", "subject-1"), true, true)
             .await
             .unwrap();
 
@@ -831,8 +971,9 @@ mod tests {
         // A client certificate, Basic and a passkey assertion are not scoped
         // grants; treating their absent scope as "not admin" would lock the
         // first-run wizard and every certificate-authenticated sidecar out.
-        let db = database().await;
-        let row = provision(&db, &oidc(), &identity("ada", "subject-1"), true, true)
+        let context = context().await;
+        let db = context.db().clone();
+        let row = provision(&context, &oidc(), &identity("ada", "subject-1"), true, true)
             .await
             .unwrap();
 
@@ -854,10 +995,17 @@ mod tests {
 
     #[tokio::test]
     async fn me_reports_the_channels_and_how_the_request_arrived() {
-        let db = database().await;
-        let row = provision(&db, &oidc(), &identity("ada", "subject-1"), false, true)
-            .await
-            .unwrap();
+        let context = context().await;
+        let db = context.db().clone();
+        let row = provision(
+            &context,
+            &oidc(),
+            &identity("ada", "subject-1"),
+            false,
+            true,
+        )
+        .await
+        .unwrap();
         let principal = principal(
             &db,
             &row,

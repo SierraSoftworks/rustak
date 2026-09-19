@@ -302,7 +302,7 @@ async fn sign_in(
     }
 
     let user = users::provision(
-        context.db(),
+        context,
         provider,
         &identity,
         acl.is_admin,

@@ -207,21 +207,34 @@ pub async fn join_default(db: &Database, user_id: UserId) -> Result<(), Error> {
 /// granting anything — and the repository does it in one transaction so nobody
 /// is momentarily in no channels at all.
 ///
+/// Takes the context for the reason [`create`] does: a claim may create a
+/// channel, and a channel that exists only in the stored table and not in the
+/// routing one is unroutable for up to a second after the sign-in that made it.
+///
+/// Returns **whether the account's provider-granted memberships changed**,
+/// which the caller turns into the re-authentication and the `t-x-g-c` that
+/// make it take effect on whatever that account has connected. Not done here
+/// because that is addressed to a *person*, and this function is given an
+/// account identifier rather than a name — see
+/// [`members::channels_changed`](super::members::channels_changed).
+///
 /// # Errors
 ///
 /// A [`human_errors::Kind::System`] error if a channel cannot be read or
 /// created, or the write fails.
 pub async fn apply_claims(
-    db: &Database,
+    context: &AppContext,
     oidc: &OidcConfig,
     user_id: UserId,
     claimed: &[String],
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
+    let db = context.db();
     let read_only = claimed
         .iter()
         .any(|claim| Some(claim.as_str()) == oidc.read_only_group.as_deref());
 
     let mut granted = Vec::new();
+    let mut created_a_channel = false;
 
     for claim in claimed {
         let Some((name, direction)) = interpret(oidc, claim) else {
@@ -232,14 +245,61 @@ pub async fn apply_claims(
         // must not be able to write whatever their other claims say.
         let direction = if read_only { Direction::Out } else { direction };
 
-        let Some(group) = lookup_or_create(db, oidc, &name).await? else {
+        let Some((group, created)) = lookup_or_create(db, oidc, &name).await? else {
             continue;
         };
 
+        created_a_channel |= created;
         granted.push((group.id, direction));
     }
 
-    db.members().replace_provider_grants(user_id, granted).await
+    // Once, after the loop rather than inside it: an invalidation between two
+    // creations lets the next lookup cache a map that still lacks the second.
+    if created_a_channel {
+        routing_changed(context);
+    }
+
+    let changed = provider_grants_differ(db, user_id, &granted).await?;
+
+    db.members()
+        .replace_provider_grants(user_id, granted)
+        .await?;
+
+    Ok(changed)
+}
+
+/// Whether `granted` is a different set from the one the provider last granted.
+///
+/// Read before the write because the write is a delete followed by inserts and
+/// says nothing about what was there. Only the provider's own rows are
+/// compared: an administrator's grants are not this path's to speak for, and
+/// counting them would report a change at every sign-in.
+async fn provider_grants_differ(
+    db: &Database,
+    user_id: UserId,
+    granted: &[(GroupId, Direction)],
+) -> Result<bool, Error> {
+    let held: Vec<(GroupId, Direction)> = db
+        .members()
+        .list_for_user(user_id)
+        .await?
+        .into_iter()
+        .filter(|membership| membership.source == MembershipSource::Oidc)
+        .map(|membership| (membership.group_id, membership.direction))
+        .collect();
+
+    // Stored one row per direction, so `Both` is compared as the two rows the
+    // repository is about to write rather than as the one this path collected.
+    let mut wanted: Vec<(GroupId, Direction)> = Vec::new();
+    for (group_id, direction) in granted {
+        for single in direction.expand() {
+            if !wanted.contains(&(*group_id, *single)) {
+                wanted.push((*group_id, *single));
+            }
+        }
+    }
+
+    Ok(wanted.len() != held.len() || !wanted.iter().all(|grant| held.contains(grant)))
 }
 
 /// Turns one claimed group into a channel name and a direction.
@@ -300,13 +360,16 @@ fn truncate_at_first<'a>(claim: &'a str, suffix: &str) -> Option<&'a str> {
 
 /// Finds a channel, creating it when the installation lets the provider define
 /// the channel list.
+///
+/// The flag is whether *this* call created it, which is what tells
+/// [`apply_claims`] the routing table changed and not just the membership one.
 async fn lookup_or_create(
     db: &Database,
     oidc: &OidcConfig,
     name: &GroupName,
-) -> Result<Option<GroupRow>, Error> {
+) -> Result<Option<(GroupRow, bool)>, Error> {
     if let Some(existing) = db.groups().get_by_name(name).await? {
-        return Ok(Some(existing));
+        return Ok(Some((existing, false)));
     }
 
     if !oidc.auto_create_groups {
@@ -325,7 +388,7 @@ async fn lookup_or_create(
 
     info!(group = %name, "Created a channel an identity provider claimed.");
 
-    Ok(Some(created))
+    Ok(Some((created, true)))
 }
 
 #[cfg(test)]
@@ -337,6 +400,12 @@ mod tests {
 
     async fn database() -> Database {
         Database::open_in_memory().await.unwrap()
+    }
+
+    /// A context with no stream listener, which is what most of these are
+    /// about: the mapping rules, not the notification.
+    async fn context() -> AppContext {
+        AppContext::new_mock(|_| {}).await.unwrap()
     }
 
     fn oidc() -> OidcConfig {
@@ -436,11 +505,12 @@ mod tests {
 
     #[tokio::test]
     async fn claimed_channels_are_created_and_granted() {
-        let db = database().await;
+        let context = context().await;
+        let db = context.db().clone();
         let user = user(&db).await;
 
         apply_claims(
-            &db,
+            &context,
             &oidc(),
             user,
             &["tak-ops_WRITE".to_string(), "tak-weather_READ".to_string()],
@@ -460,13 +530,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_claim_that_stopped_being_sent_stops_granting_anything() {
-        let db = database().await;
+        let context = context().await;
+        let db = context.db().clone();
         let user = user(&db).await;
 
-        apply_claims(&db, &oidc(), user, &["tak-ops".to_string()])
+        apply_claims(&context, &oidc(), user, &["tak-ops".to_string()])
             .await
             .unwrap();
-        apply_claims(&db, &oidc(), user, &["tak-weather".to_string()])
+        apply_claims(&context, &oidc(), user, &["tak-weather".to_string()])
             .await
             .unwrap();
 
@@ -483,7 +554,8 @@ mod tests {
 
     #[tokio::test]
     async fn the_read_only_group_outranks_every_other_claim() {
-        let db = database().await;
+        let context = context().await;
+        let db = context.db().clone();
         let user = user(&db).await;
         let oidc = OidcConfig {
             read_only_group: Some("observers".to_string()),
@@ -491,7 +563,7 @@ mod tests {
         };
 
         apply_claims(
-            &db,
+            &context,
             &oidc,
             user,
             &["observers".to_string(), "tak-ops_WRITE".to_string()],
@@ -511,14 +583,15 @@ mod tests {
 
     #[tokio::test]
     async fn a_claimed_channel_is_ignored_when_the_list_is_curated_here() {
-        let db = database().await;
+        let context = context().await;
+        let db = context.db().clone();
         let user = user(&db).await;
         let oidc = OidcConfig {
             auto_create_groups: false,
             ..oidc()
         };
 
-        apply_claims(&db, &oidc, user, &["tak-ops".to_string()])
+        apply_claims(&context, &oidc, user, &["tak-ops".to_string()])
             .await
             .unwrap();
 
@@ -554,11 +627,12 @@ mod tests {
     async fn a_manual_grant_survives_a_provider_sign_in() {
         // The two sources are kept apart on purpose: an administrator's grant
         // is not something a directory gets to revoke.
-        let db = database().await;
+        let context = context().await;
+        let db = context.db().clone();
         let user = user(&db).await;
 
         join_default(&db, user).await.unwrap();
-        apply_claims(&db, &oidc(), user, &["tak-ops".to_string()])
+        apply_claims(&context, &oidc(), user, &["tak-ops".to_string()])
             .await
             .unwrap();
 
@@ -746,6 +820,94 @@ mod tests {
                 .await,
             Disposition::Dropped(DropReason::NoSuchGroup("ops".into())),
             "a deleted channel stops being a destination without waiting for the refresh",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_channel_a_sign_in_created_can_be_routed_to_now() {
+        // M2-14 closed this for `create`/`patch`/`delete` and left it open
+        // here, because `apply_claims` took a `&Database` and had no way to
+        // reach the cache. A channel an identity provider's claim makes is a
+        // change to the routing table like any other. The probe is what fills
+        // that cache with an answer that does not have the channel in it,
+        // which is the state the hook exists for.
+        let (context, hub, router) = live_context().await;
+        let user = user(context.db()).await;
+
+        let (probe_from, _probe_rx) = join(&hub, "alpha", &[]);
+        assert_eq!(
+            router
+                .handle_inbound(probe_from, addressed_to("UID-A", "ALPHA", "ops"))
+                .await,
+            Disposition::Dropped(DropReason::NoSuchGroup("ops".into())),
+            "the cache now holds a map that does not have `ops` in it",
+        );
+
+        assert!(
+            apply_claims(&context, &oidc(), user, &["tak-ops".to_string()])
+                .await
+                .unwrap(),
+            "a first sign-in's grants are a change to tell the connections about",
+        );
+
+        let created = context
+            .db()
+            .groups()
+            .get_by_name(&GroupName::parse("ops").unwrap())
+            .await
+            .unwrap()
+            .expect("the claim created the channel");
+
+        let (sender, _sender_rx) = join(&hub, "bravo", &[(created.bitpos, Direction::In)]);
+        let (_reader, mut reader_rx) = join(&hub, "charlie", &[(created.bitpos, Direction::Out)]);
+
+        assert_eq!(
+            router
+                .handle_inbound(sender, addressed_to("UID-B", "BRAVO", "ops"))
+                .await,
+            Disposition::Relayed {
+                recipients: 1,
+                explicit: true,
+            },
+            "the channel is routable in the same moment the sign-in created it",
+        );
+        assert!(
+            reader_rx.try_recv().is_ok(),
+            "and its reader actually received the message",
+        );
+    }
+
+    #[tokio::test]
+    async fn only_a_claim_set_that_actually_changed_is_reported_as_one() {
+        // The flag is what a sign-in turns into a re-authentication and a
+        // `t-x-g-c`, and a notice at every sign-in would make every ATAK on
+        // the account throw its map away and re-fetch for nothing.
+        let context = context().await;
+        let user = user(context.db()).await;
+        let ops = ["tak-ops".to_string()];
+
+        assert!(apply_claims(&context, &oidc(), user, &ops).await.unwrap());
+        assert!(
+            !apply_claims(&context, &oidc(), user, &ops).await.unwrap(),
+            "the same claims at the next sign-in changed nothing",
+        );
+        assert!(
+            apply_claims(&context, &oidc(), user, &["tak-ops_READ".to_string()])
+                .await
+                .unwrap(),
+            "the same channel one way rather than both is a change",
+        );
+        assert!(
+            apply_claims(&context, &oidc(), user, &[]).await.unwrap(),
+            "and a claim that stopped being sent is a change",
+        );
+        assert!(!apply_claims(&context, &oidc(), user, &[]).await.unwrap());
+
+        join_default(context.db(), user).await.unwrap();
+
+        assert!(
+            !apply_claims(&context, &oidc(), user, &[]).await.unwrap(),
+            "an administrator's grant is not the provider's to report as its own",
         );
     }
 

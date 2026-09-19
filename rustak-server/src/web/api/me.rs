@@ -101,15 +101,9 @@ async fn link(
         ));
     }
 
-    let row = users::link_identity(
-        context.db(),
-        provider,
-        &caller.user,
-        &identity,
-        acl.is_admin,
-    )
-    .await
-    .map_err(|err| ApiError::from_human(&err))?;
+    let row = users::link_identity(context, provider, &caller.user, &identity, acl.is_admin)
+        .await
+        .map_err(|err| ApiError::from_human(&err))?;
 
     record(context, "link", AuditOutcome::Success, &row.username).await;
 

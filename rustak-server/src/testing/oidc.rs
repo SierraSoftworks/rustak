@@ -108,11 +108,21 @@ pub fn unadvertised_key() -> &'static str {
 /// and the proof-key challenge, either of which a caller may omit.
 type Issued = Arc<Mutex<HashMap<String, (Option<String>, Option<String>)>>>;
 
+/// The `groups` claim the token endpoint is currently putting in its tokens.
+///
+/// Shared with the endpoint rather than baked into it, because what a directory
+/// says about somebody is exactly the thing that changes between two sign-ins.
+type Groups = Arc<Mutex<Vec<String>>>;
+
+/// The `groups` claim a provider issues until a test says otherwise.
+const DEFAULT_GROUPS: &[&str] = &["ops_WRITE"];
+
 /// An identity provider, served over HTTP.
 ///
 /// Holds the server, so it must outlive every request made through it.
 pub struct TestIdentityProvider {
     server: MockServer,
+    groups: Groups,
 }
 
 impl TestIdentityProvider {
@@ -197,7 +207,11 @@ impl TestIdentityProvider {
             .await;
 
         let claims = claims_for(&issuer, username);
+        let groups: Groups = Arc::new(Mutex::new(
+            DEFAULT_GROUPS.iter().map(|name| name.to_string()).collect(),
+        ));
         let redeeming = Arc::clone(&issued);
+        let claiming = Arc::clone(&groups);
 
         // The code flow, with the checks a provider actually makes: the code
         // has to be the one it issued, the verifier has to be present, and —
@@ -226,6 +240,10 @@ impl TestIdentityProvider {
                     .and_then(|held| held.get(&code).cloned());
                 let mut claims = claims.clone();
 
+                if let Ok(held) = claiming.lock() {
+                    claims["groups"] = serde_json::Value::from(held.clone());
+                }
+
                 if let Some((nonce, challenge)) = recorded {
                     if let Some(challenge) = challenge
                         && challenge != s256(verifier)
@@ -248,12 +266,28 @@ impl TestIdentityProvider {
             .mount(&server)
             .await;
 
-        Self { server }
+        Self { server, groups }
     }
 
     /// The provider's issuer, which is also where its discovery document lives.
     pub fn issuer(&self) -> String {
         self.server.uri()
+    }
+
+    /// Replaces the `groups` claim the *next* redemption will carry.
+    ///
+    /// A directory changes what it says about somebody between one sign-in and
+    /// the next — that is how a membership is taken away — and a provider whose
+    /// claims were fixed when it started could not express it.
+    ///
+    /// # Panics
+    ///
+    /// Never: a poisoned lock leaves the claim as it was, which fails the
+    /// assertion the caller was about to make rather than the whole suite.
+    pub fn set_groups(&self, groups: &[&str]) {
+        if let Ok(mut held) = self.groups.lock() {
+            *held = groups.iter().map(|name| (*name).to_string()).collect();
+        }
     }
 
     /// The configuration an operator would write to trust this provider.
@@ -345,7 +379,7 @@ fn claims_for(issuer: &str, username: &str) -> serde_json::Value {
         "preferred_username": username,
         "name": display_name(username),
         "email": format!("{username}@example.com"),
-        "groups": ["ops_WRITE"],
+        "groups": DEFAULT_GROUPS,
         "iat": now,
         "exp": now + LIFETIME_SECONDS,
     })
