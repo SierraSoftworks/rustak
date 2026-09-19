@@ -445,12 +445,34 @@ jobs:
       # protoc) is a build-dependency of rustak-cot, so cross's Docker images
       # need nothing extra to compile it either.
 
+      # Retried, because this step is a network fetch and nothing else. On
+      # 2026-09-19 `linux-arm64-rustak` failed here on a docs-shaped commit:
+      # every one of cargo-binstall's fetchers timed out ("Timeout reached
+      # while checking fetcher ... deadline has elapsed") and, with the compile
+      # strategy disabled, there was no fallback — so the whole cross build
+      # failed on a transient. The two runs after it passed untouched.
+      #
+      # `--disable-strategies compile` stays: falling back to building `cross`
+      # from source would turn a fast failure into a very slow success and put
+      # the job near its timeout. Three attempts with a short backoff is the
+      # cheaper answer — seconds when it works, one more try when it does not.
       - name: Install Cross
         if: matrix.builder == 'cross'
         shell: bash
         run: |
           curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
-          cargo binstall --no-confirm --disable-strategies compile cross
+
+          for attempt in 1 2 3; do
+            if cargo binstall --no-confirm --disable-strategies compile cross; then
+              exit 0
+            fi
+
+            echo "::warning::cargo binstall cross failed (attempt ${attempt} of 3)."
+            sleep $(( attempt * 10 ))
+          done
+
+          echo "::error::cargo binstall could not fetch cross after three attempts."
+          exit 1
 
       - name: Setup Cache
         uses: Swatinem/rust-cache@v2
