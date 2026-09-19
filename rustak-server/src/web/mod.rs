@@ -7,7 +7,9 @@
 //! endpoints, the enrolment endpoints and the whole TAK surface, with no client
 //! certificate asked for. [`build_marti`] binds `[web.marti]`: the TAK surface
 //! alone, with a client certificate **required** — which is both the
-//! authentication and the device identity on that port.
+//! authentication and the device identity on that port. [`build_marti_on`]
+//! serves the same thing on a socket the caller bound, for a test that has to
+//! know the port before the server exists.
 //!
 //! # Why the public listener always serves TLS
 //!
@@ -33,4 +35,4 @@ pub mod telemetry;
 pub mod tls;
 pub mod ui;
 
-pub use server::{build_marti, build_public};
+pub use server::{build_marti, build_marti_on, build_public};

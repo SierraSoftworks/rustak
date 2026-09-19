@@ -32,6 +32,7 @@
 //! the admin UI has no business answering a device, so `/api/v1` and the
 //! single-page shell are simply not mounted rather than being refused.
 
+use std::net::TcpListener;
 use std::sync::Arc;
 
 use actix_web::{App, HttpServer, dev::Server, web};
@@ -117,14 +118,48 @@ async fn marti_unmatched(request: actix_web::HttpRequest) -> marti::MartiResult 
 /// [`human_errors::Kind::User`] error when the address cannot be bound.
 #[instrument("web.server.build_marti", skip_all, err(Display))]
 pub fn build_marti(context: AppContext) -> Result<Option<Server>, Error> {
-    let config = context.config();
-
-    if !config.web.marti.enabled {
+    if !context.config().web.marti.enabled {
         info!("The Marti listener is switched off in the configuration.");
 
         return Ok(None);
     }
 
+    marti_server(context, MartiSocket::Configured).map(Some)
+}
+
+/// Serves `[web.marti]` on a socket the caller has already bound.
+///
+/// The server [`build_marti`] builds — the same TLS configuration, client
+/// certificate requirement, routes and drain — on `listener` instead of the
+/// configured addresses. `enabled` is not consulted: a caller holding a socket
+/// for it has already decided.
+///
+/// For the caller that has to know the port before the server exists. A test
+/// binds `:0` to be given a free port, and the only way to serve on that port
+/// without a window in which another process can take it is to serve on the
+/// socket that claimed it.
+///
+/// # Errors
+///
+/// A [`human_errors::Kind::System`] error when the authority has not been
+/// installed or cannot produce a TLS configuration, and a
+/// [`human_errors::Kind::User`] error when the socket cannot be served on.
+#[instrument("web.server.build_marti_on", skip_all, err(Display))]
+pub fn build_marti_on(context: AppContext, listener: TcpListener) -> Result<Server, Error> {
+    marti_server(context, MartiSocket::Bound(listener))
+}
+
+/// Where the Marti listener's socket comes from.
+enum MartiSocket {
+    /// Every address in `[web.marti] listen`, bound here.
+    Configured,
+    /// One socket the caller bound already.
+    Bound(TcpListener),
+}
+
+/// The Marti server, unstarted, on the socket `socket` describes.
+fn marti_server(context: AppContext, socket: MartiSocket) -> Result<Server, Error> {
+    let config = context.config();
     let pki = context.pki()?;
     let required = matches!(config.web.marti.client_cert, ClientCertMode::Required);
     let drain = config.server.listener_drain_seconds();
@@ -142,15 +177,33 @@ pub fn build_marti(context: AppContext) -> Result<Option<Server>, Error> {
     .disable_signals()
     .shutdown_timeout(drain);
 
-    for socket in config.web.marti.listen.to_socket_addrs()? {
-        server = server
-            .bind_rustls_0_23(socket, tls.clone())
-            .map_err(|err| cannot_bind(socket, &err))?;
+    match socket {
+        MartiSocket::Configured => {
+            for socket in config.web.marti.listen.to_socket_addrs()? {
+                server = server
+                    .bind_rustls_0_23(socket, tls.clone())
+                    .map_err(|err| cannot_bind(socket, &err))?;
 
-        info!(address = %socket, client_cert = %required, "The Marti listener is bound.");
+                info!(address = %socket, client_cert = %required, "The Marti listener is bound.");
+            }
+        }
+        MartiSocket::Bound(listener) => {
+            let socket = listener.local_addr().map_err(|err| {
+                human_errors::system(
+                    format!("The socket handed to the Marti listener has no address: {err}"),
+                    &["This is unexpected; please report it with the surrounding log entries."],
+                )
+            })?;
+
+            server = server
+                .listen_rustls_0_23(listener, tls)
+                .map_err(|err| cannot_bind(socket, &err))?;
+
+            info!(address = %socket, client_cert = %required, "The Marti listener is bound.");
+        }
     }
 
-    Ok(Some(server.run()))
+    Ok(server.run())
 }
 
 /// Binds every configured public address and returns the server, unstarted.
