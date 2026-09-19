@@ -56,13 +56,59 @@ Two reasons, and the second is the one I would act on:
    is safe. The dangerous direction is the reverse, and it is worth knowing
    which way the route fails under load before relying on it.
 2. Whatever produced a `500` on a request that should never reach a handler is
-   doing work it does not need to do. A shell fall-through should not be able
-   to fail: no database, no auth resolution, no I/O. That it can suggests the
-   request *is* matching something first — most likely a
-   `/api/v1/users/{username}/…` route with `username = "probe"` — and erroring
-   there. If so, the `500` is a real error-mapping bug (a missing account
-   should be `404`, not `500`) that happens to be reachable only when something
-   else is slow.
+   doing work it does not need to do.
+
+### Correction: it is not the `users/{username}` routes, and it is not the shell
+
+My first reading — that the request matches a `/api/v1/users/{username}/…`
+route and errors for an unknown account — is **wrong**, and I checked before
+anyone spent time on it. The registered `users` routes are:
+
+```
+GET   /users            GET /users/{username}            GET /users/{username}/groups
+POST  /users            PATCH /users/{username}          PUT /users/{username}/groups
+```
+
+None matches `/users/probe/cloudtak-onboarding`: `{username}` is one segment,
+and the three-segment routes end in the literal `groups`. The onboarding route
+itself is `POST` only (`web/api/cloudtak_onboarding.rs:45`). So the path really
+does fall through.
+
+It is **not the shell either**. `web/server.rs:79` sets
+`.default_service(web::get().to(ui::serve))`, and `ui::serve` returns
+`HttpResponse` rather than `Result` — it serves an asset or the shell and has no
+failure path at all. It cannot produce a `500`.
+
+### The mechanism that fits
+
+`rustak-server/src/web/api/mod.rs:93` wraps the whole `/api/v1` scope:
+
+```rust
+.wrap(from_fn(middleware::api_auth))
+```
+
+**Middleware runs before routing resolves.** An unmatched path *inside* the
+scope still goes through `api_auth` — and this request carries an
+`authorization` header, because the suite's `fetch!` macro inserts the admin
+token on every call. So `api_auth` resolves that token, which reaches the
+database, on a request that was never going to match a route.
+
+That explains all three observations at once: it is load-dependent (the database
+is what contends), the shell never rendered (the middleware short-circuits
+before routing), and `ui::serve` being infallible is irrelevant.
+
+**Where I would look:** what `middleware::api_auth` does when its token
+resolution fails under contention, and whether that maps to `500`. A token that
+cannot be *checked* is a different case from one that is invalid, and only one
+of them is a server error.
+
+**A second question worth asking while there:** whether an unmatched path inside
+`/api/v1` should be paying for authentication at all. The Marti scope already
+answers its own JSON `404` through `.default_service(web::to(marti_unmatched))`
+(`web/server.rs:100`); an equivalent on the API scope would make the
+fall-through explicit rather than incidental — though note the interop probes
+currently *depend* on the HTML shell answering here, so changing it would need
+`interop/shared/src/probe.ts` changed with it.
 
 ## 4. What I changed, and what I did not
 

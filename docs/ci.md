@@ -41,8 +41,8 @@ deduplicate ──┬─ version ───────────────�
   `-Cinstrument-coverage`; see [Keeping the test job inside its
   timeout](#keeping-the-test-job-inside-its-timeout) for what that costs and
   what pays for it.
-- **Every job carries a `timeout-minutes`** — 45 for `build`, 30 for `test`
-  and for the four that compile or image something big (`ui`, `e2e`,
+- **Every job carries a `timeout-minutes`** — 45 for `build` and for `test`,
+  30 for the four that compile or image something big (`ui`, `e2e`,
   `interop-node-tak`, `docker-build`), 20 for `lint`, `docker-publish` and
   `tap`, 10 for the bookkeeping jobs (`deduplicate`, `version`, `ci`).
   GitHub's own default is six hours, which is not a guard rail — a `test` job
@@ -53,6 +53,17 @@ deduplicate ──┬─ version ───────────────�
   nightly `interop-eud` job carried 90 minutes against a ~15-minute envelope,
   and when a crashed runner left an orphaned server holding the step's stdout
   open the job sat idle for 82 of them before anyone was told. It is 30 now.
+
+  **`test` is the one exception to "a timeout is a bug report", and it is worth
+  knowing why.** Its normal wall time measured 11m40s to 16m12s across six
+  runs, but the *same* tests cost two to four times more on a slow host —
+  `rustak_server`'s library was 102 s on one run and 341 s on another,
+  `stream_routing` 81 s against 309 s. Nothing in the repository changes
+  between those; GitHub's two-vCPU hosts simply vary. On 2026-09-19 that
+  multiplier met a suite that had also grown and the job was cancelled at
+  exactly 30 minutes with four binaries still to run. So `test` carries **45**,
+  and the extra fifteen minutes buy variance rather than the suite's own cost.
+  A `test` job that hits *45* is a bug report again.
 - **`ui`** installs `trunk` pinned to **0.21.14** (`cargo binstall trunk@0.21.14`;
   0.22 was still beta at the time this pipeline was written — bump the pin
   deliberately, not via dependabot, which cannot see cargo-binstall installs).
