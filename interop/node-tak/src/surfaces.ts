@@ -14,6 +14,7 @@
  * - **M2-03** enrollment (`/Marti/api/tls/*`) and `/oauth/token`.
  * - **M2-04** the Marti envelope, `/Marti/api/version`, `/files/api/config`.
  * - **M2-06** channels, contacts and `clientEndPoints`.
+ * - **M3-02** the device profiles ATAK fetches on enrolment and on connect.
  * - **M3** data packages (`/Marti/sync/*`, files metadata).
  * - **M4** Data Sync (the mission API).
  */
@@ -43,6 +44,11 @@ export const SURFACES = {
     on: "webtak",
     path: "/Marti/api/tls/config",
     todo: "TODO(M2-03): GET /Marti/api/tls/config is not served yet — enrollment lands with M2-03 (marti/tls.rs).",
+  },
+  enrollmentProfile: {
+    on: "webtak",
+    path: "/Marti/api/tls/profile/enrollment",
+    todo: "TODO(M3-02): GET /Marti/api/tls/profile/enrollment is not served yet — the device profile ATAK fetches with the credential it enrolled with lands with M3-02 (marti/profiles.rs).",
   },
   groups: {
     on: "webtak",

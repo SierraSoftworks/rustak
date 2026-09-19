@@ -32,14 +32,14 @@ use rustak_core::prelude::*;
 
 use crate::db::repos::UserRow;
 use crate::identity::users;
-use crate::identity::verify::Purpose;
+use crate::identity::verify::{Grace, Purpose};
 use crate::pki::PeerCertificate;
 use crate::prelude::Services;
 use crate::web::helpers::request::client_address;
 
 use super::AccessClaims;
 use super::acl::{AuthRequestFilter, evaluate};
-use super::basic::{basic_credential, verify_basic};
+use super::basic::{basic_credential, verify_basic_with_grace};
 use super::ratelimit::RateLimiter;
 
 /// What a request says about itself, for the access-control expressions.
@@ -207,6 +207,14 @@ pub enum BasicPolicy {
 /// The enrolment paths, which are the only `/Marti` paths Basic reaches.
 pub const ENROLLMENT_PREFIX: &str = "/Marti/api/tls/";
 
+/// The two device-profile routes under the enrolment prefix.
+///
+/// The only paths a **spent** enrolment token still reaches, and only inside
+/// `[auth] enrollment_grace`: `/tls/profile/enrollment` and
+/// `/tls/profile/tool/{tool}/file` are both registered under this, and nothing
+/// else is (`marti::profiles::routes`).
+pub const ENROLLMENT_PROFILE_PREFIX: &str = "/Marti/api/tls/profile/";
+
 /// The token endpoint, whose whole job is to take a password.
 pub const OAUTH_TOKEN_PATH: &str = "/oauth/token";
 
@@ -253,16 +261,62 @@ impl ListenerAuthPolicy {
     pub fn basic_purpose(&self, path: &str) -> Option<Purpose> {
         match self.basic {
             BasicPolicy::Off => None,
-            BasicPolicy::All if path.starts_with(ENROLLMENT_PREFIX) => Some(Purpose::Enrollment),
-            BasicPolicy::All if path == OAUTH_TOKEN_PATH => Some(Purpose::OAuthPassword),
-            BasicPolicy::All => Some(Purpose::Marti),
-            BasicPolicy::EnrollmentOnly if path.starts_with(ENROLLMENT_PREFIX) => {
-                Some(Purpose::Enrollment)
+            BasicPolicy::All | BasicPolicy::EnrollmentOnly
+                if path.starts_with(ENROLLMENT_PREFIX) =>
+            {
+                Some(enrollment_purpose(path))
             }
-            BasicPolicy::EnrollmentOnly if path == OAUTH_TOKEN_PATH => Some(Purpose::OAuthPassword),
+            BasicPolicy::All | BasicPolicy::EnrollmentOnly if path == OAUTH_TOKEN_PATH => {
+                Some(Purpose::OAuthPassword)
+            }
+            BasicPolicy::All => Some(Purpose::Marti),
             BasicPolicy::EnrollmentOnly => None,
         }
     }
+}
+
+/// Which of the two enrolment purposes a `/Marti/api/tls/` path is.
+///
+/// The split is what keeps the grace window off the signing endpoints: a spent
+/// token presented to `signClient/v2` is [`Purpose::Enrollment`], which no
+/// [`Grace`] applies to, whatever the request says about itself.
+fn enrollment_purpose(path: &str) -> Purpose {
+    match path.starts_with(ENROLLMENT_PROFILE_PREFIX) {
+        true => Purpose::EnrollmentProfile,
+        false => Purpose::Enrollment,
+    }
+}
+
+/// The device a request claiming the grace window is for.
+///
+/// Three conditions, all of them read off the request rather than supplied by
+/// it: the purpose is the profile one (so the path is one of the two profile
+/// routes), the method is `GET` — they are read-only, and nothing else is
+/// routed to them — and the installation has left a window configured.
+/// Anything else is [`None`], which is the behaviour every other credential
+/// gets. The uid itself is returned owned, because the [`Grace`] borrows it and
+/// the query string it came from is percent-encoded.
+fn grace_uid(request: &HttpRequest, purpose: Purpose, window: chrono::Duration) -> Option<String> {
+    if purpose != Purpose::EnrollmentProfile
+        || request.method() != actix_web::http::Method::GET
+        || window <= chrono::Duration::zero()
+    {
+        return None;
+    }
+
+    client_uid(request.query_string())
+}
+
+/// The `clientUid` of a query string, named case-insensitively as the Marti
+/// surface reads every other parameter (`marti::extract::CiQuery`).
+///
+/// Percent-decoded, because ATAK sends `ANDROID-…` and CloudTAK sends
+/// `alice (ETL)` — a space and parentheses — and the value recorded with the
+/// spend is the decoded one.
+fn client_uid(query: &str) -> Option<String> {
+    url::form_urlencoded::parse(query.as_bytes())
+        .find(|(name, value)| name.eq_ignore_ascii_case("clientUid") && !value.is_empty())
+        .map(|(_, value)| value.into_owned())
 }
 
 /// Who a request is from, given what its listener accepts.
@@ -365,7 +419,15 @@ pub async fn resolve_principal<S: Services>(
         .check(address, subject)
         .map_err(AuthFailure::RateLimited)?;
 
-    match verify_basic(services, &credential, purpose).await {
+    // The grace names a device this request is about, not a credential the
+    // caller gets to choose: both halves are read off the request here.
+    let window = config.auth.enrollment_grace;
+    let uid = grace_uid(request, purpose, window);
+    let grace = uid
+        .as_deref()
+        .map(|client_uid| Grace { client_uid, window });
+
+    match verify_basic_with_grace(services, &credential, purpose, grace).await {
         Ok(resolved) => {
             limiter.record_success(address, subject);
 
@@ -381,6 +443,8 @@ pub async fn resolve_principal<S: Services>(
 
 #[cfg(test)]
 mod tests {
+    use actix_web::test::TestRequest;
+
     use super::*;
     use crate::testing::TestServer;
 
@@ -405,6 +469,98 @@ mod tests {
 
         assert_eq!(resolved.user.id, user.id);
         assert!(resolved.principal.is_admin);
+    }
+
+    #[test]
+    fn only_the_two_profile_routes_are_the_purpose_a_spent_token_can_reach() {
+        // The grace window applies to `Purpose::EnrollmentProfile` alone, so
+        // which paths map to it *is* the blast radius.
+        let policy = ListenerAuthPolicy::public();
+
+        for path in [
+            "/Marti/api/tls/profile/enrollment",
+            "/Marti/api/tls/profile/tool/atak/file",
+        ] {
+            assert_eq!(
+                policy.basic_purpose(path),
+                Some(Purpose::EnrollmentProfile),
+                "{path}",
+            );
+        }
+
+        for path in [
+            "/Marti/api/tls/config",
+            "/Marti/api/tls/signClient/v2",
+            "/Marti/api/tls/signClient",
+            // Not under the enrolment prefix at all: Basic is not read there.
+            "/Marti/api/device/profile/connection",
+        ] {
+            assert_ne!(
+                policy.basic_purpose(path),
+                Some(Purpose::EnrollmentProfile),
+                "{path} must not reach the relaxation",
+            );
+        }
+
+        assert_eq!(
+            policy.basic_purpose("/Marti/api/tls/config"),
+            Some(Purpose::Enrollment),
+        );
+        assert_eq!(
+            policy.basic_purpose(OAUTH_TOKEN_PATH),
+            Some(Purpose::OAuthPassword),
+        );
+        assert_eq!(policy.basic_purpose("/Marti/api/device/profile"), None);
+    }
+
+    #[test]
+    fn the_device_a_grace_is_for_is_read_off_the_query_string() {
+        // ATAK sends `clientUid`; CloudTAK sends `alice (ETL)`, percent-encoded,
+        // and the uid recorded with the spend is the decoded one.
+        assert_eq!(
+            client_uid("clientUid=ANDROID-7e0bf5df978a87d8").as_deref(),
+            Some("ANDROID-7e0bf5df978a87d8"),
+        );
+        assert_eq!(
+            client_uid("syncSecago=0&CLIENTUID=ada%20(ETL)").as_deref(),
+            Some("ada (ETL)"),
+        );
+        assert_eq!(client_uid("clientUid="), None);
+        assert_eq!(client_uid(""), None);
+    }
+
+    #[actix_web::test]
+    async fn a_grace_is_offered_only_to_a_get_on_a_profile_route() {
+        let window = chrono::Duration::minutes(10);
+        let get = TestRequest::get()
+            .uri("/Marti/api/tls/profile/enrollment?clientUid=ANDROID-1")
+            .to_http_request();
+
+        assert_eq!(
+            grace_uid(&get, Purpose::EnrollmentProfile, window).as_deref(),
+            Some("ANDROID-1"),
+        );
+
+        // Wrong purpose, wrong method, no device, no window: each on its own is
+        // enough to leave a spent token refused.
+        assert_eq!(grace_uid(&get, Purpose::Enrollment, window), None);
+        assert_eq!(
+            grace_uid(&get, Purpose::EnrollmentProfile, chrono::Duration::zero()),
+            None,
+        );
+
+        let post = TestRequest::post()
+            .uri("/Marti/api/tls/profile/enrollment?clientUid=ANDROID-1")
+            .to_http_request();
+        assert_eq!(grace_uid(&post, Purpose::EnrollmentProfile, window), None);
+
+        let anonymous = TestRequest::get()
+            .uri("/Marti/api/tls/profile/enrollment")
+            .to_http_request();
+        assert_eq!(
+            grace_uid(&anonymous, Purpose::EnrollmentProfile, window),
+            None,
+        );
     }
 
     #[tokio::test]

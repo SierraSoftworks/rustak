@@ -1005,3 +1005,251 @@ async fn a_device_uid_cannot_be_taken_from_the_account_that_enrolled_it() {
 
     harness.stop().await;
 }
+
+/// The ATAK device uid the sequence below enrols, as one arrived in the field.
+const ATAK_UID: &str = "ANDROID-7e0bf5df978a87d8";
+
+/// A server with an authority installed and **no** listener bound.
+///
+/// The three calls of ATAK's enrolment are all HTTP, so they are served
+/// in-process; only the tests that prove a certificate completes a real
+/// handshake need [`harness`] and its socket. `grace` is `[auth]
+/// enrollment_grace`, which a test closes to nothing to watch the window shut.
+async fn enrolment_server(grace: chrono::Duration) -> TestServer {
+    let server = TestServer::start_with(move |config| {
+        config.pki.key_type = KeyType::EcdsaP256;
+        config.auth.enrollment_grace = grace;
+    })
+    .await;
+
+    let config = server.config();
+    let pki = Pki::load(
+        server.db(),
+        server.secrets(),
+        &config.pki,
+        &config.server.data_dir,
+        &["localhost".to_string()],
+        &config.pki.server_ips,
+    )
+    .await
+    .expect("an authority for the test server");
+
+    server
+        .context
+        .install_pki(pki)
+        .expect("the authority is installed once");
+
+    server
+}
+
+/// `GET /Marti/api/tls/profile/enrollment?clientUid=<uid>` under `credential`.
+fn profile_request(uid: &str, credential: &str) -> test::TestRequest {
+    test::TestRequest::get()
+        .uri(&format!(
+            "/Marti/api/tls/profile/enrollment?clientUid={uid}"
+        ))
+        .insert_header((AUTHORIZATION, credential.to_string()))
+}
+
+/// `POST /Marti/api/tls/signClient/v2` as ATAK sends it.
+fn sign_request(uid: &str, credential: &str, csr: String) -> test::TestRequest {
+    test::TestRequest::post()
+        .uri(&format!(
+            "/Marti/api/tls/signClient/v2?clientUid={uid}&version=5.6.0"
+        ))
+        .insert_header((AUTHORIZATION, credential.to_string()))
+        .insert_header((ACCEPT, "application/xml"))
+        .insert_header((CONTENT_TYPE, "application/octet-stream"))
+        .set_payload(csr)
+}
+
+#[actix_web::test]
+async fn atak_walks_its_three_calls_with_one_token_and_none_of_them_is_refused() {
+    // The field sequence, in order, with the same credential throughout:
+    // `tls/config`, `signClient/v2` — which spends the token — and then the
+    // enrolment profile 0.4 s later, which used to be a 401 and a device that
+    // reported "TAK server registration failed" (M2-15).
+    let server = enrolment_server(chrono::Duration::minutes(10)).await;
+    let token = credential(&server, "notheotherben", CredentialKind::EnrollmentToken).await;
+    let credential = basic("notheotherben", &token);
+    let app = test::init_service(App::new().configure(server.app())).await;
+
+    let config = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/Marti/api/tls/config")
+            .insert_header((AUTHORIZATION, credential.clone()))
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(config.status().as_u16(), 200, "step one: the name entries");
+
+    let signed = test::call_service(
+        &app,
+        sign_request(ATAK_UID, &credential, signing_request("notheotherben").0).to_request(),
+    )
+    .await;
+
+    assert_eq!(
+        signed.status().as_u16(),
+        200,
+        "step two: ATAK reads anything but 200 as a failed enrolment",
+    );
+
+    let profile =
+        test::call_service(&app, profile_request(ATAK_UID, &credential).to_request()).await;
+
+    assert!(
+        matches!(profile.status().as_u16(), 200 | 204),
+        "step three: the profile fetch carries the token step two spent, and answered {} in the field",
+        profile.status().as_u16(),
+    );
+}
+
+#[actix_web::test]
+async fn a_spent_token_buys_the_profile_and_nothing_else() {
+    // Every relaxation, negated: the window is one route for one device, not a
+    // token that works again.
+    let server = enrolment_server(chrono::Duration::minutes(10)).await;
+    let token = credential(&server, "ada", CredentialKind::EnrollmentToken).await;
+    let credential = basic("ada", &token);
+    let app = test::init_service(App::new().configure(server.app())).await;
+
+    let signed = test::call_service(
+        &app,
+        sign_request(ATAK_UID, &credential, signing_request("ada").0).to_request(),
+    )
+    .await;
+
+    assert_eq!(signed.status().as_u16(), 200);
+
+    // A second certificate is the thing a one-time token exists to prevent.
+    let again = test::call_service(
+        &app,
+        sign_request(ATAK_UID, &credential, signing_request("ada").0).to_request(),
+    )
+    .await;
+
+    assert_eq!(
+        again.status().as_u16(),
+        401,
+        "a spent token signs nothing, inside the window or out of it",
+    );
+
+    // Nor does it fetch the name entries again, or reach the password grant.
+    let config = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/Marti/api/tls/config")
+            .insert_header((AUTHORIZATION, credential.clone()))
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(config.status().as_u16(), 401);
+
+    let grant = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/oauth/token")
+            .insert_header((CONTENT_TYPE, "application/x-www-form-urlencoded"))
+            .set_payload(format!("grant_type=password&username=ada&password={token}"))
+            .to_request(),
+    )
+    .await;
+
+    assert_ne!(
+        grant.status().as_u16(),
+        200,
+        "an enrolment token is not a password, spent or otherwise",
+    );
+
+    // And the profile it *is* for is answered only for the device that enrolled.
+    let somebody_else = test::call_service(
+        &app,
+        profile_request("ANDROID-somebody-else", &credential).to_request(),
+    )
+    .await;
+
+    assert_eq!(
+        somebody_else.status().as_u16(),
+        401,
+        "the window answers the uid the token was spent by and no other",
+    );
+
+    let ours = test::call_service(&app, profile_request(ATAK_UID, &credential).to_request()).await;
+
+    assert!(matches!(ours.status().as_u16(), 200 | 204));
+}
+
+#[actix_web::test]
+async fn the_grace_window_closes_and_the_token_is_spent_again() {
+    // One millisecond of window, and a device that took longer than that.
+    let server = enrolment_server(chrono::Duration::milliseconds(1)).await;
+    let token = credential(&server, "ada", CredentialKind::EnrollmentToken).await;
+    let credential = basic("ada", &token);
+    let app = test::init_service(App::new().configure(server.app())).await;
+
+    let signed = test::call_service(
+        &app,
+        sign_request(ATAK_UID, &credential, signing_request("ada").0).to_request(),
+    )
+    .await;
+
+    assert_eq!(signed.status().as_u16(), 200);
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let profile =
+        test::call_service(&app, profile_request(ATAK_UID, &credential).to_request()).await;
+
+    assert_eq!(
+        profile.status().as_u16(),
+        401,
+        "past the window a spent token is spent, which is where this started",
+    );
+}
+
+#[actix_web::test]
+async fn revoking_a_token_inside_the_window_ends_its_grace() {
+    let server = enrolment_server(chrono::Duration::minutes(10)).await;
+    let token = credential(&server, "ada", CredentialKind::EnrollmentToken).await;
+    let credential = basic("ada", &token);
+    let app = test::init_service(App::new().configure(server.app())).await;
+
+    let signed = test::call_service(
+        &app,
+        sign_request(ATAK_UID, &credential, signing_request("ada").0).to_request(),
+    )
+    .await;
+
+    assert_eq!(signed.status().as_u16(), 200);
+
+    let ada = server
+        .db()
+        .users()
+        .get_by_username(&Username::parse("ada").unwrap())
+        .await
+        .unwrap()
+        .expect("the account that enrolled");
+    let held = server
+        .db()
+        .credentials()
+        .list_for_user(ada.id, true)
+        .await
+        .unwrap();
+
+    for row in held {
+        server.db().credentials().revoke(row.id).await.unwrap();
+    }
+
+    let profile =
+        test::call_service(&app, profile_request(ATAK_UID, &credential).to_request()).await;
+
+    assert_eq!(
+        profile.status().as_u16(),
+        401,
+        "an administrator taking a token back ends the window it was in",
+    );
+}

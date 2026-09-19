@@ -36,6 +36,14 @@
 //! credential. Consuming the token on the first call would strand somebody
 //! half-way through enrolling with a token that no longer works, so it is spent
 //! by [`sign_client_v2`] after a certificate has been issued and recorded.
+//!
+//! There is a **third** call, and it carries the token this one has just spent:
+//! `GET /Marti/api/tls/profile/enrollment?clientUid=`, which ATAK makes
+//! unconditionally a fraction of a second later and fails its whole
+//! registration without (M2-15). The spend therefore records the device it was
+//! for, and [`crate::identity::verify::Grace`] answers that one route for that
+//! one device inside `[auth] enrollment_grace`. Nothing else about a spent
+//! token changes.
 
 use actix_web::http::StatusCode;
 use actix_web::http::header::{ACCEPT, HeaderValue, WWW_AUTHENTICATE};

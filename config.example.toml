@@ -313,6 +313,16 @@ anon_group_default = true
 # consumed by the certificate it authorises.
 enrollment_token_ttl = "15m"
 
+# How long a SPENT enrollment token may still fetch the enrollment device
+# profile. ATAK enrols in three calls with one token — GET /Marti/api/tls/config,
+# POST /Marti/api/tls/signClient/v2 (which spends it), then
+# GET /Marti/api/tls/profile/enrollment?clientUid=, unconditionally and with the
+# same credential. Inside this window the third call is answered, and only that:
+# only the two /Marti/api/tls/profile routes, only for the clientUid the token
+# was spent by, never a second signClient and never /oauth/token. "0s" refuses
+# it outright, at the cost of ATAK reporting "Failed to get profile (401)".
+enrollment_grace = "10m"
+
 # Long-lived client passwords are a COMPATIBILITY credential: CloudTAK
 # authenticates with a username and password against /oauth/token and has no
 # other option today. They are accepted only there and on /Marti/api/tls/*,

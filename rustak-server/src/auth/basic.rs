@@ -23,7 +23,7 @@ use rustak_core::prelude::*;
 
 use crate::identity::secret_cache::VerifiedSecretCache;
 use crate::identity::users;
-use crate::identity::verify::{Purpose, VerifyError, verify};
+use crate::identity::verify::{Grace, Purpose, VerifyError, verify_with_grace};
 use crate::prelude::Services;
 
 use super::resolve::{AuthFailure, Resolved};
@@ -111,21 +111,47 @@ pub fn basic_credential(headers: &HeaderMap) -> Option<BasicCredential> {
 /// account, the wrong secret, an expired, exhausted or misapplied credential —
 /// all reported identically, because the difference between them is an oracle;
 /// [`AuthFailure::Unavailable`] when a read fails.
+pub async fn verify_basic<S: Services>(
+    services: &S,
+    credential: &BasicCredential,
+    purpose: Purpose,
+) -> Result<Resolved, AuthFailure> {
+    verify_basic_with_grace(services, credential, purpose, None).await
+}
+
+/// As [`verify_basic`], carrying the spent-enrolment-token relaxation.
+///
+/// `grace` is built by the caller from the request — the device it names and
+/// `[auth] enrollment_grace` — and is honoured only on
+/// [`Purpose::EnrollmentProfile`]. See [`crate::identity::verify::Grace`].
+///
+/// # Errors
+///
+/// As [`verify_basic`].
 #[instrument(
     "auth.resolve.basic",
     skip_all,
     fields(username = %credential.username, purpose = ?purpose),
     err(Debug)
 )]
-pub async fn verify_basic<S: Services>(
+pub async fn verify_basic_with_grace<S: Services>(
     services: &S,
     credential: &BasicCredential,
     purpose: Purpose,
+    grace: Option<Grace<'_>>,
 ) -> Result<Resolved, AuthFailure> {
     let db = services.db();
     let cache = VerifiedSecretCache::shared();
 
-    let verified = match verify(db, &credential.username, &credential.secret, purpose, cache).await
+    let verified = match verify_with_grace(
+        db,
+        &credential.username,
+        &credential.secret,
+        purpose,
+        cache,
+        grace,
+    )
+    .await
     {
         Ok(verified) => verified,
         Err(VerifyError::Unavailable(err)) => return Err(AuthFailure::Unavailable(err)),
@@ -136,10 +162,13 @@ pub async fn verify_basic<S: Services>(
         }
     };
 
-    // Ordinary, non-consuming: the count is what exhausts a reusable password,
-    // and a one-time token ignores this call by design.
-    if let Err(err) =
-        crate::identity::credentials::record_use(db, &verified.credential, false, cache).await
+    // Ordinary, non-consuming: the count is what exhausts a reusable password.
+    // A one-time token has nothing to count here — its use *is* the claim the
+    // signing endpoint makes — and asking anyway is what put a warning in the
+    // log on every `tls/config` call in the field (M2-15).
+    if !verified.credential.kind.is_single_use()
+        && let Err(err) =
+            crate::identity::credentials::record_use(db, &verified.credential, false, cache).await
     {
         debug!(error = %err, "Could not record the use of a credential that verified.");
     }

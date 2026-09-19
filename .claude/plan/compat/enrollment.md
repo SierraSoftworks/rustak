@@ -121,6 +121,41 @@ generic failure to both clients.
 | Validity | configurable (default suggestion: 365 days), `notBefore` backdated slightly (TAK Server uses 720 minutes) to tolerate clock skew |
 | Subject | TAK Server copies the CSR subject verbatim; **rustak replaces it** with `CN=<authenticated user>` + configured `O`/`OU` (only the CSR's public key survives; SANs/extensions dropped) — the CN is still validated against the user (design 03 §3, M2-01). Clients never inspect the subject beyond CN. |
 
+## 4a. The third call: the enrolment profile, with the token already spent
+
+ATAK's enrolment is **three** Basic-authenticated calls carrying the same credential, and the third
+one is not optional:
+
+```
+GET  /Marti/api/tls/config
+POST /Marti/api/tls/signClient/v2?clientUid=<uid>&version=<v>     ← spends a one-time token
+GET  /Marti/api/tls/profile/enrollment?clientUid=<uid>            ← 0.4 s later, same credential
+```
+
+The third call is made **unconditionally** — it is not gated by `deviceProfileEnableOnConnect`, which
+gates only the on-connect fetches — and ATAK reconnects the stream only after it (07 §1.5 step 6,
+§2.4). Anything but `200`/`204`/`304` is a `ConnectionException` inside ATAK (07 §2.3), reported as
+`Failed to get profile: Enrollment (401)` and then `TAK server registration failed`.
+
+**So a server that spends the one-time token on the signing call must still answer the profile
+fetch.** rustak does, through a grace window (`[auth] enrollment_grace`, 10 minutes by default):
+
+- **only** `GET /Marti/api/tls/profile/enrollment` and `GET /Marti/api/tls/profile/tool/**` — not
+  a second `signClient`, not `tls/config`, not `/oauth/token`, not the Marti API;
+- **only** for the `clientUid` the signing call recorded with the spend, so a token spent by one
+  device fetches nothing for another, and a signing call that named no `clientUid` leaves no grace
+  at all;
+- **only** until `spent_at + enrollment_grace`, after which the token is simply spent;
+- and a revocation ends it immediately — revoking a credential clears the spend it is measured
+  from.
+
+The token's own expiry is not re-checked inside the window: the spend is proof it was live, and an
+`enrollment_token_ttl` of 15 minutes would otherwise strand a device that scanned the code at 14:59.
+
+Verified against a real ATAK 5.6 enrolment, 2026-09-19 (`.claude/plan/status/M2-15-field-report.md`).
+CloudTAK never reaches this call — it holds a reusable client password, which is not spent — which is
+why neither interop suite caught the `401`.
+
 ## 5. QR code / quick-connect
 
 `tak://com.atakmap.app/enroll?host=<host[:port[:proto]]>&username=<user>&token=<enrollment-token>`
@@ -170,6 +205,9 @@ CA mode requires operators to distribute the CA out of band (07 §1.4, §1.6; `p
 ## Gotchas
 
 - `signClient/v2` on `201` is a **failure signal to ATAK** — always `200` on success (§3).
+- The enrolment is **three** calls with one credential, not two: the profile fetch that follows the
+  signing call carries the token the signing call spent, and a `401` there fails the whole
+  registration on the device (§4a).
 - `nameEntry` must be a real array (≥2 entries) in the `tls/config` XML, or CloudTAK's XML-to-JS
   compaction breaks the client (§1).
 - Accept Basic **and** Bearer on `signClient/v2`; CloudTAK sends Basic here even though it holds a
@@ -184,7 +222,10 @@ CA mode requires operators to distribute the CA out of band (07 §1.4, §1.6; `p
 ## Verified in
 
 - `research/07-atak-client-verified.md` §1 (ATAK enrollment sequence, ports, trust bootstrap,
-  post-success state) — authoritative for ATAK.
+  post-success state) and §2 (the device-profile calls, their auth and their status handling) —
+  authoritative for ATAK.
+- `.claude/plan/status/M2-15-field-report.md` — the first real ATAK enrolment against a production
+  server, which is where §4a comes from.
 - `research/06-takserver-http-api-verified.md` §3 (`CertManagerApi` exact request/response,
   issuance parameters, status-code mapping) — authoritative for the HTTP contract.
 - `research/03-cloudtak-node-tak-contract.md` §2.1 steps 3a/3b, §2.4 (CloudTAK's enrollment client,

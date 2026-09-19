@@ -164,8 +164,13 @@ pub async fn mint(
 /// The use count is what exhausts a credential, so an ordinary recorded use on
 /// a one-time token would spend it — and a token spent by the `tls/config` call
 /// that precedes `signClient` strands the person halfway through enrolling. The
-/// call is therefore ignored rather than honoured, and logged, because it is a
-/// mistake in the caller rather than something a client did.
+/// call is therefore ignored rather than honoured.
+///
+/// It is logged at `debug` rather than `warn`: every `tls/config` call used to
+/// produce one, which is the expected path rather than a mistake (M2-15), and a
+/// warning on the ordinary path is a warning an operator learns to skip.
+/// [`super::verify`]'s caller no longer makes the call at all for a single-use
+/// credential, so what is left here is the guard rather than the noise.
 ///
 /// # Errors
 ///
@@ -177,7 +182,7 @@ pub async fn record_use(
     cache: &VerifiedSecretCache,
 ) -> Result<(), Error> {
     if !consumed && credential.kind.is_single_use() {
-        warn!(
+        debug!(
             credential = %credential.id,
             kind = credential.kind.as_str(),
             "Ignored an ordinary use recorded against a one-time credential.",
@@ -202,19 +207,28 @@ pub async fn record_use(
 /// so of two concurrent enrolments carrying the same token exactly one gets a
 /// certificate. A reusable credential has nothing to claim and answers `true`.
 ///
+/// `client_uid` is the device the signing request named, recorded with the
+/// spend because it is the only device the enrolment grace window
+/// ([`super::verify::Grace`]) will answer to afterwards. A request that named
+/// none records none, and gets no grace.
+///
 /// # Errors
 ///
 /// A [`human_errors::Kind::System`] error if the write fails.
 pub async fn claim_single_use(
     db: &Database,
     credential: &CredentialRow,
+    client_uid: Option<&str>,
     cache: &VerifiedSecretCache,
 ) -> Result<bool, Error> {
     if !credential.kind.is_single_use() {
         return Ok(true);
     }
 
-    let claimed = db.credentials().claim_single_use(credential.id).await?;
+    let claimed = db
+        .credentials()
+        .claim_single_use(credential.id, client_uid)
+        .await?;
 
     if claimed {
         cache.forget(credential.id);
