@@ -507,6 +507,13 @@ jobs:
       - e2e
       - interop-node-tak
       - build
+      # `tap` only runs on a release, and until v0.0.1 it was not a dependency
+      # of this job at all — so that release published ten assets and four image
+      # tags, failed to write the Homebrew formula, and still reported a green
+      # `CI`. A release that did not publish the formula is not a successful
+      # release. Nothing depends on `ci`, so waiting for `tap` delays only this
+      # aggregator and never the images.
+      - tap
 
     if: always()
 
@@ -525,6 +532,7 @@ jobs:
           E2E_RESULT: ${{ needs.e2e.result }}
           INTEROP_NODE_TAK_RESULT: ${{ needs.interop-node-tak.result }}
           BUILD_RESULT: ${{ needs.build.result }}
+          TAP_RESULT: ${{ needs.tap.result }}
         run: |
           if [ "$CACHE_HIT" = "true" ]; then
             echo "This merge tree has already passed CI."
@@ -549,6 +557,18 @@ jobs:
               failed=1
             fi
           done
+
+          # `tap` is the one dependency that is *meant* to be skipped most of
+          # the time: it selects `github.event_name == 'release'`, so every
+          # push and pull request leaves it skipped and that is not a failure.
+          # On a release it has to have succeeded.
+          case "$TAP_RESULT" in
+            success | skipped) ;;
+            *)
+              echo "::error::Update Homebrew Tap completed with result '$TAP_RESULT'."
+              failed=1
+              ;;
+          esac
 
           exit "$failed"
 

@@ -80,7 +80,14 @@ deduplicate ──┬─ version ───────────────�
   `<bin>-<os>-<arch>[.exe]`.
 - **`ci`** is the required check: `always()`-gated, it fails the run if any
   dependency did not succeed, then saves the merge-tree success marker for
-  `deduplicate` to find next time.
+  `deduplicate` to find next time. **`tap` is one of those dependencies**, and
+  is the only one whose *skip* is the normal outcome — it selects
+  `github.event_name == 'release'`, so `ci` accepts `success` or `skipped` from
+  it and fails on anything else. It was added after the v0.0.1 release
+  published ten assets and four image tags, failed to write the Homebrew
+  formula, and still reported a green `CI`: a release that did not publish the
+  formula is not a successful release. Nothing depends on `ci`, so waiting for
+  `tap` delays only the aggregator and never the images.
 - **`docker-build`**/**`docker-publish`** build and publish one multi-arch
   (`linux/amd64` + `linux/arm64`) image per crate to
   `ghcr.io/sierrasoftworks/<bin>` — `ghcr.io/sierrasoftworks/rustak` and
@@ -101,11 +108,24 @@ job is active today. See [`docs/interop.md`](interop.md) for what each suite
 actually covers — this section only describes the workflow's shape.
 
 ```
-schedule: "0 4 * * *"  (nightly)  ──┬─ interop-cloudtak   if: false — lands M4
-                                     └─ interop-eud        if: false — lands M2
-schedule: "0 3 * * 1"  (weekly)  ──── interop-eud-image    active
-workflow_dispatch                ──── interop-eud-image    active (manual rebuild)
+schedule: "17 4 * * *"  (nightly) ──┬─ interop-cloudtak   active
+                                    └─ interop-eud        active
+schedule: "17 3 * * 1"  (weekly) ──── interop-eud-image   active
+workflow_dispatch                ──── all three            active (manual)
+pull_request + label run-cloudtak ─── interop-cloudtak     active
 ```
+
+**Both crons are deliberately at :17 rather than on the hour.** GitHub queues
+every repository's top-of-the-hour schedules together and delays or drops them
+under that load. Measured here on 2026-09-19: the `0 0 * * *` security audit ran
+**1h57m** late and the `0 4 * * *` nightly ran **4h19m** late, arriving in the
+middle of the next working day rather than before it. A minute nobody else picks
+costs nothing, and is GitHub's own documented advice.
+
+Each job selects its own cron with `github.event.schedule`, so **a cron and the
+`if:` that names it must change together** — there are three such expressions in
+`nightly.yml`, and a mismatch stops a job selecting itself silently rather than
+failing.
 
 - **`interop-eud-image`** — **active.** Builds `interop/eud/Dockerfile`
   (ATAK's own `commoncommo` networking core and its stock `commotest` CLI,

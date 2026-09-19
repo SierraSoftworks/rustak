@@ -1,12 +1,22 @@
 name: Nightly Interop
 on:
   schedule:
-    # 04:00 UTC daily — after the rest of the world's business-hours CI load.
-    - cron: "0 4 * * *"
-    # 03:00 UTC Mondays — rebuilds the commoncommo interop image. A separate
+    # 04:17 UTC daily — after the rest of the world's business-hours CI load,
+    # and deliberately *not* on the hour. GitHub queues every repository's
+    # top-of-the-hour crons together and drops or delays them under that load:
+    # measured here on 2026-09-19, the `0 0 * * *` security audit ran **1h57m**
+    # late and this job ran **4h19m** late, arriving in the middle of the next
+    # working day instead of before it. A minute nobody else picks costs
+    # nothing and is GitHub's own documented advice.
+    #
+    # Changing a cron means changing the `if:` that selects on it — there are
+    # three in this file, and a mismatch silently stops a job selecting itself
+    # rather than failing loudly.
+    - cron: "17 4 * * *"
+    # 03:17 UTC Mondays — rebuilds the commoncommo interop image. A separate
     # cron (rather than a day-of-week test) so `interop-eud-image` can select
     # itself on github.event.schedule.
-    - cron: "0 3 * * 1"
+    - cron: "17 3 * * 1"
   workflow_dispatch: {}
   # The `run-cloudtak` label runs the CloudTAK suite on a pull request. Nothing
   # else in this workflow selects `pull_request`, so every other job here skips
@@ -36,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     if: >-
       github.event_name == 'workflow_dispatch'
-      || github.event.schedule == '0 4 * * *'
+      || github.event.schedule == '17 4 * * *'
       || (github.event_name == 'pull_request'
           && contains(github.event.pull_request.labels.*.name, 'run-cloudtak'))
     # The release build is the long pole on a cold cache; the stack itself is
@@ -150,7 +160,7 @@ jobs:
   interop-eud-image:
     name: "Interop: EUD image (commoncommo)"
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 3 * * 1'
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 3 * * 1'
     timeout-minutes: 150
 
     permissions:
@@ -239,7 +249,7 @@ jobs:
   interop-eud:
     name: "Interop: EUD harness"
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 4 * * *'
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 4 * * *'
     # Thirty, not ninety. The envelope is ~15 minutes — nine scenarios took
     # 13m20s on the first full run — and the build and image pull in front of
     # them are a few more. Ninety was a guess made before anything had run, and
