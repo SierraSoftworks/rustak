@@ -2718,10 +2718,16 @@ footer {
     width: min(18rem, 85vw);
     border-right: none;
     transform: translateX(-100%);
-    transition: transform 160ms ease;
+    // Off-screen is not enough: a translated drawer is still in the tab order
+    // and the accessibility tree, ahead of the page it covers. Hidden takes it
+    // out of both, and waits for the slide to finish before doing so.
+    visibility: hidden;
+    transition: transform 160ms ease, visibility 0s linear 160ms;
 
     &--open {
       transform: none;
+      visibility: visible;
+      transition: transform 160ms ease, visibility 0s;
       box-shadow: $shadow-md;
     }
 
