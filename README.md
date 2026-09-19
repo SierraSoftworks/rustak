@@ -168,6 +168,7 @@ SDK (`rustak-client`), an example plugin (`rustak-plugin-example`) and the Yew a
 cd rustak-ui && trunk build && cd ..     # the UI is embedded at compile time
 cargo build                              # builds the rustak binary
 cargo test --workspace                   # offline; fake EUDs, a test CA and an in-process IdP
+cd rustak-ui && cargo test && cd ..      # the UI's own tests: it is not in the workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ./scripts/check-file-length.sh           # files stay under 300 functional lines
 ```

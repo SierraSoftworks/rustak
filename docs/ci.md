@@ -15,7 +15,7 @@ Runs on every push to `main`, every pull request, and every published release.
 deduplicate ──┬─ version ─────────────────────────────────────┐
               ├─ lint    (fmt --check, clippy -D warnings, check-file-length.sh, cargo doc -D warnings)
               ├─ test    (cargo test --workspace, coverage → grcov → codecov)
-              ├─ ui      (trunk build → ui-dist-e2e; trunk build --release → ui-dist; lints rustak-ui for wasm32)
+              ├─ ui      (lints + tests rustak-ui; trunk build → ui-dist-e2e; trunk build --release → ui-dist)
               ├─ e2e     (needs ui; cargo build -p rustak-server; Playwright)
               ├─ interop-node-tak  (needs ui; @tak-ps/node-tak contract suite)
               └─ build   (needs version, ui; crate × target matrix, 10 jobs) ─┬─ ci (aggregator, always())
@@ -36,8 +36,8 @@ deduplicate ──┬─ version ───────────────�
   before compiling.
 - **`lint`** and **`test`** run once, workspace-wide. `rustak-ui` is excluded
   from the workspace (it targets `wasm32-unknown-unknown`), so it is not
-  covered here — it is linted inside the `ui` job instead, where the wasm32
-  toolchain and Trunk are already installed. `test` runs under
+  covered here — it is linted *and tested* inside the `ui` job instead, where
+  the wasm32 toolchain and Trunk are already installed. `test` runs under
   `-Cinstrument-coverage`; see [Keeping the test job inside its
   timeout](#keeping-the-test-job-inside-its-timeout) for what that costs and
   what pays for it.
@@ -70,6 +70,18 @@ deduplicate ──┬─ version ───────────────�
   It builds a **debug** bundle (for `e2e`'s `?demo` fixtures, which are
   compiled out of release) and a **release** bundle (for the `build` matrix to
   embed).
+
+  It also **runs `rustak-ui`'s unit tests**, on the *host* target rather than on
+  wasm32. Until M7-04 it only lint-checked them: `cargo clippy --all-targets`
+  type-checks a test without running it, so an assertion that would fail was not
+  a failing build (found by M2-14). The host target needs no browser, no wasm
+  test runner and no tool to install — `wasm-bindgen`'s bindings compile there
+  and panic only when called, and nothing in this suite calls one, so all 51
+  tests run and none is excluded. A test that does need a DOM gates itself
+  behind `#[cfg(target_arch = "wasm32")]`: the clippy step still compiles it and
+  this step skips it. The cost is one more dependency graph compiled for the
+  host — about a minute cold, seconds once `Swatinem/rust-cache` holds it,
+  against a job that takes ~1.5 minutes today.
 - **`e2e`** downloads the debug UI bundle, builds `rustak-server` and runs the
   Playwright suite in `e2e/`. See `e2e/README.md`.
 - **`interop-node-tak`** downloads the release UI bundle, builds
@@ -293,10 +305,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 scripts/check-file-length.sh
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
-# rustak-ui lint (separate: excluded from the workspace)
+# rustak-ui lint and tests (separate: excluded from the workspace)
 cd rustak-ui
 cargo fmt --all --check
 cargo clippy --all-targets --target wasm32-unknown-unknown -- -D warnings
+cargo test   # host target: nothing in the suite needs a DOM, and CI has no wasm runner
 cd ..
 
 # test

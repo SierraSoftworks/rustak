@@ -6,10 +6,12 @@
 //! "Certificate #11" — which is what the identity brief could not do before
 //! the endpoint existed.
 //!
-//! The TLS status is an ACME one that has *failed*, because that is the state
-//! the card exists for: an operator opens it when something is wrong, and a
-//! demo showing only the healthy case would never have exercised the error or
-//! the Renew button beside it.
+//! The TLS status opens on an ACME order that has *failed*, because that is the
+//! state the card exists for: an operator opens it when something is wrong, and
+//! a demo showing only the healthy case would never have exercised the error or
+//! the Renew button beside it. The other three sources render different cards
+//! and no URL could reach them while that one was the only fixture, so
+//! `?demo&tls=files`, `&tls=internal` and `&tls=none` each select their own.
 
 use std::cell::RefCell;
 
@@ -26,7 +28,8 @@ use crate::api::download::Download;
 
 thread_local! {
     static CERTIFICATES: RefCell<Vec<Certificate>> = RefCell::new(seed());
-    static TLS: RefCell<TlsStatus> = RefCell::new(acme_status());
+    static TLS: RefCell<TlsStatus> =
+        RefCell::new(status_for(super::demo_flag("tls").as_deref()));
     static FILES: RefCell<FileSettings> = const {
         RefCell::new(FileSettings {
             upload_size_limit_mb: 400,
@@ -185,6 +188,57 @@ pub fn config_package(request: &ConfigPackageRequest) -> Result<Download, ApiErr
     })
 }
 
+/// Which TLS status `?demo&tls=…` asks the card to render.
+///
+/// One baked-in status can only show one source, and each source renders a
+/// different card: `files` has three rows, a note and a differently worded
+/// error nothing else reaches; `internal` has neither the ACME rows nor the
+/// button; `none` is a warning and nothing else. So the source is a flag, and
+/// anything else — including no flag at all — keeps the failed ACME order this
+/// has always opened on.
+fn status_for(flag: Option<&str>) -> TlsStatus {
+    match flag {
+        Some("files") => files_status(),
+        Some("internal") => internal_status(),
+        Some("none") => TlsStatus::fixed(TlsSource::None),
+        _ => acme_status(),
+    }
+}
+
+/// A `files` listener still waiting for the pair a sidecar will write.
+///
+/// The state M2-13 made ordinary: the listener is up and presenting this
+/// installation's own certificate, which no client trusts, and until the note
+/// M2-14 added to the card nothing but the log said so.
+fn files_status() -> TlsStatus {
+    TlsStatus {
+        state: TlsCertificateState::Missing,
+        domains: vec!["tak.example.com".to_string()],
+        cert_file: Some("/var/lib/rustak/tls/fullchain.pem".to_string()),
+        key_file: Some("/var/lib/rustak/tls/privkey.pem".to_string()),
+        note: Some(
+            "Waiting for the certificate files to appear. Until they do this listener is \
+             presenting a certificate from this installation's own authority, which no \
+             client trusts."
+                .to_string(),
+        ),
+        ..TlsStatus::fixed(TlsSource::Files)
+    }
+}
+
+/// The certificate this installation issued itself.
+///
+/// Nothing fetches it while the server runs, so it has no renewal, no error
+/// and no button — the card is down to the pill, the names and the dates.
+fn internal_status() -> TlsStatus {
+    TlsStatus {
+        domains: vec!["tak.example.com".to_string(), "10.0.0.12".to_string()],
+        not_before: Some(ago(60 * 24 * 12)),
+        not_after: Some(ago(-60 * 24 * 353)),
+        ..TlsStatus::fixed(TlsSource::Internal)
+    }
+}
+
 /// An ACME certificate whose last order failed.
 fn acme_status() -> TlsStatus {
     TlsStatus {
@@ -222,17 +276,34 @@ pub fn tls_status() -> TlsStatus {
 pub fn renew_tls() -> Result<TlsStatus, ApiError> {
     TLS.with(|held| {
         let mut status = held.borrow_mut();
-
-        status.state = TlsCertificateState::Valid;
-        status.attempts = 0;
-        status.last_error = None;
-        status.last_attempt_at = Some(chrono::Utc::now());
-        status.not_before = Some(chrono::Utc::now());
-        status.not_after = Some(ago(-60 * 24 * 90));
-        status.renews_at = Some(ago(-60 * 24 * 60));
-
+        fetched(&mut status);
         Ok(status.clone())
     })
+}
+
+/// What a successful fetch does to a status, whichever button asked for it.
+///
+/// Separate from the thread-local above so it can be tested: reaching `TLS`
+/// reads the browser's location, and a host test has no browser.
+fn fetched(status: &mut TlsStatus) {
+    status.state = TlsCertificateState::Valid;
+    status.attempts = 0;
+    status.last_error = None;
+    // Whatever the listener was waiting for, it is not waiting for it now.
+    status.note = None;
+    status.not_before = Some(ago(0));
+    status.not_after = Some(ago(-60 * 24 * 90));
+
+    // The two sources answer the same button with different words, and the
+    // card reads different fields for each: a re-read is a read, and an order
+    // is an attempt that schedules the next one.
+    match status.source {
+        TlsSource::Files => status.loaded_at = Some(ago(0)),
+        _ => {
+            status.last_attempt_at = Some(ago(0));
+            status.renews_at = Some(ago(-60 * 24 * 60));
+        }
+    }
 }
 
 pub fn file_settings() -> FileSettings {
@@ -258,5 +329,91 @@ pub fn marti_settings() -> MartiSettings {
     MartiSettings {
         public_host: Some("tak.example.com".to_string()),
         allow_all_origins: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every source the card renders, and the flag that asks for it.
+    const FLAGS: &[(&str, TlsSource)] = &[
+        ("files", TlsSource::Files),
+        ("internal", TlsSource::Internal),
+        ("none", TlsSource::None),
+    ];
+
+    #[test]
+    fn every_source_the_card_renders_can_be_asked_for_by_name() {
+        for (flag, source) in FLAGS {
+            assert_eq!(
+                status_for(Some(flag)).source,
+                *source,
+                "?demo&tls={flag} should show a {source:?} listener",
+            );
+        }
+
+        // No flag, and a flag naming nothing, both keep the failed order the
+        // demo has always opened on rather than rendering an empty card.
+        assert_eq!(status_for(None).source, TlsSource::Acme);
+        assert_eq!(status_for(Some("")).source, TlsSource::Acme);
+        assert_eq!(status_for(Some("Files")).source, TlsSource::Acme);
+    }
+
+    #[test]
+    fn the_files_listener_shows_what_only_a_files_listener_has() {
+        // The three rows, the note and the warning tone are the whole of what
+        // M2-14 added and nothing else in demo mode reaches.
+        let status = files_status();
+
+        assert_eq!(status.state, TlsCertificateState::Missing);
+        assert!(status.cert_file.is_some());
+        assert!(status.key_file.is_some());
+        assert!(
+            status.loaded_at.is_none(),
+            "a pair that has never appeared has never been read",
+        );
+        assert!(status.note.is_some());
+        assert!(
+            status.needs_attention(),
+            "a listener presenting a certificate no client trusts is not a healthy one",
+        );
+    }
+
+    #[test]
+    fn re_reading_the_files_stops_the_card_saying_it_is_still_waiting() {
+        let mut status = files_status();
+        fetched(&mut status);
+
+        assert_eq!(status.state, TlsCertificateState::Valid);
+        assert!(status.note.is_none(), "it is not waiting for them any more");
+        assert!(status.loaded_at.is_some(), "a re-read is a read");
+        assert!(!status.needs_attention());
+    }
+
+    #[test]
+    fn an_order_that_succeeds_schedules_the_next_one() {
+        let mut status = acme_status();
+        fetched(&mut status);
+
+        assert_eq!(status.attempts, 0);
+        assert!(status.last_error.is_none());
+        assert!(status.renews_at.is_some());
+        assert!(
+            status.loaded_at.is_none(),
+            "nothing was read off disk, so the files row would be a lie",
+        );
+    }
+
+    #[test]
+    fn the_certificate_this_installation_issued_itself_is_not_a_problem() {
+        let status = internal_status();
+
+        assert_eq!(status.state, TlsCertificateState::Valid);
+        assert!(!status.needs_attention());
+        assert!(
+            status.directory.is_none() && status.renews_at.is_none(),
+            "nobody orders or renews this one, so the ACME rows would be empty",
+        );
     }
 }

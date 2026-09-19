@@ -223,6 +223,17 @@ jobs:
         working-directory: rustak-ui
         run: cargo clippy --all-targets --target wasm32-unknown-unknown -- -D warnings
 
+      # The clippy step above only *type-checks* these: until this step existed
+      # a failing assertion in rustak-ui was not a failing build (M2-14). They
+      # run on the host target, which needs no browser, no wasm test runner and
+      # no extra tool to install — nothing in the suite touches the DOM, so all
+      # of it runs. A test that one day does need one gates itself behind
+      # `#[cfg(target_arch = "wasm32")]`, and is then compiled by the step above
+      # and skipped by this one.
+      - name: cargo test (rustak-ui)
+        working-directory: rustak-ui
+        run: cargo test
+
       # e2e specs rely on `?demo` fixtures for deterministic integration data.
       # Demo mode is compiled out of release bundles, so a debug bundle is kept
       # for that job before the release bundle is produced below.

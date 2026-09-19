@@ -66,6 +66,25 @@ pub fn is_demo() -> bool {
         .unwrap_or(false)
 }
 
+/// The value of a query parameter beside `?demo`, if the URL carries one.
+///
+/// `?demo` chooses the fixtures over the network; a flag beside it chooses
+/// *which* fixtures, for a card whose states one baked-in value cannot show at
+/// once — `?demo&tls=files` is the one this exists for (see
+/// `certificates::status_for`). Only read in demo mode, so a flag can never
+/// change what a real server said.
+#[cfg(debug_assertions)]
+pub fn demo_flag(name: &str) -> Option<String> {
+    if !is_demo() {
+        return None;
+    }
+
+    let search = web_sys::window()?.location().search().ok()?;
+    web_sys::UrlSearchParams::new_with_str(&search)
+        .ok()?
+        .get(name)
+}
+
 /// Demo mode is unavailable in release builds.
 #[cfg(not(debug_assertions))]
 pub fn is_demo() -> bool {
