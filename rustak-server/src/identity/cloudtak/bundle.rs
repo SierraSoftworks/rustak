@@ -17,8 +17,11 @@
 //!   the *delete*, not the value: a caller that then finds the record expired
 //!   has still consumed it, which is what makes a replayed link useless inside
 //!   a window no sweep has covered.
-//! * **Brief.** Ten minutes, enforced on read and swept on the next
-//!   preparation, whether or not anybody collected it.
+//! * **Brief.** Ten minutes, enforced on read, swept on the next preparation
+//!   and swept again on a schedule by
+//!   [`CloudTakSweepJob`](crate::jobs::CloudTakSweepJob), whether or not
+//!   anybody collected it — so an installation that onboards CloudTAK once is
+//!   not left holding that keystore for the life of the volume.
 
 use base64::Engine as _;
 use chrono::{DateTime, Duration, Utc};
@@ -175,10 +178,16 @@ pub async fn take(context: &AppContext, id: &str) -> Result<Option<Bundle>, Erro
 
 /// Deletes every bundle whose window has closed, and reports how many.
 ///
-/// Run when a hand-over is prepared rather than on a timer: the partition is
-/// touched only by this feature, it holds at most a handful of rows, and a
-/// sealed private key that nothing will ever hand over should not wait for the
-/// next scheduled sweep to go.
+/// Run from two places, because neither alone empties the stash. Preparing a
+/// hand-over sweeps first, so a sealed private key nothing will ever hand over
+/// goes at the first opportunity rather than waiting on a schedule; and
+/// [`CloudTakSweepJob`](crate::jobs::CloudTakSweepJob) runs it on a timer, so an
+/// installation that onboards CloudTAK once and never again is not left holding
+/// the last one indefinitely. The partition is touched only by this feature and
+/// holds at most a handful of rows, so doing it twice costs nothing.
+///
+/// The count comes back rather than being logged here: the caller knows whether
+/// this was a schedule finding work or a hand-over tidying up before itself.
 ///
 /// # Errors
 ///
@@ -194,10 +203,6 @@ pub async fn sweep(db: &Database, now: DateTime<Utc>) -> Result<usize, Error> {
 
         db.remove(BUNDLE_PARTITION, key).await?;
         swept += 1;
-    }
-
-    if swept > 0 {
-        debug!(swept, "Swept expired CloudTAK hand-over bundles.");
     }
 
     Ok(swept)

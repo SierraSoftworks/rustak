@@ -50,6 +50,7 @@
 
 pub mod acme_renew;
 pub mod audit_prune;
+pub mod cloudtak_sweep;
 pub mod content_orphans;
 pub mod dead_letter;
 pub mod host;
@@ -65,6 +66,10 @@ pub use acme_renew::{
     ACME_RENEW_FORCED_KEY, ACME_RENEW_PARTITION, AcmeRenewJob, AcmeRenewTask, RENEW_INTERVAL,
 };
 pub use audit_prune::{AUDIT_PRUNE_PARTITION, AuditPruneJob, AuditPruneTask, PRUNE_INTERVAL};
+pub use cloudtak_sweep::{
+    CLOUDTAK_SWEEP_PARTITION, CloudTakSweepJob, CloudTakSweepTask,
+    SWEEP_INTERVAL as CLOUDTAK_SWEEP_INTERVAL,
+};
 pub use content_orphans::{
     CONTENT_ORPHANS_PARTITION, ContentOrphansJob, ContentOrphansTask,
     SWEEP_INTERVAL as CONTENT_ORPHANS_INTERVAL,

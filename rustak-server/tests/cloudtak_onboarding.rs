@@ -12,8 +12,9 @@
 //! * **Only once.** The second fetch is a `410`, including when the two arrive
 //!   together. A keystore that can be fetched twice is one a proxy log or a
 //!   browser history can be replayed from.
-//! * **Not for long.** The bundle expires whether or not it was collected, and
-//!   a later hand-over sweeps what is left.
+//! * **Not for long.** The bundle expires whether or not it was collected, a
+//!   later hand-over sweeps what is left, and a scheduled sweep removes it on
+//!   an installation where no later hand-over ever comes.
 //! * **Nothing stored in the clear, and nothing stored that opens it.** The
 //!   key/value row is a sealed envelope around a PKCS#12 that is itself
 //!   encrypted with a passphrase generated for this hand-over — and that
@@ -52,6 +53,7 @@ use rustak_server::crypto::{Sealed, SecretContext};
 use rustak_server::db::repos::UserRow;
 use rustak_server::db::{AuditQuery, AuditStore as _, KeyValueStore as _};
 use rustak_server::identity::cloudtak;
+use rustak_server::jobs::{CloudTakSweepJob, JobRunnable};
 use rustak_server::pki::{KeyType, Pki};
 use rustak_server::prelude::*;
 use rustak_server::testing::TestServer;
@@ -394,6 +396,49 @@ async fn preparing_a_hand_over_sweeps_the_one_before_it() {
     assert_eq!(
         fetch!(app, &token, &fresh.p12_download_url).status(),
         StatusCode::OK,
+    );
+}
+
+#[actix_web::test]
+async fn the_scheduled_sweep_removes_a_bundle_nobody_ever_came_back_for() {
+    let (server, token) = harness().await;
+    let app = app!(server);
+    account(&server, "cloudtak").await;
+
+    let onboarding = prepared!(app, &token, "cloudtak");
+    let id = onboarding
+        .p12_download_url
+        .rsplit('/')
+        .next()
+        .and_then(|segment| segment.strip_suffix(".p12"))
+        .expect("the download URL ends in the identifier")
+        .to_string();
+
+    backdate(&server, &id).await;
+
+    // The point of the job: an installation that onboards CloudTAK once makes
+    // no second request, so without a schedule this row would still be here.
+    // Run through `JobRunnable` rather than `Job`, because that is the path the
+    // host dispatches on and it proves the payload the queue carries is one
+    // this handler can read.
+    JobRunnable::handle(
+        &CloudTakSweepJob,
+        JobContext::new(server.context.clone(), Utc::now(), None, None),
+        &serde_json::json!({}),
+    )
+    .await
+    .expect("the sweep runs");
+
+    let stored: Vec<(String, serde_json::Value)> =
+        server.db().list(cloudtak::BUNDLE_PARTITION).await.unwrap();
+
+    assert!(
+        stored.is_empty(),
+        "the expired bundle should be gone from the store, not merely refused",
+    );
+    assert_eq!(
+        fetch!(app, &token, &onboarding.p12_download_url).status(),
+        StatusCode::GONE,
     );
 }
 
