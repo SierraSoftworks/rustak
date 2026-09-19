@@ -182,11 +182,24 @@ impl TlsStatus {
     }
 
     /// Whether an administrator should be shown a warning about this.
+    ///
+    /// The two sources that can sit in an unhealthy *steady state* are the two
+    /// that fetch their certificate from somewhere else while the server runs.
+    /// An ACME order can fail and be retried for days; a `files` listener
+    /// binds with an internal certificate and waits for a pair that a sidecar
+    /// may never write, or re-reads one it cannot use — both of which leave a
+    /// running server presenting something no client will trust, with nothing
+    /// but the log to say so.
+    ///
+    /// `internal` cannot: it is issued here, and a failure to issue it stops
+    /// start-up rather than producing a status to read. `none` has no
+    /// certificate to have an opinion about, and the console says so in far
+    /// stronger terms than a banner.
     pub fn needs_attention(&self) -> bool {
         matches!(
             self.state,
             TlsCertificateState::Failed | TlsCertificateState::Missing
-        ) && self.source == TlsSource::Acme
+        ) && matches!(self.source, TlsSource::Acme | TlsSource::Files)
     }
 }
 
@@ -304,9 +317,9 @@ mod tests {
     }
 
     #[test]
-    fn only_an_acme_installation_has_something_to_warn_about() {
-        // A `files` or `internal` certificate that could not be loaded stops
-        // the server, so there is no unhealthy steady state to report.
+    fn a_certificate_fetched_while_the_server_runs_is_the_one_worth_warning_about() {
+        // An `internal` certificate is issued here, and a failure to issue one
+        // stops start-up — so there is no unhealthy steady state to report.
         let mut internal = TlsStatus::fixed(TlsSource::Internal);
         internal.state = TlsCertificateState::Failed;
         assert!(!internal.needs_attention());
@@ -317,6 +330,31 @@ mod tests {
 
         acme.state = TlsCertificateState::Valid;
         assert!(!acme.needs_attention());
+
+        // `files` binds with an internal certificate and waits when the pair
+        // is not there (M2-13), so a listener that is serving something no
+        // client will trust is an ordinary running state — and the only thing
+        // that says so, before this, was the log.
+        let mut waiting = TlsStatus::fixed(TlsSource::Files);
+        waiting.state = TlsCertificateState::Missing;
+        waiting.note = Some("Waiting for the certificate files to appear.".to_string());
+        assert!(
+            waiting.needs_attention(),
+            "a pair that has not arrived leaves the listener presenting the wrong certificate",
+        );
+
+        waiting.state = TlsCertificateState::Failed;
+        assert!(
+            waiting.needs_attention(),
+            "and a pair that arrived unusable is worse, not better",
+        );
+
+        waiting.state = TlsCertificateState::Valid;
+        assert!(!waiting.needs_attention());
+
+        // `none` has no certificate to have an opinion about; the console says
+        // what that means in far stronger terms than a banner.
+        assert!(!TlsStatus::fixed(TlsSource::None).needs_attention());
     }
 
     #[test]

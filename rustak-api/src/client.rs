@@ -98,6 +98,18 @@ pub struct StreamStatus {
     /// true means it was asked for and did not come up.
     pub bound: bool,
 
+    /// When it bound, for the installation where that is not the same moment
+    /// the process started.
+    ///
+    /// A listener that is restarted without the process — or one that took a
+    /// while to come up behind a certificate that was not there yet — makes
+    /// "the server has been up for three days" and "the stream has been up for
+    /// three days" different sentences, and an operator looking at a client
+    /// list that is shorter than it should be is asking the second one.
+    /// [`None`] when nothing has bound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_at: Option<DateTime<Utc>>,
+
     /// How many connections are open right now.
     pub connections: u32,
 }
@@ -108,6 +120,7 @@ impl StreamStatus {
         Self {
             enabled: false,
             bound: false,
+            bound_at: None,
             connections: 0,
         }
     }
@@ -225,6 +238,7 @@ mod tests {
         let quiet = StreamStatus {
             enabled: true,
             bound: true,
+            bound_at: Some("2026-09-18T09:00:00.500Z".parse().unwrap()),
             connections: 0,
         };
         assert!(quiet.is_listening());
@@ -232,10 +246,12 @@ mod tests {
         let off = StreamStatus::off();
         assert!(!off.is_listening());
         assert_eq!(off.connections, 0);
+        assert!(off.bound_at.is_none());
 
         let asked_for_and_absent = StreamStatus {
             enabled: true,
             bound: false,
+            bound_at: None,
             connections: 0,
         };
         assert!(
@@ -244,8 +260,24 @@ mod tests {
         );
 
         let json = serde_json::to_string(&quiet).unwrap();
-        assert_eq!(json, r#"{"enabled":true,"bound":true,"connections":0}"#);
+        assert_eq!(
+            json,
+            r#"{"enabled":true,"bound":true,"bound_at":"2026-09-18T09:00:00.500Z","connections":0}"#
+        );
         assert_eq!(serde_json::from_str::<StreamStatus>(&json).unwrap(), quiet);
+
+        // A server that predates the field, and every installation with
+        // nothing bound, leaves it out altogether.
+        let older = serde_json::from_str::<StreamStatus>(
+            r#"{"enabled":true,"bound":false,"connections":0}"#,
+        )
+        .unwrap();
+        assert_eq!(older, asked_for_and_absent);
+        assert_eq!(
+            serde_json::to_string(&off).unwrap(),
+            r#"{"enabled":false,"bound":false,"connections":0}"#,
+            "nothing bound means no timestamp on the wire either",
+        );
     }
 
     #[test]

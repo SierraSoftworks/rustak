@@ -275,17 +275,65 @@ const child = spawn(
   },
 );
 
+/**
+ * How long a stop waits for the server to finish stopping.
+ *
+ * The server drains for `[server] shutdown_timeout` (8 s by default) and is
+ * then allowed a further two for the WAL checkpoint that makes its data
+ * directory tidy — so anything shorter than ten removes the directory out from
+ * under a checkpoint that is still running, and the run ends with the server
+ * logging an I/O failure against a path that no longer exists. Two seconds of
+ * slack on top of the budget it was given, and still inside the 15 s
+ * `gracefulShutdown` Playwright allows this process (`playwright.config.ts`).
+ */
+const STOP_TIMEOUT_MS = 12_000;
+
+/** Whether the child has already ended, whatever ended it. */
+function hasExited() {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+/** Resolves when the child has exited, or after `STOP_TIMEOUT_MS`. */
+function awaitExit() {
+  if (hasExited()) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      console.error(
+        `[e2e] the server did not stop within ${STOP_TIMEOUT_MS} ms; killing it`,
+      );
+      child.kill("SIGKILL");
+      resolve();
+    }, STOP_TIMEOUT_MS);
+
+    // Nothing else should be held open by this wait: the process is on its
+    // way out either way.
+    timer.unref?.();
+
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
 let cleanedUp = false;
 
+/**
+ * Removes the scratch directory.
+ *
+ * Only ever called once the child has gone. Removing it while the server is
+ * still running deletes the database out from under the checkpoint it was
+ * asked to make — see `stop` below, which is the whole reason this is a
+ * separate function from it.
+ */
 function cleanUp() {
   if (cleanedUp) {
     return;
   }
   cleanedUp = true;
-
-  if (child.exitCode === null && child.signalCode === null) {
-    child.kill("SIGTERM");
-  }
 
   // `RUSTAK_E2E_KEEP` leaves the database, the log and the CA behind for
   // somebody debugging a failure. It is off by default because the directory
@@ -303,11 +351,43 @@ function cleanUp() {
   }
 }
 
+/**
+ * Stops the server and *then* removes what it was writing into.
+ *
+ * Playwright stops this launcher with SIGTERM and expects the port to be free
+ * when it returns. Forwarding the signal and exiting immediately — which is
+ * what this used to do — left the server checkpointing into a directory that
+ * had already been removed, so every run ended with an error in its log and a
+ * database that was never closed cleanly.
+ */
+async function stop(code) {
+  if (!hasExited()) {
+    child.kill("SIGTERM");
+  }
+
+  await awaitExit();
+  cleanUp();
+  process.exit(code);
+}
+
+/** Whether a signal handler is already stopping the server. */
+let stopping = false;
+
+// A last-resort sweep for an exit no handler below covers (an uncaught throw,
+// `process.exit` from somewhere else). Synchronous, so it cannot wait for
+// anything; `stop` is the path that can.
 process.on("exit", cleanUp);
+
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(signal, () => {
-    cleanUp();
-    process.exit(130);
+    // A second SIGTERM — Playwright's, or an impatient developer's — must not
+    // start a second stop and race the first one's cleanup.
+    if (stopping) {
+      return;
+    }
+    stopping = true;
+
+    void stop(130);
   });
 }
 
@@ -318,6 +398,13 @@ child.on("error", (error) => {
 });
 
 child.on("exit", (code, signal) => {
+  // A stop we asked for is waiting on this same event and owns the cleanup and
+  // the exit code; anything else — the server falling over on its own — ends
+  // the run here.
+  if (stopping) {
+    return;
+  }
+
   cleanUp();
   process.exit(code ?? (signal ? 143 : 1));
 });

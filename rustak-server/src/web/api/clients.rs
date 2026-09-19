@@ -118,17 +118,25 @@ pub async fn list(context: web::Data<AppContext>, _: Administrative) -> ApiResul
 /// A `500` when the registry cannot be read, which it cannot be here.
 pub async fn status(context: web::Data<AppContext>, _: Administrative) -> ApiResult {
     let enabled = context.config().stream.tls.enabled;
-    let connections = match context.has_live() {
-        true => context
-            .live()
-            .map_err(|err| failed(&context, &err))?
-            .connected(),
-        false => 0,
+
+    // One read of the slot rather than two. This used to ask `has_live` for
+    // the connection count and again for `bound`, so a listener that published
+    // between the two was reported as bound with nobody on it — which is the
+    // one answer this endpoint exists to make unambiguous.
+    let live = match context.has_live() {
+        true => Some(context.live().map_err(|err| failed(&context, &err))?),
+        false => None,
     };
+
+    let connections = live.as_ref().map_or(0, |live| live.connected());
 
     Ok(json_ok(&StreamStatus {
         enabled,
-        bound: context.has_live(),
+        bound: live.is_some(),
+        // When the listener bound, not when the process started: the two are
+        // the same on an ordinary start and are not on an installation whose
+        // listener came up late.
+        bound_at: live.as_ref().map(|live| live.bound_at()),
         connections: u32::try_from(connections).unwrap_or(u32::MAX),
     }))
 }
@@ -624,6 +632,73 @@ mod tests {
         assert!(
             hub.handles_for_uid("ANDROID-2").is_empty(),
             "a uid nothing claims resolves to nothing, which is the 404",
+        );
+    }
+
+    #[actix_web::test]
+    async fn an_installation_with_no_listener_has_nothing_to_date() {
+        use actix_web::{App, test};
+
+        use crate::testing::TestServer;
+        use crate::testing::context::bearer;
+
+        let server = TestServer::start().await;
+        let (_, session) = server.signed_in("ada", true).await;
+
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let status: StreamStatus = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/v1/clients/status")
+                .insert_header(("authorization", bearer(&session)))
+                .to_request(),
+        )
+        .await;
+
+        assert!(!status.bound);
+        assert!(
+            status.bound_at.is_none(),
+            "a listener that never bound has no moment to report",
+        );
+        assert_eq!(status.connections, 0);
+    }
+
+    #[actix_web::test]
+    async fn a_bound_listener_says_when_it_bound() {
+        use actix_web::{App, test};
+
+        use crate::testing::TestServer;
+        use crate::testing::context::bearer;
+
+        let server = TestServer::start().await;
+        let (_, session) = server.signed_in("ada", true).await;
+
+        let before = Utc::now();
+        let live = live_with_alpha(&[]).await;
+        server
+            .install_live(std::sync::Arc::new(live))
+            .expect("the registry is installed once");
+        let after = Utc::now();
+
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let status: StreamStatus = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/v1/clients/status")
+                .insert_header(("authorization", bearer(&session)))
+                .to_request(),
+        )
+        .await;
+
+        assert!(status.bound);
+        assert_eq!(status.connections, 1);
+
+        let bound_at = status.bound_at.expect("a bound listener reports when");
+        assert!(
+            bound_at >= before && bound_at <= after,
+            "{bound_at} is not when the registry was built",
         );
     }
 }

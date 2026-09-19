@@ -126,10 +126,18 @@ pub struct LiveState {
     store: CotStoreHandle,
     metrics: Arc<StreamMetrics>,
     replay_budget: std::time::Duration,
+    bound_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl LiveState {
     /// Assembles the state from the pieces the listener builds.
+    ///
+    /// Built after the socket is bound and immediately before the registry is
+    /// published, which is why [`bound_at`](Self::bound_at) is taken here: a
+    /// listener that came up late — behind a certificate that had not been
+    /// written yet, or after a restart the process itself did not have — makes
+    /// "when did the server start" and "when did the stream start" different
+    /// questions, and the client listing is where the second one is asked.
     pub fn new(
         hub: Arc<Hub>,
         router: Arc<Router>,
@@ -137,6 +145,7 @@ impl LiveState {
         metrics: Arc<StreamMetrics>,
     ) -> Self {
         Self {
+            bound_at: chrono::Utc::now(),
             hub,
             router,
             store,
@@ -171,6 +180,15 @@ impl LiveState {
     /// The listener's counters.
     pub fn metrics(&self) -> &Arc<StreamMetrics> {
         &self.metrics
+    }
+
+    /// When this registry was built, which is when its listener bound.
+    ///
+    /// Read by `GET /api/v1/clients/status`. A clone carries the original
+    /// moment rather than the moment it was cloned — the handle is passed
+    /// around, and every copy is the same listener.
+    pub fn bound_at(&self) -> chrono::DateTime<chrono::Utc> {
+        self.bound_at
     }
 
     /// Tells the routing path that the channel table has changed.

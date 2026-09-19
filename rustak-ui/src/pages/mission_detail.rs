@@ -16,8 +16,8 @@ use yew_router::prelude::*;
 
 use crate::api;
 use crate::app::Route;
-use crate::components::{Alert, AlertKind, LoadingNote};
-use crate::util::nav_href;
+use crate::components::{Alert, AlertKind, LoadingNote, StatusPill, StatusTone};
+use crate::util::{format_iso8601, nav_href, short_relative};
 
 use super::load::{use_refresh_action, use_resource};
 use super::mission_changes::MissionChanges;
@@ -142,6 +142,20 @@ fn heading(props: &HeadingProps) -> Html {
                     <span class="entity-heading__username">{ summary.guid.to_string() }</span>
                     { " · " }
                     { summary.tool.clone() }
+                    // A mission opened after it was deleted is served as a
+                    // `410` carrying the whole document, so the page shows
+                    // what it was as well as that it went. The Overview tab
+                    // says it at length; the heading says it on every tab,
+                    // because none of the four is about a live mission any
+                    // more.
+                    if let Some(at) = summary.deleted_at {
+                        { " · " }
+                        <StatusPill
+                            tone={StatusTone::Neutral}
+                            label={format!("Deleted {}", short_relative(at))}
+                            title={Some(AttrValue::from(format_iso8601(at)))}
+                        />
+                    }
                 </p>
             </div>
             { back_link() }

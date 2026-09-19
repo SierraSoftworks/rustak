@@ -90,6 +90,16 @@ pub fn clients() -> Html {
                     }
                 />
 
+                // How long the listener has been up, whether or not anybody
+                // is connected to it: a client list that is shorter than it
+                // should be reads very differently against a listener that
+                // bound three days ago and one that bound a minute ago.
+                if let Some(bound_at) = listener.data.as_ref().and_then(|it| it.bound_at) {
+                    <p class="panel-note" title={format_iso8601(bound_at)}>
+                        { format!("The stream listener bound {}.", short_relative(bound_at)) }
+                    </p>
+                }
+
                 { connected_list(&clients.data, &clients.error, &listener.data, &reload) }
             </Card>
 

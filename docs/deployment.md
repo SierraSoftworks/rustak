@@ -174,9 +174,12 @@ INFO The public listener is now presenting the certificate on disk. Existing
 `source: "files"`, both paths, `loaded_at`, `not_before`/`not_after`, and — while
 the listener is still on its bootstrap certificate — `state: "missing"` with a
 `note` saying it is waiting for the files. A pair that is on disk and cannot be
-served reads `state: "failed"` with `last_error`. `openssl s_client -connect
-host:8446 -servername host </dev/null | openssl x509 -noout -dates` is the other
-half of the check, from outside.
+served reads `state: "failed"` with `last_error`. The console's **Settings →
+Transport security** card shows the same thing — both paths, when the pair was
+last read, and the note — and raises a banner while the listener is waiting or
+the pair is unusable. `openssl s_client -connect host:8446 -servername host
+</dev/null | openssl x509 -noout -dates` is the other half of the check, from
+outside.
 
 `POST /api/v1/settings/tls/renew` re-reads the pair immediately rather than
 waiting for the next interval — which is also the way to pick a renewal up when

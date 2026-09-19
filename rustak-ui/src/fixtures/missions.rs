@@ -22,7 +22,15 @@ use crate::api::download::Download;
 /// be written down.
 const KETTLE: &str = "0d4f1a6e-1d2b-4c3a-9f8e-7a6b5c4d3e2f";
 const RESCUE: &str = "6b2c8f41-77aa-4d19-b0c5-2e9f13d8a704";
-const STANDDOWN: &str = "f0a19c52-3e64-4b8d-8a17-55c2d9e40b31";
+
+/// The mission that has already been deleted.
+///
+/// Public because it is the one fixture whose *identifier* is worth writing
+/// down: `/admin/missions/f0a19c52-…?demo` is how the deleted-mission detail
+/// is looked at without a server, and that is the one view of this console
+/// that cannot be reached by clicking — the listing does not carry deleted
+/// missions.
+pub const STANDDOWN: &str = "f0a19c52-3e64-4b8d-8a17-55c2d9e40b31";
 
 struct State {
     missions: Vec<MissionSummary>,

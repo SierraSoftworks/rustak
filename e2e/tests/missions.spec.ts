@@ -135,6 +135,23 @@ test("a mission a client created is listed, opened, and deleted", async ({ page 
     page.getByText("This mission has been deleted.", { exact: false }),
   ).toBeVisible();
 
+  // Opening it *again* is the harder case: the page has no local memory of
+  // the delete any more, and the only copy of what the mission was is the one
+  // the `410` carries. A console that threw the body away would say "That is
+  // no longer available on this server." here instead.
+  await gotoApp(page, `/admin/missions/${guid}`);
+  await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
+  await expect(
+    page.getByText("This mission has been deleted.", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.locator(".entity-heading .status-pill"),
+    "the heading says so on every tab, not only on Overview",
+  ).toContainText("Deleted");
+  await expect(
+    page.getByText("That is no longer available on this server.", { exact: false }),
+  ).toHaveCount(0);
+
   // The row is kept in the database so that a client syncing late is told the
   // mission went. The console's listing asks for the live ones, so it is empty
   // — and `?include_deleted=true` is what shows an operator that the deletion

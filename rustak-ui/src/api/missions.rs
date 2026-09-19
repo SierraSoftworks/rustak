@@ -16,7 +16,7 @@ use rustak_api::{
 };
 
 use crate::api::download::{Download, get_download};
-use crate::api::{ApiError, delete_empty, get_json, put_json};
+use crate::api::{ApiError, Verb, delete_empty, get_json, json_response, put_json, send};
 #[cfg(debug_assertions)]
 use crate::fixtures;
 use crate::fixtures::demo;
@@ -29,11 +29,44 @@ pub async fn list() -> Result<Vec<MissionSummary>, ApiError> {
     get_json("/missions").await
 }
 
+/// The status a deleted mission's detail answers with.
+const GONE: u16 = 410;
+
 /// One mission, with its subscriptions and its layer tree.
+///
+/// A deleted one answers `410` **carrying the whole document** rather than the
+/// `{"error": …}` shape: the status is the honest answer to "is this mission
+/// here?" and the body is the honest answer to "what happened to it?", and an
+/// operator who has just followed a link from an audit entry is asking the
+/// second. So this route reads the body itself instead of letting the generic
+/// client turn the status into [`ApiError::Gone`] — which is the right
+/// conversion for the setup wizard and the wrong one here.
 pub async fn get(guid: &MissionGuid) -> Result<MissionDetail, ApiError> {
     demo!(fixtures::mission(guid));
 
-    get_json(&format!("/missions/{}", urlencode(&guid.to_string()))).await
+    let response = send::<()>(
+        Verb::Get,
+        &format!("/missions/{}", urlencode(&guid.to_string())),
+        None,
+    )
+    .await?;
+
+    if response.status() == GONE {
+        return deleted(response.json::<serde_json::Value>().await.ok());
+    }
+
+    json_response(response).await
+}
+
+/// The mission a `410` carried, or [`ApiError::Gone`] when it carried nothing
+/// we can render.
+///
+/// A body that is not a mission is not worth guessing at: a server that
+/// answered `410` for some other reason, or an intermediary that replaced the
+/// body, both land here, and "that is no longer available" is true of each.
+fn deleted(body: Option<serde_json::Value>) -> Result<MissionDetail, ApiError> {
+    body.and_then(|body| serde_json::from_value::<MissionDetail>(body).ok())
+        .ok_or(ApiError::Gone)
 }
 
 /// The change log.
@@ -118,4 +151,61 @@ pub async fn archive(guid: &MissionGuid) -> Result<Download, ApiError> {
         "mission.zip",
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A deleted mission exactly as `web/api/missions.rs::get` sends one.
+    ///
+    /// Written out rather than serialised from a fixture, because what is
+    /// being tested is that this *wire shape* is recognised: the summary is
+    /// `#[serde(flatten)]`ed into the document, so `name` and `deleted_at` sit
+    /// at the top level beside `layers` and `change_count`.
+    fn gone_body() -> serde_json::Value {
+        serde_json::json!({
+            "guid": "f0a19c52-3e64-4b8d-8a17-55c2d9e40b31",
+            "name": "Operation Stand Down",
+            "tool": "public",
+            "create_time": "2026-09-10T08:00:00.000Z",
+            "groups": ["__ANON__"],
+            "keywords": [],
+            "subscriber_count": 0,
+            "uid_count": 0,
+            "content_count": 0,
+            "password_protected": false,
+            "invite_only": false,
+            "default_role": "MISSION_SUBSCRIBER",
+            "deleted_at": "2026-09-17T08:00:00.000Z",
+            "subscriptions": [],
+            "layers": [],
+            "change_count": 4,
+        })
+    }
+
+    #[test]
+    fn a_deleted_mission_is_read_out_of_the_gone_body() {
+        // M3-06 made the detail answer `410` with the whole document in it.
+        // Turning that into a bare error threw away the only copy of what the
+        // operator had followed a link from an audit entry to look at.
+        let read = deleted(Some(gone_body())).expect("the body is a mission");
+
+        assert_eq!(read.summary.name, "Operation Stand Down");
+        assert_eq!(read.change_count, 4);
+        assert!(
+            read.summary.deleted_at.is_some(),
+            "and it says when the mission went, which is the question being asked",
+        );
+    }
+
+    #[test]
+    fn a_gone_body_that_is_not_a_mission_stays_an_error() {
+        assert_eq!(deleted(None), Err(ApiError::Gone));
+        assert_eq!(
+            deleted(Some(serde_json::json!({ "error": "no" }))),
+            Err(ApiError::Gone),
+            "the error shape is not a mission and must not be rendered as one",
+        );
+    }
 }

@@ -18,6 +18,7 @@ use crate::db::{
     Database,
     repos::{GroupRow, NewGroup},
 };
+use crate::services::{AppContext, Services};
 
 /// Every channel that has not been deleted.
 ///
@@ -34,13 +35,20 @@ pub async fn list(db: &Database) -> Result<Vec<GroupRow>, Error> {
 /// indexes on, and a reused one would hand an existing channel's traffic to a
 /// new set of members.
 ///
+/// Takes the context rather than the database because a new channel is a
+/// change to the *routing* table as well as to the stored one: it invalidates
+/// the stream's cached channel map so the new channel is a usable
+/// `<dest group>` at once rather than within a second.
+///
 /// # Errors
 ///
 /// A [`human_errors::Kind::User`] error when the name is already taken, when it
 /// is not a name we can store, or when every bit position is in use; a
 /// [`human_errors::Kind::System`] error if a read or write fails.
 #[instrument("identity.groups.create", skip_all, fields(group = %request.name), err(Display))]
-pub async fn create(db: &Database, request: &CreateGroupRequest) -> Result<GroupRow, Error> {
+pub async fn create(context: &AppContext, request: &CreateGroupRequest) -> Result<GroupRow, Error> {
+    let db = context.db();
+
     if db.groups().get_by_name(&request.name).await?.is_some() {
         return Err(human_errors::user(
             format!("There is already a channel called '{}'.", request.name),
@@ -59,6 +67,8 @@ pub async fn create(db: &Database, request: &CreateGroupRequest) -> Result<Group
 
     info!(group = %created.name, bitpos = created.bitpos, "Created a channel.");
 
+    routing_changed(context);
+
     Ok(created)
 }
 
@@ -73,10 +83,12 @@ pub async fn create(db: &Database, request: &CreateGroupRequest) -> Result<Group
 /// A [`human_errors::Kind::System`] error if a read or write fails.
 #[instrument("identity.groups.patch", skip_all, fields(group = %name), err(Display))]
 pub async fn patch(
-    db: &Database,
+    context: &AppContext,
     name: &GroupName,
     change: &GroupPatch,
 ) -> Result<Option<GroupRow>, Error> {
+    let db = context.db();
+
     let Some(group) = db.groups().get_by_name(name).await? else {
         return Ok(None);
     };
@@ -86,6 +98,12 @@ pub async fn patch(
             .set_description(group.id, description(Some(text)))
             .await?;
     }
+
+    // Nothing here moves a bit position today, and the invalidation is here
+    // anyway: this is the function a rename or a re-allocation would be added
+    // to, and a cache that is only refreshed on two of the three ways the
+    // table can change is the kind of thing that is found a year later.
+    routing_changed(context);
 
     db.groups().get(group.id).await
 }
@@ -102,7 +120,9 @@ pub async fn patch(
 /// channel, and a [`human_errors::Kind::System`] error if a read or write
 /// fails.
 #[instrument("identity.groups.delete", skip_all, fields(group = %name), err(Display))]
-pub async fn delete(db: &Database, name: &GroupName) -> Result<bool, Error> {
+pub async fn delete(context: &AppContext, name: &GroupName) -> Result<bool, Error> {
+    let db = context.db();
+
     let Some(group) = db.groups().get_by_name(name).await? else {
         return Ok(false);
     };
@@ -111,9 +131,36 @@ pub async fn delete(db: &Database, name: &GroupName) -> Result<bool, Error> {
 
     if deleted {
         info!(group = %name, "Deleted a channel; its bit position stays reserved.");
+
+        routing_changed(context);
     }
 
     Ok(deleted)
+}
+
+/// Tells the routing path that the channel table has changed.
+///
+/// `<dest group="…">` resolves a name to a bit position through the stream's
+/// [`GroupCache`](crate::stream::GroupCache), which is cached because reading
+/// the table per destination element was a denial of service (R-03 H2). It
+/// refreshes itself within a second either way, so this is not correctness —
+/// it is the second an administrator who has just created a channel and told a
+/// client to send to it would otherwise spend watching nothing happen.
+///
+/// Never fails and never logs at a level anybody has to read: an installation
+/// with no stream listener has no cache to invalidate, and a channel that was
+/// written is not un-written by a notification that could not be delivered.
+fn routing_changed(context: &AppContext) {
+    if !context.has_live() {
+        return;
+    }
+
+    match context.live() {
+        Ok(live) => live.channels_changed(),
+        Err(err) => {
+            debug!(error = %err, "Could not reach the stream after a channel change.");
+        }
+    }
 }
 
 /// A channel as the API describes it.
@@ -286,6 +333,7 @@ mod tests {
     use super::*;
     use crate::db::repos::NewUser;
     use crate::identity::members;
+    use crate::stream::{Disposition, DropReason, Router};
 
     async fn database() -> Database {
         Database::open_in_memory().await.unwrap()
@@ -518,5 +566,210 @@ mod tests {
 
         assert!(held.iter().any(|held| held.group.is_anon()));
         assert!(held.iter().any(|held| held.group.as_str() == "ops"));
+    }
+
+    /// A router, a registry and an `AppContext` that reaches both.
+    ///
+    /// The router reads the context's own database, which is what makes the
+    /// channel this test creates through [`create`] the channel the routing
+    /// path then looks for.
+    async fn live_context() -> (AppContext, std::sync::Arc<crate::stream::Hub>, Router) {
+        use std::sync::Arc;
+
+        let context = AppContext::new_mock(|_| {}).await.unwrap();
+        let hub = Arc::new(crate::stream::Hub::new());
+        let metrics = Arc::new(crate::stream::StreamMetrics::default());
+        let store = crate::cot_store::CotStoreHandle::disabled();
+        let router = Arc::new(Router::new(
+            Arc::clone(&hub),
+            context.db().clone(),
+            store.clone(),
+            crate::stream::mission_hook::no_missions(),
+            Arc::clone(&metrics),
+            "rustak-test",
+        ));
+
+        context
+            .install_live(Arc::new(crate::stream::LiveState::new(
+                Arc::clone(&hub),
+                Arc::clone(&router),
+                store,
+                metrics,
+            )))
+            .unwrap();
+
+        let routing = Router::clone(&router);
+
+        (context, hub, routing)
+    }
+
+    /// Registers one connection holding the given bit positions.
+    fn join(
+        hub: &std::sync::Arc<crate::stream::Hub>,
+        name: &str,
+        grants: &[(u32, Direction)],
+    ) -> (
+        crate::stream::ConnId,
+        tokio::sync::mpsc::Receiver<crate::stream::subscription::Outbound>,
+    ) {
+        use std::sync::Arc;
+
+        use crate::stream::subscription::{ConnHandle, ConnStats, Subscription};
+
+        let mut groups = GroupSet::new();
+        for (bitpos, direction) in grants {
+            groups.set(*bitpos, *direction);
+        }
+
+        let id = hub.next_id();
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+
+        hub.register(Subscription::new(
+            id,
+            Arc::new(
+                Principal::new(
+                    UserId::from(1),
+                    Username::parse(name).unwrap(),
+                    PrincipalKind::Person,
+                    AuthMethod::SetupToken,
+                )
+                .with_groups(Arc::new(groups)),
+            ),
+            Vec::new(),
+            format!("{name:f>64}"),
+            "127.0.0.1:9000".parse().unwrap(),
+            ConnHandle::new(id, tx, Arc::new(ConnStats::default()), 512, Shutdown::new()),
+        ));
+
+        (id, rx)
+    }
+
+    /// A message addressed at one channel and nothing else.
+    fn addressed_to(uid: &str, callsign: &str, channel: &str) -> rustak_cot::Event {
+        use rustak_cot::detail::marti::{Dest, marti_element};
+
+        let mut event = rustak_cot::Event::builder("a-f-G-U-C", uid)
+            .how("m-g")
+            .point(51.5, -0.12)
+            .typed(
+                &rustak_cot::detail::Contact::new(callsign)
+                    .with_endpoint(rustak_cot::detail::contact::STREAMING_ENDPOINT),
+            )
+            .build();
+
+        event.detail.push(marti_element(&[Dest::group(channel)]));
+
+        event
+    }
+
+    #[tokio::test]
+    async fn a_channel_created_now_can_be_routed_to_now() {
+        // `<dest group>` resolves names through a cache that refreshes itself
+        // within a second (R-03 H2), so without the hook in `create` an
+        // administrator who makes a channel and tells a client to send to it
+        // watches the first message reach nobody. The probe below is what
+        // fills that cache with an answer that does not have the channel in
+        // it, which is the state the hook exists for.
+        let (context, hub, router) = live_context().await;
+
+        let (probe_from, _probe_rx) = join(&hub, "alpha", &[]);
+        assert_eq!(
+            router
+                .handle_inbound(probe_from, addressed_to("UID-A", "ALPHA", "ops"))
+                .await,
+            Disposition::Dropped(DropReason::NoSuchGroup("ops".into())),
+            "the cache now holds a map that does not have `ops` in it",
+        );
+
+        let created = create(
+            &context,
+            &CreateGroupRequest {
+                name: GroupName::parse("ops").unwrap(),
+                description: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let (sender, _sender_rx) = join(&hub, "bravo", &[(created.bitpos, Direction::In)]);
+        let (_reader, mut reader_rx) = join(&hub, "charlie", &[(created.bitpos, Direction::Out)]);
+
+        assert_eq!(
+            router
+                .handle_inbound(sender, addressed_to("UID-B", "BRAVO", "ops"))
+                .await,
+            Disposition::Relayed {
+                recipients: 1,
+                explicit: true,
+            },
+            "the channel is routable in the same moment it was created",
+        );
+        assert!(
+            reader_rx.try_recv().is_ok(),
+            "and its reader actually received the message",
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_channel_takes_it_off_the_routing_path_at_once() {
+        let (context, hub, router) = live_context().await;
+
+        let created = create(
+            &context,
+            &CreateGroupRequest {
+                name: GroupName::parse("ops").unwrap(),
+                description: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let (sender, _sender_rx) = join(&hub, "bravo", &[(created.bitpos, Direction::In)]);
+        let (_reader, _reader_rx) = join(&hub, "charlie", &[(created.bitpos, Direction::Out)]);
+
+        assert!(matches!(
+            router
+                .handle_inbound(sender, addressed_to("UID-B", "BRAVO", "ops"))
+                .await,
+            Disposition::Relayed { .. },
+        ));
+
+        assert!(
+            delete(&context, &GroupName::parse("ops").unwrap())
+                .await
+                .unwrap()
+        );
+
+        assert_eq!(
+            router
+                .handle_inbound(sender, addressed_to("UID-C", "BRAVO", "ops"))
+                .await,
+            Disposition::Dropped(DropReason::NoSuchGroup("ops".into())),
+            "a deleted channel stops being a destination without waiting for the refresh",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_channel_change_on_an_installation_with_no_stream_is_not_an_error() {
+        // `[stream.tls] enabled = false` is a supported deployment, and the
+        // admin API must not start failing on it because there is no cache to
+        // invalidate.
+        let context = AppContext::new_mock(|_| {}).await.unwrap();
+
+        let created = create(
+            &context,
+            &CreateGroupRequest {
+                name: GroupName::parse("ops").unwrap(),
+                description: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(created.name.as_str(), "ops");
+        assert!(
+            delete(&context, &created.name).await.unwrap(),
+            "and deleting it is no more of a problem",
+        );
     }
 }

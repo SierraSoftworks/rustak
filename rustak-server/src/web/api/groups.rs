@@ -70,7 +70,7 @@ pub async fn create(
 ) -> ApiResult {
     let request = body.into_inner();
 
-    let created = groups::create(context.db(), &request)
+    let created = groups::create(&context, &request)
         .await
         .map_err(|err| failed(&context, &err))?;
 
@@ -107,7 +107,7 @@ pub async fn patch(
 
     let name = parse(&name)?;
 
-    let updated = groups::patch(context.db(), &name, &change)
+    let updated = groups::patch(&context, &name, &change)
         .await
         .map_err(|err| failed(&context, &err))?
         .ok_or_else(|| ApiError::not_found("There is no channel by that name."))?;
@@ -137,7 +137,7 @@ pub async fn remove(
 ) -> ApiResult {
     let name = parse(&name)?;
 
-    let deleted = groups::delete(context.db(), &name)
+    let deleted = groups::delete(&context, &name)
         .await
         .map_err(|err| failed(&context, &err))?;
 

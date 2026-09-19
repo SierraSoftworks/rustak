@@ -473,6 +473,9 @@ pub fn stream_status() -> rustak_api::StreamStatus {
     rustak_api::StreamStatus {
         enabled: true,
         bound: true,
+        // Long enough ago that the page renders a relative time rather than
+        // "just now", which is the thing worth looking at in a demo.
+        bound_at: Some(super::data::ago(6 * 60)),
         connections: u32::try_from(connections).unwrap_or(u32::MAX),
     }
 }

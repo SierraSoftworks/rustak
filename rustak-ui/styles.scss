@@ -1424,6 +1424,16 @@ footer {
   color: $text-secondary;
 }
 
+// A fact about the panel itself rather than about a row in it — "the stream
+// listener bound two hours ago". Tighter than `.panel-empty`, because it sits
+// above a list rather than instead of one.
+.panel-note {
+  margin: 0;
+  padding: 0.5rem 0 0;
+  font-size: 0.8125rem;
+  color: $text-secondary;
+}
+
 // Whose page this is, above the tabs.
 .entity-heading {
   display: flex;
