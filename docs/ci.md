@@ -191,37 +191,27 @@ is a gate.
 - **`security_audit.yml`** — `rustsec/audit-check@v2.0.0` nightly, plus (a
   deviation from automate, per design 01 §7.3) on every push to `main` that
   touches `Cargo.lock` or `rustak-ui/Cargo.lock`, so a vulnerable dependency
-  bump is caught the same day rather than up to 24 hours later. **It is red
-  today, and has been on every run so far** — see below.
+  bump is caught the same day rather than up to 24 hours later. Two advisories
+  with no available fix are ignored through `.cargo/audit.toml` — see below.
 
-### The security audit is failing on two advisories that cannot be fixed here
+### Ignored advisories (`.cargo/audit.toml`)
 
-Both are real, both are known, and neither has a version to move to:
+`cargo audit` reads `.cargo/audit.toml`, and so does the workflow. Only advisories
+with no version to move to are listed there, each with the date and the reason, so
+the job still fails on anything new:
 
-- **`RUSTSEC-2023-0071` — `rsa 0.9.10`, the Marvin timing attack.** The advisory
-  carries `patched = []` deliberately and states that both the latest stable
-  (`0.9.10`) and the latest prerelease (`0.10.0-rc.18`) are still affected.
-  rustak signs tokens and issues certificates with this crate.
-- **`RUSTSEC-2026-0258` — `h2 0.3.27`, unbounded empty DATA frames.** Patched in
-  `0.4.16`, a different major line. `cargo tree -i h2@0.3.27` gives exactly one
-  path: `actix-http 3.13.6` → `actix-web 4.15.0` (plus `actix-multipart` and
-  `actix-ws`). actix-web 4 pins `h2 ^0.3`, so leaving it behind is an actix major
-  upgrade rather than a dependency bump.
+- **`RUSTSEC-2023-0071` — `rsa`, the Marvin timing attack.** The advisory carries
+  `patched = []` deliberately. rustak signs tokens and issues certificates with
+  this crate; it never performs the PKCS#1 v1.5 *decryption* the side channel
+  targets. Decision recorded 2026-09-19.
+- **`RUSTSEC-2026-0258` — `h2 0.3`, unbounded empty DATA frames.** Patched only on
+  the `0.4` line; `cargo tree -i h2@0.3` gives exactly one path, `actix-http` →
+  `actix-web 4`, which pins `h2 ^0.3`. Revisit at actix-web 5. Decision recorded
+  2026-09-19.
 
-A job that can only be red reports nothing — a genuinely new advisory would land
-in a run that was already failing — so this needs a decision rather than
-watching. The two shapes it can take are an `ignore` list naming **those two ids
-only** (either the action's `ignore:` input or `.cargo/audit.toml`, which keeps
-the rationale in the repository), which leaves any new advisory failing the job;
-or accepting that this workflow is a report rather than a gate, and saying so
-here. It is written up in `.claude/plan/status/CI-01-ci-steward.md` §S3.
-- **`.github/dependabot.yml`** — daily `cargo` updates for the root workspace
-  and, separately, for `rustak-ui` (excluded from the workspace, so it needs
-  its own entry), daily `github-actions` updates, and daily `npm` updates for
-  `e2e/`. Grouped: `opentelemetry` (`opentelemetry*`, `tracing*`, `tonic`),
-  `protobuf` (`prost*`, `protox`), `rustls` (`rustls*`, `tokio-rustls`,
-  `rcgen`, `aws-lc-*`, `instant-acme`), `actix` (`actix-*`) on the root; `yew`
-  (`yew*`, `gloo-*`, `wasm-bindgen*`, `web-sys`, `js-sys`) on `rustak-ui`.
+Remove an entry the day a fixed version becomes reachable. Security findings that
+need tracking are raised through GitHub's security interface (Dependabot alerts,
+code scanning), not as pull-request comments.
 
 ## Release / tag flow
 
