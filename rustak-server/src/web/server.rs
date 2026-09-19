@@ -188,16 +188,13 @@ fn marti_server(context: AppContext, socket: MartiSocket) -> Result<Server, Erro
             }
         }
         MartiSocket::Bound(listener) => {
-            let socket = listener.local_addr().map_err(|err| {
-                human_errors::system(
-                    format!("The socket handed to the Marti listener has no address: {err}"),
-                    &["This is unexpected; please report it with the surrounding log entries."],
-                )
-            })?;
+            let socket = listener.local_addr().map_err(cannot_serve)?;
 
+            // Not `cannot_bind`: the socket is bound already, and what can go
+            // wrong here is actix refusing it, not something else on the port.
             server = server
                 .listen_rustls_0_23(listener, tls)
-                .map_err(|err| cannot_bind(socket, &err))?;
+                .map_err(cannot_serve)?;
 
             info!(address = %socket, client_cert = %required, "The Marti listener is bound.");
         }
@@ -256,6 +253,14 @@ pub fn build_public(context: AppContext, tls: PublicTls) -> Result<Server, Error
     }
 
     Ok(server.run())
+}
+
+/// What to say when a socket that is already bound cannot be served on.
+fn cannot_serve(err: std::io::Error) -> Error {
+    human_errors::system(
+        format!("We could not serve the Marti listener on the socket it was handed: {err}"),
+        &["This is unexpected; please report it with the surrounding log entries."],
+    )
 }
 
 /// What to say when a socket will not open.
