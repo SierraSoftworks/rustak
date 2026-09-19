@@ -43,9 +43,15 @@ Do not re-check these by hand; they fail the build (or the nightly job) if they 
    the device out of band) before re-running this section.
 4. [ ] Enrolment completes, and **Settings → Network Preferences → Network Connections** shows a new
    entry with connect string `<host>:8089:ssl`, enabled.
-5. [ ] The enrolment device profile is fetched immediately, before the stream reconnects. Check
-   **Activity** (`/admin/activity`, category *Enrollment*, then *Profile*) for the token being spent
-   and the profile being delivered.
+5. [ ] The enrolment device profile is fetched immediately, before the stream reconnects — and it is
+   fetched **with the same one-time token the certificate was just signed with**, which that signing
+   call has already spent. Check **Activity** (`/admin/activity`, category *Enrollment*, then
+   *Profile*) for the token being spent and the profile being delivered, and watch for
+   `Failed to get profile: Enrollment (401)` in ATAK's own log: that is the failure this step exists
+   to catch, and it ends with "TAK server registration failed" on the device. rustak answers the
+   fetch inside `[auth] enrollment_grace` (10 minutes by default), for the `clientUid` that spent
+   the token and for the two `/Marti/api/tls/profile` routes only — so an installation that has set
+   `enrollment_grace = "0s"` is expected to fail this step.
 6. [ ] **Devices** (`/admin/devices`) shows the new device: callsign, uid, a certificate in state
    *Active*.
 7. [ ] **Activity**, category *Pki*, shows the certificate issued; category *Enrollment* shows the

@@ -224,6 +224,31 @@ async fn drain_connections(
     }
 }
 
+/// What a failed handshake was, when it is something an operator should see.
+///
+/// Everything that reaches a listening socket fails a handshake sooner or
+/// later — port scans, health checks, a browser pointed at the wrong port — so
+/// the failures stay at `debug` by default. The two that do not are the two a
+/// device suffers: it presented no certificate, or it presented one this
+/// installation will not take. M2-15's field enrolment ended with ATAK
+/// reporting `"Read error: ssl=…: Failure in SSL library"` — a TLS alert or a
+/// closed connection, which is all a client sees of either — while the server
+/// logged nothing at all above `debug`, so the refusal had to be guessed at
+/// from the client's side. [`crate::pki::tls::client_verifier`] names the
+/// certificate it turned away; this names the connection.
+fn refusal(err: &std::io::Error) -> Option<&'static str> {
+    match err.get_ref()?.downcast_ref::<rustls::Error>()? {
+        rustls::Error::NoCertificatesPresented => Some(
+            "the client presented no certificate, which a device that has not \
+             finished enrolling will do",
+        ),
+        rustls::Error::InvalidCertificate(_) => {
+            Some("the certificate the client presented was not one we accept")
+        }
+        _ => None,
+    }
+}
+
 /// Completes one handshake, resolves the certificate, and serves.
 async fn serve_one(
     acceptor: TlsAcceptor,
@@ -238,7 +263,13 @@ async fn serve_one(
         Ok(Ok(stream)) => stream,
         Ok(Err(err)) => {
             StreamMetrics::incr(&deps.metrics.rejected);
-            debug!(%peer, error = %err, "A stream handshake failed.");
+
+            match refusal(&err) {
+                Some(reason) => {
+                    info!(%peer, reason, "A stream connection was refused at the handshake.")
+                }
+                None => debug!(%peer, error = %err, "A stream handshake failed."),
+            }
 
             return;
         }
@@ -276,6 +307,34 @@ async fn serve_one(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_two_refusals_a_device_suffers_are_reported_and_the_noise_is_not() {
+        // The field failure was invisible: rustak logged a refused handshake at
+        // `debug`, so the only account of it was the client's "Failure in SSL
+        // library" (M2-15). Both of these are now `info` with a reason.
+        let no_certificate = std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            rustls::Error::NoCertificatesPresented,
+        );
+        let refused_certificate = std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            rustls::Error::InvalidCertificate(rustls::CertificateError::Revoked),
+        );
+
+        assert!(refusal(&no_certificate).is_some_and(|reason| reason.contains("no certificate")));
+        assert!(refusal(&refused_certificate).is_some());
+
+        // A scanner, a `GET /` from a browser, a connection that went away:
+        // ordinary noise on any listening socket, and not an operator's
+        // problem.
+        for noise in [
+            std::io::Error::new(std::io::ErrorKind::InvalidData, rustls::Error::DecryptError),
+            std::io::Error::from(std::io::ErrorKind::ConnectionReset),
+        ] {
+            assert_eq!(refusal(&noise), None, "{noise:?}");
+        }
+    }
 
     #[tokio::test]
     async fn binding_port_zero_reports_the_port_it_got() {

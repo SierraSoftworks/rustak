@@ -473,6 +473,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_verifier_a_listener_holds_accepts_a_certificate_issued_a_moment_ago() {
+        // M2-15's leading hypothesis was that the register the client verifier
+        // consults is refreshed on a timer, so a device enrolling and
+        // connecting seconds later is refused as unknown. It is not: `enroll`
+        // notes the fingerprint in the same `RevocationCache` every listener's
+        // verifier holds, in the call that writes the row. This asserts that
+        // through the rustls boundary itself — the `mandatory` verifier is the
+        // one `stream_server_config` builds the `:8089` listener from — so a
+        // future reordering that dropped the note fails here rather than in
+        // somebody's field log.
+        let fixture = fixture().await;
+        let user = Username::parse("alice").unwrap();
+        let body = csr_body("alice");
+
+        let issued = fixture
+            .pki
+            .enroll(&fixture.db, enrollment(&user, &body))
+            .await
+            .unwrap();
+
+        assert!(
+            fixture.pki.config().require_known_cert,
+            "the test is meaningless if the register is not consulted",
+        );
+
+        let verifier = fixture
+            .pki
+            .client_verifier(true)
+            .expect("the verifier the stream listener is built with");
+        let now = rustls::pki_types::UnixTime::since_unix_epoch(std::time::Duration::from_secs(
+            chrono::Utc::now().timestamp() as u64,
+        ));
+
+        rustls::server::danger::ClientCertVerifier::verify_client_cert(
+            verifier.as_ref(),
+            &issued.der,
+            &[],
+            now,
+        )
+        .expect("a handshake immediately after issuance completes");
+    }
+
+    #[tokio::test]
     async fn enrolling_for_somebody_else_issues_nothing_and_records_nothing() {
         let fixture = fixture().await;
         let user = Username::parse("alice").unwrap();

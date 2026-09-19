@@ -15,6 +15,19 @@
 //! Anything else is a `ConnectionException` inside ATAK, which surfaces to the
 //! user as a failed connection rather than as a missing profile.
 //!
+//! # The enrolment profile is fetched with a credential that is already spent
+//!
+//! `/tls/profile/enrollment` is the third call of ATAK's enrolment and carries
+//! the same one-time token the signing call consumed, so authenticating it is
+//! not the ordinary question. The answer is not here: the two `/tls/profile`
+//! routes map to [`Purpose::EnrollmentProfile`], which
+//! [`crate::identity::verify::Grace`] allows a spent token for — same device,
+//! same window, nothing else (M2-15). Handlers below are unchanged by it, and a
+//! route added under `/tls/profile/` inherits the relaxation, so put anything
+//! that is not a device profile somewhere else.
+//!
+//! [`Purpose::EnrollmentProfile`]: crate::identity::verify::Purpose::EnrollmentProfile
+//!
 //! # There is no `/device/profile/enrollment`
 //!
 //! Real TAK Server has no such mapping despite its own security configuration

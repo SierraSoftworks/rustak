@@ -9,6 +9,13 @@
  * asserts is something that call would otherwise fail on in a way that points
  * at the wrong place, so each rule from `compat/enrollment.md` is checked on its
  * own first.
+ *
+ * The last scenario is the **third** call of a real enrolment. ATAK fetches its
+ * enrolment device profile with the credential it just enrolled with, and that
+ * call was answered `401` by the first production server it met (M2-15). The
+ * one-time-token half of that — a token the signing call has *spent* — is a
+ * Rust contract test, because CloudTAK never holds one; what belongs here is
+ * that the route answers the credential CloudTAK does hold.
  */
 
 import assert from "node:assert/strict";
@@ -103,6 +110,40 @@ test(
       first.serialNumber,
       second.serialNumber,
       "each enrollment is a fresh certificate, not the previous one handed back",
+    );
+  },
+);
+
+test(
+  "the enrollment profile answers the credential that just enrolled",
+  { skip: unlessAll(session, "oauthToken", "tlsConfig", "enrollmentProfile") },
+  async () => {
+    // Steps one and two, with the client password: `GET /Marti/api/tls/config`
+    // and `POST /Marti/api/tls/signClient/v2?clientUid=<username> (ETL)`.
+    await enroll(session);
+
+    // Step three, with the same credential and the same device, which is what
+    // ATAK does 0.4 s later and unconditionally (research 07 §1.5).
+    const uid = `${session.client.username} (ETL)`;
+    const url = new URL(
+      `/Marti/api/tls/profile/enrollment?clientUid=${encodeURIComponent(uid)}`,
+      session.urls.webtak,
+    );
+
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${session.client.username}:${session.client.password}`).toString("base64")}`,
+      },
+    });
+
+    assert.notEqual(
+      response.status,
+      401,
+      "the credential that enrolled has to reach the profile ATAK fetches with it, or the device reports a failed registration",
+    );
+    assert.ok(
+      response.status === 200 || response.status === 204,
+      `the enrollment profile answered ${response.status}; anything but 200/204/304 is a ConnectionException inside ATAK`,
     );
   },
 );

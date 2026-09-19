@@ -91,8 +91,10 @@ pub(super) async fn issue(
     }
 
     // Before anything is signed: the claim is what decides whether this caller
-    // gets a certificate at all.
-    let claimed = claim(context, resolved).await?;
+    // gets a certificate at all. The device uid goes in with it, because the
+    // grace window that follows (`identity::verify::Grace`) answers to that
+    // device and no other.
+    let claimed = claim(context, resolved, query.client_uid.as_deref()).await?;
 
     // One fallible block, so that *every* way of failing after the claim — a
     // device uid that is somebody else's, a signature that will not be made —
@@ -193,6 +195,10 @@ fn credential_for(principal: &rustak_core::identity::Principal) -> Option<Creden
 /// Anything other than a Basic credential has nothing to claim, and a reusable
 /// one is recorded after the fact by [`record_reusable_use`] instead.
 ///
+/// The spend records `client_uid` beside it: ATAK fetches its enrolment profile
+/// with this same token moments later, and the grace window that allows it is
+/// scoped to the device that spent it (M2-15).
+///
 /// # Errors
 ///
 /// [`MartiError::Forbidden`] when the token has already been spent — including
@@ -202,6 +208,7 @@ fn credential_for(principal: &rustak_core::identity::Principal) -> Option<Creden
 async fn claim(
     context: &AppContext,
     resolved: &Resolved,
+    client_uid: Option<&str>,
 ) -> Result<Option<CredentialRow>, MartiError> {
     let Some(id) = credential_of(resolved) else {
         return Ok(None);
@@ -215,7 +222,7 @@ async fn claim(
         Err(err) => return Err(internal_error(context, &err)),
     };
 
-    match credentials::claim_single_use(db, &row, VerifiedSecretCache::shared()).await {
+    match credentials::claim_single_use(db, &row, client_uid, VerifiedSecretCache::shared()).await {
         Ok(true) => Ok(Some(row)),
         Ok(false) => {
             warn!(credential = %id, "Refused an enrolment against a token that was already spent.");

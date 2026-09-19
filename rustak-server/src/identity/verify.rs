@@ -15,6 +15,16 @@
 //! every credential-stuffing run. The dummy hash is real work at the real
 //! parameters — see [`rustak_core::identity::password`].
 //!
+//! # The one relaxation: a spent enrolment token
+//!
+//! ATAK enrols in three calls carrying the same one-time token, and the third —
+//! `GET /Marti/api/tls/profile/enrollment?clientUid=` — arrives 0.4 s after the
+//! second has spent it (M2-15 field report). [`Grace`] is what answers it:
+//! inside `[auth] enrollment_grace` of the spend, for the `clientUid` that
+//! spent it, on [`Purpose::EnrollmentProfile`] and nowhere else. Every other
+//! presentation of a spent token is refused exactly as before, and the caller
+//! has to ask for the relaxation by name — [`verify`] cannot grant it.
+//!
 //! # Why a refusal is detailed here and vague on the wire
 //!
 //! [`VerifyError`] distinguishes an expired credential from an exhausted one
@@ -45,6 +55,11 @@ pub enum Purpose {
     /// only place a one-time enrolment token is spent.
     Enrollment,
 
+    /// `GET /Marti/api/tls/profile/**`: the device profile ATAK fetches
+    /// straight after enrolling, with the token it has just spent. The only
+    /// purpose [`Grace`] applies to.
+    EnrollmentProfile,
+
     /// The password grant on `/oauth/token`, which is the one thing CloudTAK
     /// can do.
     OAuthPassword,
@@ -68,7 +83,7 @@ impl Purpose {
     /// a service token speaks only to the control API.
     pub fn accepts(self, kind: CredentialKind) -> bool {
         match self {
-            Self::Enrollment => matches!(
+            Self::Enrollment | Self::EnrollmentProfile => matches!(
                 kind,
                 CredentialKind::EnrollmentToken | CredentialKind::ClientPassword
             ),
@@ -76,6 +91,47 @@ impl Purpose {
             Self::StreamAuth => kind == CredentialKind::ClientPassword,
             Self::ServiceApi => kind == CredentialKind::ServiceToken,
         }
+    }
+}
+
+/// What a **spent** one-time enrolment token may still be presented for.
+///
+/// Built by the caller from the request itself — the device it names and the
+/// configured window — and passed to [`verify_with_grace`], which is the only
+/// function that honours it. Holding the uid rather than reading it here is
+/// deliberate: "which device is asking" is a property of the route's query
+/// string, and a verifier that went looking for one could be pointed at a route
+/// where it means something else.
+#[derive(Debug, Clone, Copy)]
+pub struct Grace<'a> {
+    /// The `clientUid` this request named. Must equal the one recorded with
+    /// the spend, or there is no grace.
+    pub client_uid: &'a str,
+
+    /// How long after the spend the window stays open. Zero switches the
+    /// whole relaxation off.
+    pub window: chrono::Duration,
+}
+
+impl Grace<'_> {
+    /// Whether this credential's spend is inside the window, and this device's.
+    ///
+    /// The token's own `expires_at` is deliberately not consulted again: the
+    /// spend is proof it was live when it was used, `spent_at` is written by
+    /// the claim and by nothing else, and a revocation clears it — so the
+    /// window measured from the spend is the only clock left that matters. An
+    /// enrolment token lasts 15 minutes by default, and re-applying that to a
+    /// device fetching its profile one second later is how a person who
+    /// scanned the code at 14:59 gets stranded.
+    fn covers(&self, candidate: &CredentialRow, now: DateTime<Utc>) -> bool {
+        let Some(spent_at) = candidate.spent_at else {
+            return false;
+        };
+
+        candidate.kind.is_single_use()
+            && self.window > chrono::Duration::zero()
+            && candidate.spent_uid.as_deref() == Some(self.client_uid)
+            && now < spent_at + self.window
     }
 }
 
@@ -143,7 +199,6 @@ impl From<Error> for VerifyError {
 ///
 /// A [`VerifyError`] naming what was wrong, which the caller records and does
 /// not repeat to the client.
-#[instrument("identity.credentials.verify", skip_all, fields(username = %username, purpose = ?purpose), err(Debug))]
 pub async fn verify(
     db: &Database,
     username: &Username,
@@ -151,6 +206,31 @@ pub async fn verify(
     purpose: Purpose,
     cache: &VerifiedSecretCache,
 ) -> Result<Verified, VerifyError> {
+    verify_with_grace(db, username, secret, purpose, cache, None).await
+}
+
+/// As [`verify`], with the spent-token relaxation a caller has asked for.
+///
+/// `grace` is honoured only on [`Purpose::EnrollmentProfile`], so a caller that
+/// builds one for the wrong route gets the ordinary answer rather than a
+/// quietly widened one.
+///
+/// # Errors
+///
+/// As [`verify`].
+#[instrument("identity.credentials.verify", skip_all, fields(username = %username, purpose = ?purpose), err(Debug))]
+pub async fn verify_with_grace(
+    db: &Database,
+    username: &Username,
+    secret: &str,
+    purpose: Purpose,
+    cache: &VerifiedSecretCache,
+    grace: Option<Grace<'_>>,
+) -> Result<Verified, VerifyError> {
+    // Belt and braces: the route decides the purpose, and only one purpose can
+    // spend a grace, so a `Grace` that reached the wrong path does nothing.
+    let grace = grace.filter(|_| purpose == Purpose::EnrollmentProfile);
+
     let Some(user) = db.users().get_by_username(username).await? else {
         verify_dummy_blocking(Secret::new(secret)).await?;
 
@@ -163,7 +243,21 @@ pub async fn verify(
         return Err(VerifyError::Disabled);
     }
 
-    let candidates = db.credentials().find_by_hint(&lookup_hint(secret)).await?;
+    let now = Utc::now();
+    let hint = lookup_hint(secret);
+
+    // A spent row is revoked, and `find_by_hint` does not return revoked rows —
+    // which is why the field's profile fetch was answered `BadSecret` rather
+    // than `Exhausted`. Only the grace path asks for them, and only back to the
+    // start of its own window.
+    let candidates = match grace {
+        Some(grace) => {
+            db.credentials()
+                .find_by_hint_including_spent(&hint, now - grace.window)
+                .await?
+        }
+        None => db.credentials().find_by_hint(&hint).await?,
+    };
     let mut refusal = None;
 
     for candidate in candidates {
@@ -177,7 +271,7 @@ pub async fn verify(
 
         // Matched: from here the refusals are about this credential rather
         // than about the secret, so the first one found is the answer.
-        match usable(&candidate, purpose, Utc::now()) {
+        match usable(&candidate, purpose, now, grace) {
             Ok(()) => {
                 cache.remember(candidate.id, secret);
 
@@ -219,11 +313,29 @@ async fn matched(
 }
 
 /// Whether a matched credential may be used here and now.
+///
+/// The kind check comes first on every path, including the grace one: a
+/// credential that does not belong on this route is refused whether or not it
+/// would otherwise be live, so the relaxation can never widen *which* kinds a
+/// route takes.
 fn usable(
     candidate: &CredentialRow,
     purpose: Purpose,
     now: DateTime<Utc>,
+    grace: Option<Grace<'_>>,
 ) -> Result<(), VerifyError> {
+    if !purpose.accepts(candidate.kind) {
+        return Err(VerifyError::WrongPurpose(candidate.kind));
+    }
+
+    // The spend, and only the spend, is forgiven — for this device, on this
+    // route, inside this window. Everything a revocation touches has had its
+    // `spent_at` cleared, so a token an administrator took back is refused
+    // here like any other.
+    if grace.is_some_and(|grace| grace.covers(candidate, now)) {
+        return Ok(());
+    }
+
     if candidate.revoked_at.is_some() {
         return Err(VerifyError::BadSecret);
     }
@@ -234,10 +346,6 @@ fn usable(
 
     if candidate.max_uses.is_some_and(|max| candidate.uses >= max) {
         return Err(VerifyError::Exhausted);
-    }
-
-    if !purpose.accepts(candidate.kind) {
-        return Err(VerifyError::WrongPurpose(candidate.kind));
     }
 
     Ok(())
@@ -252,7 +360,9 @@ mod tests {
     use super::*;
     use crate::config::AuthConfig;
     use crate::db::repos::NewUser;
-    use crate::identity::credentials::{MintRequest, MintedSecret, mint, record_use};
+    use crate::identity::credentials::{
+        MintRequest, MintedSecret, claim_single_use, mint, record_use,
+    };
 
     async fn fixture() -> (Database, AuthConfig, UserRow, VerifiedSecretCache) {
         let db = Database::open_in_memory().await.unwrap();
@@ -503,8 +613,203 @@ mod tests {
         assert!(Purpose::ServiceApi.accepts(CredentialKind::ServiceToken));
         assert!(!Purpose::ServiceApi.accepts(CredentialKind::ClientPassword));
         assert!(Purpose::Enrollment.accepts(CredentialKind::EnrollmentToken));
+        assert!(Purpose::EnrollmentProfile.accepts(CredentialKind::EnrollmentToken));
+        assert!(!Purpose::EnrollmentProfile.accepts(CredentialKind::ServiceToken));
         assert!(!Purpose::OAuthPassword.accepts(CredentialKind::EnrollmentToken));
         assert!(!Purpose::Marti.accepts(CredentialKind::ServiceToken));
+    }
+    /// The `clientUid` ATAK sends, and the window the defaults give it.
+    const UID: &str = "ANDROID-7e0bf5df978a87d8";
+
+    fn grace(client_uid: &str) -> Grace<'_> {
+        Grace {
+            client_uid,
+            window: chrono::Duration::minutes(10),
+        }
+    }
+
+    /// Mints an enrolment token and spends it for `uid`, as `signClient/v2`
+    /// does, answering the secret it was minted with.
+    async fn spent(
+        db: &Database,
+        config: &AuthConfig,
+        user: &UserRow,
+        uid: Option<&str>,
+        cache: &VerifiedSecretCache,
+    ) -> (String, CredentialId) {
+        let minted = minted(db, config, user, CredentialKind::EnrollmentToken).await;
+
+        assert!(
+            claim_single_use(db, &minted.credential, uid, cache)
+                .await
+                .unwrap(),
+            "the token was live, so the claim is the one that got it",
+        );
+
+        (minted.secret.expose().to_string(), minted.credential.id)
+    }
+
+    #[tokio::test]
+    async fn a_spent_token_still_fetches_the_profile_of_the_device_that_spent_it() {
+        // The field failure: ATAK asks for its enrolment profile 0.4 s after
+        // the certificate, with the token the certificate spent (M2-15).
+        let (db, config, user, cache) = fixture().await;
+        let (secret, id) = spent(&db, &config, &user, Some(UID), &cache).await;
+
+        let verified = verify_with_grace(
+            &db,
+            &user.username,
+            &secret,
+            Purpose::EnrollmentProfile,
+            &cache,
+            Some(grace(UID)),
+        )
+        .await
+        .expect("the profile fetch is what the grace window exists for");
+
+        assert_eq!(verified.credential.id, id);
+    }
+    #[tokio::test]
+    async fn the_grace_answers_the_device_that_spent_the_token_and_no_other() {
+        let (db, config, user, cache) = fixture().await;
+        let (secret, _) = spent(&db, &config, &user, Some(UID), &cache).await;
+
+        for uid in ["ANDROID-somebody-else", ""] {
+            let refused = verify_with_grace(
+                &db,
+                &user.username,
+                &secret,
+                Purpose::EnrollmentProfile,
+                &cache,
+                Some(grace(uid)),
+            )
+            .await
+            .unwrap_err();
+
+            assert!(
+                matches!(refused, VerifyError::BadSecret),
+                "{uid}: {refused:?}"
+            );
+        }
+    }
+    #[tokio::test]
+    async fn a_token_spent_without_naming_a_device_has_no_grace_to_give() {
+        // A grace that cannot name the device it is for is a grace for anybody.
+        let (db, config, user, cache) = fixture().await;
+        let (secret, _) = spent(&db, &config, &user, None, &cache).await;
+
+        let refused = verify_with_grace(
+            &db,
+            &user.username,
+            &secret,
+            Purpose::EnrollmentProfile,
+            &cache,
+            Some(grace(UID)),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(refused, VerifyError::BadSecret), "{refused:?}");
+    }
+    #[tokio::test]
+    async fn the_grace_closes_when_its_window_does() {
+        let (db, config, user, cache) = fixture().await;
+        let (secret, _) = spent(&db, &config, &user, Some(UID), &cache).await;
+
+        for window in [chrono::Duration::milliseconds(1), chrono::Duration::zero()] {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+
+            let refused = verify_with_grace(
+                &db,
+                &user.username,
+                &secret,
+                Purpose::EnrollmentProfile,
+                &cache,
+                Some(Grace {
+                    client_uid: UID,
+                    window,
+                }),
+            )
+            .await
+            .unwrap_err();
+
+            assert!(
+                matches!(refused, VerifyError::BadSecret),
+                "{window} left the window open: {refused:?}",
+            );
+        }
+    }
+    #[tokio::test]
+    async fn a_spent_token_buys_the_profile_and_nothing_else() {
+        // The whole security argument for the window: it is not a token that
+        // works again, it is one route that answers one device.
+        let (db, config, user, cache) = fixture().await;
+        let (secret, _) = spent(&db, &config, &user, Some(UID), &cache).await;
+
+        for purpose in [
+            Purpose::Enrollment,
+            Purpose::OAuthPassword,
+            Purpose::Marti,
+            Purpose::StreamAuth,
+            Purpose::ServiceApi,
+        ] {
+            let refused = verify_with_grace(
+                &db,
+                &user.username,
+                &secret,
+                purpose,
+                &cache,
+                Some(grace(UID)),
+            )
+            .await
+            .unwrap_err();
+
+            assert!(
+                !matches!(refused, VerifyError::Unavailable(_)),
+                "{purpose:?} accepted a spent enrolment token: {refused:?}",
+            );
+        }
+    }
+    #[tokio::test]
+    async fn revoking_a_spent_token_ends_its_grace() {
+        // A revocation is an administrator saying "not that one, now"; a window
+        // that outlived it would be a ten-minute hole in the answer.
+        let (db, config, user, cache) = fixture().await;
+        let (secret, id) = spent(&db, &config, &user, Some(UID), &cache).await;
+
+        db.credentials().revoke(id).await.unwrap();
+
+        let refused = verify_with_grace(
+            &db,
+            &user.username,
+            &secret,
+            Purpose::EnrollmentProfile,
+            &cache,
+            Some(grace(UID)),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(refused, VerifyError::BadSecret), "{refused:?}");
+    }
+    #[tokio::test]
+    async fn the_relaxation_has_to_be_asked_for_by_name() {
+        // `verify` cannot grant it: a caller that has not built a `Grace` gets
+        // the answer a spent token has always had.
+        let (db, config, user, cache) = fixture().await;
+        let (secret, _) = spent(&db, &config, &user, Some(UID), &cache).await;
+
+        let refused = verify(
+            &db,
+            &user.username,
+            &secret,
+            Purpose::EnrollmentProfile,
+            &cache,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(refused, VerifyError::BadSecret), "{refused:?}");
     }
     #[tokio::test]
     async fn a_secret_belonging_to_somebody_else_is_not_accepted_for_this_account() {

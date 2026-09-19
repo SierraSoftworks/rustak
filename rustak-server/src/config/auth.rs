@@ -53,6 +53,13 @@ fn default_client_password_ttl() -> chrono::Duration {
     chrono::Duration::days(90)
 }
 
+/// Ten minutes: ATAK fetches its enrolment profile within a second of the
+/// certificate, and the margin is for a device that lost its link in between
+/// rather than for anything that could be planned around.
+fn default_enrollment_grace() -> chrono::Duration {
+    chrono::Duration::minutes(10)
+}
+
 fn default_true() -> bool {
     true
 }
@@ -120,6 +127,25 @@ pub struct AuthConfig {
         with = "rustak_core::config::duration::humane"
     )]
     pub enrollment_token_ttl: chrono::Duration,
+
+    /// How long a **spent** enrolment token may still fetch the enrolment
+    /// device profile.
+    ///
+    /// ATAK's enrolment is three calls with one token: `tls/config`,
+    /// `signClient/v2` — which spends it — and then
+    /// `GET /Marti/api/tls/profile/enrollment?clientUid=`, unconditionally and
+    /// with the same credential (research 07 §1.5). Within this window that
+    /// third call is answered, **only** for the two `/Marti/api/tls/profile`
+    /// routes and **only** for the `clientUid` the token was spent by. It buys
+    /// nothing else: no second certificate, no `/oauth/token`, no Marti API.
+    ///
+    /// Set it to `0s` to refuse the profile fetch outright, at the cost of the
+    /// "Failed to get profile: Enrollment (401)" ATAK reports when it fails.
+    #[serde(
+        default = "default_enrollment_grace",
+        with = "rustak_core::config::duration::humane"
+    )]
+    pub enrollment_grace: chrono::Duration,
 
     /// Whether long-lived client passwords may be minted at all.
     ///
@@ -199,6 +225,7 @@ impl Default for AuthConfig {
             admin_acl: None,
             anon_group_default: true,
             enrollment_token_ttl: default_enrollment_token_ttl(),
+            enrollment_grace: default_enrollment_grace(),
             client_passwords_enabled: true,
             client_password_ttl: default_client_password_ttl(),
             allow_access_token_retrieval: true,
@@ -227,6 +254,7 @@ impl fmt::Debug for AuthConfig {
             .field("admin_acl", &self.admin_acl().to_string())
             .field("anon_group_default", &self.anon_group_default)
             .field("enrollment_token_ttl", &self.enrollment_token_ttl)
+            .field("enrollment_grace", &self.enrollment_grace)
             .field("client_passwords_enabled", &self.client_passwords_enabled)
             .field("client_password_ttl", &self.client_password_ttl)
             .field(
@@ -390,6 +418,7 @@ mod tests {
         assert_eq!(parsed.access_token_ttl, chrono::Duration::hours(1));
         assert_eq!(parsed.refresh_token_ttl, chrono::Duration::days(30));
         assert_eq!(parsed.enrollment_token_ttl, chrono::Duration::minutes(15));
+        assert_eq!(parsed.enrollment_grace, chrono::Duration::minutes(10));
         assert_eq!(parsed.client_password_ttl, chrono::Duration::days(90));
         assert!(parsed.client_passwords_enabled);
         assert!(parsed.anon_group_default);

@@ -12,6 +12,17 @@
 //! is then verified properly with argon2. A hint match is a reason to *try* a
 //! row and never on its own a reason to accept a secret — see
 //! [`rustak_core::identity::password`].
+//!
+//! # The spend is its own module
+//!
+//! Claiming a one-time credential, putting the claim back and finding a row by
+//! the spend it recorded live in [`spend`]. A child module rather than more
+//! lines here, because this file is at `conventions.md`'s limit and the split
+//! falls where the responsibility does: this file is every credential's
+//! lifecycle, that one is what happens to a credential that can only be used
+//! once.
+
+pub mod spend;
 
 use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension as _;
@@ -26,7 +37,8 @@ use crate::db::{
 
 /// The columns [`CredentialRow::from_row`] expects, in order.
 const COLUMNS: &str = "id, user_id, kind, label, secret_hash, lookup_hint, max_uses, uses, \
-                       expires_at, last_used_at, revoked_at, created_by, created_at";
+                       expires_at, last_used_at, revoked_at, created_by, created_at, \
+                       spent_at, spent_uid";
 
 /// One row of `credentials`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +57,17 @@ pub struct CredentialRow {
     pub revoked_at: Option<DateTime<Utc>>,
     pub created_by: Option<Username>,
     pub created_at: DateTime<Utc>,
+
+    /// When a one-time credential was claimed for an issuance that then
+    /// succeeded. `None` for everything else, including a credential an
+    /// administrator revoked: the grace window in
+    /// [`identity::verify`](crate::identity::verify) reads this and nothing
+    /// else, so a revocation clears it.
+    pub spent_at: Option<DateTime<Utc>>,
+
+    /// The `clientUid` the signing request that spent it carried, which is the
+    /// only device the grace window answers to.
+    pub spent_uid: Option<String>,
 }
 
 impl CredentialRow {
@@ -73,6 +96,8 @@ impl CredentialRow {
                 .get::<_, Option<String>>(11)?
                 .map(Username::from_storage),
             created_at: ts(row, 12)?,
+            spent_at: opt_ts(row, 13)?,
+            spent_uid: row.get(14)?,
         })
     }
 
@@ -287,60 +312,6 @@ impl<'a> CredentialsRepo<'a> {
             .await
     }
 
-    /// Claims a one-time credential: counts the use **and** spends it, in one
-    /// conditional write, reporting whether this caller is the one that got it.
-    ///
-    /// The consumption *is* the gate. Checking usability in one read and
-    /// spending it in a later write let two concurrent `signClient/v2` posts
-    /// with the same enrolment token both pass and both receive a certificate
-    /// (R-01 M3) — the window being one argon2 verification plus a signature.
-    /// Here the `WHERE` clause does the checking, so exactly one caller changes
-    /// a row.
-    ///
-    /// # Errors
-    ///
-    /// A [`human_errors::Kind::System`] error if the write fails.
-    pub async fn claim_single_use(&self, id: CredentialId) -> Result<bool, Error> {
-        let claimed = self
-            .db
-            .write(move |tx| {
-                let now = Timestamp::now();
-
-                tx.execute(
-                    "UPDATE credentials                      SET uses = uses + 1, last_used_at = ?2, revoked_at = ?2                      WHERE id = ?1 AND revoked_at IS NULL                        AND (max_uses IS NULL OR uses < max_uses)",
-                    rusqlite::params![id.get(), now],
-                )
-            })
-            .await?;
-
-        Ok(claimed > 0)
-    }
-
-    /// Puts back a claim whose issuance then failed.
-    ///
-    /// The compensating half of [`claim_single_use`](Self::claim_single_use):
-    /// a token spent for a certificate that was never signed is one somebody
-    /// cannot enrol with and cannot get back. Conditional on the row still
-    /// being in the state the claim left it, so a release racing anything else
-    /// changes nothing.
-    ///
-    /// # Errors
-    ///
-    /// A [`human_errors::Kind::System`] error if the write fails.
-    pub async fn release_single_use(&self, id: CredentialId) -> Result<bool, Error> {
-        let released = self
-            .db
-            .write(move |tx| {
-                tx.execute(
-                    "UPDATE credentials SET uses = uses - 1, revoked_at = NULL                      WHERE id = ?1 AND revoked_at IS NOT NULL AND uses > 0",
-                    rusqlite::params![id.get()],
-                )
-            })
-            .await?;
-
-        Ok(released > 0)
-    }
-
     /// Revokes a credential, reporting whether it was live.
     ///
     /// # Errors
@@ -350,11 +321,20 @@ impl<'a> CredentialsRepo<'a> {
         let revoked = self
             .db
             .write(move |tx| {
-                tx.execute(
+                let live = tx.execute(
                     "UPDATE credentials SET revoked_at = ?2 \
                      WHERE id = ?1 AND revoked_at IS NULL",
                     rusqlite::params![id.get(), Timestamp::now()],
-                )
+                )?;
+
+                // Separately, and unconditionally: a credential that was
+                // already spent is *not* live, so the statement above changes
+                // nothing — and leaving the spend behind would let the
+                // enrolment grace window outlive the revocation an
+                // administrator asked for.
+                spend::clear(tx, "id = ?1", [id.get()])?;
+
+                Ok(live)
             })
             .await?;
 
@@ -369,11 +349,16 @@ impl<'a> CredentialsRepo<'a> {
     pub async fn revoke_all_for_user(&self, user_id: UserId) -> Result<usize, Error> {
         self.db
             .write(move |tx| {
-                tx.execute(
+                let live = tx.execute(
                     "UPDATE credentials SET revoked_at = ?2 \
                      WHERE user_id = ?1 AND revoked_at IS NULL",
                     rusqlite::params![user_id.get(), Timestamp::now()],
-                )
+                )?;
+
+                // As `revoke`: a disabled account's spent token keeps no grace.
+                spend::clear(tx, "user_id = ?1", [user_id.get()])?;
+
+                Ok(live)
             })
             .await
     }
