@@ -40,16 +40,30 @@ pub fn protected(props: &ProtectedProps) -> Html {
 
         AuthStatus::NeedsLogin => html! { <Login /> },
 
-        // Signing in again cannot change this, so the page must not offer it.
-        AuthStatus::Forbidden => html! {
-            <Alert
-                kind={AlertKind::Error}
-                title="Access denied"
-                message="Your account is not permitted to use the admin console. That is \
-                    decided by the `admin_acl` expression in the server's `[auth]` \
-                    configuration, or by the administrator flag on your account."
-            />
-        },
+        // Signing in again as the same account cannot change this, so the page
+        // must not offer it. Signing *out* is the one thing that helps: it drops
+        // this tab's session so somebody can come back as a different account,
+        // and the app bar cannot offer it because it only shows a user chip once
+        // `/me` has answered.
+        AuthStatus::Forbidden => {
+            let on_signout = {
+                let signout = auth.signout.clone();
+                Callback::from(move |_: MouseEvent| signout.emit(()))
+            };
+            html! {
+                <Alert
+                    kind={AlertKind::Error}
+                    title="Access denied"
+                    message="Your account is not permitted to use the admin console. That is \
+                        decided by the `admin_acl` expression in the server's `[auth]` \
+                        configuration, or by the administrator flag on your account."
+                >
+                    <button class="btn btn--small btn--primary" onclick={on_signout}>
+                        { "Sign out" }
+                    </button>
+                </Alert>
+            }
+        }
 
         AuthStatus::Error(message) => {
             let onclick = Callback::from(|_: MouseEvent| {
