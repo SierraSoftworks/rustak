@@ -91,8 +91,9 @@ pub fn mint_form(props: &MintFormProps) -> Html {
         .map(|kind| SelectOption::new(kind.as_str(), kind.label()))
         .collect();
 
-    let footer = html! {
+    let actions = html! {
         <Button
+            small=true
             kind={ButtonKind::Primary}
             busy={*busy}
             disabled={label.trim().is_empty()}
@@ -107,7 +108,7 @@ pub fn mint_form(props: &MintFormProps) -> Html {
         <Card
             title="Mint a credential"
             subtitle="Shown once, and only at the moment it is made."
-            {footer}
+            {actions}
         >
             if kind.is_compatibility_only() {
                 <Alert

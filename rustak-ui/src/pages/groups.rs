@@ -133,8 +133,9 @@ fn create_channel(props: &CreateChannelProps) -> Html {
         })
     };
 
-    let footer = html! {
+    let actions = html! {
         <Button
+            small=true
             kind={ButtonKind::Primary}
             busy={*busy}
             disabled={parsed.is_err()}
@@ -149,7 +150,7 @@ fn create_channel(props: &CreateChannelProps) -> Html {
         <Card
             title="Create a channel"
             subtitle="The bit position is allocated by the server."
-            {footer}
+            {actions}
         >
             if let Some(message) = &*error {
                 <Alert

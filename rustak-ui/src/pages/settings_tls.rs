@@ -111,7 +111,7 @@ fn source_note(source: TlsSource) -> &'static str {
 pub fn tls_card() -> Html {
     let tls = use_resource(api::settings::tls);
 
-    // The loaded card is `Details`' own to render: the button in its footer
+    // The loaded card is `Details`' own to render: the button in its heading
     // belongs to the request state that lives there.
     let body = match (&tls.data, &tls.error) {
         (None, None) => html! { <LoadingNote /> },
@@ -186,11 +186,12 @@ fn details(props: &DetailsProps) -> Html {
         };
     }
 
-    // The one action on the card, in the card's own bar for it. Sources that
-    // do not fetch a certificate have no bar at all rather than an empty one.
-    let footer = is_fetched(status.source).then(|| {
+    // The one action on the card, in the heading row. Sources that do not
+    // fetch a certificate have nothing there.
+    let actions = if is_fetched(status.source) {
         html! {
             <Button
+                small=true
                 busy={*busy}
                 title={Some(AttrValue::from(renew_explanation))}
                 onclick={renew}
@@ -198,10 +199,12 @@ fn details(props: &DetailsProps) -> Html {
                 { renew_action }
             </Button>
         }
-    });
+    } else {
+        Html::default()
+    };
 
     html! {
-        <Card title="Transport security" {subtitle} {footer}>
+        <Card title="Transport security" {subtitle} {actions}>
             if let Some(message) = &*error {
                 <Alert
                     kind={AlertKind::Error}

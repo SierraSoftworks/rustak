@@ -27,7 +27,7 @@ pub struct SignInMethodsProps {
 }
 
 /// The identity-provider half of "how you sign in", as a card of its own: the
-/// link to the provider is the card's one action, and it lives in the footer.
+/// link to the provider is the card's one action, and it lives in the heading.
 #[function_component(SignInMethods)]
 pub fn sign_in_methods(props: &SignInMethodsProps) -> Html {
     let metadata = use_resource(api::auth::metadata);
@@ -58,12 +58,12 @@ pub fn sign_in_methods(props: &SignInMethodsProps) -> Html {
         })
     };
 
-    let card = |body: Html, footer: Option<Html>| {
+    let card = |body: Html, actions: Html| {
         html! {
             <Card
                 title="How you sign in"
                 subtitle="Single sign-on, passkeys, or both. Keep a second way in."
-                {footer}
+                {actions}
             >
                 <div class="sign-in-methods">{ body }</div>
             </Card>
@@ -74,7 +74,7 @@ pub fn sign_in_methods(props: &SignInMethodsProps) -> Html {
         (None, None) => {
             return card(
                 html! { <LoadingNote label="Checking how you can sign in…" /> },
-                None,
+                Html::default(),
             );
         }
         (Some(metadata), _) => match &metadata.mode {
@@ -113,9 +113,9 @@ pub fn sign_in_methods(props: &SignInMethodsProps) -> Html {
             </p>
         },
         (UserSource::Local, Some(_)) => {
-            let footer = html! {
-                <Button kind={ButtonKind::Primary} busy={*busy} onclick={on_link}>
-                    { "Link your single sign-on account" }
+            let actions = html! {
+                <Button small=true kind={ButtonKind::Primary} busy={*busy} onclick={on_link}>
+                    { "Link single sign-on" }
                 </Button>
             };
 
@@ -138,10 +138,10 @@ pub fn sign_in_methods(props: &SignInMethodsProps) -> Html {
                         }
                     </>
                 },
-                Some(footer),
+                actions,
             );
         }
     };
 
-    card(body, None)
+    card(body, Html::default())
 }

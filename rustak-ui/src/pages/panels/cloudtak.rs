@@ -90,8 +90,8 @@ pub fn cloudtak_panel(props: &CloudTakPanelProps) -> Html {
         };
     }
 
-    let footer = html! {
-        <Button kind={ButtonKind::Primary} busy={*busy} onclick={onboard}>
+    let actions = html! {
+        <Button small=true kind={ButtonKind::Primary} busy={*busy} onclick={onboard}>
             { "Onboard CloudTAK" }
         </Button>
     };
@@ -101,7 +101,7 @@ pub fn cloudtak_panel(props: &CloudTakPanelProps) -> Html {
             title="Onboard CloudTAK"
             subtitle="Produces the certificate, the password and the three URLs CloudTAK's \
                       Configure Server page asks for."
-            {footer}
+            {actions}
         >
             if let Some(message) = &*error {
                 <Alert

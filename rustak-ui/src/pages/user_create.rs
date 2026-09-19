@@ -21,7 +21,8 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Alert, AlertKind, Button, ButtonGroup, ButtonKind, Card, Field, Select, SelectOption, TextInput,
+    Alert, AlertKind, Card, Field, MenuAction, MenuItem, Select, SelectOption, SplitButton,
+    TextInput,
 };
 use crate::util::{nav_href, urlencode, window};
 
@@ -56,7 +57,7 @@ pub fn create_user(props: &CreateUserProps) -> Html {
         let (fields, kind) = (fields.clone(), kind.clone());
         let (busy, error, on_created) = (busy.clone(), error.clone(), props.on_created.clone());
 
-        Callback::from(move |_: MouseEvent| {
+        Callback::from(move |()| {
             let on_created = on_created.clone();
 
             create(
@@ -72,7 +73,7 @@ pub fn create_user(props: &CreateUserProps) -> Html {
     let onboard = {
         let (fields, busy, error) = (fields.clone(), busy.clone(), error.clone());
 
-        Callback::from(move |_: MouseEvent| {
+        Callback::from(move |()| {
             create(
                 &fields,
                 // CloudTAK never sees a sign-in page; it presents a certificate
@@ -90,33 +91,29 @@ pub fn create_user(props: &CreateUserProps) -> Html {
         .map(|kind| SelectOption::new(kind.as_str(), kind.label()))
         .collect();
 
-    let footer = html! {
-        <ButtonGroup label="Create">
-            <Button
-                kind={ButtonKind::Primary}
-                busy={*busy}
-                disabled={parsed.is_err()}
-                title={parsed.is_err().then_some("Give it a valid username first.")}
-                onclick={submit}
-            >
-                { "Create account" }
-            </Button>
-            <Button
-                busy={*busy}
-                disabled={parsed.is_err()}
-                title={parsed.is_err().then_some("Give it a valid username first.")}
-                onclick={onboard}
-            >
-                { "Create CloudTAK account" }
-            </Button>
-        </ButtonGroup>
+    // One button for the two ways to create one: the plain account on its
+    // face, the CloudTAK service account behind the caret.
+    let actions = html! {
+        <SplitButton
+            busy={*busy}
+            menu_label="Other kinds of account"
+            primary={MenuAction::new("Create account", submit)
+                .primary()
+                .disabled(parsed.is_err())
+                .title(parsed.is_err().then_some("Give it a valid username first."))}
+            items={vec![MenuItem::Action(
+                MenuAction::new("Create CloudTAK account", onboard)
+                    .disabled(parsed.is_err())
+                    .title(parsed.is_err().then_some("Give it a valid username first.")),
+            )]}
+        />
     };
 
     html! {
         <Card
             title="Add an account"
             subtitle="No password is set here, because there are none to set."
-            {footer}
+            {actions}
         >
             if let Some(message) = &*error {
                 <Alert

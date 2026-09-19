@@ -57,7 +57,7 @@ pub fn files_card() -> Html {
     };
 
     // The loaded card is `UploadLimit`'s own to render: the button in its
-    // footer belongs to the draft that lives there.
+    // heading belongs to the draft that lives there.
     let body = match (&files.data, &files.error) {
         (None, None) => html! { <LoadingNote /> },
         (None, Some(message)) => html! {
@@ -87,7 +87,7 @@ pub fn files_card() -> Html {
 #[derive(Properties, PartialEq)]
 struct FilesCardFrameProps {
     #[prop_or_default]
-    footer: Option<Html>,
+    actions: Html,
     #[prop_or_default]
     children: Html,
 }
@@ -99,7 +99,7 @@ fn files_card_frame(props: &FilesCardFrameProps) -> Html {
         <Card
             title="Enterprise Sync"
             subtitle="What clients may upload, and what this server tells them about itself."
-            footer={props.footer.clone()}
+            actions={props.actions.clone()}
         >
             { props.children.clone() }
         </Card>
@@ -157,8 +157,9 @@ fn upload_limit(props: &UploadLimitProps) -> Html {
         })
     };
 
-    let footer = html! {
+    let actions = html! {
         <Button
+            small=true
             kind={ButtonKind::Primary}
             busy={*busy}
             disabled={pinned || !changed}
@@ -174,7 +175,7 @@ fn upload_limit(props: &UploadLimitProps) -> Html {
     };
 
     html! {
-        <FilesCardFrame {footer}>
+        <FilesCardFrame {actions}>
             if let Some(message) = &*error {
                 <Alert
                     kind={AlertKind::Error}

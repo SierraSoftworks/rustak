@@ -1293,24 +1293,6 @@ footer {
     padding: 1.25rem;
   }
 
-  // The bar the card's own action lives in. Set apart from the body so a
-  // "Save" reads as the thing done to the fields above it rather than as one
-  // more of them.
-  &__footer {
-    display: flex;
-    align-items: center;
-    padding: 0.85rem 1.25rem;
-    border-top: 1px solid $border-lighter;
-    background: $fill-lighter;
-    border-radius: 0 0 $radius-lg $radius-lg;
-
-    > .card__actions {
-      flex: 1;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-    }
-  }
-
   &__status {
     display: flex;
     flex-wrap: wrap;
@@ -1531,19 +1513,26 @@ footer {
   }
 }
 
+// The label box with the "+" joined to its end: one control, because the
+// name is part of registering rather than a field of its own. Sized for a
+// card's heading row rather than its width.
 .passkey-add {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.6rem;
-  // Takes the whole footer, so the label box can stretch beside the button.
-  flex: 1;
+  display: inline-flex;
+  align-items: stretch;
 
   .field__input {
+    width: 13rem;
     min-width: 0;
+    font-size: 0.8rem;
+    padding: 0.4rem 0.6rem;
+    border-radius: $radius-sm 0 0 $radius-sm;
   }
 
-  > :first-child {
-    flex: 1;
+  > .btn {
+    margin-left: -1px;
+    padding-left: 0.55rem;
+    padding-right: 0.55rem;
+    border-radius: 0 $radius-sm $radius-sm 0;
   }
 }
 
@@ -2752,14 +2741,10 @@ footer {
     left: 0;
   }
 
-  .card__footer {
-    flex-direction: column;
-    align-items: stretch;
-
-    > .card__actions {
-      flex-direction: column;
-      align-items: stretch;
-    }
+  // A heading row's action (a button, or the passkey box) drops under the
+  // title once there is no room beside it.
+  .card__header {
+    flex-wrap: wrap;
   }
 
   .page-title {
@@ -2837,11 +2822,6 @@ footer {
 
   .secret-reveal__body {
     flex-direction: column;
-  }
-
-  .passkey-add {
-    flex-direction: column;
-    align-items: stretch;
   }
 
   .wizard {

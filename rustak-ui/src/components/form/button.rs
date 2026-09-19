@@ -55,6 +55,11 @@ pub struct ButtonProps {
     #[prop_or_default]
     pub title: Option<AttrValue>,
 
+    /// The name for anything reading the page aloud, for a button whose label
+    /// is only a glyph.
+    #[prop_or_default]
+    pub aria_label: Option<AttrValue>,
+
     /// The label. `Html` rather than `Children` so that a caller can hand the
     /// text in as a value — `{ if disabled { "Restore" } else { "Suspend" } }` —
     /// which is what a button whose label depends on state has to do.
@@ -77,6 +82,7 @@ pub fn button(props: &ButtonProps) -> Html {
             onclick={props.onclick.clone()}
             disabled={props.disabled || props.busy}
             title={props.title.clone()}
+            aria-label={props.aria_label.clone()}
             aria-busy={props.busy.then_some("true")}
         >
             { props.children.clone() }

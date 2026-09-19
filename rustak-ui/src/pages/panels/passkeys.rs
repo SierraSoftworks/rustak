@@ -129,23 +129,35 @@ fn passkeys(props: &PasskeysProps) -> Html {
     };
 
     // Registering is the card's action, and the label is part of it — so the
-    // box travels with the button rather than sitting in the body it names.
-    let footer = html! {
+    // box is joined to the button, in the heading, with only a glyph on the
+    // button because the box beside it already says what it is for.
+    let actions = html! {
         <div class="passkey-add">
             <TextInput
                 id="passkey-label"
                 value={(*label).clone()}
-                placeholder="What to call it, such as “Work laptop”"
+                placeholder="Name, such as “Work laptop”"
                 onchange={Callback::from(move |value| label.set(value))}
             />
-            <Button kind={ButtonKind::Primary} busy={*busy} onclick={on_register}>
-                { "Register a passkey" }
+            <Button
+                small=true
+                kind={ButtonKind::Primary}
+                busy={*busy}
+                title="Register a passkey"
+                aria_label="Register a passkey"
+                onclick={on_register}
+            >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
+                    stroke-width="2.5" stroke-linecap="round" aria-hidden="true">
+                    <line x1="12" y1="5" x2="12" y2="19" />
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
             </Button>
         </div>
     };
 
     html! {
-        <Card title={props.title.clone()} subtitle={props.subtitle.clone()} {footer}>
+        <Card title={props.title.clone()} subtitle={props.subtitle.clone()} {actions}>
             { list }
 
             if let Some(message) = &*error {

@@ -253,8 +253,9 @@ fn create_profile(props: &CreateProfileProps) -> Html {
         })
     };
 
-    let footer = html! {
+    let actions = html! {
         <Button
+            small=true
             kind={ButtonKind::Primary}
             busy={*busy}
             disabled={name.trim().is_empty()}
@@ -269,7 +270,7 @@ fn create_profile(props: &CreateProfileProps) -> Html {
         <Card
             title="Create a profile"
             subtitle="Add its preferences and files once it exists."
-            {footer}
+            {actions}
         >
             if let Some(message) = &*error {
                 <Alert

@@ -54,6 +54,12 @@ impl MenuAction {
         self
     }
 
+    /// Marks it as the one action its card exists for.
+    pub fn primary(mut self) -> Self {
+        self.kind = ButtonKind::Primary;
+        self
+    }
+
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
@@ -247,7 +253,11 @@ pub fn split_button(props: &SplitButtonProps) -> Html {
                         "btn",
                         "split-btn__toggle",
                         props.small.then_some("btn--small"),
-                        (primary.kind == ButtonKind::Danger).then_some("btn--danger"),
+                        match primary.kind {
+                            ButtonKind::Danger => Some("btn--danger"),
+                            ButtonKind::Primary => Some("btn--primary"),
+                            _ => None,
+                        },
                     )}
                     aria-haspopup="menu"
                     aria-expanded={if *open { "true" } else { "false" }}
