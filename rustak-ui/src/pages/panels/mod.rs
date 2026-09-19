@@ -13,10 +13,14 @@ mod config_package;
 mod credentials;
 mod devices;
 mod mint;
+mod passkeys;
 mod profile;
+mod sign_in_methods;
 
 pub use channels::ChannelsPanel;
 pub use config_package::ConfigPackagePanel;
 pub use credentials::CredentialsPanel;
 pub use devices::DevicesPanel;
+pub use passkeys::PasskeysPanel;
 pub use profile::ProfilePanel;
+pub use sign_in_methods::SignInMethods;

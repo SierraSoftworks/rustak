@@ -109,6 +109,17 @@ pub async fn delete_passkey(id: i64) -> Result<(), ApiError> {
     }
 }
 
+/// Binds the signed-in account to the identity behind an authorization code.
+///
+/// The same exchange as [`exchange_code`], but the session decides which
+/// account the identity is attached to rather than the code deciding which
+/// session to mint. Answers with who the caller now is.
+pub async fn link_oidc(body: &rustak_api::TokenExchangeRequest) -> Result<Me, ApiError> {
+    demo!(Ok(fixtures::link_oidc()));
+
+    post_json("/me/oidc-link", body).await
+}
+
 /// Exchanges an identity provider's authorization code for our own session.
 ///
 /// Used by the callback page. It goes through the bearer-aware client because

@@ -39,7 +39,9 @@ pub const REFRESH_KEY: &str = "rustak.admin.refresh";
 pub const STATE_KEY: &str = "rustak.admin.oidc_state";
 /// sessionStorage key holding the in-flight PKCE code verifier.
 pub const VERIFIER_KEY: &str = "rustak.admin.oidc_verifier";
-/// localStorage slot the sign-in popup hands its tokens back through.
+/// sessionStorage key saying what the in-flight popup was opened to do.
+pub const INTENT_KEY: &str = "rustak.admin.oidc_intent";
+/// localStorage slot the sign-in popup hands its result back through.
 pub const POPUP_RESULT_KEY: &str = "rustak.admin.popup_result";
 
 fn session() -> Option<web_sys::Storage> {
@@ -82,6 +84,7 @@ pub fn clear_session() {
         let _ = storage.remove_item(REFRESH_KEY);
         let _ = storage.remove_item(STATE_KEY);
         let _ = storage.remove_item(VERIFIER_KEY);
+        let _ = storage.remove_item(INTENT_KEY);
     }
 }
 

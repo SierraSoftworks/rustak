@@ -9,9 +9,18 @@
 //! It is a popup rather than a redirect so the page behind it is never navigated
 //! away from — a half-filled setup wizard survives a sign-in. The popup loads
 //! this same SPA at the callback route, [`complete_callback`] does the exchange,
-//! and the tokens are handed back to the opener through a short-lived
+//! and the result is handed back to the opener through a short-lived
 //! `localStorage` slot (a popup does not share `sessionStorage` with its
 //! opener), after which it closes itself.
+//!
+//! The same popup serves two ceremonies. Signing in redeems the code for a
+//! session; *linking* redeems it, as somebody already signed in, to bind the
+//! identity to their existing account. Which one the popup is running is
+//! recorded in `sessionStorage` before it opens — a popup starts with a copy of
+//! its opener's — so the callback knows which endpoint the code belongs to.
+//! Failures travel back through the same slot, so the page that opened the
+//! popup can say what went wrong instead of the popup showing a sign-in prompt
+//! to nobody.
 //!
 //! Everything the browser talks to is same-origin, so the provider never has to
 //! permit cross-origin requests.
@@ -19,13 +28,15 @@
 use std::time::Duration;
 
 use base64::prelude::*;
-use rustak_api::{AuthMode, TokenExchangeRequest, TokenResponse};
+use rustak_api::{AuthMode, Me, TokenExchangeRequest, TokenResponse};
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
 use crate::api;
 use crate::auth::{
-    POPUP_RESULT_KEY, STATE_KEY, VERIFIER_KEY, local, random_token, session, store_session,
+    INTENT_KEY, POPUP_RESULT_KEY, STATE_KEY, VERIFIER_KEY, local, random_token, session,
+    store_session,
 };
 // The fixtures themselves exist only in debug builds; the macro is always in
 // scope so that a release build still compiles the call sites away.
@@ -42,6 +53,48 @@ const CALLBACK_PATH: &str = "/auth/callback";
 /// of them (~10 minutes, which is long enough to find a second factor).
 const POPUP_POLL_INTERVAL: Duration = Duration::from_millis(300);
 const POPUP_MAX_POLLS: u32 = 2_000;
+
+/// What the popup was opened to do with the code it comes back with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Intent {
+    /// Redeem it for a session.
+    SignIn,
+    /// Redeem it, as the signed-in account, to bind the identity to it.
+    Link,
+}
+
+impl Intent {
+    const SIGN_IN: &'static str = "sign-in";
+    const LINK: &'static str = "link";
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SignIn => Self::SIGN_IN,
+            Self::Link => Self::LINK,
+        }
+    }
+
+    /// Reads the recorded intent; a callback with none recorded is a sign-in,
+    /// which is what a stale or hand-typed callback URL should amount to.
+    fn stored(storage: &web_sys::Storage) -> Self {
+        match storage.get_item(INTENT_KEY).ok().flatten().as_deref() {
+            Some(Self::LINK) => Self::Link,
+            _ => Self::SignIn,
+        }
+    }
+}
+
+/// What the popup hands back to the page that opened it.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "kebab-case")]
+enum Handoff {
+    /// The code bought a session.
+    SignedIn(TokenResponse),
+    /// The code bound an identity to the account, which is now this.
+    Linked(Me),
+    /// The ceremony ran and the server said no; the message is for the person.
+    Failed { message: String },
+}
 
 fn origin() -> String {
     window().location().origin().unwrap_or_default()
@@ -137,9 +190,44 @@ pub async fn begin_login() -> Result<Option<String>, String> {
         Ok(Some(fixtures::demo_token()))
     });
 
+    match run_popup(Intent::SignIn).await? {
+        None => Ok(None),
+        Some(Handoff::SignedIn(tokens)) => {
+            store_session(&tokens);
+            Ok(Some(tokens.token))
+        }
+        Some(Handoff::Failed { message }) => Err(message),
+        Some(Handoff::Linked(_)) => Err(wrong_ceremony()),
+    }
+}
+
+/// Begins linking the signed-in account to the identity provider, and waits
+/// for the popup to report back with who the account now is.
+///
+/// `Ok(None)` means the popup was dismissed without completing. Must be called
+/// from a user gesture, or the browser blocks the popup.
+pub async fn begin_link() -> Result<Option<Me>, String> {
+    demo!(Ok(Some(fixtures::link_oidc())));
+
+    match run_popup(Intent::Link).await? {
+        None => Ok(None),
+        Some(Handoff::Linked(me)) => Ok(Some(me)),
+        Some(Handoff::Failed { message }) => Err(message),
+        Some(Handoff::SignedIn(_)) => Err(wrong_ceremony()),
+    }
+}
+
+fn wrong_ceremony() -> String {
+    "the sign-in window completed a different ceremony than the one it was opened for".to_string()
+}
+
+/// Opens the provider's authorization page in a popup and waits for whatever
+/// it hands back. `None` if the popup was closed first.
+async fn run_popup(intent: Intent) -> Result<Option<Handoff>, String> {
     let state = random_token(24).ok_or("this browser cannot generate a login state")?;
     if let Some(storage) = session() {
         let _ = storage.set_item(STATE_KEY, &state);
+        let _ = storage.set_item(INTENT_KEY, intent.as_str());
     }
     // Clear any stale handoff from an abandoned attempt before opening a popup
     // that is about to write to the same slot.
@@ -161,10 +249,8 @@ pub async fn begin_login() -> Result<Option<String>, String> {
             if let Some(storage) = local() {
                 let _ = storage.remove_item(POPUP_RESULT_KEY);
             }
-            let tokens: TokenResponse =
-                serde_json::from_str(&result).map_err(|err| err.to_string())?;
-            store_session(&tokens);
-            return Ok(Some(tokens.token));
+            let handoff: Handoff = serde_json::from_str(&result).map_err(|err| err.to_string())?;
+            return Ok(Some(handoff));
         }
         if popup.closed().unwrap_or(false) {
             return Ok(None);
@@ -177,19 +263,64 @@ pub async fn begin_login() -> Result<Option<String>, String> {
 
 /// Finishes a callback, if the current URL is one.
 ///
-/// In a popup the tokens are handed back to the opener and the window closes
-/// (returning `None`). On a direct navigation they are stored and the bearer is
-/// returned. `None` also means there was no callback to process.
+/// In a popup the outcome — tokens, the linked account, or the server's
+/// refusal — is handed back to the opener and the window closes (returning
+/// `Ok(None)`). On a direct navigation a sign-in's tokens are stored and the
+/// bearer is returned, and a refusal is returned as the error. `Ok(None)` also
+/// means there was no callback to process.
 pub async fn complete_callback() -> Result<Option<String>, String> {
     let Some((code, state)) = callback_params() else {
         return Ok(None);
     };
     let storage = session().ok_or("session storage is unavailable")?;
+    let intent = Intent::stored(&storage);
 
+    let outcome = redeem(&storage, code, &state, intent).await;
+
+    let _ = storage.remove_item(STATE_KEY);
+    let _ = storage.remove_item(VERIFIER_KEY);
+    let _ = storage.remove_item(INTENT_KEY);
+
+    if is_popup() {
+        let handoff = outcome.unwrap_or_else(|message| Handoff::Failed { message });
+        if let Some(local) = local() {
+            let serialised = serde_json::to_string(&handoff).map_err(|err| err.to_string())?;
+            let _ = local.set_item(POPUP_RESULT_KEY, &serialised);
+        }
+        let _ = window().close();
+        return Ok(None);
+    }
+
+    // A direct navigation: scrub the code and state out of the address bar so
+    // that a shared or bookmarked URL carries neither, and keep what was won.
+    if let Ok(history) = window().history() {
+        let _ =
+            history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(CALLBACK_PATH));
+    }
+
+    match outcome? {
+        Handoff::SignedIn(tokens) => {
+            store_session(&tokens);
+            Ok(Some(tokens.token))
+        }
+        // The account is linked; the session this tab already holds still
+        // describes it, so there is nothing to keep.
+        Handoff::Linked(_) => Ok(None),
+        Handoff::Failed { message } => Err(message),
+    }
+}
+
+/// Spends the code on whichever ceremony the popup was opened for.
+async fn redeem(
+    storage: &web_sys::Storage,
+    code: String,
+    state: &str,
+    intent: Intent,
+) -> Result<Handoff, String> {
     // The state is what ties this response to the request this tab made. A
     // mismatch is either a stale login or a forged one, and neither is worth
     // exchanging a code for.
-    if storage.get_item(STATE_KEY).ok().flatten().as_deref() != Some(state.as_str()) {
+    if storage.get_item(STATE_KEY).ok().flatten().as_deref() != Some(state) {
         return Err("the sign-in response did not match this browser's request".into());
     }
 
@@ -199,29 +330,14 @@ pub async fn complete_callback() -> Result<Option<String>, String> {
         code_verifier: storage.get_item(VERIFIER_KEY).ok().flatten(),
     };
 
-    let tokens = api::auth::exchange_code(&request)
-        .await
-        .map_err(|err| err.to_string())?;
-
-    let _ = storage.remove_item(STATE_KEY);
-    let _ = storage.remove_item(VERIFIER_KEY);
-
-    if is_popup() {
-        if let Some(local) = local() {
-            let serialised = serde_json::to_string(&tokens).map_err(|err| err.to_string())?;
-            let _ = local.set_item(POPUP_RESULT_KEY, &serialised);
-        }
-        let _ = window().close();
-        return Ok(None);
+    match intent {
+        Intent::SignIn => api::auth::exchange_code(&request)
+            .await
+            .map(Handoff::SignedIn)
+            .map_err(|err| err.to_string()),
+        Intent::Link => api::auth::link_oidc(&request)
+            .await
+            .map(Handoff::Linked)
+            .map_err(|err| err.to_string()),
     }
-
-    // A direct navigation: keep the tokens, and scrub the code and state out of
-    // the address bar so that a shared or bookmarked URL carries neither.
-    store_session(&tokens);
-    if let Ok(history) = window().history() {
-        let _ =
-            history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(CALLBACK_PATH));
-    }
-
-    Ok(Some(tokens.token))
 }

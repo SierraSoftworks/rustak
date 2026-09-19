@@ -583,6 +583,33 @@ Day to day, signing in to the admin UI is either:
   users mint their own per-device enrollment tokens and (opt-in) client
   passwords from the admin UI afterwards.
 
+  `user_acl` gates these accounts and only these: at sign-in, and on every
+  later request, judged against the claims that sign-in recorded on the
+  account (`users.oidc_claims`). A passkey account is never refused by it — it
+  was admitted when it was made here, and it exists precisely so that an
+  administrator keeps a way in when the directory is wrong or away.
+
+  **Moving an installation from passkeys to single sign-on.** The first time
+  somebody signs in through the provider they usually already have an account
+  here under the same name, with devices and channels on it. There are two
+  ways to join the two, and both keep the passkeys, credentials, devices,
+  channels and administrative standing (recorded as an explicit override, so
+  `admin_acl` cannot silently end it):
+
+  - **Each person links their own** — sign in with the passkey, open
+    *Credentials* → *How you sign in* → *Link your single sign-on account*.
+    Nothing to configure: they have proved they hold both. The username then
+    follows what the provider calls them, as it does for every provider-backed
+    account.
+  - **The operator links by name** — `link_by_username = true` under
+    `[auth.oidc]` hands any account whose username the provider claims to the
+    provider on that sign-in. Turn it on only if whoever controls the
+    directory is trusted to own every account here; turn it off again once
+    the migration is done.
+
+  Without either, a provider sign-in that names an existing local account is
+  refused on the sign-in page with the reason, and nothing is written.
+
 ATAK devices never see either of these: they enrol with a **one-time
 enrollment token**, scanned as a QR code or typed in, which is consumed the
 moment it issues a certificate — see [`docs/plugins.md`](plugins.md) and

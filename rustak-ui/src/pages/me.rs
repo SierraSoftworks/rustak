@@ -1,4 +1,4 @@
-//! Your own devices and credentials.
+//! Your own sign-in methods, devices and credentials.
 //!
 //! Enrolling a phone is something a person should be able to do for themselves:
 //! `POST /api/v1/credentials` with no `username` mints for the caller, and
@@ -12,7 +12,7 @@ use yew::prelude::*;
 use crate::app::AuthHandle;
 use crate::components::{Alert, AlertKind, Card, LoadingNote};
 
-use super::panels::{CredentialsPanel, DevicesPanel};
+use super::panels::{CredentialsPanel, DevicesPanel, PasskeysPanel, SignInMethods};
 
 #[function_component(Me)]
 pub fn me() -> Html {
@@ -38,6 +38,15 @@ pub fn me() -> Html {
                         Connections. The token is spent the moment a certificate is issued, \
                         and it is worthless afterwards."
                 />
+            </Card>
+
+            <Card
+                title="How you sign in"
+                subtitle="Single sign-on, passkeys, or both. Keep a second way in."
+            >
+                <SignInMethods user={user.clone()} on_changed={auth.refresh.clone()} />
+                <h3 class="card__section-title">{ "Your passkeys" }</h3>
+                <PasskeysPanel />
             </Card>
 
             // No username: the server reads the caller's own, which is the whole

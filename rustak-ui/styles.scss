@@ -133,6 +133,31 @@ pre {
   padding: 1.5rem 0;
 }
 
+// A quiet line of explanation: what a panel has to say when there is nothing
+// to do.
+.muted {
+  color: $text-secondary;
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+// A heading that divides one card into two subjects.
+.card__section-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 1.5rem 0 0.75rem;
+}
+
+.sign-in-methods {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+
+  p {
+    margin: 0;
+  }
+}
+
 // A button that reads as a link, for the one-off actions inside a paragraph.
 .link-button {
   padding: 0;

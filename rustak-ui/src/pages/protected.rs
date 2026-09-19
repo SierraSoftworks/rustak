@@ -54,9 +54,10 @@ pub fn protected(props: &ProtectedProps) -> Html {
                 <Alert
                     kind={AlertKind::Error}
                     title="Access denied"
-                    message="Your account is not permitted to use the admin console. That is \
-                        decided by the `admin_acl` expression in the server's `[auth]` \
-                        configuration, or by the administrator flag on your account."
+                    message="Your identity provider account is not permitted to use this \
+                        server. That is decided by the `user_acl` expression in the server's \
+                        `[auth]` configuration, judged against what the provider said about \
+                        you when you last signed in."
                 >
                     <button class="btn btn--small btn--primary" onclick={on_signout}>
                         { "Sign out" }

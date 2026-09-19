@@ -32,6 +32,8 @@ const MIN_SETUP_TOKEN: usize = 8;
 
 struct State {
     signed_in: bool,
+    /// Whether the demo account has been linked to the demo identity provider.
+    linked: bool,
     setup: SetupStatus,
     settings: ServerSettings,
     ca: Option<CaSummary>,
@@ -53,6 +55,7 @@ impl State {
     fn new() -> Self {
         Self {
             signed_in: true,
+            linked: false,
             setup: data::setup_status(),
             settings: data::server_settings(),
             ca: Some(data::ca_summary()),
@@ -99,7 +102,22 @@ pub fn auth_metadata() -> AuthMetadata {
 }
 
 pub fn me() -> Option<Me> {
-    with(|state| state.signed_in.then(data::me))
+    with(|state| {
+        state.signed_in.then(|| {
+            let mut me = data::me();
+            if state.linked {
+                me.source = UserSource::Oidc;
+                me.identity_provider = Some("https://id.example.com".to_string());
+            }
+            me
+        })
+    })
+}
+
+/// Links the demo account to the demo identity provider.
+pub fn link_oidc() -> Me {
+    with(|state| state.linked = true);
+    me().expect("demo mode is signed in")
 }
 
 pub fn sign_out() {

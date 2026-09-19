@@ -166,6 +166,11 @@ pub struct AuthHandle {
     pub signout: Callback<()>,
     /// Re-resolves the session, for the wizard to call once it has one.
     pub refresh: Callback<()>,
+    /// Why the last sign-in attempt did not sign anybody in. Distinct from
+    /// [`AuthStatus::Error`], which is about not being able to tell who
+    /// somebody is: this is the server (or the provider) having said no, and
+    /// the prompt shows it beside the buttons so the person can try another way.
+    pub login_error: Option<String>,
 }
 
 /// Resolves the current state: the wizard first, then the identity.
@@ -198,15 +203,19 @@ async fn resolve_status(status: &UseStateHandle<AuthStatus>) {
 #[hook]
 fn use_auth() -> AuthHandle {
     let status = use_state(|| AuthStatus::Loading);
+    let login_error = use_state(|| None::<String>);
 
     {
-        let status = status.clone();
+        let (status, login_error) = (status.clone(), login_error.clone());
         use_effect_with((), move |_| {
             spawn_local(async move {
                 // Finish any in-flight OIDC callback first: a popup hands its
-                // tokens back to the opener and closes here, and a
-                // direct-navigation fallback stores them.
-                let _ = auth::oidc::complete_callback().await;
+                // outcome back to the opener and closes here, and a
+                // direct-navigation fallback stores the tokens — or, when the
+                // server refused, has a reason to show on the prompt.
+                if let Err(message) = auth::oidc::complete_callback().await {
+                    login_error.set(Some(message));
+                }
                 resolve_status(&status).await;
             });
             || ()
@@ -223,29 +232,31 @@ fn use_auth() -> AuthHandle {
     };
 
     let login = {
-        let status = status.clone();
+        let (status, login_error) = (status.clone(), login_error.clone());
         Callback::from(move |_| {
-            let status = status.clone();
+            let (status, login_error) = (status.clone(), login_error.clone());
+            login_error.set(None);
             spawn_local(async move {
                 match auth::oidc::begin_login().await {
                     Ok(Some(_)) => resolve_status(&status).await,
                     // The popup was dismissed without completing; leave the
                     // state as it was rather than inventing a failure.
                     Ok(None) => {}
-                    Err(err) => status.set(AuthStatus::Error(err)),
+                    Err(err) => login_error.set(Some(err)),
                 }
             });
         })
     };
 
     let login_passkey = {
-        let status = status.clone();
+        let (status, login_error) = (status.clone(), login_error.clone());
         Callback::from(move |_| {
-            let status = status.clone();
+            let (status, login_error) = (status.clone(), login_error.clone());
+            login_error.set(None);
             spawn_local(async move {
                 match auth::passkey::login(None).await {
                     Ok(()) => resolve_status(&status).await,
-                    Err(err) => status.set(AuthStatus::Error(err)),
+                    Err(err) => login_error.set(Some(err)),
                 }
             });
         })
@@ -271,6 +282,7 @@ fn use_auth() -> AuthHandle {
         login_passkey,
         signout,
         refresh,
+        login_error: (*login_error).clone(),
     }
 }
 

@@ -85,6 +85,13 @@ pub fn login() -> Html {
             } else {
                 html! {
                     <>
+                        if let Some(message) = &auth.login_error {
+                            <Alert
+                                kind={AlertKind::Error}
+                                title="The sign-in could not be completed"
+                                message={message.clone()}
+                            />
+                        }
                         <div class="auth-card__actions">
                             if sso {
                                 <Button kind={ButtonKind::Primary} large=true onclick={on_sso}>
