@@ -202,9 +202,32 @@ jobs:
       - name: Install Trunk
         shell: bash
         run: |
-          # Prebuilt only: compiling trunk from source has broken before on
-          # transitive cssparser/lightningcss mismatches, so fail fast instead.
-          cargo binstall --no-confirm --disable-strategies compile trunk@0.21.14
+          # Prebuilt only, and retried: this is a network fetch and nothing
+          # else. The identical step failed the **v0.0.2 release** (run
+          # 35454908767) when every one of cargo-binstall's fetchers timed out
+          # — and because `build` needs `ui`, the whole pipeline behind it
+          # skipped and the release published **nothing**: no assets, no
+          # images, no formula. The same shape had already cost `cross` a
+          # build-matrix job earlier the same day.
+          #
+          # `--disable-strategies compile` stays: compiling trunk from source
+          # has broken before on transitive cssparser/lightningcss mismatches,
+          # so a slow success is not a better outcome than a fast failure.
+          # Retrying is.
+          for attempt in 1 2 3; do
+            if cargo binstall --no-confirm --disable-strategies compile trunk@0.21.14; then
+              installed=1
+              break
+            fi
+
+            echo "::warning::cargo binstall trunk failed (attempt ${attempt} of 3)."
+            sleep $(( attempt * 10 ))
+          done
+
+          if [ -z "${installed:-}" ]; then
+            echo "::error::cargo binstall could not fetch trunk after three attempts."
+            exit 1
+          fi
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Setup Cache
