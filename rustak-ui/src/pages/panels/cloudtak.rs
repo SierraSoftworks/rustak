@@ -90,11 +90,18 @@ pub fn cloudtak_panel(props: &CloudTakPanelProps) -> Html {
         };
     }
 
+    let actions = html! {
+        <Button small=true kind={ButtonKind::Primary} busy={*busy} onclick={onboard}>
+            { "Onboard CloudTAK" }
+        </Button>
+    };
+
     html! {
         <Card
             title="Onboard CloudTAK"
             subtitle="Produces the certificate, the password and the three URLs CloudTAK's \
                       Configure Server page asks for."
+            {actions}
         >
             if let Some(message) = &*error {
                 <Alert
@@ -155,10 +162,6 @@ pub fn cloudtak_panel(props: &CloudTakPanelProps) -> Html {
                         { port_field("cloudtak-webtak", "WebTAK port", 8446, &public) }
                     </div>
                 }
-
-                <Button kind={ButtonKind::Primary} busy={*busy} onclick={onboard}>
-                    { "Onboard CloudTAK" }
-                </Button>
             </div>
         </Card>
     }

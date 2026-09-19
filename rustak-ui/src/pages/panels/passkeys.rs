@@ -11,20 +11,36 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::auth;
-use crate::components::{Alert, AlertKind, Button, ButtonKind, EmptyState, LoadingNote, TextInput};
+use crate::components::{
+    Alert, AlertKind, Button, ButtonKind, Card, EmptyState, LoadingNote, TextInput,
+};
 use crate::util::{format_iso8601, optional_relative};
 
 use crate::pages::load::use_resource;
 
-/// The passkeys the signed-in account holds, with a way to add and remove them.
+#[derive(Properties, PartialEq)]
+pub struct PasskeysPanelProps {
+    /// The card's heading.
+    #[prop_or(AttrValue::from("Your passkeys"))]
+    pub title: AttrValue,
+
+    /// Why this page has the card, which differs between the two that do.
+    #[prop_or_default]
+    pub subtitle: Option<AttrValue>,
+}
+
+/// The passkeys the signed-in account holds, as a card with a way to add and
+/// remove them.
 ///
 /// Loads its own list, so a page can drop it in without wiring a resource.
 #[function_component(PasskeysPanel)]
-pub fn passkeys_panel() -> Html {
+pub fn passkeys_panel(props: &PasskeysPanelProps) -> Html {
     let passkeys = use_resource(api::auth::list_passkeys);
 
     html! {
         <Passkeys
+            title={props.title.clone()}
+            subtitle={props.subtitle.clone()}
             passkeys={passkeys.data.clone()}
             error={passkeys.error.clone()}
             on_changed={passkeys.reload.clone()}
@@ -34,6 +50,8 @@ pub fn passkeys_panel() -> Html {
 
 #[derive(Properties, PartialEq)]
 struct PasskeysProps {
+    title: AttrValue,
+    subtitle: Option<AttrValue>,
     passkeys: Option<Vec<PasskeySummary>>,
     error: Option<String>,
     on_changed: Callback<()>,
@@ -110,8 +128,36 @@ fn passkeys(props: &PasskeysProps) -> Html {
         },
     };
 
+    // Registering is the card's action, and the label is part of it — so the
+    // box is joined to the button, in the heading, with only a glyph on the
+    // button because the box beside it already says what it is for.
+    let actions = html! {
+        <div class="passkey-add">
+            <TextInput
+                id="passkey-label"
+                value={(*label).clone()}
+                placeholder="Name, such as “Work laptop”"
+                onchange={Callback::from(move |value| label.set(value))}
+            />
+            <Button
+                small=true
+                kind={ButtonKind::Primary}
+                busy={*busy}
+                title="Register a passkey"
+                aria_label="Register a passkey"
+                onclick={on_register}
+            >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
+                    stroke-width="2.5" stroke-linecap="round" aria-hidden="true">
+                    <line x1="12" y1="5" x2="12" y2="19" />
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+            </Button>
+        </div>
+    };
+
     html! {
-        <>
+        <Card title={props.title.clone()} subtitle={props.subtitle.clone()} {actions}>
             { list }
 
             if let Some(message) = &*error {
@@ -121,19 +167,7 @@ fn passkeys(props: &PasskeysProps) -> Html {
                     message={message.clone()}
                 />
             }
-
-            <div class="passkey-add">
-                <TextInput
-                    id="passkey-label"
-                    value={(*label).clone()}
-                    placeholder="What to call it, such as “Work laptop”"
-                    onchange={Callback::from(move |value| label.set(value))}
-                />
-                <Button kind={ButtonKind::Primary} busy={*busy} onclick={on_register}>
-                    { "Register a passkey" }
-                </Button>
-            </div>
-        </>
+        </Card>
     }
 }
 

@@ -17,8 +17,8 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Alert, AlertKind, Button, ButtonKind, Card, ConfirmButton, Field, LoadingNote, StatusPill,
-    StatusTone, TextInput,
+    Alert, AlertKind, Button, ButtonKind, Card, Field, LoadingNote, MenuAction, MenuItem,
+    SplitButton, StatusPill, StatusTone, TextInput,
 };
 
 use super::group_members::GroupMembers;
@@ -133,8 +133,25 @@ fn create_channel(props: &CreateChannelProps) -> Html {
         })
     };
 
+    let actions = html! {
+        <Button
+            small=true
+            kind={ButtonKind::Primary}
+            busy={*busy}
+            disabled={parsed.is_err()}
+            title={parsed.is_err().then_some("Give it a valid name first.")}
+            onclick={submit}
+        >
+            { "Create channel" }
+        </Button>
+    };
+
     html! {
-        <Card title="Create a channel" subtitle="The bit position is allocated by the server.">
+        <Card
+            title="Create a channel"
+            subtitle="The bit position is allocated by the server."
+            {actions}
+        >
             if let Some(message) = &*error {
                 <Alert
                     kind={AlertKind::Error}
@@ -174,18 +191,6 @@ fn create_channel(props: &CreateChannelProps) -> Html {
                         }
                     />
                 </Field>
-
-                <div class="inline-form__action">
-                    <Button
-                        kind={ButtonKind::Primary}
-                        busy={*busy}
-                        disabled={parsed.is_err()}
-                        title={parsed.is_err().then_some("Give it a valid name first.")}
-                        onclick={submit}
-                    >
-                        { "Create channel" }
-                    </Button>
-                </div>
             </div>
         </Card>
     }
@@ -216,7 +221,7 @@ fn channel_row(props: &ChannelRowProps) -> Html {
             props.on_changed.clone(),
             current.clone(),
         );
-        Callback::from(move |_: MouseEvent| {
+        Callback::from(move |()| {
             let (busy, error, description) = (busy.clone(), error.clone(), description.clone());
             let (name, on_changed, value) = (name.clone(), on_changed.clone(), value.clone());
             let change = GroupPatch {
@@ -291,28 +296,28 @@ fn channel_row(props: &ChannelRowProps) -> Html {
                 }
             />
 
-            <Button
-                small=true
+            // Saving the description is what the box beside it is for, so it
+            // is the face; deleting the channel is behind the caret, and asks.
+            <SplitButton
                 busy={*busy}
-                disabled={description.is_none() || !editable}
-                title={description.is_none().then_some("Nothing has changed.")}
-                onclick={save}
-            >
-                { "Save" }
-            </Button>
-
-            <ConfirmButton
-                label="Delete"
-                confirm_label="Delete it"
-                question={format!(
-                    "Delete '{}'? Everyone in it loses it, and the name cannot be reused \
-                     with the same bit position.",
-                    props.group.name,
-                )}
-                disabled={!editable}
-                busy={*busy}
-                title={(!editable).then_some("Only a channel created here can be deleted.")}
-                onconfirm={remove}
+                menu_label={format!("More actions for {}", props.group.name)}
+                primary={MenuAction::new("Save", save)
+                    .disabled(description.is_none() || !editable)
+                    .title(description.is_none().then_some("Nothing has changed."))}
+                items={vec![MenuItem::Action(
+                    MenuAction::new("Delete", remove)
+                        .danger()
+                        .disabled(!editable)
+                        .title((!editable).then_some("Only a channel created here can be deleted."))
+                        .confirm(
+                            format!(
+                                "Delete '{}'? Everyone in it loses it, and the name cannot be \
+                                 reused with the same bit position.",
+                                props.group.name,
+                            ),
+                            "Delete it",
+                        ),
+                )]}
             />
 
             if let Some(message) = &*error {

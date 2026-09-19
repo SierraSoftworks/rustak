@@ -1,9 +1,9 @@
 //! The chrome shared by every admin view.
 //!
-//! It renders the app bar, the navigation strip, the page's own title row with a
-//! slot the page can push actions into, and gates the routed page behind the
-//! session — so a page only mounts, and therefore only fetches, once access has
-//! been granted.
+//! It renders the app bar, the sidebar navigation, the page's own title row
+//! with a slot the page can push actions into, and gates the routed page behind
+//! the session — so a page only mounts, and therefore only fetches, once access
+//! has been granted.
 
 use chrono::{Datelike, Utc};
 use yew::prelude::*;
@@ -52,6 +52,11 @@ pub fn admin_shell(props: &AdminShellProps) -> Html {
         })
     };
 
+    // Whether the navigation drawer is open. Only meaningful on a narrow
+    // screen, where the sidebar is hidden until asked for; at desktop widths
+    // the stylesheet shows it regardless.
+    let nav_open = use_state(|| false);
+
     // The shell is shared, so what it is a shell *for* has to come from the
     // route. Hard-coding one page's title here would make every other page claim
     // to be the dashboard.
@@ -59,59 +64,109 @@ pub fn admin_shell(props: &AdminShellProps) -> Html {
     let (title, subtitle) = route.heading();
 
     // A page's actions belong to the page. Clearing them on every route change
-    // stops the previous page's refresh button outliving it.
+    // stops the previous page's refresh button outliving it — and following a
+    // link is what closes the drawer, so the page it opened can be seen.
     {
-        let actions = actions.clone();
+        let (actions, nav_open) = (actions.clone(), nav_open.clone());
         use_effect_with(route.clone(), move |_| {
             actions.set(Html::default());
+            nav_open.set(false);
             || ()
         });
     }
 
+    let toggle_nav = {
+        let nav_open = nav_open.clone();
+        Callback::from(move |_| nav_open.set(!*nav_open))
+    };
+    let close_nav = {
+        let nav_open = nav_open.clone();
+        Callback::from(move |_| nav_open.set(false))
+    };
+
     html! {
         <div class="app-shell">
-            <AppBar><AdminNav /></AppBar>
-            <main class="app-main">
-                <div class="app-container">
-                    <ContextProvider<PageActions> context={(*page_actions).clone()}>
-                        <Protected>
-                            <PageTitle title={title} subtitle={subtitle}>
-                                { (*actions).clone() }
-                            </PageTitle>
-                            { props.children.clone() }
-                        </Protected>
-                    </ContextProvider<PageActions>>
-                </div>
-            </main>
-            <footer class="app-footer">
-                <p>{ format!("Copyright © Sierra Softworks {}", Utc::now().year()) }</p>
-            </footer>
+            <AppBar menu_open={*nav_open} on_menu={toggle_nav} />
+            <div class="app-body">
+                <AdminNav open={*nav_open} on_close={close_nav} />
+                <main class="app-main">
+                    <div class="app-container">
+                        <ContextProvider<PageActions> context={(*page_actions).clone()}>
+                            <Protected>
+                                <PageTitle title={title} subtitle={subtitle}>
+                                    { (*actions).clone() }
+                                </PageTitle>
+                                { props.children.clone() }
+                            </Protected>
+                        </ContextProvider<PageActions>>
+                    </div>
+                    <footer class="app-footer">
+                        <p>{ format!("Copyright © Sierra Softworks {}", Utc::now().year()) }</p>
+                    </footer>
+                </main>
+            </div>
         </div>
     }
 }
 
-/// Every destination, in the order somebody works through them: what is
-/// happening now, what is connected, who may connect, what they exchange, and
-/// how the server is set up.
-const NAV: &[(Route, &str)] = &[
-    (Route::Dashboard, "Dashboard"),
-    (Route::Clients, "Live"),
-    (Route::CotBrowser, "Situation"),
-    (Route::Devices, "Devices"),
-    (Route::Users, "Users"),
-    (Route::Groups, "Channels"),
-    (Route::Credentials, "Credentials"),
-    (Route::Missions, "Missions"),
-    (Route::Packages, "Packages"),
-    (Route::Profiles, "Profiles"),
-    (Route::Services, "Services"),
-    (Route::Activity, "Activity"),
-    (Route::Settings, "Settings"),
+/// One section of the navigation: what it is for, and where it goes.
+struct NavGroup {
+    title: &'static str,
+    links: &'static [(Route, &'static str)],
+}
+
+/// Every destination, grouped by what somebody is there to do and ordered the
+/// way they work through them: what is happening now, what is connected, who
+/// may connect, what they exchange, and how the server is set up.
+const NAV: &[NavGroup] = &[
+    NavGroup {
+        title: "Overview",
+        links: &[(Route::Dashboard, "Dashboard")],
+    },
+    NavGroup {
+        title: "Live",
+        links: &[
+            (Route::Clients, "Clients"),
+            (Route::CotBrowser, "Situation"),
+        ],
+    },
+    NavGroup {
+        title: "Identity",
+        links: &[
+            (Route::Devices, "Devices"),
+            (Route::Users, "Users"),
+            (Route::Groups, "Channels"),
+            (Route::Credentials, "Credentials"),
+        ],
+    },
+    NavGroup {
+        title: "Content",
+        links: &[
+            (Route::Missions, "Missions"),
+            (Route::Packages, "Packages"),
+            (Route::Profiles, "Profiles"),
+        ],
+    },
+    NavGroup {
+        title: "Server",
+        links: &[
+            (Route::Services, "Services"),
+            (Route::Activity, "Activity"),
+            (Route::Settings, "Settings"),
+        ],
+    },
 ];
 
-/// The links between the admin pages.
+#[derive(Properties, PartialEq)]
+struct AdminNavProps {
+    /// Whether the drawer is slid in, on a screen narrow enough to have one.
+    open: bool,
+    on_close: Callback<()>,
+}
+
+/// The links between the admin pages, down the side of every one of them.
 #[function_component(AdminNav)]
-fn admin_nav() -> Html {
+fn admin_nav(props: &AdminNavProps) -> Html {
     let current = use_route::<Route>().unwrap_or(Route::Dashboard);
 
     let link = |route: &Route, label: &'static str| {
@@ -119,7 +174,7 @@ fn admin_nav() -> Html {
         // not appear unselected while the other is showing.
         let active = match (route, &current) {
             (Route::Dashboard, Route::Dashboard | Route::AdminRoot) => true,
-            // One account's page is somewhere inside Users, so the strip must
+            // One account's page is somewhere inside Users, so the list must
             // not read as though nothing is selected while it is open. The
             // same for a mission and a profile, which are rows on their lists.
             (Route::Users, Route::Users | Route::UserDetail { .. }) => true,
@@ -145,17 +200,45 @@ fn admin_nav() -> Html {
         html! { <Link<Route> to={route.clone()} classes={classes}>{ label }</Link<Route>> }
     };
 
-    html! {
-        <nav class="admin-nav">
-            <div class="admin-nav__inner">
-                { for NAV.iter().map(|(route, label)| link(route, label)) }
-                // Only reachable in demo mode, which is the only mode it works in.
-                if fixtures::is_demo() {
-                    <a class="admin-nav__link" href={nav_href("/demo/controls")}>
-                        { "Controls" }
-                    </a>
-                }
+    let group = |group: &NavGroup| {
+        html! {
+            <div class="admin-nav__group">
+                <div class="admin-nav__heading">{ group.title }</div>
+                { for group.links.iter().map(|(route, label)| link(route, label)) }
             </div>
-        </nav>
+        }
+    };
+
+    let on_backdrop = {
+        let on_close = props.on_close.clone();
+        Callback::from(move |_: MouseEvent| on_close.emit(()))
+    };
+
+    html! {
+        <>
+            if props.open {
+                <div class="sidebar__backdrop" aria-hidden="true" onclick={on_backdrop} />
+            }
+            <aside
+                id="admin-nav"
+                class={classes!("sidebar", props.open.then_some("sidebar--open"))}
+            >
+                <div class="sidebar__inner">
+                    <nav class="admin-nav" aria-label="Admin sections">
+                        { for NAV.iter().map(group) }
+                        // Only reachable in demo mode, which is the only mode it
+                        // works in.
+                        if fixtures::is_demo() {
+                            <div class="admin-nav__group">
+                                <div class="admin-nav__heading">{ "Development" }</div>
+                                <a class="admin-nav__link" href={nav_href("/demo/controls")}>
+                                    { "Controls" }
+                                </a>
+                            </div>
+                        }
+                    </nav>
+                </div>
+            </aside>
+        </>
     }
 }

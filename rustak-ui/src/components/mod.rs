@@ -20,6 +20,7 @@ mod qr_code;
 mod role_badge;
 mod secret_input;
 mod secret_reveal;
+mod split_button;
 mod status_pill;
 mod xml_view;
 
@@ -47,6 +48,7 @@ pub use role_badge::{RoleBadge, role_description, role_label, role_options};
 pub use secret_input::SecretInput;
 #[allow(unused_imports)]
 pub use secret_reveal::{Copyable, SecretReveal};
+pub use split_button::{MenuAction, MenuItem, SplitButton};
 pub use status_pill::{StatusPill, StatusTone};
 // Its only caller today is the control gallery, which a release build does not
 // contain; the CoT browser that needs it lands with the next brief.

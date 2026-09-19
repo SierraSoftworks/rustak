@@ -26,7 +26,9 @@ pub struct CardProps {
     #[prop_or_default]
     pub subtitle: Option<AttrValue>,
 
-    /// Controls aligned to the end of the heading row.
+    /// Controls aligned to the end of the heading row: the action the card
+    /// exists for — a "Save", a "Mint" — or a link out of it. Up here rather
+    /// than among the fields it acts on, so it is never lost among them.
     #[prop_or_default]
     pub actions: Html,
 

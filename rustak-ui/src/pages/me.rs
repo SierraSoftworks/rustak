@@ -40,14 +40,12 @@ pub fn me() -> Html {
                 />
             </Card>
 
-            <Card
-                title="How you sign in"
-                subtitle="Single sign-on, passkeys, or both. Keep a second way in."
-            >
-                <SignInMethods user={user.clone()} on_changed={auth.refresh.clone()} />
-                <h3 class="card__section-title">{ "Your passkeys" }</h3>
-                <PasskeysPanel />
-            </Card>
+            <SignInMethods user={user.clone()} on_changed={auth.refresh.clone()} />
+
+            <PasskeysPanel
+                title="Your passkeys"
+                subtitle="The local way in. Register one on each device you sign in from."
+            />
 
             // No username: the server reads the caller's own, which is the whole
             // point — a person does not need administrative access to do this.

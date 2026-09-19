@@ -213,12 +213,67 @@ test("a channel is created and granted to an account", async ({ page }) => {
   await expect(reloaded.getByRole("checkbox", { name: "Read" })).not.toBeChecked();
 
   // And the channel's own page shows the same membership from the other side.
+  // The row's selector is named after the channel and its bit position; the
+  // row's action menu is named after the channel too, so the bit is what tells
+  // the two apart.
   await gotoApp(page, "/admin/groups");
   await page.locator(".channel-row").filter({ hasText: channel }).getByRole("button", {
-    name: channel,
+    name: `${channel} bit`,
   }).click();
   const member = page.locator(".member-row").filter({ hasText: username });
   await expect(member.getByRole("checkbox", { name: "Write" })).toBeChecked();
+});
+
+test("a row's menu closes on Escape and outside clicks, and a destructive item asks first", async ({
+  page,
+}) => {
+  // Every row with several actions shares one split button, so one row's
+  // menu stands for all of them. A channel's is the one with nothing else on
+  // the page to confuse it with.
+  const channel = uniqueName("Channel");
+
+  await gotoApp(page, "/admin/groups");
+  await page.getByLabel("Name").fill(channel);
+  await page.getByRole("button", { name: "Create channel" }).click();
+
+  const row = page.locator(".channel-row").filter({ hasText: channel });
+  await expect(row).toBeVisible();
+  const toggle = row.getByRole("button", { name: `More actions for ${channel}` });
+  const remove = row.getByRole("menuitem", { name: "Delete" });
+
+  // Opening puts the focus inside the menu, which is what lets Escape reach it.
+  await toggle.click();
+  await expect(remove).toBeVisible();
+  await expect(remove).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(remove).toHaveCount(0);
+
+  // A click anywhere else lands on the backdrop the open menu puts under
+  // itself, and closes it without doing anything to what was clicked.
+  await toggle.click();
+  await expect(remove).toBeVisible();
+  await page.locator(".split-btn__backdrop").click({ position: { x: 5, y: 5 } });
+  await expect(remove).toHaveCount(0);
+  await expect(row).toBeVisible();
+
+  // A destructive item asks in place, naming what is about to go, and can be
+  // backed out of — which leaves the button as it was and the row intact.
+  await toggle.click();
+  await remove.click();
+  await expect(row.getByText(`Delete '${channel}'?`)).toBeVisible();
+  await row.getByRole("button", { name: "Cancel" }).click();
+  await expect(toggle).toBeVisible();
+  await expect(row).toBeVisible();
+
+  await toggle.click();
+  await remove.click();
+  await row.getByRole("button", { name: "Delete it" }).click();
+  await expect(row).toHaveCount(0);
+
+  // Gone on the server too, not just from the list it was removed from.
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Channels", exact: true })).toBeVisible();
+  await expect(page.locator(".channel-row").filter({ hasText: channel })).toHaveCount(0);
 });
 
 test("anybody can mint an enrolment token for their own phone", async ({ page }) => {
