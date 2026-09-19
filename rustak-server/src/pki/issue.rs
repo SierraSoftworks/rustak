@@ -26,6 +26,7 @@ use rustls_pki_types::CertificateDer;
 
 use super::ca::CaMaterial;
 use super::csr::{CsrKey, ParsedCsr};
+use super::keys::{KeyType, generate_key};
 use super::pem::sha256_fingerprint;
 use super::serial::{random_serial, serial_hex};
 
@@ -206,6 +207,77 @@ pub fn issue_client_cert(
         der,
         not_before,
         not_after,
+    })
+}
+
+/// A key pair this server generated, together with the signing request that
+/// proves possession of it.
+///
+/// # Why this exists at all
+///
+/// Everywhere else, the device generates the key and we never see it — which is
+/// what makes `POST /api/v1/config-packages` refuse to build a keystore. The
+/// one exception is the CloudTAK hand-over
+/// ([`crate::identity::cloudtak`]), where the administrator is standing in for
+/// a client that has no way to enrol on its own. Keeping the generation here,
+/// beside the signing it feeds, means the exception is one function a reviewer
+/// can find rather than a key pair conjured up in a route.
+///
+/// The key is wrapped so that it is wiped when the last holder drops it and so
+/// that nothing can print it.
+pub struct GeneratedRequest {
+    /// The private key, PKCS#8 DER.
+    pub key_pkcs8: zeroize::Zeroizing<Vec<u8>>,
+
+    /// The signing request, DER, in the form [`super::csr::parse_csr`] reads.
+    pub csr_der: Vec<u8>,
+}
+
+impl std::fmt::Debug for GeneratedRequest {
+    /// Renders neither half: the request carries the public key, but a reader
+    /// of a log line has no business with either.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GeneratedRequest")
+            .field("key_pkcs8", &"***")
+            .field("csr_der", &format_args!("{} bytes", self.csr_der.len()))
+            .finish()
+    }
+}
+
+/// Generates a key pair and a signing request naming `username`.
+///
+/// The request is signed by the key it carries, so it goes through exactly the
+/// same [`super::csr::parse_csr`] and [`super::csr::CsrPolicy`] path an
+/// enrolling device's does — there is no second, laxer route into
+/// [`issue_client_cert`].
+///
+/// Blocking: RSA generation is hundreds of milliseconds of bignum arithmetic,
+/// so callers run this on [`tokio::task::spawn_blocking`].
+///
+/// # Errors
+///
+/// A [`human_errors::Kind::System`] error when the key or the request cannot be
+/// produced.
+#[instrument("pki.issue.generate_request", skip_all, fields(user = %username), err(Display))]
+pub fn generate_signing_request(
+    username: &Username,
+    kind: KeyType,
+) -> Result<GeneratedRequest, Error> {
+    let key = generate_key(kind)?;
+
+    // The subject here is thrown away by `issue_client_cert`, which builds its
+    // own; the common name is present so that the policy check reads the same
+    // request a device would have sent.
+    let mut params = rcgen::CertificateParams::default();
+    params.distinguished_name = distinguished_name(username, &[]);
+
+    let request = params
+        .serialize_request(&key)
+        .or_system_err(ADVICE_REPORT)?;
+
+    Ok(GeneratedRequest {
+        key_pkcs8: zeroize::Zeroizing::new(key.serialize_der()),
+        csr_der: request.der().to_vec(),
     })
 }
 

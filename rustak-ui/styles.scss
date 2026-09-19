@@ -2510,6 +2510,33 @@ footer {
 }
 
 // -----------------------------------------------------------------------------
+// 5.11 CloudTAK onboarding
+// -----------------------------------------------------------------------------
+
+// The five values one hand-over produces, inside the reveal that shows them.
+//
+// A column rather than the reveal's own two-up `secret-reveal__values`: three
+// of these are URLs that an operator compares character by character against
+// what they paste into CloudTAK, and a URL that wraps mid-column is one they
+// cannot check at a glance.
+.cloudtak-result {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+  flex: 1 1 22rem;
+}
+
+// The keystore button and the sentence that says the download works once.
+.cloudtak-download {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.85rem;
+  margin-top: 1rem;
+}
+
+// -----------------------------------------------------------------------------
 // 6. Responsive
 // -----------------------------------------------------------------------------
 

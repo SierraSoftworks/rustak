@@ -398,12 +398,62 @@ services:
       - rustak
 ```
 
+##### Onboarding CloudTAK
+
+CloudTAK's *Configure Server* page will not save without an administrator
+client certificate uploaded as a `.p12` **and** a username and password for the
+same account: it validates the pair over mTLS, runs the `/oauth/token` password
+grant with the credentials, and makes that account CloudTAK's system
+administrator for the life of the installation
+(`compat/cloudtak.md` § "The connectivity smoke test").
+
+rustak produces all of it in one action. In the admin UI, open the account
+CloudTAK should sign in as — or use **Create CloudTAK account** on the Users
+page, which makes a service account first — and choose **Onboard CloudTAK**. It
+answers with:
+
+* the three URLs above, ready to paste;
+* a client password for the account, shown once;
+* a `.p12` keystore and its passphrase, downloadable **once**, for ten minutes.
+
+The same thing from the API, for a deployment being built by a script:
+
+```bash
+curl -sS -X POST \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"credential":"mint"}' \
+  https://tak.example.com:8446/api/v1/users/cloudtak/cloudtak-onboarding
+```
+
+If the containers are published on other ports than the ones rustak binds —
+`28089`/`28443`/`28446` rather than `8089`/`8443`/`8446`, say — rustak has no
+way to know, so tell it and it echoes them back in the three URLs:
+
+```json
+{ "credential": "mint",
+  "host": "tak.example.com",
+  "ports": { "stream": 28089, "marti": 28443, "public": 28446 } }
+```
+
+**This is the one place rustak holds a device's private key**, and it is a
+deliberate exception. Everywhere else a certificate is issued against a signing
+request the client made and the key never leaves it, which is why
+`POST /api/v1/config-packages` refuses to build a keystore at all. CloudTAK
+cannot enrol, so here the key is generated on the server for one download,
+sealed at rest, deleted as the file is handed over, and expired after ten
+minutes whether or not anybody collected it. Both halves are written to the
+audit log (`cloudtak.onboarding.created`, `cloudtak.onboarding.downloaded`),
+the endpoint is administrator-only, and the certificate it issues is an
+ordinary client certificate: it appears in `GET /api/v1/certificates` and is
+ended by `POST /api/v1/certificates/{id}/revoke` like any other. Nothing — not
+the key, not the passphrase, not the password — is ever logged.
+
 After both containers are up, register the server in CloudTAK's own setup
-wizard (or its `PATCH /api/server`) with the three URLs from the table above.
+wizard (or its `PATCH /api/server`) with what the hand-over produced.
 The authoritative version of this compose stack — Postgres, CloudTAK's API,
-and the assertions that it actually works — lands as `interop/cloudtak/` in
-M4 (`docs/interop.md`); this snippet is the deployment-facing subset of the
-same shape.
+and the assertions that it actually works — is `interop/cloudtak/`
+(`docs/interop.md`), which drives this endpoint for the identity it configures
+CloudTAK with; this snippet is the deployment-facing subset of the same shape.
 
 ### As a systemd service
 

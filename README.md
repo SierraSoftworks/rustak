@@ -119,7 +119,9 @@ On first start rustak creates its CA, writes a one-time setup token to
 register a passkey (or configure OIDC), and the wizard closes itself for good. From the admin UI,
 create a user and mint an enrolment token: it is shown once, as a `tak://` QR code. Scanning it
 in ATAK's *Quick Connect* enrols the device and switches it to the encrypted stream. CloudTAK is
-connected by minting a client password for its account and entering the three URLs above.
+connected with one button — **Onboard CloudTAK** hands back the three URLs, a password and the
+`.p12` its *Configure Server* page insists on, as a one-shot download that expires in ten minutes;
+it is the single place rustak generates a client's key, and it says so.
 
 Docker, `docker-compose` with CloudTAK, a systemd unit, the TLS modes and backups are covered in
 [`docs/deployment.md`](docs/deployment.md).

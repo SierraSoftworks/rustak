@@ -9,6 +9,8 @@
 
 mod certificate;
 mod channels;
+mod cloudtak;
+mod cloudtak_result;
 mod config_package;
 mod credentials;
 mod devices;
@@ -18,6 +20,7 @@ mod profile;
 mod sign_in_methods;
 
 pub use channels::ChannelsPanel;
+pub use cloudtak::CloudTakPanel;
 pub use config_package::ConfigPackagePanel;
 pub use credentials::CredentialsPanel;
 pub use devices::DevicesPanel;

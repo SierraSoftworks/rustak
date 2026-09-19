@@ -5,6 +5,15 @@
 //! identity provider, or — for a sidecar — is given a credential of its own
 //! afterwards. An administrator who could set a secret at creation time would be
 //! an administrator who knows it.
+//!
+//! # The CloudTAK shortcut
+//!
+//! CloudTAK is a program, not a person, and what an operator setting one up
+//! actually wants is a service account and then the hand-over on its page —
+//! two steps that are always the same two steps. The second button does both,
+//! landing on the account's CloudTAK tab; it creates the same row "Create
+//! account" would with the kind set to Service, and nothing about the
+//! hand-over happens until somebody asks for it there.
 
 use rustak_api::{CreateUserRequest, UserKind, Username};
 use wasm_bindgen_futures::spawn_local;
@@ -12,8 +21,9 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Alert, AlertKind, Button, ButtonKind, Card, Field, Select, SelectOption, TextInput,
+    Alert, AlertKind, Button, ButtonGroup, ButtonKind, Card, Field, Select, SelectOption, TextInput,
 };
+use crate::util::{nav_href, urlencode, window};
 
 #[derive(Properties, PartialEq)]
 pub struct CreateUserProps {
@@ -36,44 +46,42 @@ pub fn create_user(props: &CreateUserProps) -> Html {
         .then(|| parsed.as_ref().err().map(|err| err.to_string()))
         .flatten();
 
+    let fields = Fields {
+        username: username.clone(),
+        display_name: display_name.clone(),
+        email: email.clone(),
+    };
+
     let submit = {
-        let (username, display_name, email, kind) = (
-            username.clone(),
-            display_name.clone(),
-            email.clone(),
-            kind.clone(),
-        );
+        let (fields, kind) = (fields.clone(), kind.clone());
         let (busy, error, on_created) = (busy.clone(), error.clone(), props.on_created.clone());
 
         Callback::from(move |_: MouseEvent| {
-            let Ok(parsed) = Username::parse(&username) else {
-                return;
-            };
-            let (username, display_name, email) =
-                (username.clone(), display_name.clone(), email.clone());
-            let (busy, error, on_created) = (busy.clone(), error.clone(), on_created.clone());
+            let on_created = on_created.clone();
 
-            let request = CreateUserRequest {
-                username: parsed,
-                display_name: some_trimmed(&display_name),
-                email: some_trimmed(&email),
-                kind: *kind,
-            };
+            create(
+                &fields,
+                *kind,
+                &busy,
+                &error,
+                Callback::from(move |_: Username| on_created.emit(())),
+            );
+        })
+    };
 
-            busy.set(true);
-            spawn_local(async move {
-                match api::users::create(&request).await {
-                    Ok(_) => {
-                        error.set(None);
-                        username.set(String::new());
-                        display_name.set(String::new());
-                        email.set(String::new());
-                        on_created.emit(());
-                    }
-                    Err(err) => error.set(Some(err.to_string())),
-                }
-                busy.set(false);
-            });
+    let onboard = {
+        let (fields, busy, error) = (fields.clone(), busy.clone(), error.clone());
+
+        Callback::from(move |_: MouseEvent| {
+            create(
+                &fields,
+                // CloudTAK never sees a sign-in page; it presents a certificate
+                // and a password, which is what a service account is for.
+                UserKind::Service,
+                &busy,
+                &error,
+                Callback::from(open_cloudtak_tab),
+            );
         })
     };
 
@@ -162,19 +170,91 @@ pub fn create_user(props: &CreateUserProps) -> Html {
                 </Field>
 
                 <div class="inline-form__action">
-                    <Button
-                        kind={ButtonKind::Primary}
-                        busy={*busy}
-                        disabled={parsed.is_err()}
-                        title={parsed.is_err().then_some("Give it a valid username first.")}
-                        onclick={submit}
-                    >
-                        { "Create account" }
-                    </Button>
+                    <ButtonGroup label="Create">
+                        <Button
+                            kind={ButtonKind::Primary}
+                            busy={*busy}
+                            disabled={parsed.is_err()}
+                            title={parsed.is_err().then_some("Give it a valid username first.")}
+                            onclick={submit}
+                        >
+                            { "Create account" }
+                        </Button>
+                        <Button
+                            busy={*busy}
+                            disabled={parsed.is_err()}
+                            title={parsed.is_err().then_some("Give it a valid username first.")}
+                            onclick={onboard}
+                        >
+                            { "Create CloudTAK account" }
+                        </Button>
+                    </ButtonGroup>
                 </div>
             </div>
         </Card>
     }
+}
+
+/// The three text boxes, so that both buttons read the same ones and clear the
+/// same ones.
+#[derive(Clone)]
+struct Fields {
+    username: UseStateHandle<String>,
+    display_name: UseStateHandle<String>,
+    email: UseStateHandle<String>,
+}
+
+/// Creates the account and hands its name to `then`.
+///
+/// The boxes are cleared only on success, so a refused name is still there to
+/// correct rather than gone with the error that explained it.
+fn create(
+    fields: &Fields,
+    kind: UserKind,
+    busy: &UseStateHandle<bool>,
+    error: &UseStateHandle<Option<String>>,
+    then: Callback<Username>,
+) {
+    let Ok(parsed) = Username::parse(&fields.username) else {
+        return;
+    };
+
+    let request = CreateUserRequest {
+        username: parsed,
+        display_name: some_trimmed(&fields.display_name),
+        email: some_trimmed(&fields.email),
+        kind,
+    };
+
+    let (fields, busy, error) = (fields.clone(), busy.clone(), error.clone());
+
+    busy.set(true);
+    spawn_local(async move {
+        match api::users::create(&request).await {
+            Ok(created) => {
+                error.set(None);
+                fields.username.set(String::new());
+                fields.display_name.set(String::new());
+                fields.email.set(String::new());
+                then.emit(created.username);
+            }
+            Err(err) => error.set(Some(err.to_string())),
+        }
+        busy.set(false);
+    });
+}
+
+/// Opens the new account's CloudTAK tab.
+///
+/// A whole-page navigation rather than a router push, for the same reason the
+/// detail page's back link is one: demo mode lives in the query string, and a
+/// client-side navigation replaces the URL with one that has lost it.
+fn open_cloudtak_tab(username: Username) {
+    let path = nav_href(&format!("/admin/users/{}", urlencode(username.as_str())));
+
+    // The fragment goes after the query, which is why it is appended here
+    // rather than passed through `nav_href`.
+    let _ = window().location().set_href(&format!("{path}#cloudtak"));
 }
 
 /// An empty box means "nothing", not an empty string.

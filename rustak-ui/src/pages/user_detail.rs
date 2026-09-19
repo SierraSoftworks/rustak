@@ -1,11 +1,19 @@
-//! One account, in five views.
+//! One account, in six views.
 //!
 //! An operator dealing with a person deals with several different things about
 //! them — who they are, what they carry, what they can present, what they can
 //! see, and how to get a client configured when it cannot enrol — and those
-//! are five endpoints with five shapes. Tabs rather than one long page,
+//! are six endpoints with six shapes. Tabs rather than one long page,
 //! because the reason somebody opened this is usually exactly one of them and
 //! the rest are in the way.
+//!
+//! # Why one tab is addressable and the others are not
+//!
+//! The Users page offers "Create CloudTAK account", which creates the account
+//! and then has somewhere to send the operator. A fragment (`#cloudtak`) is
+//! what makes that possible without turning every tab into a route: it is read
+//! once, when the page mounts, and never written — so a reload lands where the
+//! link did and clicking between tabs afterwards behaves as it always has.
 
 use rustak_api::{User, Username};
 use yew::prelude::*;
@@ -18,7 +26,7 @@ use crate::util::nav_href;
 
 use super::load::{use_refresh_action, use_resource};
 use super::panels::{
-    ChannelsPanel, ConfigPackagePanel, CredentialsPanel, DevicesPanel, ProfilePanel,
+    ChannelsPanel, CloudTakPanel, ConfigPackagePanel, CredentialsPanel, DevicesPanel, ProfilePanel,
 };
 
 /// The views this page offers, in the order an operator works through them.
@@ -29,6 +37,7 @@ enum Tab {
     Credentials,
     Channels,
     Package,
+    CloudTak,
 }
 
 impl Tab {
@@ -38,6 +47,7 @@ impl Tab {
         Self::Credentials,
         Self::Channels,
         Self::Package,
+        Self::CloudTak,
     ];
 
     fn label(self) -> &'static str {
@@ -47,7 +57,18 @@ impl Tab {
             Self::Credentials => "Credentials",
             Self::Channels => "Channels",
             Self::Package => "Package",
+            Self::CloudTak => "CloudTAK",
         }
+    }
+
+    /// The tab a `#fragment` names, where it names one.
+    fn from_fragment(fragment: &str) -> Option<Self> {
+        let wanted = fragment.trim_start_matches('#').to_ascii_lowercase();
+
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|tab| tab.label().to_ascii_lowercase() == wanted)
     }
 }
 
@@ -89,7 +110,10 @@ fn detail(props: &DetailProps) -> Html {
     });
     use_refresh_action(user.reload.clone(), user.busy);
 
-    let tab = use_state(|| Tab::Profile);
+    // Read once, on mount: the fragment says where to open, not where the
+    // operator is now, and rewriting it on every click would make the back
+    // button walk through tabs.
+    let tab = use_state(opening_tab);
 
     match (&user.data, &user.error) {
         (None, None) => html! { <LoadingNote /> },
@@ -127,7 +151,19 @@ fn view(tab: Tab, user: &User, reload: &Callback<()>) -> Html {
         },
         Tab::Channels => html! { <ChannelsPanel username={user.username.clone()} /> },
         Tab::Package => html! { <ConfigPackagePanel username={user.username.clone()} /> },
+        Tab::CloudTak => html! { <CloudTakPanel username={user.username.clone()} /> },
     }
+}
+
+/// The tab this page opens on, from the URL fragment where there is one.
+fn opening_tab() -> Tab {
+    crate::util::window()
+        .location()
+        .hash()
+        .ok()
+        .as_deref()
+        .and_then(Tab::from_fragment)
+        .unwrap_or(Tab::Profile)
 }
 
 #[derive(Properties, PartialEq)]

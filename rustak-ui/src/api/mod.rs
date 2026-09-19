@@ -21,6 +21,7 @@ pub mod audit;
 pub mod auth;
 pub mod certificates;
 pub mod clients;
+pub mod cloudtak;
 pub mod config_packages;
 pub mod cot;
 pub mod credentials;

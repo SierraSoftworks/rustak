@@ -21,8 +21,14 @@
 //! direction: ending what an account already has open, which taking a
 //! credential or an account away has to do as well as refusing the next
 //! request.
+//!
+//! [`cloudtak`] sits slightly apart: it is the one hand-over in which this
+//! server generates a client's private key, and it is kept here — beside
+//! [`credentials`], whose minting it performs — rather than under `pki` so that
+//! the exception reads as something an administrator does to an account.
 
 pub mod active;
+pub mod cloudtak;
 pub mod credentials;
 pub mod devices;
 pub mod groups;

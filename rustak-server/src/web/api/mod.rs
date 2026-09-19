@@ -31,6 +31,7 @@ pub mod audit;
 pub mod auth;
 pub mod certificates;
 pub mod clients;
+pub mod cloudtak_onboarding;
 pub mod config_packages;
 pub mod cot;
 pub mod credentials;
@@ -147,6 +148,10 @@ pub fn configure() -> actix_web::Scope<
             .configure(missions::routes)
             .configure(profiles::routes)
             .configure(config_packages::routes)
+            // The CloudTAK hand-over, whose download sits on a literal segment
+            // of its own so the `{id}.p12` pattern never competes with a bare
+            // `{id}` elsewhere.
+            .configure(cloudtak_onboarding::routes)
             // Stored files, live connections and relayed CoT, each registering
             // its literal segments ahead of the `{hash}`/`{uid}` that would
             // otherwise swallow them.
@@ -225,6 +230,8 @@ mod tests {
         ("POST", "/api/v1/users"),
         ("GET", "/api/v1/users/ada"),
         ("PATCH", "/api/v1/users/ada"),
+        ("POST", "/api/v1/users/ada/cloudtak-onboarding"),
+        ("GET", "/api/v1/cloudtak-onboarding/abc.p12"),
         ("GET", "/api/v1/users/ada/groups"),
         ("PUT", "/api/v1/users/ada/groups"),
         ("GET", "/api/v1/groups"),

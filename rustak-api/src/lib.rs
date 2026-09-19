@@ -34,6 +34,7 @@ pub mod audit;
 pub mod auth;
 pub mod certificate;
 pub mod client;
+pub mod cloudtak;
 pub mod config_package;
 pub mod cot;
 pub mod credential;
@@ -61,6 +62,10 @@ pub use certificate::{
     RevokeCertificateRequest,
 };
 pub use client::{ClientHistoryEntry, ConnectedClient, IncognitoRequest, StreamStatus};
+pub use cloudtak::{
+    CloudTakOnboarding, CloudTakOnboardingRequest, CloudTakPorts, CloudTakUrls,
+    OnboardingCredential,
+};
 pub use config_package::{ConfigPackageRequest, ConfigPackageVariant};
 pub use cot::{CotDetail, CotSummary};
 pub use credential::{

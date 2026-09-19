@@ -16,6 +16,8 @@
 #[cfg(debug_assertions)]
 mod certificates;
 #[cfg(debug_assertions)]
+mod cloudtak;
+#[cfg(debug_assertions)]
 mod data;
 #[cfg(debug_assertions)]
 mod missions;
@@ -28,6 +30,8 @@ mod store;
 
 #[cfg(debug_assertions)]
 pub use certificates::*;
+#[cfg(debug_assertions)]
+pub use cloudtak::*;
 #[cfg(debug_assertions)]
 pub use missions::*;
 #[cfg(debug_assertions)]

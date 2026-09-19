@@ -39,6 +39,15 @@ export const SURFACES = {
     path: "/Marti/api/missions",
     todo: "TODO(M4): the mission API is not served yet — Data Sync lands in M4 (M4-01, M4-02).",
   },
+  cloudtakOnboarding: {
+    on: "webtak",
+    // The *download*, not the POST that creates a hand-over: rustak answers a
+    // path it does not recognise with the admin UI's single-page shell, so a
+    // GET on a POST-only route is `200 text/html` rather than `405` and the
+    // probe would read it as absent. An unknown download id is a clean `410`.
+    path: "/api/v1/cloudtak-onboarding/probe.p12",
+    todo: "TODO(M5-03): POST /api/v1/users/{username}/cloudtak-onboarding is not served yet — the one-action hand-over lands with M5-03; until then this suite builds CloudTAK's admin identity with a CSR by hand.",
+  },
   files: {
     on: "webtak",
     path: "/Marti/api/sync/search",

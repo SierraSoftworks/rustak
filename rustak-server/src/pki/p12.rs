@@ -93,6 +93,25 @@ impl<'a> P12Options<'a> {
             legacy: pki.p12_legacy,
         }
     }
+
+    /// The options for a bundle handed to one person, once, under a passphrase
+    /// generated for that hand-over.
+    ///
+    /// Unlike [`P12Options::from_config`], `legacy` is not a setting here. The
+    /// CloudTAK hand-over exists so that CloudTAK's own parser
+    /// (`@tak-ps/node-p12`) can read the file, and that parser reads PBES1 with
+    /// 3DES and a SHA-1 MAC and nothing else — a bundle written with the modern
+    /// algorithms is one the operator cannot upload, whatever `p12_legacy`
+    /// says. The confidentiality argument is the other way round from the
+    /// shared `atakatak` file too: this passphrase *is* secret, it is shown
+    /// once beside the download, and it is never stored.
+    pub fn handover(password: &'a str, friendly_name: &'a str) -> Self {
+        Self {
+            password,
+            friendly_name,
+            legacy: true,
+        }
+    }
 }
 
 /// The keystore a device authenticates with: its key, its certificate, and the

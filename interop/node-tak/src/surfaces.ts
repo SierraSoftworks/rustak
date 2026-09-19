@@ -17,6 +17,8 @@
  * - **M3-02** the device profiles ATAK fetches on enrolment and on connect.
  * - **M3** data packages (`/Marti/sync/*`, files metadata).
  * - **M4** Data Sync (the mission API).
+ * - **M5-03** the CloudTAK hand-over, which is `/api/v1` rather than Marti —
+ *   the one rustak endpoint that generates a client's private key.
  */
 
 import type { SurfaceProbe } from "../../shared/src/probe.js";
@@ -79,6 +81,15 @@ export const SURFACES = {
     on: "webtak",
     path: "/Marti/api/sync/search",
     todo: "TODO(M3): /Marti/sync/* and the files metadata API are not served yet — data packages land in M3.",
+  },
+  cloudtakOnboarding: {
+    on: "webtak",
+    // The *download*, not the POST that creates a hand-over: rustak answers a
+    // path it does not recognise with the admin UI's single-page shell, so a
+    // GET on a POST-only route is `200 text/html` rather than `405` and the
+    // probe would read it as absent. An unknown download id is a clean `410`.
+    path: "/api/v1/cloudtak-onboarding/probe.p12",
+    todo: "TODO(M5-03): POST /api/v1/users/{username}/cloudtak-onboarding is not served yet — the CloudTAK hand-over lands with M5-03 (web/api/cloudtak_onboarding.rs).",
   },
   stream: {
     on: "stream",

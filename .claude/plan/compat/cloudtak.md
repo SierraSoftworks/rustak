@@ -53,6 +53,38 @@ grant and enrollment. An operator supplying `auth` without credentials is refuse
 `Initial configuration must include valid TAK Username & Password to set System Administrator`, and
 once `server.auth` is set the endpoint requires an administrator bearer token like any other.
 
+**rustak produces the whole of it in one call** (M5-03):
+`POST /api/v1/users/{username}/cloudtak-onboarding`, administrator-only, answers the three URLs, a
+freshly minted `ClientPassword` and a one-shot `.p12` download with its passphrase. This is the
+**one deliberate exception** to "rustak never holds a device's private key": CloudTAK takes an
+uploaded keystore and cannot enrol, so the key is generated in memory, issued through the ordinary
+`pki::issue` path with `CN=<username>`, sealed with AES-GCM in the key/value store under a random
+download id, handed over once and deleted — with a ten-minute expiry whether or not it was
+collected. The certificate is recorded like any other client certificate, with
+`issued_via = 'cloudtak_onboarding'` so the exception is countable in the register, and it is
+revoked through `POST /api/v1/certificates/{id}/revoke`.
+
+Two details the bundle must get right, both because of `@tak-ps/node-p12`
+(node-forge underneath), which is what CloudTAK parses the upload with:
+
+* **the legacy algorithms only** — PBES1 with 3DES and a SHA-1 MAC. A bundle written with PBES2
+  throws in CloudTAK's parser, so `p12_legacy` is not consulted here: the hand-over is always
+  legacy (`pki::p12::P12Options::handover`).
+* **the leaf first.** `convertToPem` takes the *first* `certBag` and reads its common name, so a
+  chain led by the authority would give CloudTAK the CA's name for the connection instead of the
+  account's.
+
+And one quirk of the library that is **not** ours to work around: `convertToPem` runs node-forge's
+output through `.replace(/\r\n/g, "")`, which *removes* the line breaks rather than converting
+them, so the PEM it returns is a single line and Node's own TLS refuses it with
+`ERR_OSSL_PEM_NO_START_LINE`. It does that whatever produced the file. The interop scenario puts the
+lines back before using the pair; a server that emitted something odd to suit one consumer's
+formatting bug would be a server no other consumer could read. Found by M5-03.
+
+Exercised end to end in `interop/node-tak/tests/cloudtak-onboarding.test.ts`, which parses the
+bundle with CloudTAK's own library and then uses the PEM for the mTLS `/Marti/api/version` probe;
+`interop/cloudtak` uses the same endpoint for the identity it configures CloudTAK with.
+
 ## 3. TLS trust is asymmetric across the three URLs
 
 - `api` (mTLS, `:8443`) and the stream (`:8089`): CloudTAK connects with `rejectUnauthorized: false`

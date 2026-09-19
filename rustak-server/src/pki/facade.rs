@@ -58,6 +58,12 @@ pub enum IssuedVia {
 
     /// An administrator built a configuration package.
     AdminPackage,
+
+    /// An administrator onboarded CloudTAK, which is the one flow where the
+    /// key was generated here rather than on the client
+    /// ([`crate::identity::cloudtak`]). Recorded separately from
+    /// [`IssuedVia::AdminPackage`] so that the exception is countable.
+    CloudTakOnboarding,
 }
 
 impl IssuedVia {
@@ -68,13 +74,16 @@ impl IssuedVia {
             Self::EnrollV2Xml => "enroll_v2_xml",
             Self::EnrollV1P12 => "enroll_v1_p12",
             Self::AdminPackage => "admin_package",
+            Self::CloudTakOnboarding => rustak_api::cloudtak::ISSUED_VIA,
         }
     }
 
     /// How the certificate came to exist, as the `source` column records it.
     fn source(self) -> CertificateSource {
         match self {
-            Self::AdminPackage => CertificateSource::AdminPackage,
+            // Both mean "the key was generated on this server", which is what
+            // the source column is there to tell an administrator.
+            Self::AdminPackage | Self::CloudTakOnboarding => CertificateSource::AdminPackage,
             _ => CertificateSource::Enrollment,
         }
     }
