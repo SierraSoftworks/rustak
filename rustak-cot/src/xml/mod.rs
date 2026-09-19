@@ -22,7 +22,7 @@ mod entity;
 mod parse;
 mod write;
 
-pub use parse::{parse, parse_fragment, parse_str};
+pub use parse::{is_name, is_name_char, parse, parse_fragment, parse_str};
 pub use write::{format_f64, write, write_fragment, write_into};
 
 /// The declaration every outbound message starts with.

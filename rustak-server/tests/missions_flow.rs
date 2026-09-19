@@ -550,6 +550,81 @@ async fn an_empty_mission_still_answers_a_cot_document() {
 }
 
 #[actix_web::test]
+async fn a_filed_item_that_will_not_parse_costs_only_itself_not_the_document() {
+    use std::sync::Arc;
+
+    use rustak_cot::codec::EncodedEvent;
+    use rustak_cot::{Element, Event};
+    use rustak_server::cot_store::{CotRecord, latest::upsert_batch};
+    use rustak_server::db::repos::MissionUidRow;
+    use rustak_server::prelude::*;
+
+    let server = TestServer::start().await;
+    let (token, body) = created(&server, "Alpha%20Team").await;
+    let guid = body["data"][0]["guid"].as_str().unwrap().to_string();
+    let mission_id = server
+        .db()
+        .missions()
+        .by_guid(guid.parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap()
+        .id;
+
+    // The row a build before the parser refused non-XML names would have
+    // stored: rendered by us, and unreadable to CloudTAK's parser.
+    let mut stale = Event::builder("a-f-G-U-C", "UID-STALE")
+        .point(51.5, -0.12)
+        .build();
+    stale.detail.push(Element::new("2nd"));
+    let good = Event::builder("a-f-G-U-C", "UID-GOOD")
+        .point(51.6, -0.13)
+        .build();
+
+    let principal = Principal::new(
+        UserId::from(1),
+        Username::parse("grace").unwrap(),
+        PrincipalKind::Person,
+        AuthMethod::SetupToken,
+    );
+    for event in [stale, good] {
+        let uid = event.uid.clone();
+        let record = CotRecord {
+            user_id: None,
+            ..CotRecord::new(Arc::new(EncodedEvent::new(event)), &principal, None)
+        };
+        upsert_batch(server.db(), vec![record]).await.unwrap();
+        server
+            .db()
+            .mission_contents()
+            .upsert_uid(MissionUidRow::new(mission_id, uid, chrono::Utc::now()))
+            .await
+            .unwrap();
+    }
+
+    let app = app!(server);
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!("/Marti/api/missions/guid/{guid}/cot"))
+            .insert_header(("authorization", format!("Bearer {token}")))
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(response.status().as_u16(), 200);
+    let text = String::from_utf8(test::read_body(response).await.to_vec()).unwrap();
+
+    assert!(text.contains("uid=\"UID-GOOD\""), "{text}");
+    assert!(!text.contains("UID-STALE"), "{text}");
+    assert!(!text.contains("<2nd"), "{text}");
+    // What CloudTAK does with it: parse the wrapper as one document.
+    let events = text.strip_prefix(rustak_server::missions::changes::EVENTS_PROLOGUE);
+    let inner = events.unwrap().strip_suffix("</events>").unwrap().trim();
+    rustak_cot::xml::parse_str(inner).expect("every element in the document parses");
+}
+
+#[actix_web::test]
 async fn keywords_are_replaced_and_removed_one_at_a_time() {
     let server = TestServer::start().await;
     let (token, _) = created(&server, "Alpha%20Team").await;

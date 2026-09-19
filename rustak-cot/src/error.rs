@@ -60,6 +60,17 @@ pub enum ParseError {
     TooLarge,
     /// The `<detail>` tree nested deeper than [`crate::xml::MAX_DEPTH`].
     TooDeep,
+    /// An element or attribute name is not an XML `Name`.
+    ///
+    /// The parser underneath accepts `<2nd/>` and `<a 1x=""/>`, and would let
+    /// them through to be written back out verbatim. A strict parser on the
+    /// receiving end — CloudTAK's, for one — then rejects not the one event but
+    /// the whole `<events>` document it was wrapped in. Refused here, so that
+    /// nothing this crate re-serialises is markup another parser will not read.
+    BadName {
+        /// The name as it appeared.
+        name: String,
+    },
 }
 
 impl fmt::Display for ParseError {
@@ -77,6 +88,7 @@ impl fmt::Display for ParseError {
             Self::Utf8 => f.write_str("the message is not valid UTF-8"),
             Self::TooLarge => f.write_str("the message is larger than the configured limit"),
             Self::TooDeep => f.write_str("the <detail> tree is nested too deeply"),
+            Self::BadName { name } => write!(f, "{name:?} is not a valid XML name"),
         }
     }
 }

@@ -145,7 +145,7 @@ pub async fn history(
         return Ok(empty_not_found());
     }
 
-    Ok(response::xml(wrap(events.iter().map(rendered))))
+    Ok(response::xml(wrap(events.iter().filter_map(rendered))))
 }
 
 /// `GET|POST /Marti/api/cot` — the latest event of each of several uids.
@@ -177,8 +177,9 @@ pub async fn by_uids(
     for uid in uids.iter().take(MAX_ROWS as usize) {
         if let Some(row) = latest::latest_event(context.db(), uid).await?
             && visible(&row, &who)
+            && let Some(element) = event_element(&row.xml)
         {
-            rendered.push(event_element(&row.xml));
+            rendered.push(element);
         }
     }
 
@@ -222,7 +223,7 @@ pub async fn situational_awareness(
         .iter()
         .filter(|row| visible(row, &who))
         .filter(|row| bounds.is_none_or(|bounds| inside(row, bounds)))
-        .map(|row| event_element(&row.xml))
+        .filter_map(|row| event_element(&row.xml))
         .collect();
 
     if rendered.is_empty() {
@@ -320,7 +321,10 @@ fn wrap(elements: impl Iterator<Item = String>) -> String {
 }
 
 /// One decoded history event as an element of an `<events>` document.
-fn rendered(event: &Event) -> String {
+///
+/// `None` for a segment written before the parser refused a name a strict
+/// reader will not accept; see [`event_element`].
+fn rendered(event: &Event) -> Option<String> {
     event_element(&String::from_utf8_lossy(&rustak_cot::xml::write(event)))
 }
 

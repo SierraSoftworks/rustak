@@ -24,6 +24,7 @@ use std::collections::HashSet;
 
 use chrono::{DateTime, Utc};
 use rustak_cot::Event;
+use tracing::warn;
 
 use crate::db::repos::MissionChangeRow;
 use crate::marti::{MartiError, time};
@@ -253,8 +254,10 @@ impl MissionService {
                 continue;
             }
 
-            if let Some(xml) = crate::cot_store::latest_xml(self.db(), &item.uid).await? {
-                document.push_str(&event_element(&xml));
+            if let Some(xml) = crate::cot_store::latest_xml(self.db(), &item.uid).await?
+                && let Some(element) = event_element(&xml)
+            {
+                document.push_str(&element);
                 document.push('\n');
             }
         }
@@ -270,31 +273,58 @@ impl MissionService {
 /// `<marti>` says who the sender addressed the event to, which is a fact about
 /// one delivery rather than about the object — replaying it to a client reading
 /// a mission would tell them about recipients they have nothing to do with.
-/// An event we cannot re-parse is passed through unchanged rather than dropped.
+/// An event we cannot re-parse is passed through unchanged rather than dropped:
+/// this renders one event on its own, and the caller asked for that one.
 ///
 /// The result is a whole document, declaration included. Use [`event_element`]
 /// for a copy that goes inside an `<events>` wrapper.
 pub fn without_marti(xml: &str) -> String {
-    let Ok(mut event) = rustak_cot::xml::parse_str(xml) else {
-        return xml.to_string();
-    };
-
-    event.detail.remove_all("marti");
-
-    String::from_utf8_lossy(&rustak_cot::xml::write(&event)).into_owned()
+    match stripped_of_marti(xml) {
+        Some(stripped) => stripped,
+        None => xml.to_string(),
+    }
 }
 
-/// The same, as an element rather than a document.
+/// The same, as an element rather than a document — or nothing.
 ///
 /// Every `<events>` document — `{n}/cot`, `/Marti/api/cot/xml/{uid}/all`,
 /// `/Marti/api/cot` and `/Marti/api/cot/sa` — is built from this, because a
 /// stored row is a document and a wrapper holds elements.
-pub fn event_element(xml: &str) -> String {
-    let stripped = without_marti(xml);
+///
+/// # Why a row that will not parse is left out rather than passed through
+///
+/// A reader parses the wrapper as one document, and CloudTAK's parser gives up
+/// on the whole of it at the first thing it will not read — every feature on a
+/// mission layer goes missing, and the caller sees a `500` from CloudTAK rather
+/// than the one row at fault. A stored row is this server's own rendering, so
+/// one that no longer parses was written before a rule the parser now applies
+/// (an element named `<2nd/>`, say) and is the very row a strict parser would
+/// choke on. It is logged and skipped; the rest of the document still renders.
+pub fn event_element(xml: &str) -> Option<String> {
+    let Some(stripped) = stripped_of_marti(xml) else {
+        let uid = rustak_cot::xml::parse_str(xml).map_or_else(|_| None, |event| Some(event.uid));
+        warn!(
+            ?uid,
+            "A stored event no longer parses and was left out of an <events> document."
+        );
 
-    stripped
-        .strip_prefix(EVENT_DECLARATION)
-        .map_or(stripped.clone(), |rest| rest.trim_start().to_string())
+        return None;
+    };
+
+    Some(
+        stripped
+            .strip_prefix(EVENT_DECLARATION)
+            .map_or_else(|| stripped.clone(), |rest| rest.trim_start().to_string()),
+    )
+}
+
+/// The re-rendered document without `<marti>`, when the input parses.
+fn stripped_of_marti(xml: &str) -> Option<String> {
+    let mut event = rustak_cot::xml::parse_str(xml).ok()?;
+
+    event.detail.remove_all("marti");
+
+    Some(String::from_utf8_lossy(&rustak_cot::xml::write(&event)).into_owned())
 }
 
 /// The rendering fields of an event, for callers outside this module.
@@ -424,7 +454,40 @@ mod tests {
     }
 
     #[test]
-    fn an_event_we_cannot_parse_is_passed_through() {
+    fn an_event_we_cannot_parse_is_passed_through_on_its_own() {
         assert_eq!(without_marti("not xml"), "not xml");
+    }
+
+    #[test]
+    fn an_event_we_cannot_parse_is_left_out_of_a_wrapper() {
+        // Written by a build that did not yet refuse names a strict parser
+        // will not read; passing it through would cost the reader every other
+        // event in the document.
+        let stale_row = concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<event version=\"2.0\" uid=\"ANDROID-1\" type=\"a-f-G\" time=\"2026-01-01T00:00:00Z\" ",
+            "start=\"2026-01-01T00:00:00Z\" stale=\"2026-01-01T00:05:00Z\">",
+            "<point lat=\"1.0\" lon=\"2.0\" hae=\"0.0\" ce=\"9999999.0\" le=\"9999999.0\"/>",
+            "<detail><2nd/></detail></event>",
+        );
+
+        assert_eq!(event_element(stale_row), None);
+        assert_eq!(event_element("not xml"), None);
+    }
+
+    #[test]
+    fn an_element_carries_no_declaration_and_no_marti() {
+        let element = event_element(concat!(
+            "<event version='2.0' uid='ANDROID-1' type='a-f-G' time='2026-01-01T00:00:00Z' ",
+            "start='2026-01-01T00:00:00Z' stale='2026-01-01T00:05:00Z'>",
+            "<point lat='1' lon='2' hae='0' ce='9999999' le='9999999'/>",
+            "<detail><contact callsign='ALPHA'/><marti><dest mission='Alpha'/></marti></detail>",
+            "</event>",
+        ))
+        .unwrap();
+
+        assert!(element.starts_with("<event "), "{element}");
+        assert!(!element.contains("marti"), "{element}");
+        assert!(element.contains("ALPHA"), "{element}");
     }
 }

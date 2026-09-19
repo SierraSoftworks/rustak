@@ -207,12 +207,60 @@ fn read_attrs(tag: &BytesStart<'_>) -> Result<Vec<(String, String)>, ParseError>
         .map(|attribute| {
             let attribute =
                 attribute.map_err(|err| ParseError::Xml(quick_xml::Error::InvalidAttr(err)))?;
-            Ok((
-                attribute.key.into_inner().to_owned(),
-                unescape_attr(&attribute.value),
-            ))
+            let key = attribute.key.into_inner();
+            check_name(key)?;
+            Ok((key.to_owned(), unescape_attr(&attribute.value)))
         })
         .collect()
+}
+
+/// Refuses a name that is not an XML 1.0 `Name`.
+///
+/// quick-xml reads names by delimiter and never checks them, so `<2nd/>` and
+/// `<a 1x=""/>` parse here and are written back out as they came. A conforming
+/// parser reading the result stops at the first such name — and when the event
+/// is one of many inside an `<events>` document, that one name costs the
+/// reader every event in the document. The productions are the ones from the
+/// XML 1.0 specification, fifth edition, §2.3.
+fn check_name(name: &str) -> Result<(), ParseError> {
+    if is_name(name) {
+        Ok(())
+    } else {
+        Err(ParseError::BadName {
+            name: name.to_owned(),
+        })
+    }
+}
+
+/// Whether `name` is an XML 1.0 `Name`, as [`parse_str`] requires of every
+/// element and attribute.
+///
+/// For a caller that *builds* a name out of free text — a server's display
+/// name, say — and has to know whether the result will survive a strict parser.
+#[must_use]
+pub fn is_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| is_name_start(first) && chars.all(is_name_char))
+}
+
+/// `NameChar` from XML 1.0 §2.3: what may follow the first character.
+#[must_use]
+pub fn is_name_char(c: char) -> bool {
+    is_name_start(c)
+        || matches!(c,
+            '-' | '.' | '0'..='9' | '\u{B7}' | '\u{300}'..='\u{36F}' | '\u{203F}'..='\u{2040}')
+}
+
+/// `NameStartChar` from XML 1.0 §2.3.
+fn is_name_start(c: char) -> bool {
+    matches!(c,
+        ':' | '_' | 'A'..='Z' | 'a'..='z'
+        | '\u{C0}'..='\u{D6}' | '\u{D8}'..='\u{F6}' | '\u{F8}'..='\u{2FF}'
+        | '\u{370}'..='\u{37D}' | '\u{37F}'..='\u{1FFF}' | '\u{200C}'..='\u{200D}'
+        | '\u{2070}'..='\u{218F}' | '\u{2C00}'..='\u{2FEF}' | '\u{3001}'..='\u{D7FF}'
+        | '\u{F900}'..='\u{FDCF}' | '\u{FDF0}'..='\u{FFFD}' | '\u{10000}'..='\u{EFFFF}')
 }
 
 /// Reads children until the element's end tag, one level below `depth`.
@@ -279,8 +327,11 @@ impl Pending {
 }
 
 fn element_of(tag: &BytesStart<'_>) -> Result<Element, ParseError> {
+    let name = tag.name().into_inner();
+    check_name(name)?;
+
     Ok(Element {
-        name: tag.name().into_inner().to_owned(),
+        name: name.to_owned(),
         attrs: read_attrs(tag)?,
         children: Vec::new(),
     })
@@ -461,6 +512,57 @@ mod tests {
         ] {
             assert!(parse_str(text).unwrap().detail.is_empty(), "{text}");
         }
+    }
+
+    #[test]
+    fn a_name_no_conforming_parser_would_read_is_refused() {
+        // Each of these parses in quick-xml and is rejected by sax, which is
+        // what CloudTAK reads an `<events>` document with — and sax gives up on
+        // the whole document, not the one event.
+        for (text, bad) in [
+            (
+                r#"<event uid="A"><point lat="0" lon="0"/><detail><2nd/></detail></event>"#,
+                "2nd",
+            ),
+            (
+                r#"<event uid="A"><point lat="0" lon="0"/><detail><a 1x="v"/></detail></event>"#,
+                "1x",
+            ),
+            (
+                r#"<event uid="A"><point lat="0" lon="0"/><detail><-dash/></detail></event>"#,
+                "-dash",
+            ),
+            (
+                r#"<event uid="A" 9lives="v"><point lat="0" lon="0"/></event>"#,
+                "9lives",
+            ),
+            (
+                r#"<event uid="A"><point lat="0" lon="0" .ce="1"/></event>"#,
+                ".ce",
+            ),
+        ] {
+            match parse_str(text) {
+                Err(ParseError::BadName { name }) => assert_eq!(name, bad, "{text}"),
+                other => panic!("{text}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn every_name_a_tak_client_actually_sends_is_still_accepted() {
+        let text = concat!(
+            r#"<event uid="A" releasableTo="x" _hidden="1"><point lat="0" lon="0"/><detail>"#,
+            r#"<__group name="Cyan" role="Team Member"/>"#,
+            r#"<_flow-tags_><NodeCoT-14.52.2>t</NodeCoT-14.52.2></_flow-tags_>"#,
+            r#"<ns:ext xmlns:ns="urn:x" ns:a.b-c="1"/>"#,
+            r#"<ünïcödé ключ="v"/>"#,
+            r#"<a1 b2="3"/>"#,
+            "</detail></event>"
+        );
+
+        let event = parse_str(text).unwrap();
+        assert_eq!(event.detail.nodes.len(), 5);
+        assert_eq!(event.extra_attrs.len(), 1);
     }
 
     #[test]

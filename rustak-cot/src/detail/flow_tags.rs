@@ -4,8 +4,16 @@
 //! is the time it handled the message. Seeing our own tag on an inbound
 //! message means it has already been through us, so it is dropped.
 //!
-//! The server id must therefore be usable as an XML attribute name; an empty
-//! id disables tagging entirely, exactly as TAK Server does.
+//! The tag is an attribute *name*, and the server id is whatever the operator
+//! typed as the server's display name — `SierraSoftworks TAK`, say. Written
+//! verbatim that is `<_flow-tags_ TAK-Server-SierraSoftworks TAK="…">`, which a
+//! strict parser reads as an attribute with no value and refuses, and since
+//! every relayed message carries the tag, every message this server relays is
+//! one such a parser will not read: CloudTAK dropped each one off its socket
+//! and answered `500` for a whole mission's `/cot` document. Every character
+//! that may not appear in an XML name is therefore replaced with `-` before the
+//! id becomes a name. An empty id disables tagging entirely, exactly as TAK
+//! Server does.
 
 use super::{Detail, Element};
 use crate::time::CotTime;
@@ -14,9 +22,20 @@ use crate::time::CotTime;
 pub const ELEMENT: &str = "_flow-tags_";
 
 /// The attribute name a given server stamps.
+///
+/// Characters that may not appear in an XML name — a space above all — become
+/// `-`, so that the name is one every parser reads. Two ids that differ only
+/// in such characters share a tag, which is harmless: the tag says "this
+/// server saw it", and two servers whose names differ only by punctuation are
+/// not something loop prevention has to tell apart.
 #[must_use]
 pub fn flow_tag_name(server_id: &str) -> String {
-    format!("TAK-Server-{server_id}")
+    let safe: String = server_id
+        .chars()
+        .map(|c| if crate::xml::is_name_char(c) { c } else { '-' })
+        .collect();
+
+    format!("TAK-Server-{safe}")
 }
 
 /// Whether this server has already handled the message.
@@ -91,6 +110,35 @@ mod tests {
             detail.find(ELEMENT).unwrap().get("TAK-Server-rustak-1"),
             Some("2026-09-17T12:00:01.000Z")
         );
+    }
+
+    #[test]
+    fn a_display_name_with_a_space_still_makes_a_name_a_strict_parser_reads() {
+        // The id is the operator's display name, which is free text. The
+        // production incident: `SierraSoftworks TAK` became an attribute
+        // named `TAK-Server-SierraSoftworks` followed by a stray `TAK="…"`.
+        assert_eq!(
+            flow_tag_name("SierraSoftworks TAK"),
+            "TAK-Server-SierraSoftworks-TAK"
+        );
+        assert_eq!(
+            flow_tag_name("tak.example.com"),
+            "TAK-Server-tak.example.com"
+        );
+        assert_eq!(flow_tag_name("a/b=c\"d"), "TAK-Server-a-b-c-d");
+
+        let mut detail = Detail::new();
+        add_flow_tag(&mut detail, "SierraSoftworks TAK", NOW);
+        assert!(has_flow_tag(&detail, "SierraSoftworks TAK"));
+        assert!(crate::xml::is_name(&flow_tag_name("SierraSoftworks TAK")));
+
+        let event = crate::Event::builder("a-f-G", "A")
+            .point(0.0, 0.0)
+            .detail(detail)
+            .build();
+        let written = crate::xml::write(&event);
+        let reread = crate::xml::parse(&written).expect("our own output parses");
+        assert!(has_flow_tag(&reread.detail, "SierraSoftworks TAK"));
     }
 
     #[test]
