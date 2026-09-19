@@ -43,7 +43,12 @@ test("a browser holding no passkey for this server cannot sign in, and is not to
   // One message for every failure. The browser deliberately reports "cancelled"
   // and "no matching credential" identically, because telling them apart would
   // say whether an account has a passkey; the UI does not undo that by guessing.
-  await expect(page.getByText("We could not check your session")).toBeVisible();
+  //
+  // The refusal is shown on the sign-in page itself, beside the buttons, rather
+  // than replacing the view with a session-check error: `ec7320f` moved it there
+  // on purpose, and the new title is the more accurate of the two — nothing here
+  // has a session to check yet, because the ceremony never completed.
+  await expect(page.getByText("The sign-in could not be completed")).toBeVisible();
   await expect(page.getByText("may have been dismissed")).toBeVisible();
 });
 
@@ -79,7 +84,14 @@ test("a passkey registered for one host is refused at another", async ({ page, b
   await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
   await page.getByRole("button", { name: "Sign in with a passkey" }).click();
 
-  await expect(page.getByText("We could not check your session")).toBeVisible();
+  await expect(page.getByText("The sign-in could not be completed")).toBeVisible();
+
+  // The *same* wording as the empty-authenticator case above, asserted here too:
+  // "one message for every failure" is only true if both failures produce it, and
+  // a wrong-origin refusal that said so specifically would confirm the credential
+  // exists — which is the property this test is named for.
+  await expect(page.getByText("may have been dismissed")).toBeVisible();
+
   expect(await storedSession(page)).toBeUndefined();
 });
 

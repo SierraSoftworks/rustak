@@ -5,6 +5,121 @@ what remains. Brief: `.claude/plan/briefs/CI-01-ci-steward.md`.
 
 ---
 
+## 2026-09-19 — run 35445173785 (`ec7320f`) red on e2e: the specs were stale, not the product
+
+Two specs failed, both on the same assertion, and `End-to-End Tests` was the only
+job to fail (`CI` behind it is consequential). `27 passed, 2 failed`.
+
+```
+auth.spec.ts:31  a browser holding no passkey for this server cannot sign in, and is not told why
+auth.spec.ts:50  a passkey registered for one host is refused at another
+  Error: expect(locator).toBeVisible() failed
+  Locator: getByText('We could not check your session')   → element(s) not found
+```
+
+**The product is right and the specs were pinned to a message that moved.** The
+failure artefact's page snapshot shows exactly what is rendered now:
+
+```yaml
+- main:
+  - heading "Sign in" [level=1]
+  - alert:
+    - text: The sign-in could not be completed
+    - paragraph: the passkey prompt could not complete — it may have been dismissed
+  - button "Sign in with a passkey"
+```
+
+`ec7320f` added a `login_error` alert **on the sign-in page itself**
+(`rustak-ui/src/pages/login.rs:88`), and its commit message says so directly:
+*"Refusals travel back to the page that opened the popup instead of the popup
+showing a sign-in prompt to nobody, and the prompt shows them beside the
+buttons."* Before it, a refused ceremony fell through to `AuthStatus::Error` and
+rendered `protected.rs`'s *We could not check your session*.
+
+The new title is the **more accurate** of the two: nothing has a session to
+check when the ceremony never completed — that message belongs to a failed
+`/me` on a session already held. So this is not a regression to write up.
+
+**Not `ed5ed61`, which is what M5-03 reported.** That commit touches
+`protected.rs` only, and only the `Forbidden` arm (adding a sign-out button);
+`AuthStatus::Error` is untouched by it. The behaviour change is `ec7320f`'s.
+
+**What the specs protect is intact**, which is the part that mattered before
+changing them: the refusal still happens, the single non-committal message is
+still there (`the passkey prompt could not complete — it may have been
+dismissed`, identical for an empty authenticator and for a wrong-origin
+credential), and `storedSession` is still undefined.
+
+**Fixed** in `e2e/tests/auth.spec.ts`: both assertions now expect *The sign-in
+could not be completed*, with a comment recording why the message moved. I also
+**added** `may have been dismissed` to the wrong-origin test, which only asserted
+the title — "one message for every failure" is the property that test is named
+for, and it was only being checked in one of the two places it has to hold. A
+wrong-origin refusal that said so specifically would confirm the credential
+exists. Typecheck clean.
+
+---
+
+## 2026-09-19 — M2-15 green; the port-reservation fix reconciled; a second network flake
+
+**M2-15 (`bdaeb55`, the enrolment-grace fix from the first real ATAK enrolment)
+is green on every job.** `Test` **1718** library tests with migration `0016`
+applied, and `Interop: node-tak` **26 scenarios, 26 pass**, including the new
+`✔ the enrollment profile answers the credential that just enrolled`.
+
+### The cloud session's PR #6 and my probe are complementary — nothing to undo
+
+PR #6 (`069982d`, "Serve the enrolment suite's Marti listener on the socket that
+claimed its port") added `build_marti_on(context, listener)` to
+`rustak-server/src/web/server.rs`, so the test binds `:0` and hands the **actual
+socket** to the server. That is the product-side fix I declined to make from a
+test file, and it removes the reserve-then-rebind gap outright — the
+`BIND_ATTEMPTS` retry is correctly gone with it.
+
+It **kept `await_marti`**, and updated its doc comment to say `build_marti_on`.
+That is the right reconciliation, because the two close different windows:
+
+| Window | Closed by |
+|---|---|
+| something else takes the port between release and re-bind | PR #6's pre-bound socket |
+| the socket is bound but actix has no worker yet, so the kernel completes the connection from the backlog and actix drops it — M5-02's `connection closed` | `await_marti` |
+
+Both are on `main` and the combination is stronger than either. Recorded because
+the brief said to reconcile toward whichever proves the readiness rather than
+duplicating: they do not duplicate.
+
+### F10 — a second `build`-matrix network flake, and a retry for it (landed-ready)
+
+My own cron/tap landing's run (35432636305, `02c9737c`) failed
+`linux-arm64-rustak` — and not because of the change, which touched crons and
+the `ci` aggregator and nothing near a build. `cargo-binstall` could not fetch
+`cross`:
+
+```
+cargo-binstall: WARN resolve: Timeout reached while checking fetcher QuickInstall: deadline has elapsed
+cargo-binstall: ERROR Fatal error:
+  × For crate cross: Fallback to cargo-install is disabled
+```
+
+Every fetcher timed out, and `--disable-strategies compile` left no fallback.
+The two runs after it, `a2d590e` and `069982d`, passed that job untouched.
+
+**Fixed** in `.github/workflows/rust.yml`: three attempts with a 10/20-second
+backoff around `cargo binstall … cross`. `--disable-strategies compile`
+**stays** — falling back to building `cross` from source would turn a fast
+failure into a very slow success and push the job toward its timeout, so a retry
+is the cheaper answer.
+
+**Two network flakes in a day, both on the `build` matrix** — the darwin
+`upload-artifact` `ENOTFOUND` and this one. Both are "reaching GitHub failed",
+neither is a repository problem, and the discriminator recorded earlier holds: a
+`build` job failing at a *network* step on a commit that cannot have caused it
+is infrastructure; the same job failing at `cargo build` would not be. The
+artifact upload has no retry of its own either, and if it recurs the same
+treatment applies there.
+
+---
+
 ## 2026-09-19 — **release v0.0.1**: everything published except the Homebrew formula
 
 Run [35431552415](https://github.com/SierraSoftworks/rustak/actions/runs/35431552415),
