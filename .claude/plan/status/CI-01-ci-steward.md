@@ -5,6 +5,97 @@ what remains. Brief: `.claude/plan/briefs/CI-01-ci-steward.md`.
 
 ---
 
+## 2026-09-19 — the review landings are green, and the `Test` job is nearly full
+
+`7c8ce50` (the UI fixture hotfix) and `789a2bd` (the wire-compatibility and
+security review fixes, ~94 files, two new suites) are both **fully green**.
+`cd86654` before them failed `Build UI` exactly as the coordinator said —
+`error[E0063]: missing fields cert_file, key_file, loaded_at and 1 other field
+in initializer of rustak_api::TlsStatus`, the wasm demo fixture not filled in
+for M2-13's new TLS status — and `7c8ce50` cleared it.
+
+The big landing's numbers: **1682 library tests**, 31 binaries, **2512 tests**
+in all, plus `e2e` 29 specs and `node-tak` 25/25 — all green first time.
+
+### F8 — `enroll_flows`'s real-mTLS flake: a fix I could not prove (landed-ready)
+
+M5-02 reports the two real-mTLS tests failing about four runs in five under
+heavy parallel build load with `connection closed`, passing on a quiet machine
+and in CI.
+
+**I could not reproduce it.** Twelve runs of exactly those two tests under a
+real parallel `cargo build` at **load average 86**: 12 passed, 0 failed. Ten
+runs under twenty CPU burners: 10 passed. I checked the filter really selected
+`a_cloudtak_shaped_enrolment_produces_a_certificate_the_marti_listener_accepts`
+and `a_revoked_certificate_cannot_complete_the_handshake` rather than nothing,
+so the measurement is sound. So what follows is a fix for a mechanism that fits
+the symptom, not one I have watched work.
+
+**The mechanism.** `build_marti` *binds* the socket; only the spawned `Server`
+future starts the workers that serve it. A connection arriving in between is
+completed by the kernel from the backlog and then dropped by actix, which has no
+worker to hand it to — which `reqwest` reports as `connection closed` part-way
+through the handshake. That fits: contended machine fails, quiet machine and CI
+(slow but not contended) pass.
+
+**The fix.** `try_harness` now waits, deliberately *below* TLS because that is
+the layer the failure is at: a listener with a worker holds the connection open
+for our ClientHello, so a read that times out is the ready signal and an
+immediate EOF is "not yet". Nothing is written, no certificate issued, no row
+created.
+
+**It also closes a hazard that stands on its own.** Two tests here assert a
+handshake is *refused* — the revoked certificate, and the caller with none. A
+listener dropping connections for want of a worker satisfies both for entirely
+the wrong reason. Waiting until it genuinely serves means those two can only
+pass on a real refusal. That justification does not depend on reproducing
+anything.
+
+File: `rustak-server/tests/enroll_flows.rs`. 14/14 locally, rustfmt clean.
+
+If it recurs, the two things that would settle it in one read are the verbatim
+error with a timestamp and whether `harness` printed its `the reserved port was
+taken` retry line — that separates this mechanism from port theft, which the
+existing retry already handles.
+
+### The `Test` job hit 27m02s of its 30-minute bound — and I first read it wrong
+
+`789a2bd`'s `Test` took **27m02s**, so I measured it and filed a capacity report
+proposing the job be split in two. **The next run disproved my conclusion**, and
+the note is rewritten rather than quietly replaced:
+
+| Run | `Test` wall | In-test | Tests |
+|---|---:|---:|---:|
+| `789a2bd` | **27m02s** | 1365 s | 2512 |
+| `e101336` | **11m40s** | 483 s | **2634** |
+
+More tests, less than half the time. Per binary the same suites were 2.1× to
+4.2× slower on the first run — `stream_session` 257.9 s against 62.0 s. **That
+is runner variance on GitHub's two-vCPU hosts, not anything in this
+repository**, and the split I proposed was a large change (the `ci` aggregator's
+`needs:`, the required check, two codecov uploads) aimed at a problem that does
+not occur on a normal run. **Withdrawn.**
+
+What survives the correction: the four stream/Marti binaries really are 64% of
+in-test time on 42 tests, and the cause really is `-Cinstrument-coverage` over
+real mutual-TLS handshakes (`stream_session` is ≈13 s uninstrumented here). It
+is not sleeps and not RSA — `stream_support/mod.rs:98` already sets P-256. Those
+suites are doing real handshakes because that is what they exist to prove, so I
+have not touched them.
+
+The real risk is that normal ≈12 minutes times a ~2.8× bad runner is 34, past
+the bound. Two samples are not a distribution, so the action for now is to keep
+watching; if another run crosses ~20 minutes, the honest response is 30 → 45 and
+a line in `docs/ci.md` saying the number covers runner variance rather than the
+suite's own cost. Full note:
+**`CI-01-2026-09-19-test-job-capacity.md`**.
+
+**Lesson recorded there and here:** one run is not a measurement. Anything I
+report about CI timing from here carries at least two samples or says that it
+does not.
+
+---
+
 ## 2026-09-19 — `dd4177a` broke `main` with a module that had no file
 
 Run 35405146908 failed `Lint`, `Test` and `Build UI` together — three jobs, one
@@ -612,7 +703,7 @@ and `docs/ci.md`.
 
 | Workflow | On `main` | Verdict |
 |---|---|---|
-| `rust.yml` | **green** — six consecutive runs through `b8ab5d4` | one darwin artifact-upload DNS flake, green on re-run with no change |
+| `rust.yml` | **green** on `7c8ce50`, `789a2bd`, `660ccf6`, `e101336` | `Test` normally ~12m; one 27m run was runner variance, not capacity |
 | `nightly.yml` `interop-eud` | **green — 9 passed, 0 skipped, 0 failed** | 13m43s |
 | `nightly.yml` `interop-cloudtak` | **green — 9 passed, 0 skipped, 0 failed** | 9m21s, second run ever |
 | `security_audit.yml` | **red, and has never been green** (8 of 8 recorded runs failed) | two advisories, neither fixable from this repository today — needs a decision, §S3 |

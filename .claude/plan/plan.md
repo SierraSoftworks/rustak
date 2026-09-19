@@ -1,9 +1,8 @@
 # rustak — a lightweight Rust-native TAK server
 
-> Status: IN PROGRESS (2026-09-19). M0–M6 landed; both interop suites 9/9; the three independent reviews
-> (`.claude/plan/reviews/`) are actioned except the stream-side robustness items (M1-10, in flight). Remaining:
-> first pre-release tag (user decision), running the manual checklists in `docs/compat/` on real devices, and the
-> backlog in `.claude/plan/backlog.md`.
+> Status: IN PROGRESS (2026-09-19). M0–M6 landed; both interop suites 9/9; all three independent reviews
+> (`.claude/plan/reviews/`) actioned and landed. Remaining: loose ends (M2-14), the first pre-release tag (user
+> decision), running the manual checklists in `docs/compat/` on real devices, and `.claude/plan/backlog.md`.
 
 ## Context
 
