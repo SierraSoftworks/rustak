@@ -26,6 +26,7 @@ use rustak_api::TlsCertificateState;
 use rustak_server::config::{AcmeChallenge, AcmeDirectory, KeyType, TlsMode};
 use rustak_server::pki::acme;
 use rustak_server::prelude::*;
+use rustak_server::services::AcmeState;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
@@ -35,14 +36,17 @@ const DOMAIN: &str = "tak.example.com";
 /// A faked ACME directory, and what it saw.
 struct Authority {
     server: MockServer,
-    /// This authority's challenge token. Unique per test, because the answer
-    /// map is process-wide and these tests run concurrently.
+    /// This authority's challenge token.
     token: String,
-    /// What `challenge::answer` returned at the moment `set_ready` arrived —
-    /// which is when a real authority would fetch it.
+    /// What the ordering context's [`AcmeState`] answered at the moment
+    /// `set_ready` arrived — which is when a real authority would fetch it.
     armed: Arc<Mutex<Option<String>>>,
     /// The chain it issued, once it has signed one.
     issued: Arc<Mutex<Option<String>>>,
+    /// The handle of the server ordering from this authority, once
+    /// [`Authority::client`] has built one. The answer map lives on the
+    /// context now, so the mock has to be told which context to ask.
+    state: Arc<Mutex<Option<Arc<AcmeState>>>>,
 }
 
 impl Authority {
@@ -54,6 +58,7 @@ impl Authority {
         let base = server.uri();
         let token = format!("http-01-token-{}", NEXT.fetch_add(1, Ordering::SeqCst));
         let armed = Arc::new(Mutex::new(None));
+        let state: Arc<Mutex<Option<Arc<AcmeState>>>> = Arc::new(Mutex::new(None));
         // Set by `/finalize`, which signs the CSR it was sent, and read by the
         // order resource and the certificate resource: the order says "ready"
         // before finalisation and "valid" after it, for every order rather
@@ -63,7 +68,13 @@ impl Authority {
         directory(&server, &base).await;
         account(&server, &base).await;
         order(&server, &base, &token, Arc::clone(&issued)).await;
-        challenge(&server, token.clone(), Arc::clone(&armed)).await;
+        challenge(
+            &server,
+            token.clone(),
+            Arc::clone(&armed),
+            Arc::clone(&state),
+        )
+        .await;
         certificate(&server, Arc::clone(&issued)).await;
 
         Self {
@@ -71,6 +82,7 @@ impl Authority {
             token,
             armed,
             issued,
+            state,
         }
     }
 
@@ -86,10 +98,13 @@ impl Authority {
     }
 
     /// A server configured to order from this authority.
+    ///
+    /// Its [`AcmeState`] is handed to the challenge mock, which is how the
+    /// authority's fetch finds the answer this context armed.
     async fn client(&self) -> AppContext {
         let directory = format!("{}/directory", self.server.uri());
 
-        AppContext::new_mock(move |config| {
+        let context = AppContext::new_mock(move |config| {
             config.web.public.tls.mode = TlsMode::Acme;
             config.acme.enabled = true;
             config.acme.accept_tos = true;
@@ -105,7 +120,13 @@ impl Authority {
             config.pki.key_type = KeyType::EcdsaP256;
         })
         .await
-        .unwrap()
+        .unwrap();
+
+        if let Ok(mut held) = self.state.lock() {
+            *held = Some(context.acme());
+        }
+
+        context
     }
 }
 
@@ -279,7 +300,12 @@ async fn order(server: &MockServer, base: &str, token: &str, issued: Arc<Mutex<O
         .await;
 }
 
-async fn challenge(server: &MockServer, token: String, armed: Arc<Mutex<Option<String>>>) {
+async fn challenge(
+    server: &MockServer,
+    token: String,
+    armed: Arc<Mutex<Option<String>>>,
+    state: Arc<Mutex<Option<Arc<AcmeState>>>>,
+) {
     let answered = serde_json::json!({
         "type": "http-01",
         "url": "unused",
@@ -295,7 +321,11 @@ async fn challenge(server: &MockServer, token: String, armed: Arc<Mutex<Option<S
             // have answered *here* is what makes the publish/withdraw pair
             // testable at all: afterwards there is nothing left to see.
             if let Ok(mut held) = armed.lock() {
-                *held = acme::challenge::answer(&token);
+                *held = state
+                    .lock()
+                    .ok()
+                    .and_then(|state| state.as_ref().map(|state| state.answer(&token)))
+                    .flatten();
             }
 
             ResponseTemplate::new(200)
@@ -355,8 +385,11 @@ async fn one_http_01_order_produces_a_certificate_the_listener_can_serve() {
     let authority = Authority::start().await;
     let context = authority.client().await;
     let resolver = rustak_server::pki::HotSwapCertResolver::new(None);
+    // What `web::tls::resolve` publishes for `mode = "acme"`, which is how the
+    // renewal reaches the listener it has to swap over.
+    context.acme().publish_resolver(Arc::clone(&resolver));
 
-    let state = acme::run(&context, Some(Arc::clone(&resolver)), false)
+    let state = acme::run(&context, false)
         .await
         .expect("the faked authority validates everything");
 
@@ -375,7 +408,7 @@ async fn one_http_01_order_produces_a_certificate_the_listener_can_serve() {
 
     // … and gone afterwards, because a path that keeps serving a secret is a
     // path somebody will eventually find.
-    assert_eq!(acme::challenge::answer(&authority.token), None);
+    assert_eq!(context.acme().answer(&authority.token), None);
 
     let stored = acme::store::load(context.db(), &[DOMAIN.to_string()])
         .await
@@ -417,10 +450,10 @@ async fn a_second_run_against_a_fresh_certificate_places_no_order() {
     let authority = Authority::start().await;
     let context = authority.client().await;
 
-    acme::run(&context, None, false).await.unwrap();
+    acme::run(&context, false).await.unwrap();
     let after_first = authority.hits("/new-order").await;
 
-    let state = acme::run(&context, None, false).await.unwrap();
+    let state = acme::run(&context, false).await.unwrap();
 
     assert_eq!(authority.hits("/new-order").await, after_first);
     assert!(matches!(state, acme::CertState::Valid { .. }));
@@ -440,10 +473,10 @@ async fn a_forced_run_orders_again_even_though_nothing_is_due() {
     let authority = Authority::start().await;
     let context = authority.client().await;
 
-    acme::run(&context, None, false).await.unwrap();
+    acme::run(&context, false).await.unwrap();
     let after_first = authority.hits("/new-order").await;
 
-    acme::run(&context, None, true).await.unwrap();
+    acme::run(&context, true).await.unwrap();
 
     assert_eq!(authority.hits("/new-order").await, after_first + 1);
 }
@@ -469,7 +502,7 @@ async fn an_authority_that_refuses_the_order_is_recorded_rather_than_retried_at_
         .mount(&authority.server)
         .await;
 
-    let refused = acme::run(&context, None, false)
+    let refused = acme::run(&context, false)
         .await
         .expect_err("a refused order is not a certificate");
 

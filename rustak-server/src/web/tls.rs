@@ -26,9 +26,10 @@
 //! [`pki::tls::files`](crate::pki::tls::files); `require_files_at_start = true`
 //! asks for the fail-fast behaviour instead.
 //!
-//! The resolver is published to [`pki::acme`](crate::pki::acme) or to
-//! [`pki::tls::files`](crate::pki::tls::files) on the way out, because the job
-//! which replaces the certificate is not holding one.
+//! The resolver is published on the way out — into the caller's
+//! [`AcmeState`] for `acme`, and to [`pki::tls::files`](crate::pki::tls::files)
+//! for `files` — because the job which replaces the certificate is not holding
+//! one.
 
 use std::sync::Arc;
 
@@ -40,6 +41,7 @@ use crate::crypto::SecretStore;
 use crate::db::Database;
 use crate::pki::CaMaterial;
 use crate::prelude::*;
+use crate::services::AcmeState;
 
 /// What a listener will present, if anything.
 pub type PublicTls = Option<Arc<ServerConfig>>;
@@ -47,7 +49,9 @@ pub type PublicTls = Option<Arc<ServerConfig>>;
 /// Builds the public listener's TLS configuration.
 ///
 /// `ca` is this installation's authority, which `internal` needs and the other
-/// modes do not.
+/// modes do not. `acme` is the context's [`AcmeState`], which `acme` mode
+/// publishes its resolver into so that the renewal job can swap a certificate
+/// in without a restart; the other modes leave it alone.
 ///
 /// # Errors
 ///
@@ -62,11 +66,12 @@ pub async fn resolve(
     db: &Database,
     secrets: &SecretStore,
     ca: Option<&CaMaterial>,
+    acme_state: &AcmeState,
 ) -> Result<PublicTls, Error> {
     match config.web.public.tls.mode {
         TlsMode::None => plaintext(config).map(|()| None),
         TlsMode::Files => files(config, db, secrets, ca).await.map(Some),
-        TlsMode::Acme => acme(config, db, secrets, ca).await.map(Some),
+        TlsMode::Acme => acme(config, db, secrets, ca, acme_state).await.map(Some),
         TlsMode::Internal => internal(config, db, secrets, ca).await.map(Some),
     }
 }
@@ -130,6 +135,7 @@ async fn acme(
     db: &Database,
     secrets: &SecretStore,
     ca: Option<&CaMaterial>,
+    acme_state: &AcmeState,
 ) -> Result<Arc<ServerConfig>, Error> {
     let domains = crate::pki::acme::normalise(config.acme.domains(&config.server));
 
@@ -161,7 +167,7 @@ async fn acme(
     };
 
     let resolver = crate::pki::HotSwapCertResolver::new(Some(certified));
-    crate::pki::acme::publish_resolver(Arc::clone(&resolver));
+    acme_state.publish_resolver(Arc::clone(&resolver));
 
     Ok(Arc::new(crate::pki::tls::public_server_config(resolver)))
 }
@@ -365,12 +371,14 @@ mod tests {
         let secrets = SecretStore::ephemeral();
         let mut config = config(TlsMode::None);
 
-        let refused = resolve(&config, &db, &secrets, None).await.unwrap_err();
+        let refused = resolve(&config, &db, &secrets, None, &AcmeState::new())
+            .await
+            .unwrap_err();
         assert!(refused.is(human_errors::Kind::User));
 
         config.web.public.allow_insecure_http = true;
         assert!(
-            resolve(&config, &db, &secrets, None)
+            resolve(&config, &db, &secrets, None, &AcmeState::new())
                 .await
                 .unwrap()
                 .is_none()
@@ -413,14 +421,18 @@ mod tests {
         config.acme.enabled = true;
         config.acme.domains = vec!["tak.example.com".to_string()];
 
+        let state = AcmeState::new();
+
         assert!(
-            resolve(&config, &db, &secrets, Some(&ca))
+            resolve(&config, &db, &secrets, Some(&ca), &state)
                 .await
                 .unwrap()
                 .is_some()
         );
 
-        let resolver = crate::pki::acme::resolver().expect("the renewal has to find the resolver");
+        let resolver = state
+            .resolver()
+            .expect("the renewal has to find the resolver");
         assert!(
             resolver.is_ready(),
             "the listener must present something, or every handshake fails until the order lands",
@@ -461,14 +473,16 @@ mod tests {
         .await
         .unwrap();
 
+        let state = AcmeState::new();
+
         assert!(
-            resolve(&config, &db, &secrets, Some(&ca))
+            resolve(&config, &db, &secrets, Some(&ca), &state)
                 .await
                 .unwrap()
                 .is_some()
         );
 
-        let presented = crate::pki::acme::resolver().unwrap().current().unwrap();
+        let presented = state.resolver().unwrap().current().unwrap();
         assert_eq!(
             presented.end_entity_cert().unwrap().as_ref(),
             issued.der().as_ref(),
@@ -484,7 +498,9 @@ mod tests {
         config.server.domains = Vec::new();
         config.acme.domains = Vec::new();
 
-        let refused = resolve(&config, &db, &secrets, None).await.unwrap_err();
+        let refused = resolve(&config, &db, &secrets, None, &AcmeState::new())
+            .await
+            .unwrap_err();
 
         assert!(refused.is(human_errors::Kind::User));
         assert!(refused.description().contains("names"));
@@ -507,7 +523,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            resolve(&config, &db, &secrets, Some(&ca))
+            resolve(&config, &db, &secrets, Some(&ca), &AcmeState::new())
                 .await
                 .unwrap()
                 .is_some()
@@ -519,9 +535,15 @@ mod tests {
         let db = database().await;
         let secrets = SecretStore::ephemeral();
 
-        let refused = resolve(&config(TlsMode::Files), &db, &secrets, None)
-            .await
-            .unwrap_err();
+        let refused = resolve(
+            &config(TlsMode::Files),
+            &db,
+            &secrets,
+            None,
+            &AcmeState::new(),
+        )
+        .await
+        .unwrap_err();
 
         assert!(refused.description().contains("cert_file"));
     }
@@ -537,7 +559,9 @@ mod tests {
         config.web.public.tls.key_file = Some(directory.path().join("missing.key"));
         config.web.public.tls.require_files_at_start = true;
 
-        let refused = resolve(&config, &db, &secrets, None).await.unwrap_err();
+        let refused = resolve(&config, &db, &secrets, None, &AcmeState::new())
+            .await
+            .unwrap_err();
 
         assert!(refused.description().contains("missing.crt"));
     }
@@ -559,7 +583,7 @@ mod tests {
         config.web.public.tls.key_file = Some(key_file.clone());
 
         assert!(
-            resolve(&config, &db, &secrets, Some(&ca))
+            resolve(&config, &db, &secrets, Some(&ca), &AcmeState::new())
                 .await
                 .unwrap()
                 .is_some(),
@@ -616,7 +640,7 @@ mod tests {
         config.web.public.tls.key_file = Some(key_file);
 
         assert!(
-            resolve(&config, &db, &secrets, None)
+            resolve(&config, &db, &secrets, None, &AcmeState::new())
                 .await
                 .unwrap()
                 .is_some()

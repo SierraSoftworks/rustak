@@ -126,6 +126,40 @@ impl AcmeConfig {
             .collect()
     }
 
+    /// Refuses a wildcard name, whatever else is configured.
+    ///
+    /// `*.example.com` is only ever validated with `dns-01` (RFC 8555 §8.4),
+    /// and rustak implements `tls-alpn-01` and `http-01` — so the order fails
+    /// at the authorization, after it has spent one of Let's Encrypt's five
+    /// failed validations an hour. The rule is here rather than in
+    /// `validate.rs` because it is a fact about the challenges this server can
+    /// answer, and because the advice is most of the code.
+    ///
+    /// Called by [`Config::validate`](super::Config::validate).
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::User`] error naming the first wildcard.
+    ///
+    /// [`human_errors::Kind::User`]: human_errors::Kind::User
+    pub(super) fn validate_wildcards(
+        &self,
+        server: &ServerConfig,
+    ) -> Result<(), human_errors::Error> {
+        for name in self.domains(server) {
+            if name.trim().starts_with("*.") {
+                return Err(human_errors::user(
+                    format!(
+                        "`{name}` is a wildcard, and rustak cannot obtain a certificate for one: that needs a dns-01 challenge, which is not implemented."
+                    ),
+                    ADVICE_WILDCARD,
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Why `name` could never be ordered from a public authority, if it could
     /// not.
     ///
@@ -133,7 +167,9 @@ impl AcmeConfig {
     /// has an `ip` identifier, but no public authority offers it), a bare
     /// label with no domain at all, and anything under a suffix RFC 6761 or
     /// RFC 8375 reserves for private networks. A wildcard is judged by the
-    /// name under it, because that is the name an authority validates.
+    /// name under it, because that is the name an authority validates — though
+    /// `Config::validate` refuses wildcards outright before this is asked, as
+    /// rustak implements no challenge that can validate one.
     ///
     /// Returns a fragment that completes "cannot be ordered … : {reason}".
     pub fn unorderable(name: &str) -> Option<&'static str> {
@@ -160,6 +196,13 @@ impl AcmeConfig {
         )
     }
 }
+
+/// Advice for a wildcard name under `[acme]`.
+const ADVICE_WILDCARD: &[&str] = &[
+    "List the concrete host names instead, for example `domains = [\"tak.example.com\", \"map.example.com\"]`.",
+    "A certificate may carry many names, so one order covering every host you serve is the certificate a wildcard would have been.",
+    "rustak answers tls-alpn-01 and http-01 challenges; neither can prove control of a whole zone, which is why an authority only offers dns-01 for a wildcard.",
+];
 
 /// The ACME directory to order from.
 ///
@@ -379,12 +422,9 @@ mod tests {
 
     #[test]
     fn a_name_a_public_authority_could_issue_for_is_accepted() {
-        for name in [
-            "tak.example.com",
-            "TAK.example.com.",
-            "*.example.com",
-            "a.b.c.example.co.uk",
-        ] {
+        // No wildcard here: `config::validate` refuses one before this is
+        // asked, because no challenge rustak implements can validate it.
+        for name in ["tak.example.com", "TAK.example.com.", "a.b.c.example.co.uk"] {
             assert_eq!(AcmeConfig::unorderable(name), None, "{name}");
         }
     }
@@ -403,6 +443,8 @@ mod tests {
             ("tak.local", "private networks"),
             ("tak.internal", "private networks"),
             ("printer.home.arpa", "private networks"),
+            // Judged by the name under the wildcard, which is what an
+            // authority would validate if we could ask it to.
             ("*.tak.lan", "private networks"),
             ("TAK.LAN.", "private networks"),
         ] {

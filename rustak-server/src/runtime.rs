@@ -2,10 +2,10 @@
 //!
 //! [`run_all`] is the second half of start-up: the storage is already open, and
 //! what is left is the things that have a lifetime — the public listener, the
-//! CoT stream listener, the job host, and the housekeeping that none of them
-//! owns. All four share one [`Shutdown`], so a `SIGTERM`, a failed listener and
-//! a test cancelling its token are the same event as far as the rest of the
-//! server is concerned.
+//! optional plaintext and Marti ones, the CoT stream listener, the job host,
+//! and the housekeeping that none of them owns. They share one [`Shutdown`], so
+//! a `SIGTERM`, a failed listener and a test cancelling its token are the same
+//! event as far as the rest of the server is concerned.
 //!
 //! # Why the failures are joined rather than awaited in turn
 //!
@@ -30,9 +30,9 @@
 //! Stopping is two waits, and they are bounded separately because only one of
 //! them is the operator's to lengthen.
 //!
-//! The **drain** is `[server] shutdown_timeout`, and it covers all three
-//! listeners at once: the public `HttpServer`, the Marti one and the CoT
-//! stream. They are all told to stop by the same cancellation and they all
+//! The **drain** is `[server] shutdown_timeout`, and it covers every listener
+//! at once: the public `HttpServer`, the plaintext redirect, the Marti one and
+//! the CoT stream. They are all told to stop by the same cancellation and they all
 //! wait for the same kind of thing — a connection somebody else has to close —
 //! so one deadline for the lot is the only one an operator could reason about.
 //! The wait for them is bounded here rather than in any one of them, which is
@@ -152,8 +152,21 @@ async fn listen(context: &AppContext) -> Result<(), Error> {
 
     announce_setup(context).await?;
 
-    let tls = crate::web::tls::resolve(&config, context.db(), context.secrets(), Some(&ca)).await?;
+    let tls = crate::web::tls::resolve(
+        &config,
+        context.db(),
+        context.secrets(),
+        Some(&ca),
+        &context.acme(),
+    )
+    .await?;
     let server = crate::web::build_public(context.clone(), tls)?;
+
+    // The plaintext port, when `[web.public] plain_bind` asks for one: the
+    // ACME `http-01` path and a redirect to the listener above, and nothing
+    // else. Bound before the first order can be placed, because the authority
+    // fetches its answer from here.
+    let plain = crate::web::build_plain(context.clone())?;
 
     // Only when something is going to ask a client for a certificate. Loading
     // the authority also issues this server's own certificate, which needs a
@@ -183,7 +196,11 @@ async fn listen(context: &AppContext) -> Result<(), Error> {
     let shutdown = context.shutdown().clone();
     let components = (
         stopping_on_exit(&shutdown, serve(context.clone(), server)),
-        stopping_on_exit(&shutdown, serve_marti(context.clone(), marti)),
+        stopping_on_exit(
+            &shutdown,
+            serve_optional(context.clone(), plain, "plaintext"),
+        ),
+        stopping_on_exit(&shutdown, serve_optional(context.clone(), marti, "Marti")),
         stopping_on_exit(
             &shutdown,
             crate::stream::serve(
@@ -204,7 +221,7 @@ async fn listen(context: &AppContext) -> Result<(), Error> {
     // Boxed: the five components and both `select!` arms live inside this
     // future, and `clippy::large_futures` is right that a frame that size does
     // not belong on the stack of every caller up to `main`.
-    let Some((web, tak, stream, jobs, housekeeping)) = Box::pin(drain(
+    let Some((web, plain, tak, stream, jobs, housekeeping)) = Box::pin(drain(
         &shutdown,
         components,
         config.server.shutdown_budget(),
@@ -217,7 +234,11 @@ async fn listen(context: &AppContext) -> Result<(), Error> {
     // The first failure in start-up order, which is the one that caused the
     // shutdown; the others will be the `Ok(())` of a component that noticed the
     // cancellation and wound down.
-    web.and(tak).and(stream).and(jobs).and(housekeeping)
+    web.and(plain)
+        .and(tak)
+        .and(stream)
+        .and(jobs)
+        .and(housekeeping)
 }
 
 /// Runs the components, and bounds the wait once one of them has to stop.
@@ -260,18 +281,20 @@ async fn drain<F: Future>(
     }
 }
 
-/// Runs the Marti listener, when there is one.
+/// Runs a listener an installation may not have asked for.
 ///
-/// An installation that switched `[web.marti] enabled` off waits for the
-/// shutdown instead, so that the component still exists and still ends when
-/// everything else does — rather than returning at once and, through
-/// [`stopping_on_exit`], stopping the whole server.
-async fn serve_marti(
+/// `[web.marti] enabled = false` and an unset `[web.public] plain_bind` both
+/// mean there is no server to run. That component waits for the shutdown
+/// instead, so that it still exists and still ends when everything else does —
+/// rather than returning at once and, through [`stopping_on_exit`], stopping
+/// the whole server.
+async fn serve_optional(
     context: AppContext,
     server: Option<actix_web::dev::Server>,
+    what: &'static str,
 ) -> Result<(), Error> {
     match server {
-        Some(server) => serve_named(context, server, "Marti").await,
+        Some(server) => serve_named(context, server, what).await,
         None => {
             context.shutdown().cancelled().await;
 

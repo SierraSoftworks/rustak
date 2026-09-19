@@ -123,7 +123,7 @@ impl Job for AcmeRenewJob {
         // `run` records the failure on the row, audits it and logs it with the
         // authority's own words; the back-off it sets is what the next run
         // consults. Returning it here would replace that with the job host's.
-        match acme::run(&services, acme::resolver(), job.forced).await {
+        match acme::run(&services, job.forced).await {
             Ok(state) => {
                 debug!(?state, "The ACME certificate was checked.");
 

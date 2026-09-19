@@ -106,8 +106,17 @@ open_history_logs = 4096
 # binding it needs CAP_NET_BIND_SERVICE or a forwarding proxy.
 listen = [":8446"]
 
-# An optional plaintext address, used only for the ACME http-01 challenge and a
-# permanent redirect to HTTPS. It does not serve the API. Default: unset.
+# An optional plaintext address. It serves exactly two things: the ACME http-01
+# challenge path (/.well-known/acme-challenge/), and a 301 to
+# https://<host><path> for everything else — no API, no admin UI, no Marti and
+# no cookies. Use ":80" where rustak may bind it, or a higher port with a proxy
+# forwarding :80 to it. The redirect points at the first `listen` address above
+# (or at `[server] base_url` where that is set), and only ever at a host this
+# installation answers to: a request naming any other is sent to
+# `[server] domains[0]` rather than back to itself.
+#
+# This is NOT `allow_insecure_http`: that key permits serving the real surface
+# without TLS, which this listener never does. Default: unset.
 # plain_bind = ":80"
 
 # Permits `[web.public.tls] mode = "none"`. Serving credentials, tokens and
@@ -507,10 +516,13 @@ accept_tos = false
 #                   in [web.public] listen. Needs no plaintext port.
 #   "http-01"     — answered over plaintext HTTP on port 80, at
 #                   /.well-known/acme-challenge/. rustak serves that path on
-#                   every [web.public] listen address, so port 80 has to reach
-#                   one of them: add ":80" to listen, or put a proxy in front
-#                   and set plain_bind so validation knows there is one.
-# Validation refuses a combination the authority could never complete.
+#                   every [web.public] listen address and on [web.public]
+#                   plain_bind, so port 80 has to reach one of them: add ":80"
+#                   to listen, set plain_bind = ":80", or set plain_bind to a
+#                   higher port with a proxy forwarding :80 to it.
+# Validation refuses a combination the authority could never complete, and
+# refuses a wildcard name: that needs a dns-01 challenge, which rustak does not
+# implement — list the concrete host names instead.
 challenge = "tls-alpn-01"
 renew_before = "30d"
 

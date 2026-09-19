@@ -74,7 +74,9 @@ pub struct PublicWebConfig {
     /// permanent redirect to the HTTPS listener.
     ///
     /// It serves nothing else: it is not an insecure copy of the API, and
-    /// `allow_insecure_http` is not what turns it on.
+    /// `allow_insecure_http` is not what turns it on. See
+    /// [`web::plain`](crate::web::plain) for what it answers and where the
+    /// redirect points.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plain_bind: Option<ListenAddr>,
 
@@ -112,6 +114,21 @@ impl PublicWebConfig {
     /// for `tls-alpn-01` and port 80 for `http-01`, and no other port will do.
     pub fn listens_on(&self, port: u16) -> bool {
         self.listen.iter().any(|address| address.port() == port)
+    }
+
+    /// The port an `https://` URL for this listener needs, when it is not the
+    /// one a URL already implies.
+    ///
+    /// The first configured address, because that is the one an operator puts
+    /// first for a reason — and [`None`] for 443, so that the redirect the
+    /// plaintext listener sends is `https://tak.example.com/` rather than
+    /// `https://tak.example.com:443/`. `[server] base_url` overrides it where
+    /// it is set; see [`web::plain`](crate::web::plain).
+    pub fn https_port(&self) -> Option<u16> {
+        self.listen
+            .first()
+            .map(ListenAddr::port)
+            .filter(|port| *port != 443)
     }
 }
 
@@ -408,6 +425,25 @@ mod tests {
         assert!(public.listens_on(443));
         assert!(public.listens_on(8446));
         assert!(!public.listens_on(80));
+    }
+
+    #[test]
+    fn the_port_a_redirect_needs_is_the_first_one_unless_it_is_the_default() {
+        // What the plaintext listener puts in a `Location`: the port a browser
+        // following it has to reach, and nothing when a URL says it already.
+        let listed: PublicWebConfig =
+            toml::from_str(r#"listen = [":8446", "0.0.0.0:443"]"#).unwrap();
+        assert_eq!(listed.https_port(), Some(8446));
+
+        let standard: PublicWebConfig =
+            toml::from_str(r#"listen = ["0.0.0.0:443", ":8446"]"#).unwrap();
+        assert_eq!(standard.https_port(), None);
+
+        let nothing = PublicWebConfig {
+            listen: Vec::new(),
+            ..PublicWebConfig::default()
+        };
+        assert_eq!(nothing.https_port(), None);
     }
 
     #[test]

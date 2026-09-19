@@ -62,7 +62,10 @@ for the full comment on every key.
   below), `files`, `acme` (see **ACME certificates** below), or `none` (refused unless
   `allow_insecure_http = true`, which is meant for development and the e2e
   suite, not a real deployment — it serves credentials, tokens and
-  certificate enrollment in the clear).
+  certificate enrollment in the clear). `plain_bind` adds an optional
+  **plaintext** listener that serves only the ACME `http-01` path and a `301`
+  to HTTPS — see **The plaintext listener** below; it is not
+  `allow_insecure_http` and does not need it.
 - **`[web.marti]`** — the mutually authenticated Marti listener, `:8443` by
   default. `client_cert = "required"` is the only accepted value: unlike TAK
   Server, rustak does not accept a bearer token here instead of a
@@ -235,13 +238,53 @@ renew_before = "30d"
 | `challenge` | Answered on | What must be true |
 |---|---|---|
 | `tls-alpn-01` (default) | port **443**, inside the TLS handshake | `":443"` is in `[web.public] listen`. Needs no plaintext port. |
-| `http-01` | port **80**, over plaintext HTTP, at `/.well-known/acme-challenge/{token}` | Port 80 reaches the public listener. rustak serves that path on every `[web.public]` binding; it does **not** yet bind `[web.public] plain_bind` itself, so an `http-01` deployment needs a proxy forwarding `:80` to a `[web.public] listen` address, or `":80"` in that list. |
+| `http-01` | port **80**, over plaintext HTTP, at `/.well-known/acme-challenge/{token}` | Port 80 reaches rustak. Either bind it directly — `":80"` in `[web.public] listen`, or `[web.public] plain_bind = ":80"` — or set `plain_bind` to a higher port, such as `":8080"`, and have a proxy forward `:80` to it. The challenge path is served on every `[web.public]` binding *and* on `plain_bind`. |
 
 `--check` refuses a combination that could never complete — `tls-alpn-01` with
 nothing on 443, `http-01` with no plaintext port — and refuses a name no public
-authority could issue for, such as `tak.lan`, `localhost` or an IP address.
+authority could issue for, such as `tak.lan`, `localhost` or an IP address. It
+also refuses a **wildcard**: `*.example.com` can only be validated with a
+`dns-01` challenge, and rustak implements `tls-alpn-01` and `http-01`, so list
+the concrete host names instead (one certificate can carry many).
 Binding a port below 1024 needs `CAP_NET_BIND_SERVICE` (the systemd unit below
 grants it) or a proxy in front.
+
+### The plaintext listener
+
+`[web.public] plain_bind` binds one plaintext HTTP socket, and it answers
+exactly two things:
+
+| Request | Answer |
+|---|---|
+| `GET /.well-known/acme-challenge/{token}` | the `http-01` key authorization, or `404` when no order is in flight |
+| anything else, any method | `301` to `https://<host><path>` |
+
+```toml
+[web.public]
+listen = ["0.0.0.0:8446"]
+plain_bind = ":8080"                 # behind a proxy forwarding :80 to it
+# plain_bind = ":80"                 # or bound directly, with CAP_NET_BIND_SERVICE
+```
+
+- **It is not `allow_insecure_http`.** That key permits serving the API, the
+  admin UI and enrollment without TLS. This listener serves none of them: no
+  API, no UI, no Marti, no cookies, nothing that carries a credential. Setting
+  `plain_bind` does not weaken the HTTPS listener, and `allow_insecure_http`
+  is neither needed nor consulted for it.
+- **The redirect never echoes an unknown `Host`.** The host is kept only when
+  it is one this installation answers to (`[server] domains`, `[acme] domains`
+  or the host of `[server] base_url`); anything else is sent to the first
+  `[server] domains` entry. That is what stops the port being an open redirect,
+  and stops a cache in front of it answering for everybody with a poisoned
+  `Location`.
+- **The port in the redirect** is the port of `[server] base_url` when that is
+  set, and otherwise the first `[web.public] listen` address — omitted when it
+  is 443. So a rustak on `:8446` behind no proxy redirects to
+  `https://tak.example.com:8446/…`, and one published on 443 by a proxy should
+  say so with `base_url = "https://tak.example.com"`.
+- An installation with no `[server] domains` and no `base_url` has nothing to
+  compare a `Host` against; it redirects to whatever was asked for and says so
+  in the log at start-up.
 
 ### Watching it, and asking for a renewal
 

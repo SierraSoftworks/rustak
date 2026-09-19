@@ -11,6 +11,11 @@
 //! serves the same thing on a socket the caller bound, for a test that has to
 //! know the port before the server exists.
 //!
+//! [`build_plain`] binds the third, optional one: `[web.public] plain_bind`,
+//! which answers the ACME `http-01` challenge over plaintext and redirects
+//! everything else to HTTPS. Nothing is *served* on it — see [`plain`] for why
+//! that is not the same as `allow_insecure_http`.
+//!
 //! # Why the public listener always serves TLS
 //!
 //! Everything this listener carries is a credential: a bearer token, a passkey
@@ -30,9 +35,11 @@
 
 pub mod api;
 pub mod helpers;
+pub mod plain;
 pub mod server;
 pub mod telemetry;
 pub mod tls;
 pub mod ui;
 
+pub use plain::{build_plain, build_plain_on};
 pub use server::{build_marti, build_marti_on, build_public};

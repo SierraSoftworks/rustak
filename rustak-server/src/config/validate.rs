@@ -172,6 +172,10 @@ fn acme(config: &Config) -> Result<(), Error> {
         ));
     }
 
+    // A wildcard is refused before the names are judged one by one, because
+    // the reason is about the challenges rustak implements rather than about
+    // the name; see [`AcmeConfig::validate_wildcards`].
+    acme.validate_wildcards(&config.server)?;
     public_names(config)?;
     challenge_is_reachable(config)
 }
@@ -556,7 +560,6 @@ mod tests {
             "tak.home.arpa",
             "localhost",
             "192.168.1.10",
-            "*.tak.lan",
         ] {
             let message = refusal(&format!(
                 r#"
@@ -580,8 +583,37 @@ mod tests {
     }
 
     #[test]
-    fn an_ordinary_public_name_and_a_wildcard_over_one_are_accepted() {
-        for name in ["tak.example.com", "TAK.example.com.", "*.example.com"] {
+    fn a_wildcard_is_refused_because_dns_01_is_not_implemented() {
+        // The authority would only ever offer dns-01 for it, and rustak
+        // answers tls-alpn-01 and http-01 — so the order cannot complete, and
+        // failing at the authorization spends a rate-limit slot to learn it.
+        for name in ["*.example.com", "*.tak.example.com"] {
+            let message = refusal(&format!(
+                r#"
+                [server]
+                domains = ["{name}"]
+                [web.public]
+                listen = [":443"]
+                [web.public.tls]
+                mode = "acme"
+                [acme]
+                enabled = true
+                accept_tos = true
+                "#,
+            ));
+
+            assert!(message.contains(name), "{message}");
+            assert!(message.contains("dns-01"), "{message}");
+            assert!(
+                message.contains("concrete host names"),
+                "the advice has to say what to write instead: {message}",
+            );
+        }
+    }
+
+    #[test]
+    fn an_ordinary_public_name_is_accepted() {
+        for name in ["tak.example.com", "TAK.example.com."] {
             parse(&format!(
                 r#"
                 [server]

@@ -24,7 +24,6 @@ use rustak_api::{AuditCategory, AuditOutcome, TlsCertificateState, TlsSource, Tl
 
 use crate::config::TlsMode;
 use crate::db::AuditEntry;
-use crate::pki::tls::HotSwapCertResolver;
 use crate::prelude::*;
 
 use super::challenge::Responder;
@@ -207,10 +206,12 @@ pub async fn status(services: &impl Services) -> Result<TlsStatus, Error> {
 
 /// Runs one renewal: decide, order, store, and swap the listener over.
 ///
-/// `resolver` is the public listener's, when `[web.public.tls] mode = "acme"`
-/// installed one; without it a `tls-alpn-01` challenge cannot be answered and
-/// a new certificate cannot be served until the next restart, both of which
-/// are said rather than assumed.
+/// The resolver and the `http-01` answer map both come from
+/// [`Services::acme`]. A handle with no
+/// resolver on it — a listener that is not in `[web.public.tls] mode = "acme"`
+/// — cannot answer a `tls-alpn-01` challenge and cannot serve a new
+/// certificate until the next restart, both of which are said rather than
+/// assumed.
 ///
 /// `forced` skips the schedule — that is the admin API's "renew now" — but not
 /// the ordering itself, so a forced run against a healthy certificate does
@@ -223,11 +224,7 @@ pub async fn status(services: &impl Services) -> Result<TlsStatus, Error> {
 /// an order fails. The failure is recorded on the row before it is returned, so
 /// the back-off applies to the next attempt either way.
 #[instrument("pki.acme.renew", skip_all, fields(forced), err(Display))]
-pub async fn run(
-    services: &impl Services,
-    resolver: Option<Arc<HotSwapCertResolver>>,
-    forced: bool,
-) -> Result<CertState, Error> {
+pub async fn run(services: &impl Services, forced: bool) -> Result<CertState, Error> {
     let config = services.config();
     let acme = &config.acme;
 
@@ -269,7 +266,7 @@ pub async fn run(
 
     let id = store::reserve(services.db(), &domains).await?;
 
-    match place_order(services, resolver, &domains, id).await {
+    match place_order(services, &domains, id).await {
         Ok(state) => Ok(state),
         Err(err) => {
             let attempts = store::record_failure(services.db(), id, &err.description()).await?;
@@ -303,12 +300,12 @@ pub async fn run(
 /// recorded against the row by exactly one piece of code.
 async fn place_order(
     services: &impl Services,
-    resolver: Option<Arc<HotSwapCertResolver>>,
     domains: &[String],
     id: i64,
 ) -> Result<CertState, Error> {
     let config = services.config();
     let acme = &config.acme;
+    let state = services.acme();
 
     let account = account::ensure(
         services.db(),
@@ -318,7 +315,7 @@ async fn place_order(
     )
     .await?;
 
-    let responder = Responder::new(resolver.clone());
+    let responder = Responder::new(Arc::clone(&state));
     let issued = order::place(
         &account,
         domains,
@@ -345,7 +342,7 @@ async fn place_order(
         services.db(),
         services.secrets(),
         domains,
-        resolver.as_ref(),
+        state.resolver().as_ref(),
     )
     .await?;
 
@@ -591,7 +588,7 @@ mod tests {
     async fn renewing_without_acme_configured_says_which_keys_to_set() {
         let context = AppContext::new_mock(|_| {}).await.unwrap();
 
-        let refused = run(&context, None, true).await.unwrap_err();
+        let refused = run(&context, true).await.unwrap_err();
 
         assert!(refused.is(human_errors::Kind::User));
         assert!(refused.description().contains("ACME is not switched on"));
@@ -612,7 +609,7 @@ mod tests {
         .await
         .unwrap();
 
-        let refused = run(&context, None, true).await.unwrap_err();
+        let refused = run(&context, true).await.unwrap_err();
 
         assert!(refused.is(human_errors::Kind::User));
         assert!(refused.description().contains("no names"));

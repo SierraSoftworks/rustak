@@ -30,6 +30,17 @@
 //! anything is spawned — see [`late`] for why, and
 //! [`AppContext::install_content`]/[`AppContext::install_jwt`] for how.
 //!
+//! # The ACME slot
+//!
+//! [`AcmeState`] is different: it is created with the context, empty and
+//! always valid, and what arrives late is the certificate resolver *inside*
+//! it, which [`web::tls::resolve`](crate::web::tls::resolve) publishes during
+//! start-up. It is here because the two halves that share it cannot reach each
+//! other any other way — the renewal is a queue job holding nothing but
+//! [`Services`], and the `http-01` route is an actix handler holding nothing
+//! but its request — and because the process-wide statics it replaced made
+//! every server in a process answer for every other one's order.
+//!
 //! ```
 //! use rustak_server::prelude::*;
 //!
@@ -85,6 +96,15 @@ pub type JwtKeys = crate::auth::jwt::JwtIssuer;
 /// before the context does. Installed by
 /// [`AppContext::install_pki`](AppContext::install_pki).
 pub type PkiAuthority = crate::pki::Pki;
+
+/// The public listener's ACME certificate resolver and `http-01` answer map.
+///
+/// Created with the context rather than installed into it: an installation
+/// that never switches ACME on simply holds an empty one, and the resolver
+/// inside it is published by
+/// [`web::tls::resolve`](crate::web::tls::resolve) for
+/// `[web.public.tls] mode = "acme"` alone.
+pub type AcmeState = crate::pki::acme::AcmeState;
 
 /// The registry of everything connected to the CoT stream right now.
 ///
@@ -154,6 +174,7 @@ pub struct AppContext {
     jwt: Late<JwtKeys>,
     pki: Late<PkiAuthority>,
     live: Late<LiveConnections>,
+    acme: Arc<AcmeState>,
     events: ServerEvents,
     session: Arc<Session>,
     http_client: reqwest::Client,
@@ -190,6 +211,7 @@ impl AppContext {
             jwt: Late::new("the token signing keys"),
             pki: Late::new("the certificate authority"),
             live: Late::new("the live stream connections"),
+            acme: Arc::new(AcmeState::new()),
             events: ServerEvents::new(),
             session,
             http_client,
@@ -308,6 +330,7 @@ impl std::fmt::Debug for AppContext {
             .field("jwt", &self.jwt)
             .field("pki", &self.pki)
             .field("live", &self.live)
+            .field("acme", &self.acme)
             .field("events", &self.events)
             .field("shutdown", &self.shutdown)
             .field("started_at", &self.started_at)
@@ -401,6 +424,16 @@ pub trait Services {
     /// Always present, and never fails: a bus with no subscribers is the
     /// ordinary case.
     fn events(&self) -> &ServerEvents;
+
+    /// The ACME certificate resolver and the `http-01` answers armed right
+    /// now.
+    ///
+    /// On the trait because the renewal job reaches for it through the
+    /// `&impl Services` its context hands it, and because the listener builders
+    /// hand the same handle to the challenge routes. Always present: an
+    /// installation that is not in ACME mode holds an empty one, which reports
+    /// no resolver and answers no token.
+    fn acme(&self) -> Arc<AcmeState>;
 }
 
 impl Services for AppContext {
@@ -454,6 +487,10 @@ impl Services for AppContext {
 
     fn events(&self) -> &ServerEvents {
         &self.events
+    }
+
+    fn acme(&self) -> Arc<AcmeState> {
+        Arc::clone(&self.acme)
     }
 }
 
@@ -513,6 +550,10 @@ impl<S: Services + ?Sized> Services for &S {
 
     fn events(&self) -> &ServerEvents {
         (*self).events()
+    }
+
+    fn acme(&self) -> Arc<AcmeState> {
+        (*self).acme()
     }
 }
 
@@ -596,6 +637,35 @@ mod tests {
         // a caller reaching for one before start-up filled it should see.
         assert!(context.content().is_err());
         assert!(context.jwt().is_err());
+    }
+
+    #[tokio::test]
+    async fn every_clone_shares_one_acme_handle() {
+        // The property the slot exists for: the renewal publishes an answer
+        // through the job host's clone, and the listener's clone is the one
+        // asked for it.
+        let context = AppContext::new_mock(|_| {}).await.unwrap();
+        let taken_by_the_listener = context.clone();
+
+        assert!(context.acme().resolver().is_none());
+        context.acme().publish("token", "token.thumbprint");
+
+        assert_eq!(
+            taken_by_the_listener.acme().answer("token").as_deref(),
+            Some("token.thumbprint"),
+        );
+    }
+
+    #[tokio::test]
+    async fn two_contexts_do_not_answer_for_each_other() {
+        // What the process-wide token map could not promise, and the reason
+        // two integration suites can order concurrently.
+        let one = AppContext::new_mock(|_| {}).await.unwrap();
+        let other = AppContext::new_mock(|_| {}).await.unwrap();
+
+        one.acme().publish("token", "one.thumbprint");
+
+        assert_eq!(other.acme().answer("token"), None);
     }
 
     #[tokio::test]

@@ -70,8 +70,10 @@ pub fn services(
             // Ahead of the catch-all, which would otherwise answer the
             // authority's validation request with the SPA shell and a `200` —
             // which fails the order with no useful message. Always mounted,
-            // and a `404` unless an order is in flight.
-            .configure(crate::pki::acme::http01_routes)
+            // and a `404` unless an order is in flight. The plaintext listener
+            // ([`web::plain`](crate::web::plain)) mounts the same routes on
+            // the port an `http-01` authority actually connects to.
+            .configure(crate::pki::acme::http01_routes(context.acme()))
             // Ahead of the catch-all, which would otherwise answer it with the
             // SPA shell — and a crawler handed HTML where it asked for
             // `robots.txt` reads that as "no rules".
@@ -264,7 +266,11 @@ fn cannot_serve(err: std::io::Error) -> Error {
 }
 
 /// What to say when a socket will not open.
-fn cannot_bind(socket: std::net::SocketAddr, err: &std::io::Error) -> Error {
+///
+/// `pub(super)` because the plaintext listener binds sockets the same way and
+/// an operator meeting this message should not be told two different things
+/// about the same failure.
+pub(super) fn cannot_bind(socket: std::net::SocketAddr, err: &std::io::Error) -> Error {
     human_errors::user(
         format!("We could not bind a listener to {socket}: {err}"),
         &[
