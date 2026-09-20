@@ -42,7 +42,7 @@ deduplicate ──┬─ version ───────────────�
   `-Cinstrument-coverage`; see [Keeping the test job inside its
   timeout](#keeping-the-test-job-inside-its-timeout) for what that costs and
   what pays for it.
-- **Every job carries a `timeout-minutes`** — 45 for `build` and for `test`,
+- **Every job carries a `timeout-minutes`** — 60 for `test`, 45 for `build`,
   30 for the four that compile or image something big (`ui`, `e2e`,
   `interop-node-tak`, `docker-build`), 20 for `lint`, `docker-publish` and
   `tap`, 10 for the bookkeeping jobs (`deduplicate`, `version`, `ci`).
@@ -56,15 +56,28 @@ deduplicate ──┬─ version ───────────────�
   open the job sat idle for 82 of them before anyone was told. It is 30 now.
 
   **`test` is the one exception to "a timeout is a bug report", and it is worth
-  knowing why.** Its normal wall time measured 11m40s to 16m12s across six
-  runs, but the *same* tests cost two to four times more on a slow host —
-  `rustak_server`'s library was 102 s on one run and 341 s on another,
+  knowing why.** The *same* tests cost two to four times more on a slow host —
+  `rustak_server`'s library measured 102 s on one run and 341 s on another,
   `stream_routing` 81 s against 309 s. Nothing in the repository changes
-  between those; GitHub's two-vCPU hosts simply vary. On 2026-09-19 that
-  multiplier met a suite that had also grown and the job was cancelled at
-  exactly 30 minutes with four binaries still to run. So `test` carries **45**,
-  and the extra fifteen minutes buy variance rather than the suite's own cost.
-  A `test` job that hits *45* is a bug report again.
+  between those; GitHub's two-vCPU hosts simply vary.
+
+  The number has moved twice, and the history is the argument. **Thirty** was
+  set against a normal band of 11–16 minutes — the good case dressed up as a
+  bound — and on 2026-09-19 the multiplier met a suite that had also grown, so
+  the job was cancelled at exactly 30 with four binaries still to run.
+  **Forty-five** was set against 15–17. On 2026-09-20 the M9 wave added 184
+  tests across four landings and the band became **16–20 minutes**, which puts
+  the bad case at 20 × 2.8 ≈ 56 — past 45 again. So `test` now carries **60**,
+  raised deliberately rather than discovered from a cancelled release: `build`
+  needs `ui` and `test`, and v0.0.2 published nothing at all after a single job
+  died. Revisit once the M9 tests settle into a band.
+
+  **A `test` job that hits 60 is a bug report again** — and the first thing to
+  check is the per-binary shape, not the total. Cost landing in the binaries a
+  change touched is growth; cost spread evenly across binaries nothing touched
+  is the host. Reading a single slow run as a trend has produced two wrong
+  conclusions in this repository already, so take at least two samples and say
+  so when you have not.
 - **`ui`** installs `trunk` pinned to **0.21.14** (`cargo binstall trunk@0.21.14`;
   0.22 was still beta at the time this pipeline was written — bump the pin
   deliberately, not via dependabot, which cannot see cargo-binstall installs).

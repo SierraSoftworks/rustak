@@ -132,21 +132,30 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    # Forty-five, not thirty, and the extra fifteen buy runner variance rather
-    # than the suite's own cost. Measured: this job's normal wall time across
-    # six runs was 11m40s to 16m12s, but the *same* tests cost 2-4x more on a
-    # slow host — `rustak_server`'s library was 102s on one run and 341s on
-    # another, `stream_routing` 81s against 309s. On 2026-09-19 that
-    # multiplier landed on a suite that had also grown (a new
-    # `cloudtak_onboarding` binary, 1754 library tests) and run 35450602916 was
-    # cancelled at exactly 30 minutes with four binaries still to go.
+    # Sixty, and the extra minutes buy runner variance rather than the suite's
+    # own cost. The *same* tests cost 2-4x more on a slow host —
+    # `rustak_server`'s library measured 102s on one run and 341s on another,
+    # `stream_routing` 81s against 309s — and nothing in this repository
+    # changes between those.
     #
-    # `docs/ci.md` argues that a job hitting its timeout is a bug report rather
-    # than a number to raise, and that is still right for a job that is slow
-    # because of what it does. This one is not: it is slow because of where it
-    # happens to run, three times in ten. Thirty was the good case dressed up
-    # as a bound.
-    timeout-minutes: 45
+    # The history is why the number has moved twice. Thirty was set against a
+    # normal band of 11-16 minutes and was the good case dressed up as a bound:
+    # run 35450602916 was cancelled at exactly 30 with four binaries still to
+    # go. Forty-five was set against 15-17. On 2026-09-20 the M9 wave added 184
+    # tests across four landings and the band became **16-20 minutes**, which
+    # puts the bad case at 20 x 2.8 = 56 — past 45. Raised before a release run
+    # discovered it, because a `Test` failure takes the whole release with it:
+    # `build` needs `ui` and `test`, and v0.0.2 published nothing at all after
+    # one job died.
+    #
+    # Revisit once the M9 tests settle into a band. `docs/ci.md` argues a job
+    # hitting its timeout is a bug report rather than a number to raise, and
+    # that is still right for a job slow because of what it does. This one is
+    # slow because of where it runs. **A `Test` job that hits 60 is a bug report
+    # again** — and the shape to check first is per-binary: cost landing in the
+    # binaries a change touched is growth, cost spread evenly across binaries
+    # nothing touched is the host.
+    timeout-minutes: 60
     needs: deduplicate
 
     permissions:
