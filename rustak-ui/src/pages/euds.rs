@@ -55,6 +55,7 @@ pub fn euds() -> Html {
             certificates.reload.clone(),
             clients.reload.clone(),
             history.reload.clone(),
+            listener.reload.clone(),
         ];
         Callback::from(move |_| {
             for reload in &reloads {
@@ -62,18 +63,26 @@ pub fn euds() -> Html {
             }
         })
     };
-    let busy = devices.busy || certificates.busy || clients.busy || history.busy;
+    let busy = devices.busy || certificates.busy || clients.busy || history.busy || listener.busy;
     use_refresh_action(reload.clone(), busy);
 
+    // The live things are re-read on the timer: the connections, the
+    // listener they hang off (which can bind while the page is open), and
+    // the day's history when it is showing.
     {
-        let (live, busy) = (*live, clients.busy || history.busy);
-        let (clients, history) = (clients.reload.clone(), history.reload.clone());
+        let (live, busy) = (*live, clients.busy || history.busy || listener.busy);
+        let (clients, history, listener) = (
+            clients.reload.clone(),
+            history.reload.clone(),
+            listener.reload.clone(),
+        );
         let wide = !*connected_only;
         use_effect_with((live, busy, wide), move |(live, busy, wide)| {
             let wide = *wide;
             let handle = (*live && !*busy).then(|| {
                 gloo_timers::callback::Timeout::new(REFRESH_MS, move || {
                     clients.emit(());
+                    listener.emit(());
                     if wide {
                         history.emit(());
                     }
@@ -85,11 +94,13 @@ pub fn euds() -> Html {
 
     let connected: &[ConnectedClient] = clients.data.as_deref().unwrap_or_default();
     let held = certificates.data.as_deref().unwrap_or_default();
-    let is_connected = |device: &Device| {
+    // Every connection the uid holds: the registry allows more than one.
+    let connections_of = |device: &Device| -> Vec<ConnectedClient> {
         connected
             .iter()
-            .find(|client| client.client_uid == device.uid.to_string())
+            .filter(|client| client.client_uid == device.uid.to_string())
             .cloned()
+            .collect()
     };
 
     let body = match (&devices.data, &devices.error) {
@@ -102,11 +113,11 @@ pub fn euds() -> Html {
             />
         },
         (Some(list), _) => {
-            let enrolled: Vec<(&Device, Option<ConnectedClient>)> = list
+            let enrolled: Vec<(&Device, Vec<ConnectedClient>)> = list
                 .iter()
                 .filter(|device| matches_filter(device, &filter))
-                .map(|device| (device, is_connected(device)))
-                .filter(|(_, live)| !*connected_only || live.is_some())
+                .map(|device| (device, connections_of(device)))
+                .filter(|(_, live)| !*connected_only || !live.is_empty())
                 .collect();
 
             // Connected, but nothing here enrolled it.

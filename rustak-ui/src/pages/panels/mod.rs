@@ -24,7 +24,7 @@ pub use channels::ChannelsPanel;
 pub use cloudtak::CloudTakPanel;
 pub use config_package::ConfigPackagePanel;
 pub use credentials::CredentialsPanel;
-pub use device_row::DeviceRow;
+pub use device_row::{DeviceRow, live_details};
 pub use devices::{DevicesPanel, certificate_for, matches_filter};
 pub use passkeys::PasskeysPanel;
 pub use profile::ProfilePanel;

@@ -9,6 +9,8 @@ use crate::api;
 use crate::components::{MenuAction, MenuItem, SplitButton, StatusPill, StatusTone};
 use crate::util::{format_iso8601, short_relative};
 
+use super::panels::live_details;
+
 /// Why the connected list is empty, once the listener has said whether it is
 /// running. Until it has, the page says the ambiguous thing, which is honest
 /// for the moment before the answer arrives.
@@ -110,14 +112,8 @@ pub fn connected_only_row(props: &ConnectedOnlyRowProps) -> Html {
                     title="Connected with a certificate this installation has no device record for."
                 />
                 <span title="The account it presented as">{ client.username.clone() }</span>
-                <span>{ format!("{} · {}", client.team, client.role) }</span>
                 <span>{ client.takv.clone() }</span>
-                <span title="Where it is connecting from">
-                    { format!("{}:{}", client.ip, client.port) }
-                </span>
-                <span title={format_iso8601(client.connected_at)}>
-                    { format!("Connected {}", short_relative(client.connected_at)) }
-                </span>
+                { live_details(client) }
             </div>
 
             <span class="certificate">{ "No device record" }</span>

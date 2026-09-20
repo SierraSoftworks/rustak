@@ -43,9 +43,10 @@ pub struct DeviceRowProps {
     #[prop_or_default]
     pub show_presence: bool,
 
-    /// Its stream connection, when it holds one.
+    /// Its stream connections. Usually none or one, but the registry allows
+    /// a uid to hold several, and every one is shown.
     #[prop_or_default]
-    pub live: Option<ConnectedClient>,
+    pub live: Vec<ConnectedClient>,
 
     pub on_changed: Callback<()>,
 }
@@ -124,7 +125,7 @@ pub fn device_row(props: &DeviceRowProps) -> Html {
 
             <div class="device-row__meta">
                 if props.show_presence {
-                    { presence(props.live.as_ref()) }
+                    { presence(&props.live) }
                 }
                 if props.show_owner {
                     <span title="Whose device this is">{ props.device.username.to_string() }</span>
@@ -135,8 +136,8 @@ pub fn device_row(props: &DeviceRowProps) -> Html {
                 if let Some(model) = &props.device.device_model {
                     <span>{ model.clone() }</span>
                 }
-                if let Some(client) = &props.live {
-                    { live_details(client) }
+                if !props.live.is_empty() {
+                    { for props.live.iter().map(live_details) }
                 } else {
                     <span title={format_iso8601(props.device.last_seen_at)}>
                         { format!("Seen {}", short_relative(props.device.last_seen_at)) }
@@ -167,26 +168,34 @@ pub fn device_row(props: &DeviceRowProps) -> Html {
 }
 
 /// Whether it is here now, as a pill at the head of the metadata.
-fn presence(live: Option<&ConnectedClient>) -> Html {
-    match live {
-        Some(client) => html! {
-            <>
-                <StatusPill tone={StatusTone::Ok} label="Connected" />
-                if client.incognito {
-                    <StatusPill
-                        tone={StatusTone::Warning}
-                        label="Incognito"
-                        title="Its position is not forwarded to other clients."
-                    />
-                }
-            </>
-        },
-        None => html! { <StatusPill tone={StatusTone::Neutral} label="Offline" /> },
+fn presence(live: &[ConnectedClient]) -> Html {
+    if live.is_empty() {
+        return html! { <StatusPill tone={StatusTone::Neutral} label="Offline" /> };
+    }
+
+    html! {
+        <>
+            <StatusPill
+                tone={StatusTone::Ok}
+                label={match live.len() {
+                    1 => "Connected".to_string(),
+                    n => format!("Connected ×{n}"),
+                }}
+                title={(live.len() > 1).then_some("This uid holds more than one connection.")}
+            />
+            if live.iter().any(|client| client.incognito) {
+                <StatusPill
+                    tone={StatusTone::Warning}
+                    label="Incognito"
+                    title="Its position is not forwarded to other clients."
+                />
+            }
+        </>
     }
 }
 
 /// What a live connection says about itself.
-fn live_details(client: &ConnectedClient) -> Html {
+pub fn live_details(client: &ConnectedClient) -> Html {
     let names = |held: &[rustak_api::GroupName]| match held.is_empty() {
         true => "none".to_string(),
         false => held
@@ -233,15 +242,17 @@ fn actions(
         "Forget it",
     );
 
-    // What can be done to the connection, while there is one.
+    // What can be done to the connection, while there is one. Both act on
+    // the uid, so they reach every connection it holds.
     let mut live_items = Vec::new();
-    if let Some(client) = &props.live {
+    if !props.live.is_empty() {
+        let incognito = props.live.iter().all(|client| client.incognito);
         let toggle = {
-            let (act_live, on) = (act_live.clone(), !client.incognito);
+            let (act_live, on) = (act_live.clone(), !incognito);
             Callback::from(move |()| act_live.emit(Some(on)))
         };
         live_items.push(MenuItem::Action(MenuAction::new(
-            if client.incognito {
+            if incognito {
                 "Leave incognito"
             } else {
                 "Go incognito"

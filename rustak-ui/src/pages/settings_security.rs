@@ -120,7 +120,7 @@ fn auth_details(props: &AuthDetailsProps) -> Html {
     let auth = use_context::<AuthHandle>().expect("AuthHandle context must be provided");
     let metadata = &props.metadata;
 
-    let (mode_label, mode_tone) = match metadata.mode {
+    let (mode_label, mode_tone) = match &metadata.mode {
         AuthMode::Oidc { .. } => ("Single sign-on", StatusTone::Ok),
         AuthMode::Passkey => ("Passkeys only", StatusTone::Neutral),
     };
@@ -153,13 +153,18 @@ fn auth_details(props: &AuthDetailsProps) -> Html {
                     <dd>{ if *pkce { "Required" } else { "Not used" } }</dd>
                 }
 
+                // The account's source is how it gets in: a local account
+                // signs in with a passkey, a single sign-on one through its
+                // provider. (`Me::via` is only how this request authenticated,
+                // which is a bearer token either way.)
                 if let Some(me) = &auth.user {
-                    <dt>{ "You signed in" }</dt>
-                    <dd>{ me.via.label() }</dd>
-                    if let Some(provider) = &me.identity_provider {
-                        <dt>{ "Your provider" }</dt>
-                        <dd>{ provider.clone() }</dd>
-                    }
+                    <dt>{ "Your account" }</dt>
+                    <dd>
+                        { match &me.identity_provider {
+                            Some(provider) => format!("{} via {provider}", me.source.label()),
+                            None => me.source.label().to_string(),
+                        } }
+                    </dd>
                     <dt>{ "Your access" }</dt>
                     <dd>{ if me.is_admin { "Administrator" } else { "Member" } }</dd>
                 }
@@ -169,7 +174,8 @@ fn auth_details(props: &AuthDetailsProps) -> Html {
             // sign-in recorded are judged on the server but not served by it
             // yet; this card grows to show them once they are.
             <p class="panel-note">
-                { "Access-control rules and recorded claims are not yet readable from here." }
+                { "Access-control rules, claim mappings and the claims your sign-in recorded \
+                   are not yet readable from here." }
             </p>
         </>
     }
