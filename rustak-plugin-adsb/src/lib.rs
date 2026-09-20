@@ -7,15 +7,21 @@
 //! receivers hear. This sidecar is what turns that into CoT tracks on a rustak
 //! channel.
 //!
-//! # What is here, and what is not
+//! # The sources
 //!
-//! This is the M9-00 skeleton: the plugin, its settings and its wiring, with
-//! [`Source::Replay`] — a file of tracks — as its only upstream. The real
-//! sources (a local or remote `aircraft.json`, an aggregator's
-//! `v2/point/{lat}/{lon}/{radius}`, OpenSky's `states/all` behind OAuth2)
-//! arrive in M9-02 as further variants of [`Source`], and nothing else here
-//! changes: the model, the CoT mapping, the area filter and the publishing rate
-//! all live in [`rustak_client::feed`].
+//! | `[settings.source]` `kind` | What it reads |
+//! |---|---|
+//! | `readsb` | A `readsb`/`dump1090` decoder's own `aircraft.json`, by path or over HTTP |
+//! | `aggregator` | adsb.lol, adsb.fi or airplanes.live — the same document, pooled |
+//! | `opensky` | The OpenSky Network's state vectors, anonymously or behind OAuth2 |
+//! | `replay` | A file of tracks, for demonstrations and for the test suite |
+//!
+//! Each is a [`sources::AdsbFeed`]: it owns its own reconnection, its own
+//! backoff and its own rate limiting, and answers how it is doing so that the
+//! sidecar's heartbeat can say more than "healthy". [`mapping`] is the only
+//! place that knows anything about emitter categories, feet or knots;
+//! everything after it is [`rustak_client::feed`], which neither knows nor
+//! cares that any of this came off 1090 MHz.
 //!
 //! # Running it
 //!
@@ -23,122 +29,37 @@
 //! rustak-plugin-adsb --config plugin.toml [--env .env] [--check]
 //! ```
 //!
-//! See `config.example.toml` for every setting with its default, and
-//! `docs/plugins.md` for the sidecar contract this follows.
+//! See `config.example.toml` for every setting with its default, `README.md`
+//! for each source's terms, and `docs/plugins.md` for the sidecar contract this
+//! follows.
 
-use std::path::PathBuf;
-use std::time::Duration;
+pub mod health;
+pub mod mapping;
+pub mod settings;
+pub mod sources;
+pub mod wire;
 
-use rustak_client::feed::{
-    Affiliation, Area, Feed, FeedCounters, FeedPublisher, PublishPolicy, Replay,
-};
+use std::time::Instant;
+
+use rustak_api::ServiceState;
+use rustak_client::feed::{Area, FeedCounters, FeedPublisher};
 use rustak_client::sidecar::{Sidecar, SidecarContext, SidecarEvent, async_trait};
 use rustak_core::prelude::*;
 use rustak_cot::Event;
 
-/// How long an aircraft stays on a map without another report.
-///
-/// Shorter than the [`PublishPolicy`] default, which is set for AIS: an
-/// aircraft reports once a second, so one that has said nothing for ninety
-/// seconds has left the area, landed, or was never really there.
-const STALE: Duration = Duration::from_secs(90);
-
-/// Where this plugin reads observations from.
-///
-/// `#[serde(tag = "kind")]`, so a settings file names the upstream it means and
-/// a variant added in M9-02 is an additive change to the file format:
-///
-/// ```toml
-/// [settings.source]
-/// kind = "replay"
-/// path = "tracks.ndjson"
-/// ```
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Source {
-    /// A file of tracks, replayed on every tick. What the demonstration and the
-    /// integration suite use, and what proves the rest of the plugin works
-    /// without an upstream to be down.
-    Replay {
-        /// The newline-delimited JSON file; see [`Replay`] for the format.
-        path: PathBuf,
-    },
-}
-
-impl Source {
-    /// Opens the upstream this setting names.
-    ///
-    /// # Errors
-    ///
-    /// Whatever the source could not do, as something the operator can fix: a
-    /// replay file that is missing or malformed names itself.
-    pub fn open(&self) -> Result<Box<dyn Feed>, Error> {
-        match self {
-            Self::Replay { path } => Ok(Box::new(Replay::open(path)?)),
-        }
-    }
-}
-
-/// The file replayed when a configuration has no `[settings]` table at all.
-fn default_source() -> Source {
-    Source::Replay {
-        path: PathBuf::from("tracks.ndjson"),
-    }
-}
-
-/// The publishing policy an ADS-B deployment starts from.
-fn default_publish() -> PublishPolicy {
-    PublishPolicy::default().with_stale(STALE)
-}
-
-/// `[settings]` — what this sidecar watches, and how loudly it says so.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Settings {
-    /// Where the feed is looking. Default: the whole world.
-    #[serde(default)]
-    pub area: Area,
-
-    /// How often an aircraft may be republished, and how long it lives.
-    ///
-    /// Default: the [`PublishPolicy`] defaults with a `stale` of 90 seconds.
-    /// **A `[settings.publish]` table that omits `stale` gets the module
-    /// default of two minutes instead**, which is why the example file writes
-    /// it out: a partial table is filled in key by key, not from this function.
-    #[serde(default = "default_publish")]
-    pub publish: PublishPolicy,
-
-    /// What these tracks are to the operator. Default: `unknown`, because open
-    /// ADS-B says nothing about whose side an airframe is on.
-    #[serde(default)]
-    pub affiliation: Affiliation,
-
-    /// The upstream. Required, because choosing one is the whole deployment
-    /// decision.
-    pub source: Source,
-}
-
-impl Default for Settings {
-    /// Only reached by a configuration file with no `[settings]` table, which
-    /// is a sidecar that has not been told where to look: it replays
-    /// `tracks.ndjson` from the working directory, and says so by name when
-    /// that file is not there.
-    fn default() -> Self {
-        Self {
-            area: Area::default(),
-            publish: default_publish(),
-            affiliation: Affiliation::default(),
-            source: default_source(),
-        }
-    }
-}
+pub use settings::{MIN_MOVE_M, STALE, Settings, Source};
+pub use sources::{AdsbFeed, Provider};
 
 /// The plugin: one upstream, one publisher, and what it has done so far.
 #[derive(Default)]
 pub struct AdsbSidecar {
     context: Option<SidecarContext<Settings>>,
     publisher: Option<FeedPublisher>,
-    feed: Option<Box<dyn Feed>>,
+    feed: Option<Box<dyn AdsbFeed>>,
+    /// Which kind of source is open, for the heartbeat.
+    kind: &'static str,
+    /// When the last heartbeat of our own went out, and what it said.
+    reported: Option<(Instant, ServiceState)>,
 }
 
 impl AdsbSidecar {
@@ -149,6 +70,101 @@ impl AdsbSidecar {
         self.publisher
             .as_ref()
             .map_or_else(FeedCounters::default, FeedPublisher::counters)
+    }
+
+    /// How many aircraft are on the map right now.
+    #[must_use]
+    pub fn tracked(&self) -> usize {
+        self.publisher.as_ref().map_or(0, FeedPublisher::tracked)
+    }
+
+    /// How the upstream is doing, as the admin UI would see it.
+    #[must_use]
+    pub fn state(&self) -> ServiceState {
+        self.feed.as_ref().map_or(ServiceState::Unknown, |feed| {
+            health::service_state(feed.state())
+        })
+    }
+
+    /// Tells the server what this sidecar is carrying and how its upstream is.
+    ///
+    /// Best-effort and rate-limited: a heartbeat that did not land is not a
+    /// reason to stop publishing CoT, and one that says the same thing as the
+    /// last is not worth a request. A change of state always goes out.
+    async fn report(&mut self) {
+        let (Some(context), Some(feed), Some(publisher)) =
+            (self.context.clone(), &self.feed, &self.publisher)
+        else {
+            return;
+        };
+        let Some(control) = context.control() else {
+            return;
+        };
+
+        let beat = health::heartbeat(
+            self.kind,
+            feed.state(),
+            publisher.counters(),
+            publisher.tracked(),
+        );
+        let due = self
+            .reported
+            .is_none_or(|(at, state)| state != beat.state || at.elapsed() >= health::REPEAT_AFTER);
+
+        if !due {
+            return;
+        }
+
+        self.reported = Some((Instant::now(), beat.state));
+
+        if let Err(err) = control.heartbeat(&beat).await {
+            debug!("The server did not take this sidecar's heartbeat: {err}");
+        }
+    }
+}
+
+/// The area an administrator set for this service, when there is one.
+///
+/// `GET /api/v1/services/<name>/config` is a JSON object an administrator
+/// writes and the service reads, so a deployment can move an area of interest
+/// from the admin UI without anybody editing a file on the sidecar's host. Only
+/// `area` is honoured, and only at start-up; anything else in the document is
+/// somebody else's setting and is left alone.
+///
+/// Every failure here is a [`None`]: no control API, nothing configured, a
+/// document that is not the shape we expect. A sidecar must start with the
+/// file's area rather than refuse to start because a server could not be
+/// reached.
+async fn configured_area(context: &SidecarContext<Settings>) -> Option<Area> {
+    let control = context.control()?;
+    let document = match control.config().await {
+        Ok(document) => document,
+        Err(err) => {
+            debug!("No server-side configuration for this service: {err}");
+
+            return None;
+        }
+    };
+
+    let area = document.get("area")?.clone();
+
+    match serde_json::from_value::<Area>(area) {
+        Ok(area) => {
+            info!(
+                ?area,
+                "Using the area an administrator set for this service; it wins over the file.",
+            );
+
+            Some(area)
+        }
+        Err(err) => {
+            warn!(
+                "The `area` an administrator set for this service is not one we can read ({err}); \
+                 using the one in the configuration file.",
+            );
+
+            None
+        }
     }
 }
 
@@ -161,17 +177,20 @@ impl Sidecar for AdsbSidecar {
 
     async fn start(&mut self, ctx: SidecarContext<Self::Settings>) -> Result<(), Error> {
         let settings = ctx.settings();
+        let area = configured_area(&ctx).await.unwrap_or(settings.area);
 
         // Before anything else: a source that cannot be opened is a setting the
         // operator got wrong, and the one thing `start` should refuse over.
-        self.feed = Some(settings.source.open()?);
-        self.publisher = Some(
-            FeedPublisher::new(settings.publish, settings.affiliation).with_area(settings.area),
-        );
+        self.kind = settings.source.kind();
+        self.feed = Some(settings.source.open(area)?);
+        self.publisher =
+            Some(FeedPublisher::new(settings.publish, settings.affiliation).with_area(area));
 
         info!(
             uid = %ctx.identity().uid(),
-            area = ?settings.area,
+            source = self.kind,
+            upstream = self.feed.as_ref().map(|feed| feed.name()),
+            ?area,
             affiliation = ?settings.affiliation,
             "The ADS-B sidecar is watching.",
         );
@@ -182,26 +201,30 @@ impl Sidecar for AdsbSidecar {
     }
 
     async fn tick(&mut self) -> Result<Vec<Event>, Error> {
-        let (Some(feed), Some(publisher)) = (&mut self.feed, &mut self.publisher) else {
-            return Ok(Vec::new());
-        };
-
-        match feed.poll().await {
-            Ok(tracks) => {
-                for track in tracks {
-                    publisher.offer(track);
+        if let (Some(feed), Some(publisher)) = (&mut self.feed, &mut self.publisher) {
+            match feed.poll().await {
+                Ok(tracks) => {
+                    for track in tracks {
+                        publisher.offer(track);
+                    }
                 }
+                // An upstream that is down, rate-limiting or restarting is an
+                // ordinary Tuesday for an open feed: logged, never a stopped
+                // sidecar. The aircraft it was carrying age out on their own
+                // `stale`, and the heartbeat below says what happened.
+                Err(err) => warn!(source = feed.name(), "The ADS-B feed did not answer: {err}"),
             }
-            // An upstream that is down, rate-limiting or restarting is an
-            // ordinary Tuesday for an open feed: logged, never a stopped
-            // sidecar. The aircraft it was carrying age out on their own
-            // `stale`.
-            Err(err) => warn!(source = feed.name(), "The ADS-B feed did not answer: {err}"),
+
+            publisher.tick();
         }
 
-        publisher.tick();
+        self.report().await;
 
-        Ok(publisher.drain())
+        Ok(self
+            .publisher
+            .as_mut()
+            .map(FeedPublisher::drain)
+            .unwrap_or_default())
     }
 
     async fn on_event(&mut self, event: SidecarEvent) -> Result<Vec<Event>, Error> {
@@ -229,6 +252,7 @@ impl Sidecar for AdsbSidecar {
         let counters = self.counters();
 
         info!(
+            source = self.kind,
             offered = counters.offered,
             published = counters.published,
             suppressed = counters.suppressed,
@@ -245,6 +269,7 @@ mod tests {
     use super::*;
     use rustak_client::feed::{AircraftClass, Track, TrackKind};
     use rustak_client::sidecar::SidecarConfig;
+    use std::path::PathBuf;
 
     /// The file an operator is handed, loaded the way the binary loads it.
     const EXAMPLE: &str = include_str!("../config.example.toml");
@@ -256,29 +281,59 @@ mod tests {
         rustak_core::config::load_str(EXAMPLE).expect("config.example.toml should load")
     }
 
+    /// Starts the plugin over a replay of the demonstration fixture.
+    async fn started() -> AdsbSidecar {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("tracks.ndjson");
+        std::fs::write(&path, FIXTURE).expect("the fixture lands");
+
+        let config: SidecarConfig<Settings> = rustak_core::config::load_str(&format!(
+            "[service]\nname = \"adsb\"\n\n[settings.source]\nkind = \"replay\"\npath = \"{}\"\n",
+            path.display(),
+        ))
+        .expect("the configuration loads");
+
+        let mut sidecar = AdsbSidecar::default();
+        sidecar
+            .start(
+                SidecarContext::from_config(config, AdsbSidecar::VERSION, Shutdown::new())
+                    .expect("a usable identity"),
+            )
+            .await
+            .expect("the replay file opens");
+
+        sidecar
+    }
+
     #[test]
     fn the_example_configuration_file_is_one_this_plugin_can_load() {
         let config = config();
 
         assert_eq!(config.service.name.as_str(), "adsb");
-        assert_eq!(config.settings.affiliation, Affiliation::Unknown);
         assert_eq!(
-            config.settings.source,
-            Source::Replay {
-                path: PathBuf::from("tracks.example.ndjson")
-            }
+            config.settings.affiliation,
+            rustak_client::feed::Affiliation::Unknown
         );
+        assert_eq!(config.settings.source.kind(), "replay");
         assert!(config.settings.area.contains(51.4775, -0.4614));
         assert_eq!(
             config.settings.publish.stale(),
             STALE,
             "the example writes `stale` out; a partial table would not",
         );
+        assert!(
+            (config.settings.publish.min_move_m - MIN_MOVE_M).abs() < f64::EPSILON,
+            "and `min_move_m`, for the same reason",
+        );
     }
 
     #[test]
     fn an_absent_settings_table_still_gets_the_shorter_horizon() {
         assert_eq!(Settings::default().publish.stale(), STALE);
+        assert!(matches!(
+            Settings::default().source,
+            Source::Replay { ref path } if path == &PathBuf::from("tracks.ndjson"),
+        ),);
     }
 
     #[test]
@@ -312,31 +367,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_tick_publishes_the_replayed_aircraft_once() {
-        let directory = tempfile::tempdir().expect("a temporary directory");
-        let path = directory.path().join("tracks.ndjson");
-        std::fs::write(&path, FIXTURE).expect("the fixture lands");
-
-        let config: SidecarConfig<Settings> = rustak_core::config::load_str(&format!(
-            r#"
-            [service]
-            name = "adsb"
-
-            [settings.source]
-            kind = "replay"
-            path = "{}"
-            "#,
-            path.display(),
-        ))
-        .expect("the configuration loads");
-
-        let mut sidecar = AdsbSidecar::default();
-        sidecar
-            .start(
-                SidecarContext::from_config(config, AdsbSidecar::VERSION, Shutdown::new())
-                    .expect("a usable identity"),
-            )
-            .await
-            .expect("the replay file opens");
+        let mut sidecar = started().await;
 
         let published = sidecar.tick().await.expect("the first tick publishes");
 
@@ -347,6 +378,7 @@ mod tests {
                 .iter()
                 .all(|event| event.stale.millis() - event.time.millis() == 90_000),
         );
+        assert_eq!(sidecar.tracked(), 5);
 
         // The second tick offers the same five observations and publishes none
         // of them: the policy is what makes a feed a rate rather than a flood.
@@ -358,9 +390,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_running_replay_reports_itself_healthy() {
+        let sidecar = started().await;
+
+        assert_eq!(sidecar.state(), ServiceState::Healthy);
+    }
+
+    #[test]
+    fn a_sidecar_that_has_not_started_has_nothing_to_report() {
+        let sidecar = AdsbSidecar::default();
+
+        assert_eq!(sidecar.state(), ServiceState::Unknown);
+        assert_eq!(sidecar.tracked(), 0);
+        assert_eq!(sidecar.counters(), FeedCounters::default());
+    }
+
+    #[tokio::test]
     async fn a_reconnection_publishes_every_aircraft_again() {
         let mut sidecar = AdsbSidecar {
-            publisher: Some(FeedPublisher::new(default_publish(), Affiliation::Unknown)),
+            publisher: Some(FeedPublisher::new(
+                settings::default_publish(),
+                rustak_client::feed::Affiliation::Unknown,
+            )),
             ..AdsbSidecar::default()
         };
 

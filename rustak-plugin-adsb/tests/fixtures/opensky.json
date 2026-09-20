@@ -1,0 +1,9 @@
+{
+  "time": 1789000000,
+  "states": [
+    ["3c6444", "BAW117  ", "United Kingdom", 1789000000, 1789000000, -0.3947, 51.4602, 762.0, false, 77.2, 88.0, 2.5, null, 801.6, "5271", false, 0, 5],
+    ["406b1a", "HLE21   ", "United Kingdom", 1789000000, 1789000000, -0.16, 51.482, null, true, 0.0, null, null, null, null, null, false, 0, 8],
+    ["4008f2", "EZY84NM ", "United Kingdom", null, 1789000000, null, null, 9753.6, false, 231.0, 271.0, 0.0, null, 9820.0, "7412", false, 0, 3],
+    ["43c1d2", "RRR7231 ", "United Kingdom", 1788999760, 1788999760, -0.74, 51.61, 7620.0, false, 205.8, 312.0, -3.0, null, 7700.0, null, false, 0, 4]
+  ]
+}

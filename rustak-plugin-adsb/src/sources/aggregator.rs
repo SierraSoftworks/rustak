@@ -1,0 +1,491 @@
+//! The public aggregators, which pool what thousands of receivers hear.
+//!
+//! All three serve the same `readsb` objects over an HTTP endpoint that takes a
+//! point and a radius, so this is one implementation and the [`Provider`]
+//! chooses the URL. The array key differs — adsb.lol and airplanes.live say
+//! `ac`, adsb.fi says `aircraft` — which [`Snapshot`] absorbs, so nothing here
+//! has to care.
+//!
+//! # These are somebody else's servers
+//!
+//! Every one of them is free, run by volunteers, and paid for by people who
+//! feed data into it. This source is written to be a guest:
+//!
+//! - it identifies itself by name and link in every request;
+//! - it never asks more often than [`Provider::min_interval`], whatever the
+//!   configuration says;
+//! - a `429` is honoured for as long as `Retry-After` asks;
+//! - [`FORBIDDEN_LIMIT`] consecutive `403`s stop the source, with a log line
+//!   saying so, rather than retrying against a service that has said no.
+//!
+//! Each provider's terms and the attribution it asks for are in the crate's
+//! README, and [`Provider::terms`] carries the short version into the log at
+//! start-up so that an operator sees it without reading anything.
+
+use std::time::Duration;
+
+use chrono::Utc;
+use rustak_client::feed::{Area, Feed, Track};
+use rustak_client::sidecar::async_trait;
+use rustak_core::prelude::*;
+
+use super::{AdsbFeed, SourceState, http_client, retry_after};
+use crate::mapping::track_from_aircraft;
+use crate::wire::Snapshot;
+
+/// The largest radius any of these endpoints accepts, in nautical miles.
+pub const MAX_RADIUS_NM: f64 = 250.0;
+
+/// How many consecutive `403`s stop this source for good.
+///
+/// Three rather than one, because a single `403` can be a proxy or a bad
+/// minute; three in a row is a service telling us to go away, and continuing to
+/// ask would be the thing that gets an address range blocked.
+pub const FORBIDDEN_LIMIT: u32 = 3;
+
+/// Which pool of receivers to read.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Provider {
+    /// `adsb.lol` — open data, no key, rate limits described as dynamic.
+    AdsbLol,
+    /// `adsb.fi` — open data, non-commercial use, asks to be cited and linked.
+    AdsbFi,
+    /// `airplanes.live` — documented as the same shape at one request a
+    /// second. **Experimental**: our probe of the public endpoint answered
+    /// `403`, so this path is implemented but unverified.
+    AirplanesLive,
+}
+
+impl Provider {
+    /// What to call it in a log line.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::AdsbLol => "adsb.lol",
+            Self::AdsbFi => "adsb.fi",
+            Self::AirplanesLive => "airplanes.live",
+        }
+    }
+
+    /// The endpoint for a circle, as the provider spells it.
+    #[must_use]
+    pub fn endpoint(self, lat: f64, lon: f64, radius_nm: u32) -> String {
+        match self {
+            Self::AdsbLol => format!("https://api.adsb.lol/v2/point/{lat:.5}/{lon:.5}/{radius_nm}"),
+            Self::AdsbFi => format!(
+                "https://opendata.adsb.fi/api/v2/lat/{lat:.5}/lon/{lon:.5}/dist/{radius_nm}"
+            ),
+            Self::AirplanesLive => {
+                format!("https://api.airplanes.live/v2/point/{lat:.5}/{lon:.5}/{radius_nm}")
+            }
+        }
+    }
+
+    /// The shortest gap between two requests this provider documents.
+    #[must_use]
+    pub const fn min_interval(self) -> Duration {
+        match self {
+            // "Dynamic, API keys planned" rather than a number, so this is our
+            // own restraint rather than their published figure.
+            Self::AdsbLol => Duration::from_secs(1),
+            Self::AdsbFi | Self::AirplanesLive => Duration::from_secs(1),
+        }
+    }
+
+    /// The one-line version of what using this data commits an operator to.
+    #[must_use]
+    pub const fn terms(self) -> &'static str {
+        match self {
+            Self::AdsbLol => "adsb.lol is open data; see https://adsb.lol for the current terms.",
+            Self::AdsbFi => {
+                "adsb.fi is for non-commercial use and asks to be cited and linked: https://adsb.fi"
+            }
+            Self::AirplanesLive => {
+                "airplanes.live allows one request a second; see https://airplanes.live/api-guide"
+            }
+        }
+    }
+}
+
+/// One public aggregator, read over a circle.
+#[derive(Debug)]
+pub struct AggregatorFeed {
+    provider: Provider,
+    url: reqwest::Url,
+    client: reqwest::Client,
+    state: SourceState,
+    forbidden: u32,
+    stopped: bool,
+}
+
+impl AggregatorFeed {
+    /// Points a provider at the area this sidecar is watching.
+    ///
+    /// The area becomes a centre and a radius, because that is what these
+    /// endpoints take; a box therefore asks for the circle that encloses it and
+    /// the publisher filters the corners back out.
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::System`] error when the HTTP client or the URL
+    /// this crate built cannot be constructed, neither of which an operator can
+    /// do anything about.
+    pub fn open(provider: Provider, area: Area, interval: Duration) -> Result<Self, Error> {
+        let floor = provider.min_interval();
+        if interval < floor {
+            warn!(
+                provider = provider.name(),
+                seconds = floor.as_secs(),
+                "The configured poll interval is faster than this provider allows; using theirs.",
+            );
+        }
+
+        let (lat, lon) = area.centre();
+        let radius = radius_nm(area);
+        let endpoint = provider.endpoint(lat, lon, radius);
+        let url =
+            reqwest::Url::parse(&endpoint).or_system_err(rustak_core::errors::ADVICE_REPORT_DEV)?;
+
+        info!(
+            provider = provider.name(),
+            lat,
+            lon,
+            radius_nm = radius,
+            "Reading aircraft from a public aggregator. {}",
+            provider.terms(),
+        );
+
+        Ok(Self {
+            provider,
+            url,
+            client: http_client()?,
+            state: SourceState::new(provider.name(), interval.max(floor)),
+            forbidden: 0,
+            stopped: false,
+        })
+    }
+
+    /// Whether repeated refusals have stopped this source.
+    #[must_use]
+    pub const fn stopped(&self) -> bool {
+        self.stopped
+    }
+
+    /// One request, turned into aircraft or into a reason there are none.
+    async fn fetch(&mut self) -> Result<Vec<Track>, Error> {
+        let response = self
+            .client
+            .get(self.url.clone())
+            .send()
+            .await
+            .wrap_user_err(
+                format!("We could not reach {}.", self.provider.name()),
+                &[
+                    "Check that this machine can reach the internet.",
+                    "A public aggregator is somebody else's service; it may simply be down.",
+                ],
+            )?;
+
+        let status = response.status();
+
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let delay = retry_after(response.headers(), "retry-after")
+                .unwrap_or_else(|| self.state.interval() * 2);
+            self.state.wait_for(delay);
+
+            return Ok(Vec::new());
+        }
+
+        if status == reqwest::StatusCode::FORBIDDEN {
+            self.refused();
+
+            return Ok(Vec::new());
+        }
+
+        let body = response
+            .error_for_status()
+            .wrap_user_err(
+                format!("{} answered {status}.", self.provider.name()),
+                &["A public aggregator's terms and endpoints change; check the crate's README."],
+            )?
+            .text()
+            .await
+            .wrap_user_err(
+                format!("{} sent a broken reply.", self.provider.name()),
+                rustak_core::errors::ADVICE_RESTART_AFTER_FIXING,
+            )?;
+
+        let snapshot: Snapshot = serde_json::from_str(&body).wrap_user_err(
+            format!(
+                "{} sent something we could not read as aircraft.",
+                self.provider.name()
+            ),
+            &["The endpoint may have changed shape; check the crate's README."],
+        )?;
+
+        self.forbidden = 0;
+        self.state.succeeded();
+
+        let now = Utc::now();
+
+        Ok(snapshot
+            .into_aircraft()
+            .iter()
+            .filter_map(|aircraft| track_from_aircraft(aircraft, now))
+            .collect())
+    }
+
+    /// Counts a refusal, and stops asking once there have been enough.
+    fn refused(&mut self) {
+        self.forbidden = self.forbidden.saturating_add(1);
+        self.state.failed(format!(
+            "{} refused the request (403).",
+            self.provider.name()
+        ));
+
+        if self.forbidden >= FORBIDDEN_LIMIT {
+            self.stopped = true;
+
+            error!(
+                provider = self.provider.name(),
+                refusals = self.forbidden,
+                "This aggregator has refused every request; the source has stopped. {}",
+                self.provider.terms(),
+            );
+        }
+    }
+}
+
+/// The radius to ask for, in whole nautical miles within what the endpoints
+/// accept.
+fn radius_nm(area: Area) -> u32 {
+    let clamped = area.radius_nm().ceil().clamp(1.0, MAX_RADIUS_NM);
+
+    // The clamp above puts this between 1 and 250, so the conversion cannot
+    // fail; the fallback is the maximum rather than a panic.
+    u32::try_from(clamped as i64).unwrap_or(MAX_RADIUS_NM as u32)
+}
+
+#[async_trait]
+impl Feed for AggregatorFeed {
+    fn name(&self) -> &str {
+        self.provider.name()
+    }
+
+    async fn poll(&mut self) -> Result<Vec<Track>, Error> {
+        if self.stopped || !self.state.ready() {
+            return Ok(Vec::new());
+        }
+
+        match self.fetch().await {
+            Ok(tracks) => Ok(tracks),
+            Err(err) => {
+                self.state.failed(err.to_string());
+
+                Err(err)
+            }
+        }
+    }
+}
+
+impl AdsbFeed for AggregatorFeed {
+    fn state(&self) -> &SourceState {
+        &self.state
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// The aggregator pointed at a mock rather than at somebody's live service.
+    fn against(server: &MockServer, interval: Duration) -> AggregatorFeed {
+        let mut feed =
+            AggregatorFeed::open(Provider::AdsbLol, Area::default(), interval).expect("it opens");
+        feed.url = reqwest::Url::parse(&format!("{}/v2/point/51.5/-0.5/25", server.uri()))
+            .expect("a mock URL");
+        // `open` clamps the interval up to what the provider documents, which
+        // is right against a live service and pointless against a mock.
+        feed.state = SourceState::new(Provider::AdsbLol.name(), interval);
+
+        feed
+    }
+
+    async fn serving(status: u16, body: &str) -> MockServer {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(status).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        server
+    }
+
+    #[test]
+    fn each_provider_has_its_own_endpoint_shape() {
+        assert_eq!(
+            Provider::AdsbLol.endpoint(51.4775, -0.4614, 25),
+            "https://api.adsb.lol/v2/point/51.47750/-0.46140/25",
+        );
+        assert_eq!(
+            Provider::AdsbFi.endpoint(51.4775, -0.4614, 25),
+            "https://opendata.adsb.fi/api/v2/lat/51.47750/lon/-0.46140/dist/25",
+        );
+        assert_eq!(
+            Provider::AirplanesLive.endpoint(51.4775, -0.4614, 25),
+            "https://api.airplanes.live/v2/point/51.47750/-0.46140/25",
+        );
+    }
+
+    #[test]
+    fn a_provider_is_named_in_a_settings_file_in_snake_case() {
+        for (written, expected) in [
+            ("\"adsb_lol\"", Provider::AdsbLol),
+            ("\"adsb_fi\"", Provider::AdsbFi),
+            ("\"airplanes_live\"", Provider::AirplanesLive),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<Provider>(written).expect("it parses"),
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn the_radius_stays_inside_what_the_endpoints_accept() {
+        assert_eq!(
+            radius_nm(Area::Circle {
+                lat: 51.0,
+                lon: 0.0,
+                radius_km: 46.3
+            }),
+            25,
+        );
+        assert_eq!(
+            radius_nm(Area::Circle {
+                lat: 51.0,
+                lon: 0.0,
+                radius_km: 0.1
+            }),
+            1,
+            "a tiny circle still has to ask for something",
+        );
+        assert_eq!(
+            radius_nm(Area::default()),
+            250,
+            "the whole world asks for the largest circle they will serve",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_response_under_the_ac_key_becomes_tracks() {
+        let server = serving(
+            200,
+            r#"{"now":1.0,"total":1,"ac":[{"hex":"3c6444","flight":"BAW117  ","category":"A5","lat":51.46,"lon":-0.39,"gs":247.6,"track":88.0,"alt_geom":3225,"seen_pos":0.1}]}"#,
+        )
+        .await;
+        let mut feed = against(&server, Duration::from_secs(0));
+
+        let tracks = feed.poll().await.expect("the aggregator answers");
+
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].id, "ADSB-3c6444");
+        assert_eq!(tracks[0].callsign.as_deref(), Some("BAW117"));
+        assert!(feed.state().is_connected());
+    }
+
+    #[tokio::test]
+    async fn a_response_under_the_aircraft_key_becomes_the_same_tracks() {
+        let server = serving(
+            200,
+            r#"{"now":1.0,"resultCount":1,"aircraft":[{"hex":"3c6444","lat":51.46,"lon":-0.39,"seen_pos":0.1}]}"#,
+        )
+        .await;
+        let mut feed = against(&server, Duration::from_secs(0));
+
+        assert_eq!(feed.poll().await.expect("it answers")[0].id, "ADSB-3c6444");
+    }
+
+    #[tokio::test]
+    async fn a_rate_limit_is_waited_out_rather_than_treated_as_a_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "30"))
+            .mount(&server)
+            .await;
+
+        let mut feed = against(&server, Duration::from_secs(0));
+        feed.state.succeeded();
+
+        assert!(feed.poll().await.expect("429 is not an error").is_empty());
+        assert!(
+            feed.state().is_connected(),
+            "they answered; they just said later"
+        );
+        assert!(!feed.state().ready(), "and we are waiting");
+    }
+
+    #[tokio::test]
+    async fn repeated_refusals_stop_the_source_for_good() {
+        let server = serving(403, "no").await;
+        let mut feed = against(&server, Duration::from_secs(0));
+
+        for _ in 0..FORBIDDEN_LIMIT {
+            assert!(feed.poll().await.expect("a 403 is not an error").is_empty());
+        }
+
+        assert!(
+            feed.stopped(),
+            "three refusals in a row is a service saying no"
+        );
+
+        let before = server.received_requests().await.expect("a log").len();
+        assert!(feed.poll().await.expect("a stopped source").is_empty());
+        assert_eq!(
+            server.received_requests().await.expect("a log").len(),
+            before,
+            "a stopped source sends nothing at all",
+        );
+    }
+
+    #[tokio::test]
+    async fn one_refusal_is_a_bad_minute_rather_than_a_ban() {
+        let server = serving(403, "no").await;
+        let mut feed = against(&server, Duration::from_secs(0));
+
+        assert!(feed.poll().await.expect("it answers nothing").is_empty());
+
+        assert!(!feed.stopped());
+    }
+
+    #[tokio::test]
+    async fn the_interval_is_a_floor_under_the_request_rate() {
+        let server = serving(200, r#"{"now":1.0,"ac":[]}"#).await;
+        let mut feed = against(&server, Duration::from_secs(60));
+
+        for _ in 0..5 {
+            assert!(feed.poll().await.expect("a poll").is_empty());
+        }
+
+        assert_eq!(
+            server.received_requests().await.expect("a log").len(),
+            1,
+            "five polls inside one interval is one request",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_error_is_a_failure_the_plugin_can_log() {
+        let server = serving(500, "oops").await;
+        let mut feed = against(&server, Duration::from_secs(0));
+
+        let err = feed.poll().await.expect_err("a 500 is a failed poll");
+
+        assert!(err.to_string().contains("adsb.lol"), "{err}");
+        assert!(!feed.state().is_connected());
+    }
+}

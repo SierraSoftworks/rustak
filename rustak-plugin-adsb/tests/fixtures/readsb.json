@@ -1,0 +1,103 @@
+{
+  "now": 1789000000.0,
+  "messages": 184213,
+  "aircraft": [
+    {
+      "hex": "3c6444",
+      "type": "adsb_icao",
+      "flight": "BAW117  ",
+      "r": "G-XLEA",
+      "t": "A388",
+      "desc": "AIRBUS A-380-800",
+      "alt_baro": 2675,
+      "alt_geom": 3225,
+      "gs": 247.6,
+      "track": 88.0,
+      "true_heading": 86.2,
+      "baro_rate": 2816,
+      "geom_rate": 2592,
+      "squawk": "5271",
+      "emergency": "none",
+      "category": "A5",
+      "lat": 51.4602,
+      "lon": -0.3947,
+      "nic": 8,
+      "rc": 186,
+      "seen_pos": 0.128,
+      "seen": 0.0,
+      "rssi": -15.5
+    },
+    {
+      "hex": "406b1a",
+      "type": "mlat",
+      "flight": "HLE21   ",
+      "t": "EC35",
+      "alt_baro": 1300,
+      "gs": 80.0,
+      "track": 15.0,
+      "category": "A7",
+      "lat": 51.482,
+      "lon": -0.16,
+      "seen_pos": 1.2,
+      "seen": 1.2
+    },
+    {
+      "hex": "43c1d2",
+      "type": "adsb_icao",
+      "flight": "RRR7231 ",
+      "t": "A332",
+      "alt_baro": 24975,
+      "alt_geom": 25000,
+      "gs": 400.0,
+      "track": 312.0,
+      "category": "A4",
+      "dbFlags": 1,
+      "lat": 51.61,
+      "lon": -0.74,
+      "seen_pos": 0.4,
+      "seen": 0.4
+    },
+    {
+      "hex": "4ca7b3",
+      "type": "adsb_icao",
+      "flight": "LHRTUG4 ",
+      "alt_baro": "ground",
+      "gs": 13.0,
+      "track": 200.0,
+      "category": "C2",
+      "lat": 51.47,
+      "lon": -0.4543,
+      "seen_pos": 0.9,
+      "seen": 0.9
+    },
+    {
+      "hex": "~a1b2c3",
+      "type": "tisb_icao",
+      "alt_baro": 5000,
+      "gs": 140.0,
+      "track": 275.0,
+      "emergency": "general",
+      "lat": 51.2,
+      "lon": -0.9,
+      "seen_pos": 3.0,
+      "seen": 3.0
+    },
+    {
+      "hex": "400abc",
+      "type": "adsb_icao",
+      "flight": "GONE123 ",
+      "alt_baro": 33000,
+      "lat": 50.9,
+      "lon": -1.4,
+      "seen_pos": 120.0,
+      "seen": 120.0
+    },
+    {
+      "hex": "4008f2",
+      "type": "mode_s",
+      "flight": "EZY84NM ",
+      "alt_baro": 9800,
+      "seen": 2.0
+    }
+  ]
+}

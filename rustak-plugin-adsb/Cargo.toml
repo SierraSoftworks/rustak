@@ -24,6 +24,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+rustak-api = { workspace = true }
 rustak-client = { workspace = true }
 rustak-core = { workspace = true }
 rustak-cot = { workspace = true }
@@ -32,10 +33,16 @@ serde = { workspace = true }
 tracing = { workspace = true }
 human-errors = { workspace = true }
 clap = { workspace = true }
+# The live sources: every one of them is an HTTP GET of a JSON document, and
+# OpenSky's is behind an OAuth2 client-credentials token exchange.
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+# Observation times, the `"90s"` durations in `[settings.source]`, and the age
+# of a position report.
+chrono = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-# The fixture test reads the demonstration file the example configuration names,
-# and the reconnection test needs an observation time to offer.
-serde_json = { workspace = true }
-chrono = { workspace = true }
+# The source suites serve hand-written fixtures from a local mock rather than
+# reaching a public aggregator: an open feed is somebody else's rate limit.
+wiremock = { workspace = true }

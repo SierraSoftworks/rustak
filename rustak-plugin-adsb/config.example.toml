@@ -116,8 +116,10 @@ min_interval = "5s"
 max_interval = "60s"
 
 # How far an aircraft must move since its last publication to be published
-# again, in metres. Default: 25.
-min_move_m = 25.0
+# again, in metres. Default for this plugin: 50 — an airliner at cruise covers
+# 25 m in a tenth of a second, so the module's 25 would publish at the rate the
+# receiver hears rather than at the rate anybody needs.
+min_move_m = 50.0
 
 # How many aircraft this sidecar holds before it drops the least recently seen.
 # A busy 250 nm circle is a few hundred, so this is a ceiling on a runaway area
@@ -125,13 +127,79 @@ min_move_m = 25.0
 max_tracks = 5000
 
 
-# Where the observations come from. Required.
+# Where the observations come from. Required. Exactly one of the four blocks
+# below, chosen with `kind`.
 #
-# M9-00 ships one source: "replay", a file of tracks offered on every tick, for
-# demonstrations and for the integration suite. The live ADS-B sources — a
-# readsb/dump1090 aircraft.json (local file or HTTP), the public aggregators'
-# v2/point endpoints, OpenSky's states/all behind OAuth2 client credentials —
-# arrive in M9-02 as further values of `kind`.
+# This file ships with "replay" so that it runs with no receiver, no account and
+# no internet; a deployment replaces this block with one of the three live ones.
+# Read rustak-plugin-adsb/README.md first: every live source has terms, and two
+# of the three ask for attribution.
+
+
+# 1. A readsb / dump1090 receiver's own aircraft.json. The best source there is
+#    and the only one with no terms: it is your own hardware, hearing aircraft
+#    directly. `url_or_path` is either a file on this machine or an http:// or
+#    https:// URL — tar1090 and the dump1090 web interfaces serve the document
+#    at <base>/data/aircraft.json.
+#
+# [settings.source]
+# kind = "readsb"
+# url_or_path = "/run/readsb/aircraft.json"
+# url_or_path = "http://receiver.lan/data/aircraft.json"
+#
+# How often to read it. Default: "1s" — readsb rewrites the file about once a
+# second, and it is your own machine. The sidecar's own `tick` is the other
+# half: a source is never read more often than a tick.
+# poll = "1s"
+
+
+# 2. A public aggregator, which pools what thousands of receivers hear. The area
+#    above becomes the circle they are asked for, so keep it small: a 250 nm
+#    circle over southern England is several hundred aircraft.
+#
+#    `provider` is one of:
+#      "adsb_lol"       - open data, no account. https://adsb.lol
+#      "adsb_fi"        - non-commercial use; asks to be cited and linked.
+#                         https://adsb.fi
+#      "airplanes_live" - EXPERIMENTAL: documented as the same shape, but our
+#                         probe of the public endpoint was refused, so this path
+#                         is implemented and unverified. https://airplanes.live
+#
+# [settings.source]
+# kind = "aggregator"
+# provider = "adsb_lol"
+#
+# How often to ask. Default: "5s". Never faster than the provider documents
+# (one request a second) whatever this says: these are free services run by
+# volunteers, and every request carries a user agent naming this plugin so that
+# they can tell us to stop. Repeated 403s stop the source with a log line.
+# poll = "5s"
+
+
+# 3. The OpenSky Network, which is a research network: its terms are research
+#    and non-commercial use. The area above becomes the bounding box, and a box
+#    larger than 25 square degrees costs more than one credit per request out of
+#    a daily budget of 400 (anonymous) or 4000 (authenticated). The sidecar says
+#    what your configuration costs at start-up.
+#
+# [settings.source]
+# kind = "opensky"
+#
+# An OpenSky API client's credentials. Default: none, which is the anonymous
+# tier. They are credentials, so they belong in the environment rather than
+# here; create them under your OpenSky account.
+# client_id = "${{ env.OPENSKY_CLIENT_ID }}"
+# client_secret = "${{ env.OPENSKY_CLIENT_SECRET }}"
+#
+# How often to ask. Default: "10s" anonymously and "5s" with a credential, which
+# are OpenSky's own two resolutions — asking faster returns the same numbers and
+# spends the budget twice as fast.
+# poll = "10s"
+
+
+# 4. A file of tracks, offered on every tick: what this file ships with, what
+#    the demonstration runs on, and what the integration suite drives. One JSON
+#    track per line; see docs/plugins.md -> "Feed sidecars" for the fields.
 [settings.source]
 kind = "replay"
 path = "tracks.example.ndjson"
