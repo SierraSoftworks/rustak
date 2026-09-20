@@ -103,6 +103,16 @@ deduplicate ──┬─ version ───────────────�
   pure-Rust `protoc` substitute, so neither the native runners nor the `cross`
   Docker image need one. Artifacts and (on a release) release assets are named
   `<bin>-<os>-<arch>[.exe]`.
+
+  The aarch64 leg's `cross` is pinned to **0.2.5** (`cargo binstall cross@0.2.5`)
+  — bump the pin deliberately, like `trunk`'s, and for the same reason:
+  dependabot cannot see cargo-binstall installs, so an unpinned `cross` would
+  let a new upstream release change how that target is built with no commit
+  saying so. The binary is **cached** on that version, which is the other half
+  of why it is pinned: an unpinned cache would be worse than none, restoring
+  whatever was current the day it was first stored, forever. Four of the twenty
+  jobs use `cross` and share one cache key, so on a cold key three of them log
+  `Cache already exists` — a warning, not a failure.
 - **`ci`** is the required check: `always()`-gated, it fails the run if any
   dependency did not succeed, then saves the merge-tree success marker for
   `deduplicate` to find next time. **`tap` is one of those dependencies**, and
@@ -337,7 +347,8 @@ cargo build --release -p rustak-server
 cargo build --release -p rustak-plugin-example
 cargo build --release -p rustak-plugin-ais -p rustak-plugin-adsb
 
-# a cross-compiled leg (needs `cross`: cargo binstall cross)
+# a cross-compiled leg (needs `cross`: cargo binstall cross@0.2.5 — the same
+# pin the build matrix uses)
 cross build --release --target aarch64-unknown-linux-musl -p rustak-server
 
 # docker image (after building the binary for the host platform)

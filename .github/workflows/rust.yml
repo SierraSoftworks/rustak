@@ -17,6 +17,11 @@ env:
   # 0.22 was still beta when this pipeline was written — bump deliberately, not
   # via dependabot, which cannot see cargo-binstall installs.
   TRUNK_VERSION: "0.21.14"
+  # Pinned for the same reasons, plus one of its own: the `Cache Cross` step
+  # keys on this, and an *unpinned* cache would be worse than no cache — it
+  # would restore whatever `cross` was current the day it was first stored,
+  # forever, with nothing in the repository naming that version.
+  CROSS_VERSION: "0.2.5"
 
 concurrency:
   group: rust-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
@@ -527,23 +532,49 @@ jobs:
       # from source would turn a fast failure into a very slow success and put
       # the job near its timeout. Three attempts with a short backoff is the
       # cheaper answer — seconds when it works, one more try when it does not.
-      - name: Install Cross
+      # Cached for the same reason trunk is: a network fetch on the critical
+      # path, and `cargo binstall cross` was one of the four fetches that failed
+      # on 2026-09-19. A retry covers a blip; run 35457004854 showed it cannot
+      # cover a runner degraded for four minutes.
+      #
+      # Four jobs now share this key and run at once, so the first to finish
+      # saves it and the others log "Cache already exists" — a warning, not a
+      # failure, and the next run hits for all four.
+      - name: Cache Cross
+        id: cross-cache
         if: matrix.builder == 'cross'
+        uses: actions/cache@v4
+        with:
+          # Both binaries: binstall installs `cross-util` beside `cross`, and a
+          # cache holding only one restores a half-installed toolchain.
+          path: |
+            ~/.cargo/bin/cross
+            ~/.cargo/bin/cross-util
+          key: cross-${{ env.CROSS_VERSION }}-${{ runner.os }}
+
+      - name: Install Cross
+        if: matrix.builder == 'cross' && steps.cross-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
 
           for attempt in 1 2 3; do
-            if cargo binstall --no-confirm --disable-strategies compile cross; then
-              exit 0
+            if cargo binstall --no-confirm --disable-strategies compile "cross@${CROSS_VERSION}"; then
+              installed=1
+              break
             fi
 
             echo "::warning::cargo binstall cross failed (attempt ${attempt} of 3)."
             sleep $(( attempt * 10 ))
           done
 
-          echo "::error::cargo binstall could not fetch cross after three attempts."
-          exit 1
+          # `installed`, not `exit 0` inside the loop: that worked only because
+          # nothing followed it in the step, and would have stopped working
+          # silently the moment anything was appended.
+          if [ -z "${installed:-}" ]; then
+            echo "::error::cargo binstall could not fetch cross after three attempts."
+            exit 1
+          fi
 
       - name: Setup Cache
         uses: Swatinem/rust-cache@v2
