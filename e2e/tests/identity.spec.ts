@@ -185,7 +185,7 @@ test("a channel is created and granted to an account", async ({ page }) => {
 
   // The bit position is the server's to allocate, so the form does not offer
   // one — it is shown on the row afterwards.
-  await gotoApp(page, "/admin/groups");
+  await gotoApp(page, "/admin/channels");
   await page.getByLabel("Name").fill(channel);
   await page.getByRole("button", { name: "Create channel" }).click();
 
@@ -216,7 +216,7 @@ test("a channel is created and granted to an account", async ({ page }) => {
   // The row's selector is named after the channel and its bit position; the
   // row's action menu is named after the channel too, so the bit is what tells
   // the two apart.
-  await gotoApp(page, "/admin/groups");
+  await gotoApp(page, "/admin/channels");
   await page.locator(".channel-row").filter({ hasText: channel }).getByRole("button", {
     name: `${channel} bit`,
   }).click();
@@ -232,7 +232,7 @@ test("a row's menu closes on Escape and outside clicks, and a destructive item a
   // the page to confuse it with.
   const channel = uniqueName("Channel");
 
-  await gotoApp(page, "/admin/groups");
+  await gotoApp(page, "/admin/channels");
   await page.getByLabel("Name").fill(channel);
   await page.getByRole("button", { name: "Create channel" }).click();
 
@@ -281,7 +281,7 @@ test("anybody can mint an enrolment token for their own phone", async ({ page })
 
   // No username anywhere in this flow: `POST /api/v1/credentials` mints for the
   // caller, which is what lets somebody enrol a device without an administrator.
-  await gotoApp(page, "/admin/credentials");
+  await gotoApp(page, "/admin/settings/account");
   await expect(page.getByRole("heading", { name: "Your credentials" })).toBeVisible();
 
   await page.getByLabel("Label").fill(label);

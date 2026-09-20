@@ -24,21 +24,24 @@ import { bootstrapAdmin, expect, gotoApp, signIn, test, waitForApp } from "./hel
  * The navigation sidebar's label, and the heading the page it opens announces
  * itself with.
  *
- * They differ on purpose in two places: the sidebar has room for "Packages" and
- * "Profiles" where the page can afford "Data packages" and "Device profiles".
+ * They differ on purpose in three places: the sidebar has room for "Packages",
+ * "Profiles" and "Account" where the page can afford "Data packages", "Device
+ * profiles" and "Your account".
  * Asserting both is what proves the link opened the page it claimed to.
  */
 const DESTINATIONS: ReadonlyArray<readonly [string, string]> = [
-  ["Devices", "Devices"],
+  ["Situation", "Situation"],
+  ["Activity", "Activity"],
   ["Users", "Users"],
+  ["EUDs", "EUDs"],
+  ["Profiles", "Device profiles"],
   ["Channels", "Channels"],
-  ["Credentials", "Credentials"],
   ["Missions", "Missions"],
   ["Packages", "Data packages"],
-  ["Profiles", "Device profiles"],
-  ["Services", "Services"],
-  ["Activity", "Activity"],
-  ["Settings", "Settings"],
+  ["Account", "Your account"],
+  ["Security", "Security"],
+  ["Storage", "Storage"],
+  ["Add-ons", "Add-ons"],
   ["Dashboard", "Dashboard"],
 ];
 
@@ -95,11 +98,12 @@ test("a deep link into the console is served by the single-page fallback", async
   // answers everything else with `index.html` — which is what makes a bookmark,
   // a reload and a pasted link all work. A 404 here would mean the fallback was
   // not wired up, and only a deep link would ever show it.
-  const response = await page.goto("/admin/settings");
+  const response = await page.goto("/admin/settings/security");
   expect(response?.status()).toBe(200);
 
   await waitForApp(page);
-  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  // Exact, because "Transport security" is a card heading on the same page.
+  await expect(page.getByRole("heading", { name: "Security", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "This server", exact: true })).toBeVisible();
 });
 

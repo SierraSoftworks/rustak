@@ -2615,6 +2615,11 @@ footer {
   &__meta {
     @include entity-meta;
   }
+
+  // A grid reference is read digit by digit, so it gets the monospace face.
+  &__position {
+    font-family: $font-mono;
+  }
 }
 
 .cot-drawer__heading {

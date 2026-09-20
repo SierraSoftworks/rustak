@@ -1,6 +1,6 @@
 /**
- * The two pages that answer "what is happening right now": the connected
- * clients and the situational-awareness browser.
+ * The two pages that answer "what is happening right now": the EUDs list,
+ * narrowed to what is connected, and the situational-awareness browser.
  *
  * Neither has anything to show on a server nothing has ever connected to,
  * which is exactly the state this suite's server is in — and that is worth
@@ -23,7 +23,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("a server with nothing connected says so rather than failing", async ({ page }) => {
-  await gotoApp(page, "/admin/clients");
+  await gotoApp(page, "/admin/euds");
 
   // `GET /clients` answers `[]` rather than a 503 on an installation with no
   // stream listener, so the page needs no special case for it — and this is
@@ -42,14 +42,21 @@ test("a server with nothing connected says so rather than failing", async ({ pag
   // The auto-refresh is on by default and switchable off, because a page left
   // open on a wall display should not be a request every five seconds for a
   // week.
-  const live = page.locator("#clients-live");
+  const live = page.locator("#euds-refresh");
   await expect(live).toBeChecked();
-  await page.getByText("Refresh every 5 seconds", { exact: false }).click();
+  await page.getByText("Auto-refresh", { exact: true }).click();
   await expect(live).not.toBeChecked();
+
+  // Widening past what is connected shows every enrolled device (none, on
+  // this server) and the day's disconnections beneath.
+  await page.getByText("Connected only", { exact: true }).click();
+  await expect(page.getByText("Nothing has enrolled yet", { exact: false })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Recently disconnected" })).toBeVisible();
+  await expect(page.getByText("Nothing has connected in the last day.")).toBeVisible();
 });
 
 test("the situational-awareness browser is empty rather than broken", async ({ page }) => {
-  await gotoApp(page, "/admin/cot");
+  await gotoApp(page, "/admin/situation");
 
   await expect(
     page.getByText("This server holds the latest message per identifier", { exact: false }),
@@ -66,12 +73,9 @@ test("the situational-awareness browser is empty rather than broken", async ({ p
 test("both live pages are reachable from the navigation sidebar", async ({ page }) => {
   await gotoApp(page, "/admin/");
 
-  // Under the sidebar's "Live" heading the link is called what the page is.
-  await page.getByRole("link", { name: "Clients", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Clients", level: 1 })).toBeVisible();
+  await page.getByRole("link", { name: "EUDs", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "EUDs", level: 1 })).toBeVisible();
 
   await page.getByRole("link", { name: "Situation", exact: true }).click();
-  await expect(
-    page.getByRole("heading", { name: "Situational awareness", level: 1 }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Situation", level: 1 })).toBeVisible();
 });

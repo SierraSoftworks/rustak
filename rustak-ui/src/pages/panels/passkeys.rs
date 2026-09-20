@@ -1,9 +1,8 @@
 //! The passkeys an account holds: the local half of "how you sign in".
 //!
-//! Shown on the person's own Credentials page beside the identity-provider
-//! link, and on Settings, because registering a second passkey before the first
-//! device is lost is the one thing an administrator should do on day one. Both
-//! places are this one component, so the ceremony cannot drift between them.
+//! Shown on the person's own account page beside the identity-provider link,
+//! because registering a second passkey before the first device is lost is the
+//! one thing an administrator should do on day one.
 
 use rustak_api::PasskeySummary;
 use wasm_bindgen_futures::spawn_local;

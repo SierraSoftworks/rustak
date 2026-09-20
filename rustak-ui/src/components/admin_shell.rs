@@ -115,44 +115,41 @@ struct NavGroup {
     links: &'static [(Route, &'static str)],
 }
 
-/// Every destination, grouped by what somebody is there to do and ordered the
-/// way they work through them: what is happening now, what is connected, who
-/// may connect, what they exchange, and how the server is set up.
+/// Every destination, grouped by what somebody is there to do: what is
+/// happening, who and what connects, what they exchange, and how the server
+/// itself is set up.
 const NAV: &[NavGroup] = &[
     NavGroup {
         title: "Overview",
-        links: &[(Route::Dashboard, "Dashboard")],
-    },
-    NavGroup {
-        title: "Live",
         links: &[
-            (Route::Clients, "Clients"),
-            (Route::CotBrowser, "Situation"),
+            (Route::Dashboard, "Dashboard"),
+            (Route::Situation, "Situation"),
+            (Route::Activity, "Activity"),
         ],
     },
     NavGroup {
-        title: "Identity",
+        title: "Clients",
         links: &[
-            (Route::Devices, "Devices"),
             (Route::Users, "Users"),
-            (Route::Groups, "Channels"),
-            (Route::Credentials, "Credentials"),
-        ],
-    },
-    NavGroup {
-        title: "Content",
-        links: &[
-            (Route::Missions, "Missions"),
-            (Route::Packages, "Packages"),
+            (Route::Euds, "EUDs"),
             (Route::Profiles, "Profiles"),
         ],
     },
     NavGroup {
-        title: "Server",
+        title: "Operations",
         links: &[
-            (Route::Services, "Services"),
-            (Route::Activity, "Activity"),
-            (Route::Settings, "Settings"),
+            (Route::Channels, "Channels"),
+            (Route::Missions, "Missions"),
+            (Route::Packages, "Packages"),
+        ],
+    },
+    NavGroup {
+        title: "Settings",
+        links: &[
+            (Route::Account, "Account"),
+            (Route::Security, "Security"),
+            (Route::Storage, "Storage"),
+            (Route::AddOns, "Add-ons"),
         ],
     },
 ];

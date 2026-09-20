@@ -5,29 +5,17 @@
 //! narrows by `username` and answers an administrator with everything when it is
 //! left off, so the three are one component with one prop between them.
 //!
-//! # Forgetting is not revoking
-//!
-//! `DELETE /api/v1/devices/{uid}` removes what we knew about a client and
-//! leaves its certificate working, so the button says "Forget". Taking the
-//! certificate back is the *other* action on the row — see
-//! [`super::certificate`] — and it is separate because the two have different
-//! consequences: forgetting loses a record, revoking drops a live connection
-//! and refuses the next handshake. Both sit on one split button, the revocation
-//! on its face and the rest behind the caret, with a rule between the two kinds
-//! of thing.
+//! The row itself is [`super::device_row`], which the EUDs page also uses
+//! with the connection registry joined on.
 
-use rustak_api::{Certificate, Device, DeviceUid, RevocationReason, Username};
-use wasm_bindgen_futures::spawn_local;
+use rustak_api::{Certificate, Device, Username};
 use yew::prelude::*;
 
 use crate::api;
-use crate::components::{
-    Alert, AlertKind, Card, Field, LoadingNote, MenuAction, MenuItem, SplitButton, TextInput,
-};
-use crate::util::{format_iso8601, short_relative};
+use crate::components::{Alert, AlertKind, Card, Field, LoadingNote, TextInput};
 
 use super::super::load::use_resource;
-use super::certificate::{CertificateDetails, revoke_actions};
+use super::device_row::DeviceRow;
 
 #[derive(Properties, PartialEq)]
 pub struct DevicesPanelProps {
@@ -148,7 +136,7 @@ pub fn devices_panel(props: &DevicesPanelProps) -> Html {
 }
 
 /// Whether a device matches what somebody typed, ignoring case.
-fn matches_filter(device: &Device, needle: &str) -> bool {
+pub fn matches_filter(device: &Device, needle: &str) -> bool {
     let needle = needle.trim().to_lowercase();
     if needle.is_empty() {
         return true;
@@ -169,7 +157,7 @@ fn matches_filter(device: &Device, needle: &str) -> bool {
 /// at. The fallback to the newest one issued to the same uid covers a device
 /// whose row has not caught up with a renewal — showing the certificate that
 /// is really in use beats showing none.
-fn certificate_for(device: &Device, certificates: &[Certificate]) -> Option<Certificate> {
+pub fn certificate_for(device: &Device, certificates: &[Certificate]) -> Option<Certificate> {
     if let Some(found) = device
         .last_certificate_id
         .and_then(|id| certificates.iter().find(|held| held.id == id))
@@ -182,132 +170,4 @@ fn certificate_for(device: &Device, certificates: &[Certificate]) -> Option<Cert
         .filter(|held| held.device_uid.as_ref() == Some(&device.uid))
         .max_by_key(|held| held.not_before)
         .cloned()
-}
-
-#[derive(Properties, PartialEq)]
-struct DeviceRowProps {
-    device: Device,
-
-    /// The certificate it last presented, when one could be read.
-    #[prop_or_default]
-    certificate: Option<Certificate>,
-
-    show_owner: bool,
-    on_changed: Callback<()>,
-}
-
-#[function_component(DeviceRow)]
-fn device_row(props: &DeviceRowProps) -> Html {
-    let busy = use_state(|| false);
-    let error = use_state(|| None::<String>);
-
-    let forget = {
-        let (busy, error, on_changed) = (busy.clone(), error.clone(), props.on_changed.clone());
-        let uid: DeviceUid = props.device.uid.clone();
-        Callback::from(move |()| {
-            let (busy, error, on_changed) = (busy.clone(), error.clone(), on_changed.clone());
-            let uid = uid.clone();
-            busy.set(true);
-            spawn_local(async move {
-                match api::devices::forget(&uid).await {
-                    Ok(()) => {
-                        error.set(None);
-                        on_changed.emit(());
-                    }
-                    Err(err) => error.set(Some(err.to_string())),
-                }
-                busy.set(false);
-            });
-        })
-    };
-
-    let revoke = {
-        let (busy, error, on_changed) = (busy.clone(), error.clone(), props.on_changed.clone());
-        let id = props.certificate.as_ref().map(|certificate| certificate.id);
-        Callback::from(move |reason: RevocationReason| {
-            let Some(id) = id else {
-                return;
-            };
-            let (busy, error, on_changed) = (busy.clone(), error.clone(), on_changed.clone());
-            busy.set(true);
-            spawn_local(async move {
-                match api::certificates::revoke(id, reason).await {
-                    Ok(_) => {
-                        error.set(None);
-                        on_changed.emit(());
-                    }
-                    Err(err) => error.set(Some(err.to_string())),
-                }
-                busy.set(false);
-            });
-        })
-    };
-
-    let forget = MenuAction::new("Forget", forget).danger().confirm(
-        format!(
-            "Forget '{}'? Its certificate stays valid — revoke the credential it enrolled \
-             with to take that back.",
-            props.device.display(),
-        ),
-        "Forget it",
-    );
-
-    // Revoking is the face of the button while there is a certificate to
-    // revoke; once there is not, forgetting is all that is left, and it takes
-    // the face with no caret beside it.
-    let (primary, items) = match props
-        .certificate
-        .as_ref()
-        .and_then(|c| revoke_actions(c, &revoke))
-    {
-        Some((primary, mut items)) => {
-            items.push(MenuItem::Separator);
-            items.push(MenuItem::Action(forget));
-            (primary, items)
-        }
-        None => (forget, Vec::new()),
-    };
-
-    html! {
-        <div class="device-row">
-            <div class="device-row__identity">
-                <span class="device-row__name">{ props.device.display().to_string() }</span>
-                <span class="device-row__uid">{ props.device.uid.to_string() }</span>
-            </div>
-
-            <div class="device-row__meta">
-                if props.show_owner {
-                    <span title="Whose device this is">{ props.device.username.to_string() }</span>
-                }
-                if let Some(platform) = props.device.platform_version() {
-                    <span>{ platform }</span>
-                }
-                if let Some(model) = &props.device.device_model {
-                    <span>{ model.clone() }</span>
-                }
-                <span title={format_iso8601(props.device.last_seen_at)}>
-                    { format!("Seen {}", short_relative(props.device.last_seen_at)) }
-                </span>
-                if let Some(ip) = props.device.last_ip {
-                    <span title="Where we last saw it connect from">{ ip.to_string() }</span>
-                }
-            </div>
-
-            <CertificateDetails
-                certificate={props.certificate.clone()}
-                had_one={props.device.last_certificate_id.is_some()}
-            />
-
-            <SplitButton
-                busy={*busy}
-                menu_label={format!("More actions for {}", props.device.display())}
-                {primary}
-                {items}
-            />
-
-            if let Some(message) = &*error {
-                <p class="device-row__error" role="alert">{ message.clone() }</p>
-            }
-        </div>
-    }
 }

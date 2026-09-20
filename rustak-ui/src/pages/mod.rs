@@ -2,13 +2,13 @@
 
 mod activity;
 mod auth_callback;
-mod clients;
 mod cot_browser;
 mod cot_drawer;
 mod dashboard;
 #[cfg(debug_assertions)]
 mod demo;
-mod devices;
+mod eud_rows;
+mod euds;
 mod group_members;
 mod groups;
 mod landing;
@@ -30,8 +30,9 @@ mod profile_files;
 mod profile_prefs;
 mod profiles;
 mod protected;
-mod settings;
 mod settings_files;
+mod settings_security;
+mod settings_storage;
 mod settings_tls;
 mod setup;
 mod stubs;
@@ -41,12 +42,11 @@ mod users;
 
 pub use activity::Activity;
 pub use auth_callback::AuthCallback;
-pub use clients::Clients;
-pub use cot_browser::CotBrowser;
+pub use cot_browser::Situation;
 pub use dashboard::Dashboard;
 #[cfg(debug_assertions)]
 pub use demo::DemoControls;
-pub use devices::Devices;
+pub use euds::Euds;
 pub use groups::Groups;
 pub use landing::Landing;
 pub use login::Login;
@@ -58,8 +58,9 @@ pub use packages::Packages;
 pub use profile_editor::ProfileEditor;
 pub use profiles::Profiles;
 pub use protected::Protected;
-pub use settings::Settings;
+pub use settings_security::Security;
+pub use settings_storage::Storage;
 pub use setup::Setup;
-pub use stubs::Services;
+pub use stubs::AddOns;
 pub use user_detail::UserDetail;
 pub use users::Users;

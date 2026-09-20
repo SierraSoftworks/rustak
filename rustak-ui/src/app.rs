@@ -34,19 +34,16 @@ pub enum Route {
     #[at("/admin/")]
     Dashboard,
 
-    #[at("/admin/devices")]
-    Devices,
-    #[at("/admin/credentials")]
-    Credentials,
+    /// The end-user devices: enrolled, and whether each is connected now.
+    #[at("/admin/euds")]
+    Euds,
     #[at("/admin/users")]
     Users,
     /// One account, with its devices, credentials and channels.
     #[at("/admin/users/:username")]
     UserDetail { username: String },
-    #[at("/admin/groups")]
-    Groups,
-    #[at("/admin/services")]
-    Services,
+    #[at("/admin/channels")]
+    Channels,
     #[at("/admin/missions")]
     Missions,
     /// One Data Sync mission, addressed by guid because a name may be renamed
@@ -55,12 +52,9 @@ pub enum Route {
     MissionDetail { guid: String },
     #[at("/admin/packages")]
     Packages,
-    /// What is connected to the stream listener right now.
-    #[at("/admin/clients")]
-    Clients,
     /// The latest situational-awareness message per identifier.
-    #[at("/admin/cot")]
-    CotBrowser,
+    #[at("/admin/situation")]
+    Situation,
     #[at("/admin/profiles")]
     Profiles,
     /// One device profile, with its preferences and its files.
@@ -68,8 +62,21 @@ pub enum Route {
     ProfileEditor { id: i64 },
     #[at("/admin/activity")]
     Activity,
-    #[at("/admin/settings")]
-    Settings,
+
+    /// The signed-in account's own page: how they sign in, and what they hold.
+    /// It needs no administrative access, which is what lets a person enrol
+    /// their own phone.
+    #[at("/admin/settings/account")]
+    Account,
+    /// How this server is reached and how people prove who they are.
+    #[at("/admin/settings/security")]
+    Security,
+    /// What this server keeps, and how much it accepts.
+    #[at("/admin/settings/storage")]
+    Storage,
+    /// The sidecars connected to this server.
+    #[at("/admin/settings/add-ons")]
+    AddOns,
 
     /// The control gallery, for reviewing every component without a server. It
     /// exists in debug builds only, alongside the fixtures it renders with.
@@ -86,34 +93,25 @@ impl Route {
     /// The title and supporting line the shell shows for this route.
     pub fn heading(&self) -> (&'static str, &'static str) {
         match self {
-            Route::Devices => (
-                "Devices",
-                "The EUDs that have connected, and what they came as.",
-            ),
-            Route::Credentials => (
-                "Credentials",
-                "The credentials you hold, and the devices you enrolled with them.",
+            Route::Euds => (
+                "EUDs",
+                "The end-user devices that have enrolled, and which are connected right now.",
             ),
             Route::Users => ("Users", "Everyone who can sign in, and what they may do."),
             Route::UserDetail { .. } => (
                 "Account",
                 "One account: who they are, what they carry, and what they can see.",
             ),
-            Route::Groups => ("Channels", "Who can see whose position reports."),
-            Route::Services => ("Services", "The sidecars connected to this server."),
+            Route::Channels => ("Channels", "Who can see whose position reports."),
             Route::Missions => ("Missions", "Data Sync missions and their subscribers."),
             Route::MissionDetail { .. } => (
                 "Mission",
                 "One Data Sync mission: who is on it, what changed, and how it is arranged.",
             ),
             Route::Packages => ("Data packages", "The files this server hands out."),
-            Route::Clients => (
-                "Clients",
-                "What is connected right now, and what each is publishing.",
-            ),
-            Route::CotBrowser => (
-                "Situational awareness",
-                "The latest message this server holds for each identifier.",
+            Route::Situation => (
+                "Situation",
+                "Every entity this server knows of, where it last was, and when it last spoke.",
             ),
             Route::Profiles => ("Device profiles", "What each device is configured with."),
             Route::ProfileEditor { .. } => (
@@ -124,7 +122,19 @@ impl Route {
                 "Activity",
                 "What this server has done, and what it refused.",
             ),
-            Route::Settings => ("Settings", "How this server describes itself to clients."),
+            Route::Account => (
+                "Your account",
+                "How you sign in, and the credentials and devices you hold.",
+            ),
+            Route::Security => (
+                "Security",
+                "How this server is reached, and how people prove who they are.",
+            ),
+            Route::Storage => (
+                "Storage",
+                "What this server keeps, and how much it will accept.",
+            ),
+            Route::AddOns => ("Add-ons", "The sidecars connected to this server."),
             _ => ("Dashboard", "How this server is doing, at a glance."),
         }
     }
@@ -316,24 +326,24 @@ fn switch(route: Route) -> Html {
         Route::AuthCallback => html! { <pages::AuthCallback /> },
         Route::Setup => html! { <pages::Setup /> },
         Route::AdminRoot | Route::Dashboard => admin(html! { <pages::Dashboard /> }),
-        Route::Devices => admin(html! { <pages::Devices /> }),
-        // The signed-in account's own, because that is what the server answers
-        // when a credentials request names nobody — so this page needs no
-        // administrative access and a person can enrol their own phone.
-        Route::Credentials => admin(html! { <pages::Me /> }),
+        Route::Euds => admin(html! { <pages::Euds /> }),
         Route::Users => admin(html! { <pages::Users /> }),
         Route::UserDetail { username } => admin(html! { <pages::UserDetail {username} /> }),
-        Route::Groups => admin(html! { <pages::Groups /> }),
-        Route::Services => admin(html! { <pages::Services /> }),
+        Route::Channels => admin(html! { <pages::Groups /> }),
         Route::Missions => admin(html! { <pages::Missions /> }),
         Route::MissionDetail { guid } => admin(html! { <pages::MissionDetailPage {guid} /> }),
         Route::Packages => admin(html! { <pages::Packages /> }),
-        Route::Clients => admin(html! { <pages::Clients /> }),
-        Route::CotBrowser => admin(html! { <pages::CotBrowser /> }),
+        Route::Situation => admin(html! { <pages::Situation /> }),
         Route::Profiles => admin(html! { <pages::Profiles /> }),
         Route::ProfileEditor { id } => admin(html! { <pages::ProfileEditor {id} /> }),
         Route::Activity => admin(html! { <pages::Activity /> }),
-        Route::Settings => admin(html! { <pages::Settings /> }),
+        // The signed-in account's own, because that is what the server answers
+        // when a credentials request names nobody — so this page needs no
+        // administrative access and a person can enrol their own phone.
+        Route::Account => admin(html! { <pages::Me /> }),
+        Route::Security => admin(html! { <pages::Security /> }),
+        Route::Storage => admin(html! { <pages::Storage /> }),
+        Route::AddOns => admin(html! { <pages::AddOns /> }),
         #[cfg(debug_assertions)]
         Route::DemoControls => html! { <pages::DemoControls /> },
         Route::NotFound => html! { <pages::NotFound /> },

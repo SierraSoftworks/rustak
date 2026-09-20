@@ -18,13 +18,13 @@ use crate::components::{
     Alert, AlertKind, Card, Field, LoadingNote, Select, SelectOption, StatusPill, StatusTone,
     TextInput,
 };
-use crate::util::{format_iso8601, short_relative};
+use crate::util::{format_iso8601, mgrs, short_relative};
 
 use super::cot_drawer::CotDrawer;
 use super::load::{use_refresh_action, use_resource};
 
-#[function_component(CotBrowser)]
-pub fn cot_browser() -> Html {
+#[function_component(Situation)]
+pub fn situation() -> Html {
     let filter = use_state(CotFilter::default);
     let wanted = (*filter).clone();
 
@@ -222,8 +222,14 @@ fn cot_row(props: &CotRowProps) -> Html {
                         } }
                     </span>
                 }
-                <span title="Where it said it was">
-                    { format!("{:.5}, {:.5}", summary.lat, summary.lon) }
+                // MGRS, because that is what the person beside a map wants
+                // to hear; the degrees stay a hover away.
+                <span
+                    class="cot-row__position"
+                    title={format!("{:.5}, {:.5}", summary.lat, summary.lon)}
+                >
+                    { mgrs::format(summary.lat, summary.lon)
+                        .unwrap_or_else(|| format!("{:.5}, {:.5}", summary.lat, summary.lon)) }
                 </span>
                 <span title={format_iso8601(summary.time)}>
                     { format!("Sent {}", short_relative(summary.time)) }

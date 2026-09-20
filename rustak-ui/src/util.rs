@@ -1,5 +1,7 @@
 //! Small formatting and navigation helpers shared across pages.
 
+pub mod mgrs;
+
 use chrono::{DateTime, Utc};
 
 /// Builds an href for in-app navigation, preserving demo mode across full-page
