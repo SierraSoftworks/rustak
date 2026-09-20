@@ -1,0 +1,137 @@
+# rustak-plugin-adsb configuration.
+#
+# Every key is shown with its default. A key that is commented out has its
+# default written beside it; a key that is shown uncommented is set to its
+# default, so this file describes a working sidecar as it stands.
+#
+# Any value may be written as "${{ env.NAME }}", which is substituted from the
+# environment (or from the file passed to --env) before the file is parsed. That
+# is how a feed's API credentials stay out of a file you commit or bind-mount.
+#
+# Unknown and misplaced keys are refused rather than ignored, so
+# `rustak-plugin-adsb --config config.example.toml --check` is a real check of
+# this file. This crate's test suite loads it, so it cannot drift from the code
+# either.
+#
+# Durations are written as "45s", "15m", "12h" or "30d".
+
+
+[service]
+# The service's name. Required: the stream uid (SERVICE-<name>), the control-API
+# path and the certificate subject are all derived from it. One receiver per
+# site is one name each: "adsb-heathrow", "adsb-gatwick".
+name = "adsb"
+
+# What to call this service in the admin UI. Default: its name.
+# display_name = "ADS-B (Heathrow)"
+
+# What this service advertises that it does. Default: [].
+capabilities = ["cot.publish"]
+
+# The token this service authenticates to /api/v1/services/* with. Default:
+# none. It is a credential, so it belongs in the environment rather than here.
+# token = "${{ env.RUSTAK_SERVICE_TOKEN }}"
+
+# The client certificate and private key this service opens the CoT stream with,
+# in PEM. Default: none; both are required as soon as [server] stream names an
+# "ssl://" endpoint, which every real deployment does.
+# certificate = "/etc/rustak/adsb.pem"
+# key = "/etc/rustak/adsb.key"
+
+# The truststore used to verify the server's certificate, in PEM.
+# Default: the platform's own roots.
+# truststore = "/etc/rustak/truststore.pem"
+
+
+[server]
+# The CoT stream, as a TAK connect string. Default: none — and a sidecar without
+# one runs its ticks and opens no connection at all, which is what makes this
+# file usable offline.
+# stream = "ssl://tak.example.com:8089"
+
+# The service control API, which is what registers this sidecar and reports its
+# health to the admin UI. Default: none.
+# control = "https://tak.example.com:8446"
+
+
+[sidecar]
+# How often the feed is polled and the publisher drained. The first tick happens
+# as soon as the sidecar has started. Default: "30s" — this file sets it lower
+# because ADS-B positions arrive about once a second and a longer tick would
+# hold them back.
+tick = "5s"
+
+# How long `stop` is given before the harness stops waiting.
+shutdown_grace = "10s"
+
+
+[settings]
+# What these tracks are to an operator: "unknown", "friend", "neutral",
+# "hostile" or "pending". Default: "unknown" — open ADS-B says nothing about
+# whose side an airframe is on, and a plugin that claimed otherwise would be
+# putting an assertion on the map that nothing in the data supports.
+affiliation = "unknown"
+
+
+# Where this feed is looking. The source subscribes with it and the publisher
+# re-checks it, so an aggregator that rounds a radius upwards does not fill a
+# channel with the whole of southern England. Default: the whole world.
+#
+# Either a circle, which is what an aggregator's point endpoint takes:
+[settings.area]
+kind = "circle"
+lat = 51.4775
+lon = -0.4614
+radius_km = 120.0
+
+# …or a box, which is what OpenSky's states/all takes:
+# [settings.area]
+# kind = "bbox"
+# south = 50.5
+# west = -2.0
+# north = 52.5
+# east = 1.0
+
+
+# How often an aircraft may be republished, and how long one lives on a map.
+#
+# Every key here has a default of its own, and a table that omits one gets that
+# default rather than this plugin's — which is why `stale` is written out below
+# rather than left to be filled in.
+[settings.publish]
+# How long a published track stays on a map without another report. Default for
+# this plugin: "90s". An aircraft reports about once a second, so one that has
+# said nothing for ninety seconds has left the area, landed, or was never really
+# there. No delete message is ever sent — TAK clients expire a track by this
+# attribute, so a sidecar that is stopped leaves a map that empties itself.
+stale = "90s"
+
+# The shortest gap between two publications of the same aircraft, however far it
+# moved. Default: "5s" — an airliner covers a kilometre and a half in that time,
+# which is as often as anybody needs to see it move.
+min_interval = "5s"
+
+# The longest an aircraft that is still being reported goes unpublished. This is
+# what keeps a holding aircraft on the map. Default: "60s".
+max_interval = "60s"
+
+# How far an aircraft must move since its last publication to be published
+# again, in metres. Default: 25.
+min_move_m = 25.0
+
+# How many aircraft this sidecar holds before it drops the least recently seen.
+# A busy 250 nm circle is a few hundred, so this is a ceiling on a runaway area
+# rather than a working limit. Default: 5000.
+max_tracks = 5000
+
+
+# Where the observations come from. Required.
+#
+# M9-00 ships one source: "replay", a file of tracks offered on every tick, for
+# demonstrations and for the integration suite. The live ADS-B sources — a
+# readsb/dump1090 aircraft.json (local file or HTTP), the public aggregators'
+# v2/point endpoints, OpenSky's states/all behind OAuth2 client credentials —
+# arrive in M9-02 as further values of `kind`.
+[settings.source]
+kind = "replay"
+path = "tracks.example.ndjson"

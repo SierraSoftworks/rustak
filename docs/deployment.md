@@ -397,6 +397,29 @@ services:
       - "8089:8089"   # CoT stream (planned — M1)
 ```
 
+#### The sidecar images
+
+The plugins are published the same way, from the same workflow, as their own
+multi-arch images:
+
+| Image | What it is |
+|---|---|
+| `ghcr.io/sierrasoftworks/rustak-plugin-example` | The copy-and-rename template |
+| `ghcr.io/sierrasoftworks/rustak-plugin-ais` | Vessels from open AIS data (**in progress — M9**) |
+| `ghcr.io/sierrasoftworks/rustak-plugin-adsb` | Aircraft from open ADS-B data (**in progress — M9**) |
+
+A sidecar dials out and listens on nothing, so there are no ports to publish.
+Each reads `/data/plugin.toml` and needs its certificate, key and truststore
+under the same volume — see [`docs/plugins.md`](plugins.md):
+
+```sh
+docker run -d \
+  --name rustak-plugin-ais \
+  -v "$(pwd)/ais:/data" \
+  -e RUSTAK_SERVICE_TOKEN \
+  ghcr.io/sierrasoftworks/rustak-plugin-ais:latest
+```
+
 #### With CloudTAK
 
 CloudTAK stores one `server` record with three independent base URLs rather

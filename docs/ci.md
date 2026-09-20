@@ -1,8 +1,9 @@
 # CI/CD
 
 rustak's pipeline is a direct port of [`automate`](https://github.com/SierraSoftworks/automate)'s
-GitHub Actions setup, adapted for a multi-crate workspace with two release
-binaries (`rustak-server` → `rustak`, `rustak-plugin-example`) instead of one.
+GitHub Actions setup, adapted for a multi-crate workspace with four release
+binaries (`rustak-server` → `rustak`, and the `rustak-plugin-example`,
+`rustak-plugin-ais` and `rustak-plugin-adsb` sidecars) instead of one.
 See `.claude/plan/design/01-foundations-storage-ci.md` §7 for the design this
 implements and `.claude/plan/research/01-automate-architecture.md` §1 for what
 was ported from where.
@@ -18,7 +19,7 @@ deduplicate ──┬─ version ───────────────�
               ├─ ui      (lints + tests rustak-ui; trunk build → ui-dist-e2e; trunk build --release → ui-dist)
               ├─ e2e     (needs ui; cargo build -p rustak-server; Playwright)
               ├─ interop-node-tak  (needs ui; @tak-ps/node-tak contract suite)
-              └─ build   (needs version, ui; crate × target matrix, 10 jobs) ─┬─ ci (aggregator, always())
+              └─ build   (needs version, ui; crate × target matrix, 20 jobs) ─┬─ ci (aggregator, always())
                                                                                 ├─ docker-build  (per crate × platform)
                                                                                 │     └─ docker-publish (per crate, manifest list)
                                                                                 └─ tap (release only)
@@ -93,13 +94,14 @@ deduplicate ──┬─ version ───────────────�
   report as skips naming the brief that will serve them, and begin running on
   their own when it lands. See `interop/node-tak/README.md`.
 - **`build`** is a `crate × target` matrix: `{rustak-server → rustak,
-  rustak-plugin-example → rustak-plugin-example}` ×
+  rustak-plugin-example, rustak-plugin-ais, rustak-plugin-adsb}` ×
   `{x86_64-unknown-linux-musl, aarch64-unknown-linux-musl (cross),
-  x86_64-apple-darwin, aarch64-apple-darwin, x86_64-pc-windows-msvc}` — 10
-  jobs. **No `protoc` is installed anywhere in this workflow**: `rustak-cot`
-  builds its protobuf definitions with `protox`, a pure-Rust `protoc`
-  substitute, so neither the native runners nor the `cross` Docker image need
-  one. Artifacts and (on a release) release assets are named
+  x86_64-apple-darwin, aarch64-apple-darwin, x86_64-pc-windows-msvc}` — 20
+  jobs. A new plugin crate is three lines: one in each of this matrix and the
+  two Docker ones below. **No `protoc` is installed anywhere in this
+  workflow**: `rustak-cot` builds its protobuf definitions with `protox`, a
+  pure-Rust `protoc` substitute, so neither the native runners nor the `cross`
+  Docker image need one. Artifacts and (on a release) release assets are named
   `<bin>-<os>-<arch>[.exe]`.
 - **`ci`** is the required check: `always()`-gated, it fails the run if any
   dependency did not succeed, then saves the merge-tree success marker for
@@ -113,9 +115,10 @@ deduplicate ──┬─ version ───────────────�
   `tap` delays only the aggregator and never the images.
 - **`docker-build`**/**`docker-publish`** build and publish one multi-arch
   (`linux/amd64` + `linux/arm64`) image per crate to
-  `ghcr.io/sierrasoftworks/<bin>` — `ghcr.io/sierrasoftworks/rustak` and
-  `ghcr.io/sierrasoftworks/rustak-plugin-example`. Unlike automate (which only
-  publishes on a GitHub release), this also runs on every push to `main`,
+  `ghcr.io/sierrasoftworks/<bin>` — `ghcr.io/sierrasoftworks/rustak`,
+  `…/rustak-plugin-example`, `…/rustak-plugin-ais` and `…/rustak-plugin-adsb`.
+  Unlike automate (which only publishes on a GitHub release), this also runs on
+  every push to `main`,
   because rustak's M0 exit criterion is a multi-arch
   `ghcr.io/sierrasoftworks/rustak:latest` on a green `main`.
 - **`tap`** updates the `SierraSoftworks` Homebrew tap with the `rustak`
@@ -262,15 +265,15 @@ code scanning), not as pull-request comments.
    `rust.yml`.
 2. `version` rewrites `Cargo.toml`'s workspace version to `0.1.0` (the tag
    name with its leading `v` stripped) and uploads it.
-3. `build` downloads that manifest, compiles all 10 crate×target
+3. `build` downloads that manifest, compiles all 20 crate×target
    combinations, and uploads each binary both as a GitHub Actions artifact and
    (via `SierraSoftworks/gh-releases@v1.0.10`) as a release asset named
    `<bin>-<os>-<arch>[.exe]`.
-4. `docker-build` builds and pushes per-platform image digests for both
-   crates; `docker-publish` combines them into multi-arch manifest lists
+4. `docker-build` builds and pushes per-platform image digests for every
+   crate; `docker-publish` combines them into multi-arch manifest lists
    tagged `latest`, `<major>.<minor>.<patch>`, `<major>.<minor>` and `<major>`
-   at `ghcr.io/sierrasoftworks/rustak` and
-   `ghcr.io/sierrasoftworks/rustak-plugin-example`.
+   at `ghcr.io/sierrasoftworks/rustak`, `…/rustak-plugin-example`,
+   `…/rustak-plugin-ais` and `…/rustak-plugin-adsb`.
 5. `tap` pushes an updated `rustak` formula (aliased `major`/`minor`) to the
    `SierraSoftworks` Homebrew tap.
 
@@ -332,6 +335,7 @@ cd ..
 # a single build-matrix leg, e.g. the native target
 cargo build --release -p rustak-server
 cargo build --release -p rustak-plugin-example
+cargo build --release -p rustak-plugin-ais -p rustak-plugin-adsb
 
 # a cross-compiled leg (needs `cross`: cargo binstall cross)
 cross build --release --target aarch64-unknown-linux-musl -p rustak-server

@@ -447,8 +447,139 @@ code. The fields a plugin acts on are typed; the parts TAK itself treats as
 opaque stay `serde_json::Value`, and nothing uses `deny_unknown_fields` — the
 wire shape is TAK's and grows.
 
+## Feed sidecars
+
+An *information feed* is the same plugin twice: subscribe to an open data
+source over an area, turn each observation into a CoT track, publish it at a
+rate a phone can carry, and let it go stale when the source stops reporting it.
+`rustak_client::feed` is everything in that sentence except "subscribe to a
+source", so a feed plugin is its own parsing and nothing else.
+
+Two ship with rustak — [`rustak-plugin-ais`](../rustak-plugin-ais) (vessels) and
+[`rustak-plugin-adsb`](../rustak-plugin-adsb) (aircraft) — and both are the
+`Sidecar` above with a `feed` in the middle.
+
+### The `Track` contract
+
+A source's whole job is to produce these:
+
+| Field | What it is |
+|---|---|
+| `id: String` | The uid on the map, **already prefixed by its source**: `AIS-244660000`, `ADSB-3c6444`. The prefix is what stops two feeds watching the same airport from overwriting each other |
+| `kind: TrackKind` | `Vessel(VesselClass)`, `Aircraft(AircraftClass)` or `GroundVehicle` — which decides the CoT type |
+| `position: (f64, f64)` | Latitude and longitude, decimal degrees, WGS-84 |
+| `altitude_hae_m: Option<f64>` | Height above the ellipsoid, metres. `None` becomes CoT's `9999999.0` |
+| `speed_mps`, `course_deg`, `heading_deg` | Metres per second and degrees true. The heading is used as the course when no course was reported, because CoT's `<track>` has nowhere else to put it |
+| `callsign: Option<String>` | What the map shows: a ship's name, a flight number |
+| `remarks: Vec<(String, String)>` | Ordered lines rendered into `<remarks>` as `key: value` |
+| `observed_at: DateTime<Utc>` | When the object was there, as its source said — not when we heard |
+| `on_ground: bool` | For the plugin's own decisions; CoT says what a thing is through its type and has no separate flag |
+
+`Track::to_event(affiliation, stale)` turns one into the event a client reads:
+`how="m-g"`, the point with its sentinels, `time`/`start` from `observed_at`,
+`stale` from the policy, a `<contact>` with the callsign (and **no endpoint** —
+a ship is a thing on the map, not a chat peer), a `<track>` when a speed or a
+bearing is known, and `<remarks>`.
+
+### The CoT types
+
+Written from the public MIL-STD-2525 hierarchy that CoT types follow, and the
+affiliation (`Affiliation::{Unknown, Friend, Neutral, Hostile, Pending}` →
+`u f n h p`) is a setting, defaulting to `unknown`: open data says nothing about
+whose side a hull or an airframe is on.
+
+| Kind | Type (unknown affiliation) |
+|---|---|
+| `Vessel(Merchant)` | `a-u-S-X-M` |
+| `Vessel(Fishing)` | `a-u-S-X-F` |
+| `Vessel(Leisure)` | `a-u-S-X-R` |
+| `Vessel(LawEnforcement)` | `a-u-S-X-L` |
+| `Vessel(Military)` | `a-u-S-C` |
+| `Vessel(Other)` | `a-u-S-X` |
+| `Aircraft(CivilFixedWing)` | `a-u-A-C-F` |
+| `Aircraft(CivilRotary)` | `a-u-A-C-H` |
+| `Aircraft(LighterThanAir)` | `a-u-A-C-L` |
+| `Aircraft(MilitaryFixedWing)` | `a-u-A-M-F` |
+| `Aircraft(Uav)` | `a-u-A-M-F-Q` |
+| `Aircraft(Unknown)` | `a-u-A` |
+| `GroundVehicle` | `a-u-G-E-V-C` |
+
+### The area of interest
+
+`Area` is a `Bbox { south, west, north, east }` (anti-meridian aware) or a
+`Circle { lat, lon, radius_km }`, and it is used **twice**: the source
+subscribes with it — `bbox()` for an upstream that only takes a box,
+`centre()`/`radius_nm()` for one that takes a point — and the publisher checks
+`contains()` again before anything goes out, because an upstream that widens its
+box is not a reason for a channel to fill up with the Atlantic.
+
+### The policy knobs
+
+`PublishPolicy` is what turns a thousand vessels reporting every two seconds
+into a rate an operator's device can carry:
+
+| Key | Default | What it does |
+|---|---|---|
+| `stale` | `"2m"` (`"90s"` for ADS-B) | How long a published track lives on a map without another report |
+| `min_interval` | `"5s"` | The floor between two publications of the same track, however far it moved |
+| `max_interval` | `"60s"` | The ceiling, which is what keeps a moored vessel on the map |
+| `min_move_m` | `25` | How far a track moves before it is worth saying so |
+| `max_tracks` | `5000` | How many tracks are held before the least recently seen is dropped |
+
+A track is published when it is new, when it has moved at least `min_move_m`,
+when it has turned by ten degrees or changed speed by five knots, or when
+`max_interval` has passed — and never more often than `min_interval`.
+`tick()` forgets what has not been reported for `stale` and evicts beyond
+`max_tracks`; `counters()` answers what was offered, published, suppressed and
+expired, and the publisher logs that at `info` every five minutes.
+
+**A feed never sends a delete.** TAK clients expire a track by the `stale` on
+the last event they were given, so a sidecar that is stopped or killed leaves a
+map that empties itself over the next two minutes rather than one full of
+ghosts.
+
+### Publishing is still a return value
+
+`FeedPublisher` buffers rather than sends, because `tick` and `on_event` return
+what the harness writes:
+
+```rust
+async fn tick(&mut self) -> Result<Vec<Event>, Error> {
+    match self.feed.poll().await {
+        Ok(tracks) => tracks.into_iter().for_each(|track| { self.publisher.offer(track); }),
+        Err(err) => warn!("The feed did not answer: {err}"),
+    }
+
+    self.publisher.tick();
+
+    Ok(self.publisher.drain())
+}
+```
+
+An upstream that is down is a log line, never a stopped sidecar: reconnection
+and backoff belong to the `Feed` implementation, which is the only thing that
+knows whether its upstream wants a new socket, a new token or another minute.
+On `SidecarEvent::Connected`, call `refresh_all()` — a reopened connection is a
+new subscription, and the server has none of what went down the old one.
+
+### The replay fixture format
+
+`Replay` is a `Feed` over a file, which is what the demonstrations and
+`rustak-server/tests/feed_sidecars.rs` run on: one JSON `Track` per line
+(newline-delimited JSON), blank lines and `#` comments ignored.
+
+```json
+{"id":"AIS-244660000","kind":{"vessel":"merchant"},"position":[51.9512,4.1338],"speed_mps":6.2,"course_deg":271.5,"callsign":"ZEEBRUGGE","remarks":[["MMSI","244660000"]],"observed_at":"2026-09-20T12:00:00Z"}
+```
+
+Every poll answers the whole file, stamped with the moment it was offered — a
+fixture written last week would otherwise publish tracks that every client
+expires on arrival. Offering the same observations repeatedly is the point: it
+is what makes a replay a fair test of the policy.
+
 ## See also
 
 - `rustak-plugin-example/` — the template this document describes.
+- `rustak-plugin-ais/`, `rustak-plugin-adsb/` — the two feed sidecars.
 - `docs/ci.md` — how a plugin crate is built, published and released.
 - `.claude/plan/plan.md` → Architecture → "Plugin (sidecar) contract".

@@ -58,6 +58,10 @@ human-errors = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 rustls = { workspace = true }
+# `feed`'s settings types are read out of a plugin's `[settings]` table, so the
+# tests that hold them to `deny_unknown_fields` parse the TOML an operator
+# writes rather than the JSON a fixture does.
+toml = { workspace = true }
 # The Marti and control clients are tested against a stub server rather than a
 # real one: what they are being held to is the bytes they send.
 wiremock = { workspace = true }

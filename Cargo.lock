@@ -3962,6 +3962,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-util",
+ "toml",
  "tracing",
  "url",
  "wiremock",
@@ -4013,6 +4014,40 @@ dependencies = [
  "serde",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "rustak-plugin-adsb"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "human-errors",
+ "rustak-client",
+ "rustak-core",
+ "rustak-cot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "rustak-plugin-ais"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "human-errors",
+ "rustak-client",
+ "rustak-core",
+ "rustak-cot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -4077,6 +4112,8 @@ dependencies = [
  "rustak-client",
  "rustak-core",
  "rustak-cot",
+ "rustak-plugin-adsb",
+ "rustak-plugin-ais",
  "rustak-server",
  "rustls",
  "rustls-pki-types",
