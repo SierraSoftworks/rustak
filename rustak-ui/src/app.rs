@@ -74,9 +74,13 @@ pub enum Route {
     /// What this server keeps, and how much it accepts.
     #[at("/admin/settings/storage")]
     Storage,
-    /// The sidecars connected to this server.
+    /// The sidecars registered with this server, and what they are reporting.
+    ///
+    /// Still at `/admin/settings/add-ons`: the page was called Add-ons until
+    /// the sidecars it lists existed, and a path that changes breaks every
+    /// bookmark somebody made of it.
     #[at("/admin/settings/add-ons")]
-    AddOns,
+    Services,
 
     /// The control gallery, for reviewing every component without a server. It
     /// exists in debug builds only, alongside the fixtures it renders with.
@@ -134,7 +138,10 @@ impl Route {
                 "Storage",
                 "What this server keeps, and how much it will accept.",
             ),
-            Route::AddOns => ("Add-ons", "The sidecars connected to this server."),
+            Route::Services => (
+                "Services",
+                "The sidecars registered with this server, and what each last reported.",
+            ),
             _ => ("Dashboard", "How this server is doing, at a glance."),
         }
     }
@@ -343,7 +350,7 @@ fn switch(route: Route) -> Html {
         Route::Account => admin(html! { <pages::Me /> }),
         Route::Security => admin(html! { <pages::Security /> }),
         Route::Storage => admin(html! { <pages::Storage /> }),
-        Route::AddOns => admin(html! { <pages::AddOns /> }),
+        Route::Services => admin(html! { <pages::Services /> }),
         #[cfg(debug_assertions)]
         Route::DemoControls => html! { <pages::DemoControls /> },
         Route::NotFound => html! { <pages::NotFound /> },

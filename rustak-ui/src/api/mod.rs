@@ -32,6 +32,7 @@ pub mod health;
 pub mod missions;
 pub mod packages;
 pub mod profiles;
+pub mod services;
 pub mod settings;
 pub mod setup;
 pub mod users;

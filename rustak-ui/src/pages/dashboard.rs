@@ -1,9 +1,10 @@
 //! How this server is doing, at a glance.
 //!
-//! Four questions, in the order somebody arriving at a console asks them: is it
-//! running, what is it called, who can use it, and what has it been doing.
+//! Five questions, in the order somebody arriving at a console asks them: is it
+//! running, what is it called, who can use it, what is plugged into it, and
+//! what has it been doing.
 
-use rustak_api::{Health, ServerSettings, User};
+use rustak_api::{Health, ServerSettings, ServiceSummary, User};
 use yew::prelude::*;
 
 use crate::api;
@@ -18,14 +19,16 @@ pub fn dashboard() -> Html {
     let health = use_resource(api::health::get);
     let settings = use_resource(api::settings::get);
     let users = use_resource(api::users::list);
+    let services = use_resource(api::services::list);
     let activity = use_resource(|| api::audit::list(None, 6));
 
-    let busy = health.busy || settings.busy || users.busy || activity.busy;
+    let busy = health.busy || settings.busy || users.busy || services.busy || activity.busy;
     let reload = {
         let reloads = [
             health.reload.clone(),
             settings.reload.clone(),
             users.reload.clone(),
+            services.reload.clone(),
             activity.reload.clone(),
         ];
         Callback::from(move |_| {
@@ -36,12 +39,13 @@ pub fn dashboard() -> Html {
     };
     use_refresh_action(reload, busy);
 
-    // One alert for all four, because four stacked copies of "we could not reach
-    // the server" says nothing the first one did not.
+    // One alert for all of them, because five stacked copies of "we could not
+    // reach the server" says nothing the first one did not.
     let error = [
         &health.error,
         &settings.error,
         &users.error,
+        &services.error,
         &activity.error,
     ]
     .into_iter()
@@ -63,6 +67,16 @@ pub fn dashboard() -> Html {
                 <Card title="Server">{ health_panel(health.data.as_ref()) }</Card>
                 <Card title="Identity">{ settings_panel(settings.data.as_ref()) }</Card>
                 <Card title="People">{ users_panel(users.data.as_deref()) }</Card>
+                <Card
+                    title="Services"
+                    actions={html! {
+                        <a class="btn btn--small" href={nav_href("/admin/settings/add-ons")}>
+                            { "See them" }
+                        </a>
+                    }}
+                >
+                    { services_panel(services.data.as_deref()) }
+                </Card>
             </div>
 
             <Card
@@ -137,6 +151,33 @@ fn settings_panel(settings: Option<&ServerSettings>) -> Html {
             <dt>{ "Node ID" }</dt>
             <dd><code>{ settings.node_id.clone().unwrap_or_else(|| "—".to_string()) }</code></dd>
         </dl>
+    }
+}
+
+/// The sidecars, and how many of them are asking for something.
+///
+/// Two figures rather than a list: the question the dashboard answers about
+/// plugins is "is anything wrong with one?", and the page behind the link is
+/// where the answer to "which one" lives.
+fn services_panel(services: Option<&[ServiceSummary]>) -> Html {
+    let Some(services) = services else {
+        return html! { <LoadingNote /> };
+    };
+
+    let attention = services
+        .iter()
+        .filter(|service| service.status.state.needs_attention())
+        .count();
+
+    html! {
+        <div class="stat-row">
+            <Stat label="Registered" value={services.len().to_string()} />
+            <Stat
+                label="Need attention"
+                value={attention.to_string()}
+                detail={(attention > 0).then_some("Degraded, stopped, or not reporting.")}
+            />
+        </div>
     }
 }
 

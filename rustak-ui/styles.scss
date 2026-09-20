@@ -2681,6 +2681,176 @@ footer {
 }
 
 // -----------------------------------------------------------------------------
+// 5.12 Services (sidecars)
+// -----------------------------------------------------------------------------
+
+// A capability, an endpoint kind — a short, unactionable label. Distinct from
+// `.chip`, which is a button that narrows a list; nothing here is pressable.
+.tag {
+  font-family: $font-mono;
+  font-size: 0.72rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: $radius-sm;
+  background: $fill-light;
+  border: 1px solid $border-lighter;
+  color: $text-regular;
+  white-space: nowrap;
+}
+
+.service-list {
+  @include entity-list;
+}
+
+.service-row {
+  @include entity-row;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.6fr) minmax(0, 1fr) auto;
+  border-radius: $radius;
+  transition: background $transition;
+
+  &--selected {
+    background: $brand-tint;
+  }
+
+  // The whole identity opens the drawer, so it is a button rather than a row
+  // with a button on it: clicking a service's name means "show me this one".
+  &__select {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    min-width: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+
+    &:focus-visible {
+      @include focus-ring;
+      border-radius: $radius-sm;
+    }
+  }
+
+  &__name {
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: $text-primary;
+  }
+
+  &__id {
+    font-family: $font-mono;
+    font-size: 0.78rem;
+    color: $text-secondary;
+    overflow-wrap: anywhere;
+  }
+
+  &__meta {
+    @include entity-meta;
+  }
+
+  &__tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    min-width: 0;
+  }
+
+  // What the service said about why it is in the state it is in. Under the
+  // row rather than in it, because a sentence does not fit in a column and
+  // truncating the reason something failed is the one thing not to truncate.
+  &__message {
+    grid-column: 1 / -1;
+    margin: 0;
+    font-size: 0.8rem;
+    color: $text-regular;
+  }
+
+  // A row asking for attention carries a rule down its left edge: the pill
+  // says the same thing, and two signals mean neither depends on colour alone.
+  &--attention {
+    padding-left: 0.65rem;
+    border-left: 3px solid $warning;
+  }
+}
+
+.service-detail {
+  &__heading {
+    margin: 1.25rem 0 0;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: $text-regular;
+  }
+
+  &__actions {
+    margin-top: 1.25rem;
+    padding-top: 1rem;
+    border-top: 1px solid $border-lighter;
+  }
+}
+
+// A heartbeat's `metrics`, as a key/value table. A definition list rather than
+// a `<table>`: these are labelled values, not rows and columns, and a `<dl>`
+// wraps on a narrow screen without a horizontal scrollbar.
+.metrics {
+  margin: 0.75rem 0 0;
+  font-size: 0.85rem;
+
+  &__row {
+    display: grid;
+    grid-template-columns: minmax(8rem, auto) minmax(0, 1fr);
+    gap: 0.4rem 1rem;
+    padding: 0.3rem 0;
+    border-bottom: 1px solid $border-lighter;
+
+    &:last-child {
+      border-bottom: none;
+    }
+
+    dt {
+      font-family: $font-mono;
+      color: $text-secondary;
+      overflow-wrap: anywhere;
+    }
+
+    dd {
+      margin: 0;
+      color: $text-primary;
+      overflow-wrap: anywhere;
+    }
+  }
+
+  // One level in, under the key it belongs to.
+  &__row--nested dt {
+    padding-left: 1.25rem;
+  }
+
+  // The key a nested object sits under: a heading, with its fields beneath.
+  &__row--group {
+    border-bottom: none;
+
+    dt {
+      color: $text-regular;
+      font-weight: 600;
+    }
+  }
+
+  // Metrics that are not an object at all: shown as the text they are, never
+  // as markup (see `pages/service_metrics.rs`).
+  &__raw {
+    margin: 0.75rem 0 0;
+    font-family: $font-mono;
+    font-size: 0.85rem;
+    color: $text-primary;
+    overflow-wrap: anywhere;
+  }
+}
+
+// A note that reports a success rather than a fact: "Saved."
+.panel-note--ok {
+  color: $brand;
+}
+
+// -----------------------------------------------------------------------------
 // 6. Responsive
 // -----------------------------------------------------------------------------
 
@@ -2801,7 +2971,8 @@ footer {
   .pref-row,
   .package-row,
   .client-row,
-  .cot-row {
+  .cot-row,
+  .service-row {
     grid-template-columns: minmax(0, 1fr);
 
     // A grid item stretches to its column by default, which turns a pill into a

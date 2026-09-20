@@ -121,3 +121,54 @@ pub async fn copy_to_clipboard(value: &str) -> Result<(), String> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use chrono::Duration;
+
+    use super::*;
+
+    #[test]
+    fn a_duration_is_shown_in_its_largest_sensible_unit() {
+        assert_eq!(short_duration(0), "0s");
+        assert_eq!(short_duration(45), "45s");
+        assert_eq!(short_duration(59), "59s");
+        assert_eq!(short_duration(60), "1m");
+        assert_eq!(short_duration(3_599), "59m");
+        assert_eq!(short_duration(3_600), "1h");
+        assert_eq!(short_duration(86_399), "23h");
+        assert_eq!(short_duration(86_400), "1d");
+        // The sign belongs to the phrase around it, not to the magnitude.
+        assert_eq!(short_duration(-90), short_duration(90));
+    }
+
+    #[test]
+    fn a_timestamp_says_which_side_of_now_it_is_on() {
+        let now = Utc::now();
+
+        assert_eq!(short_relative(now), "now");
+        // A heartbeat a few minutes ago, which is the case the Services page
+        // exists to show.
+        assert_eq!(short_relative(now - Duration::minutes(15)), "15m ago");
+        assert_eq!(short_relative(now - Duration::hours(3)), "3h ago");
+        assert_eq!(short_relative(now - Duration::days(2)), "2d ago");
+        // A second past the boundary, because the clock moves between building
+        // the timestamp and formatting it: a bare `now + 5m` has already become
+        // four minutes and fifty-nine seconds by the time it is read.
+        assert_eq!(
+            short_relative(now + Duration::minutes(5) + Duration::seconds(1)),
+            "in 5m"
+        );
+    }
+
+    #[test]
+    fn a_timestamp_that_is_not_there_is_an_em_dash_everywhere() {
+        // "Never reported" has to look the same on every list that has a
+        // last-seen column, which is what this helper is for.
+        assert_eq!(optional_relative(None), "—");
+        assert_eq!(
+            optional_relative(Some(Utc::now() - Duration::minutes(47))),
+            "47m ago"
+        );
+    }
+}

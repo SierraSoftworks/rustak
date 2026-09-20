@@ -318,9 +318,52 @@ if let Some(control) = self.context.as_ref().and_then(|ctx| ctx.control()) {
 }
 ```
 
-`metrics` is whatever your plugin says it is; it is rendered in the admin UI
-as-is, so nothing secret belongs in it. Swallow the failure, as above — a
+`metrics` is whatever your plugin says it is. The admin console renders it as
+a key/value table without interpreting any of it (see *Monitoring a sidecar*
+below), so nothing secret belongs in it. Swallow the failure, as above — a
 heartbeat that did not go through is not a reason to stop.
+
+### Monitoring a sidecar
+
+**Settings → Services** in the admin console is the page this control API
+exists for. It lists every registration — display name and `name`, version,
+state, the message the last heartbeat carried, how long ago that was, when the
+service registered, and its capabilities — with anything needing attention
+sorted to the top, and re-reads itself every ten seconds while the tab is in
+front. Selecting a row opens the detail beneath it: the endpoints the sidecar
+reported, its `metrics`, its configuration, and a **Remove** button that takes
+the registration away without touching the account, the certificate or the
+channels behind it.
+
+`metrics` is drawn as a key/value table:
+
+| What you report | What the page shows |
+|---|---|
+| A flat object of numbers and short strings | One row per key, in key order |
+| A nested object | Its key as a heading, with its own fields indented under it |
+| An array | Its elements, comma-joined, on one row |
+| Anything that is not an object | The value as a line of text |
+
+So a heartbeat reports best as a flat object of counters, with at most one
+level of nesting for something that genuinely groups:
+
+```json
+{
+  "offered": 18422,
+  "published": 4106,
+  "suppressed": 14291,
+  "expired": 25,
+  "tracked": 612,
+  "source": { "kind": "aisstream", "state": "connected" }
+}
+```
+
+Keys are shown exactly as you spell them, and every value reaches the page as
+text — a string that looks like HTML is rendered as that string, never as
+markup — so a metric is never a way to put something into an administrator's
+browser. Keep the values short: this is a table, not a log, and a paragraph in
+a metric is a paragraph in a table cell. Anything that needs a sentence belongs
+in the heartbeat's `message`, which the row shows in full.
 
 ### Per-service configuration
 
@@ -339,7 +382,10 @@ let tuning: Tuning = control.config_as().await?;
 ```
 
 Reading it on a tick is what lets a setting changed in the UI reach the sidecar
-without anybody restarting it.
+without anybody restarting it — and it is what the console's Configuration
+panel says when it saves: the change is stored, and the service picks it up on
+its next tick rather than immediately. An administrator may read the
+configuration as well as write it; a service reads only its own.
 
 ### Two credentials
 
@@ -458,6 +504,26 @@ source", so a feed plugin is its own parsing and nothing else.
 Two ship with rustak — [`rustak-plugin-ais`](../rustak-plugin-ais) (vessels) and
 [`rustak-plugin-adsb`](../rustak-plugin-adsb) (aircraft) — and both are the
 `Sidecar` above with a `feed` in the middle.
+
+**AIS.** [`rustak-plugin-ais`](../rustak-plugin-ais) reads vessels from a
+receiver of your own — `!AIVDM` sentences over UDP from AIS-catcher, `rtl_ais`
+or a dAISy hat, with no key and no internet — or from the
+[AISStream.io](https://aisstream.io) WebSocket feed, which wants a free API key
+and the terms published on that site. It maps the AIS ship-type code to a
+`VesselClass`, turns AIS's "not available" numbers (a heading of 511, a course
+of 360, a speed of 102.3 knots) into nothing at all, and joins each position
+report to the static report that carries the vessel's name a few minutes later.
+Its README has the mapping table, the two staleness horizons it publishes with,
+and what each source's data terms are.
+
+The ADS-B sidecar reads a local `readsb`/`dump1090` receiver's own
+`aircraft.json` (by path or over HTTP), a public aggregator's point endpoint
+(adsb.lol, adsb.fi, airplanes.live) or the OpenSky Network's state vectors
+behind OAuth2 client credentials, and maps the ADS-B emitter categories onto
+`TrackKind::Aircraft`. Each of those has its own terms, its own rate limits and
+its own attribution, and a couple need budgeting rather than just configuring:
+[`rustak-plugin-adsb/README.md`](../rustak-plugin-adsb/README.md) is where they
+are written down, and is worth reading before a deployment points at one.
 
 ### The `Track` contract
 

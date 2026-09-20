@@ -12,7 +12,9 @@
  * worse than one that says what it is waiting for.
  *
  * Since M2 three of them are real pages rather than stubs — Devices, Channels
- * and Credentials — and one destination is reachable only from inside another:
+ * and Credentials — and since M9 the last stub is gone too: "Add-ons" is now
+ * the Services page (`services.spec.ts`), at the same path. One destination is
+ * reachable only from inside another:
  * an account's own page, at `/admin/users/{username}`. It has no link in the
  * sidebar on purpose, because it is about one row rather than one area, so it is
  * tested as a deep link instead.
@@ -41,7 +43,7 @@ const DESTINATIONS: ReadonlyArray<readonly [string, string]> = [
   ["Account", "Your account"],
   ["Security", "Security"],
   ["Storage", "Storage"],
-  ["Add-ons", "Add-ons"],
+  ["Services", "Services"],
   ["Dashboard", "Dashboard"],
 ];
 

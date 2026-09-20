@@ -149,7 +149,7 @@ const NAV: &[NavGroup] = &[
             (Route::Account, "Account"),
             (Route::Security, "Security"),
             (Route::Storage, "Storage"),
-            (Route::AddOns, "Add-ons"),
+            (Route::Services, "Services"),
         ],
     },
 ];

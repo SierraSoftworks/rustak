@@ -26,6 +26,8 @@ mod packages;
 #[cfg(debug_assertions)]
 mod profiles;
 #[cfg(debug_assertions)]
+mod services;
+#[cfg(debug_assertions)]
 mod store;
 
 #[cfg(debug_assertions)]
@@ -38,6 +40,8 @@ pub use missions::*;
 pub use packages::*;
 #[cfg(debug_assertions)]
 pub use profiles::*;
+#[cfg(debug_assertions)]
+pub use services::*;
 #[cfg(debug_assertions)]
 pub use store::*;
 

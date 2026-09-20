@@ -545,6 +545,52 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn an_administrator_reads_a_services_configuration_and_nobody_else_does() {
+        // The admin console's Services page `GET`s this to fill its
+        // Configuration panel before it `PUT`s anything back, so an
+        // administrator being able to *read* one is load-bearing rather than
+        // incidental — `owns` grants it, and this is what says so.
+        let server = TestServer::start().await;
+        let (_, token) = sidecar(&server, "weather").await;
+        let (_, admin) = server.signed_in("ada", true).await;
+        let (_, bystander) = server.signed_in("blake", false).await;
+        let app = app!(server);
+        test::TestRequest::post()
+            .uri("/api/v1/services/register")
+            .insert_header(("authorization", format!("Bearer {token}")))
+            .set_json(descriptor("weather"))
+            .send_request(&app)
+            .await;
+        test::TestRequest::put()
+            .uri("/api/v1/services/weather/config")
+            .insert_header(("authorization", format!("Bearer {}", admin.token)))
+            .set_json(serde_json::json!({ "interval_seconds": 30 }))
+            .send_request(&app)
+            .await;
+
+        let read = test::TestRequest::get()
+            .uri("/api/v1/services/weather/config")
+            .insert_header(("authorization", format!("Bearer {}", admin.token)))
+            .send_request(&app)
+            .await;
+        assert_eq!(read.status(), StatusCode::OK);
+        assert_eq!(
+            test::read_body_json::<serde_json::Value, _>(read).await,
+            serde_json::json!({ "interval_seconds": 30 })
+        );
+
+        // A signed-in account that neither administers the installation nor
+        // owns the registration gets the same `404` a stranger's name gets:
+        // `403` would mean "registered" (R-01 M16).
+        let refused = test::TestRequest::get()
+            .uri("/api/v1/services/weather/config")
+            .insert_header(("authorization", format!("Bearer {}", bystander.token)))
+            .send_request(&app)
+            .await;
+        assert_eq!(refused.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[actix_web::test]
     async fn a_person_cannot_register_a_service_as_themselves() {
         let server = TestServer::start().await;
         let (_, session) = server.signed_in("ada", true).await;
