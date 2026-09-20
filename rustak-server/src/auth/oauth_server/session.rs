@@ -9,9 +9,27 @@
 //! provider's), and `/token/access` hands a page the token its own cookies
 //! already carry.
 //!
-//! `/logout` is the fourth. It answers `204` rather than TAK Server's `301` to
-//! `/webtak/index.html`: there is no such page here, and a redirect from a
-//! sign-out is a page nobody asked for.
+//! `/logout` is the fourth, and it is also the `end_session_endpoint` of
+//! rustak's own discovery document. It answers `204` rather than TAK Server's
+//! `301` to `/webtak/index.html`: there is no such page here, and a redirect
+//! from a sign-out is a page nobody asked for.
+//!
+//! # The one redirect it will do
+//!
+//! A relying party may ask to be returned to itself afterwards, with
+//! `client_id` and `post_logout_redirect_uri`. That is answered with a `302`
+//! **only** when the URI is registered on that client under
+//! `[auth.oauth] clients … post_logout_redirect_uris`, byte for byte, and with
+//! a `204` in every other case — an unregistered URI, a URI on a client that
+//! registered none, a `post_logout_redirect_uri` with no `client_id`, an
+//! unknown `client_id`. A sign-out endpoint that redirected wherever it was
+//! told is an open redirector on a path every session ends at, and the
+//! specification's own "registered" requirement is the whole of the control.
+//!
+//! `id_token_hint` is **not** read. The specification allows a provider to take
+//! the client from a token's `aud` instead of from `client_id`, and doing so
+//! would mean parsing an attacker-supplied token before deciding where to send
+//! a browser. Requiring `client_id` costs a relying party one query parameter.
 
 use actix_web::http::StatusCode;
 use actix_web::http::header::{CACHE_CONTROL, SET_COOKIE};
@@ -106,7 +124,11 @@ pub async fn token_access(request: HttpRequest, context: web::Data<AppContext>) 
 /// would let one link sign somebody out of every device they own (R-01 M2).
 /// So the `GET` revokes the token that was presented, and only the `POST` —
 /// which is same-site by construction — ends the account's other sessions.
-pub async fn logout(request: HttpRequest, context: web::Data<AppContext>) -> HttpResponse {
+pub async fn logout(
+    request: HttpRequest,
+    context: web::Data<AppContext>,
+    query: Option<web::Query<LogoutQuery>>,
+) -> HttpResponse {
     if let Ok(resolved) =
         resolve_principal(context.get_ref(), &request, ListenerAuthPolicy::public()).await
     {
@@ -134,7 +156,13 @@ pub async fn logout(request: HttpRequest, context: web::Data<AppContext>) -> Htt
         }
     }
 
-    let mut response = HttpResponse::NoContent().finish();
+    let mut response = match query
+        .as_deref()
+        .and_then(|query| returning_to(&context, query))
+    {
+        Some(location) => super::authorize::redirect(&location),
+        None => HttpResponse::NoContent().finish(),
+    };
 
     response
         .headers_mut()
@@ -147,6 +175,53 @@ pub async fn logout(request: HttpRequest, context: web::Data<AppContext>) -> Htt
     }
 
     response
+}
+
+/// The query `GET|POST /logout` accepts, all of it optional.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LogoutQuery {
+    /// Which registered client is asking to be returned to.
+    #[serde(default)]
+    pub client_id: Option<String>,
+
+    /// Where it would like the browser sent, which has to be one of that
+    /// client's registered `post_logout_redirect_uris`.
+    #[serde(default)]
+    pub post_logout_redirect_uri: Option<String>,
+
+    /// The client's own state, returned untouched when there is a redirect.
+    #[serde(default)]
+    pub state: Option<String>,
+}
+
+/// Where a sign-out redirects to, when it redirects at all.
+///
+/// [`None`] — and therefore the `204` — for every case that is not "a
+/// registered client asked to be returned to a URI it registered": see the
+/// module documentation for why the answer is silence rather than an error.
+fn returning_to(context: &AppContext, query: &LogoutQuery) -> Option<String> {
+    let requested = query.post_logout_redirect_uri.as_deref()?;
+    let client_id = query.client_id.as_deref()?;
+    let config = context.config();
+    let client = config.auth.oauth.client(client_id)?;
+
+    if !client.allows_post_logout(requested) {
+        warn!(
+            client = %client_id,
+            "Refused to return a sign-out to a URI the client is not registered for.",
+        );
+
+        return None;
+    }
+
+    match query.state.as_deref() {
+        Some(state) => Some(format!(
+            "{requested}{}state={}",
+            if requested.contains('?') { '&' } else { '?' },
+            super::authorize::encode(state),
+        )),
+        None => Some(requested.to_string()),
+    }
 }
 
 /// The token this request presented, from either place one may arrive.
@@ -249,7 +324,7 @@ mod tests {
             .app_data(web::Data::new(server.context.clone()))
             .to_http_request();
 
-        let response = logout(request, web::Data::new(server.context.clone())).await;
+        let response = logout(request, web::Data::new(server.context.clone()), None).await;
 
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
@@ -266,6 +341,99 @@ mod tests {
             "{cleared:?}",
         );
         assert!(cleared.iter().any(|value| value.starts_with("state=")));
+    }
+
+    /// A server with `app` registered, optionally with a sign-out URI.
+    async fn with_client(post_logout: &[&str]) -> TestServer {
+        let registered: Vec<String> = post_logout.iter().map(|uri| (*uri).to_string()).collect();
+
+        TestServer::start_with(move |config| {
+            config.auth.oauth = crate::config::OAuthServerConfig {
+                clients: vec![crate::config::OAuthClient {
+                    id: "app".to_string(),
+                    redirect_uris: vec!["https://app.example.com/cb".to_string()],
+                    public: true,
+                    secret: None,
+                    post_logout_redirect_uris: registered,
+                }],
+                ..crate::config::OAuthServerConfig::default()
+            };
+        })
+        .await
+    }
+
+    /// `GET /logout` with `query` appended.
+    async fn signing_out(server: &TestServer, query: &str) -> actix_web::dev::ServiceResponse {
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        test::call_service(
+            &app,
+            TestRequest::get()
+                .uri(&format!("/logout{query}"))
+                .to_request(),
+        )
+        .await
+    }
+
+    #[actix_web::test]
+    async fn a_registered_sign_out_uri_is_returned_to_with_the_clients_state() {
+        let server = with_client(&["https://app.example.com/bye"]).await;
+        let response = signing_out(
+            &server,
+            "?client_id=app&post_logout_redirect_uri=https%3A%2F%2Fapp.example.com%2Fbye&state=a+b",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(
+            response
+                .headers()
+                .get(actix_web::http::header::LOCATION)
+                .unwrap(),
+            "https://app.example.com/bye?state=a%20b",
+        );
+    }
+
+    #[actix_web::test]
+    async fn everything_else_signs_out_and_redirects_nowhere() {
+        // A sign-out endpoint that redirected wherever it was told is an open
+        // redirector on a path every session ends at.
+        let server = with_client(&["https://app.example.com/bye"]).await;
+
+        for query in [
+            "",
+            "?post_logout_redirect_uri=https%3A%2F%2Fapp.example.com%2Fbye",
+            "?client_id=app&post_logout_redirect_uri=https%3A%2F%2Fevil.example.com%2Fbye",
+            "?client_id=app&post_logout_redirect_uri=https%3A%2F%2Fapp.example.com%2Fbye%3Fx%3D1",
+            "?client_id=nobody&post_logout_redirect_uri=https%3A%2F%2Fapp.example.com%2Fbye",
+        ] {
+            let response = signing_out(&server, query).await;
+
+            assert_eq!(response.status(), StatusCode::NO_CONTENT, "{query}");
+            assert!(
+                response
+                    .headers()
+                    .get(actix_web::http::header::LOCATION)
+                    .is_none(),
+                "{query}",
+            );
+        }
+    }
+
+    #[actix_web::test]
+    async fn a_client_that_registered_no_sign_out_uri_is_never_redirected_to() {
+        let server = with_client(&[]).await;
+        let response = signing_out(
+            &server,
+            "?client_id=app&post_logout_redirect_uri=https%3A%2F%2Fapp.example.com%2Fcb",
+        )
+        .await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::NO_CONTENT,
+            "a redirect URI is not a sign-out URI",
+        );
     }
 
     #[actix_web::test]

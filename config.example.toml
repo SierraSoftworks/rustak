@@ -369,7 +369,8 @@ allow_access_token_retrieval = true
 # rate_limit = { attempts = 10, window = "1m", lockout = "15m" }
 
 
-# The OAuth2 clients GET /oauth/authorize will issue authorization codes to.
+# The OAuth2 clients GET /oauth/authorize will issue authorization codes to,
+# and therefore what rustak publishes at /.well-known/openid-configuration.
 # Empty by default, which switches the authorization-code flow off entirely: an
 # authorization server with no registered client has nowhere legitimate to send
 # a code. Register the browser clients that sign in through rustak — WebTAK-style
@@ -380,17 +381,32 @@ allow_access_token_retrieval = true
 #                 Compared byte for byte, never as a prefix, and never a plain
 #                 http:// address unless the host is a loopback one.
 #   public        whether the client keeps no secret, which is every browser and
-#                 mobile client. Default true. Recorded but not yet acted on:
-#                 this server accepts no client secret, so EVERY client must use
-#                 proof key for code exchange with code_challenge_method=S256 and
-#                 a request without one is refused, public or not. Setting it to
-#                 false today changes nothing; it is here so that adding client
-#                 authentication later does not change this file's shape.
+#                 mobile client. Default true. A public client MUST use proof
+#                 key for code exchange with code_challenge_method=S256 and a
+#                 request without one is refused. A confidential one
+#                 (public = false) MUST carry a `secret` instead, authenticates
+#                 at /oauth/token with client_secret_post or client_secret_basic,
+#                 and may omit the proof key — which is what a standard OpenID
+#                 relying party such as CloudTAK's SSO needs.
+#   secret        the client secret, required when public = false and refused
+#                 when public = true. Keep it out of this file with
+#                 "${{ env.RUSTAK_OAUTH_CLIENT_SECRET }}"; it is redacted from
+#                 every log line and never appears in a Debug dump.
+#   post_logout_redirect_uris
+#                 every URI GET|POST /logout?post_logout_redirect_uri= may send
+#                 a browser back to for this client. Empty by default, which
+#                 means a sign-out answers 204 and redirects nowhere. Held to
+#                 the same rules as redirect_uris, and matched byte for byte.
+#
+# admin_group is the group name /oauth/userinfo reports for an administrator,
+# beside the channels they hold, so a relying party can map admin rights by
+# group. Rename it if a channel of your own is already called "admin".
 #
 # [auth.oauth]
+# admin_group = "admin"
 # clients = [
 #   { id = "webtak", redirect_uris = ["https://tak.example.com/login/redirect.html"] },
-#   { id = "cloudtak", redirect_uris = ["https://map.example.com/oauth/callback"], public = true },
+#   { id = "cloudtak", redirect_uris = ["https://map.example.com/api/login/oidc/callback"], public = false, secret = "${{ env.RUSTAK_OAUTH_CLIENT_SECRET }}", post_logout_redirect_uris = ["https://map.example.com/"] },
 # ]
 
 

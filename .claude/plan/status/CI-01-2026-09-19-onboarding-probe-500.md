@@ -1,4 +1,65 @@
-# CI-01 — `GET /api/v1/users/{u}/cloudtak-onboarding` answered `500` under load, once
+# CI-01 — `GET /api/v1/users/{u}/cloudtak-onboarding` answered `500`
+
+**RESOLVED by M5-04** — `761a389`, "fix(web): Answer unmatched API paths with a
+JSON 404 and never 500 without a built UI". **The cause was deterministic, and
+two of my conclusions below were wrong.** Both are kept rather than edited out,
+because the reasoning errors are more useful than the conclusion was.
+
+## The actual cause
+
+**CI never builds the UI.** `rust.yml`'s `test` job runs without `trunk`, so
+`web::ui::shell` answered **500 — "The user interface has not been built"** on
+every fall-through. Locally the UI *is* built, so the same request answered 200.
+Nothing to do with load, and nothing to do with the route.
+
+The fix: the placeholder is a `200`, unmatched `/api/v1` paths answer a JSON
+`404` behind the auth gate, `interop/shared/src/probe.ts` follows the new
+convention, and the >60 s test does one RSA generation instead of two.
+
+## My two mistakes
+
+**1. "`ui::serve` is infallible, so it cannot produce a 500."** It returns
+`HttpResponse` rather than `Result` — and I read an infallible *signature* as an
+inability to produce an error *status*. A handler that cannot fail can still
+answer `500` deliberately, which is exactly what `shell()` did. The signature
+told me nothing; I should have read the body of `shell()`, which is four lines
+further down the file I already had open.
+
+**2. "Not reproducible locally, therefore load-dependent."** This is the worse
+error. I ran the test alone (passed), the binary three times at
+`--test-threads=2` (19/19 each), saw CI take 12x longer, and concluded
+contention. The correct inference from *passes locally, fails in CI, every
+time it runs there* is an **environment difference** — and the environment
+difference was sitting in the workflow I own: the `test` job has no `ui` step
+and no `ui-dist` artefact, while my working tree has a built UI from earlier
+work.
+
+**The rule for next time:** a test that passes locally and fails in CI is an
+environment difference until proven otherwise. Load is the explanation of last
+resort, not first, and "I could not reproduce it" is evidence about my machine
+rather than about the test. Where the two environments differ is knowable — for
+this repository it is written down in `docs/ci.md`'s job graph, which says
+plainly that `ui` is a separate job from `test`.
+
+## What was half right
+
+The `api_auth` middleware thread was right that the middleware resolves the
+token on an unmatched path — M5-04 confirmed it — but it passed through, so it
+was never the failure. Ruling out the `users/{username}` routes and the shell
+*as a route match* was correct and saved time; the conclusion drawn afterwards
+was not.
+
+## Standing note for this log
+
+`rust.yml`'s `test` job runs **without a built UI**. The shell tests now cover
+both shapes. If a UI-dependent test ever differs between CI and local again,
+this is the first thing to check.
+
+---
+
+<details>
+<summary>The original write-up, kept for the record — its conclusion was wrong</summary>
+
 
 **Found by:** `rust.yml` run
 [35449569084](https://github.com/SierraSoftworks/rustak/actions/runs/35449569084)
@@ -133,3 +194,6 @@ Either of these, in one run:
 If it turns out the request is matching a `users/{username}` route, the fix is
 error mapping there rather than anything about the probe — and this test is
 then pinning the right invariant for the wrong reason, which is worth a comment.
+
+
+</details>

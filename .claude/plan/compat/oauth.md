@@ -132,7 +132,7 @@ are TAK Server's; the security properties are stricter, and every difference bel
 | `access_token_N` cookies | `HttpOnly`, `Path=/`, `Secure` when the request was, `SameSite=Strict` | `HttpOnly`, `Path=/`, **always `Secure`**, `SameSite=Lax` |
 | `state` cookie | `Max-Age=-1`, not secure-forced, unscoped | `HttpOnly`, `Secure`, `SameSite=Lax`, **`Path=/login`** |
 | Refresh token | kept in the servlet **HTTP session** | not stored in a cookie at all; renewal is `POST /oauth/token` `grant_type=refresh_token` |
-| `/logout` | `301` to `/webtak/index.html`, expires `access_token*` | `204`, expires `access_token*` **and** revokes the `jti` and the refresh family |
+| `/logout` | `301` to `/webtak/index.html`, expires `access_token*` | `204`, expires `access_token*` **and** revokes the `jti` and the refresh family; a `302` only to a **registered** `post_logout_redirect_uri` (§6.7) |
 | `/login/redirect` failure | forwards to `/Marti/login/*.html` | one generic `400` for every cause, with the `state` cookie cleared |
 | Bearer/cookie scope | port-gated (`:8446`/`:8447` only, per `AccessTokenResolver`) | **path**-gated: `/login/*`, `/logout`, `/token/access`, `/oauth/authorize`, `/Marti/**`, `/files/api/**` — never `/api/v1` |
 
@@ -157,6 +157,146 @@ is TAK Server's own convention (`groupsClaim` default `"groups"`, suffixes confi
 adopts it directly per `plan.md`'s group-mapping decision — use the **first** occurrence of the
 suffix when stripping (a name like `A_READ_B_READ` truncates at the first `_READ`, not the last).
 Verified 06 §4.7 step 5.
+
+## 6. rustak as an OpenID provider (M8-01)
+
+CloudTAK's forthcoming single sign-on (dfpc-coe/CloudTAK#661; TAK.NZ's fork has it in
+production) makes CloudTAK an OIDC **relying party**. The maintainer's decision (2026-09-20) is
+that rustak becomes the provider it talks to, because the token CloudTAK ends up holding is then
+rustak's own and the enrolment routes already accept it — a third-party provider's token could not
+enrol. This section is the exact wire contract; §1–§4 are unchanged by it.
+
+**Numbering note.** §5 below was already "Group-claim mapping (OIDC groups → rustak groups)", which
+is about rustak as a relying *party*. This is the other direction.
+
+### 6.1 `GET /.well-known/openid-configuration`
+
+On the **public** listener only, never Marti. Exactly `Content-Type: application/json`,
+`Cache-Control: public, max-age=3600`. Every endpoint is an absolute URL built from `[auth] issuer`
+(default `[server] base_url`), which is the same string the tokens carry as `iss`. An installation
+with no issuer answers `404 {"error":"not_configured"}` rather than building one from a `Host`
+header.
+
+```json
+{
+  "issuer": "https://tak.example.com",
+  "authorization_endpoint": "https://tak.example.com/oauth/authorize",
+  "token_endpoint": "https://tak.example.com/oauth/token",
+  "userinfo_endpoint": "https://tak.example.com/oauth/userinfo",
+  "jwks_uri": "https://tak.example.com/oauth/jwks",
+  "end_session_endpoint": "https://tak.example.com/logout",
+  "response_types_supported": ["code"],
+  "grant_types_supported": ["authorization_code", "refresh_token", "password"],
+  "subject_types_supported": ["public"],
+  "id_token_signing_alg_values_supported": ["RS256"],
+  "scopes_supported": ["openid", "profile", "email", "groups"],
+  "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic", "none"],
+  "code_challenge_methods_supported": ["S256"],
+  "claims_supported": ["sub", "iss", "aud", "exp", "iat", "auth_time", "nonce",
+                       "preferred_username", "name", "email", "groups"]
+}
+```
+
+`GET /login/.well-known/openid-configuration` (§4) is a **different document at a different path**
+answering a different question — the *upstream* provider's two endpoints, in TAK Server's bare
+shape. Neither is a variant of the other.
+
+### 6.2 `GET /oauth/jwks`
+
+The RS256 public keys as a JWK set: `kty`, `use: "sig"`, `alg: "RS256"`, `kid`, `n`, `e`. `n` and
+`e` are **unpadded base64url** (RFC 7518 §6.3.1). Active key first, then every retired key whose
+tokens could still be presented. `Cache-Control: public, max-age=3600`.
+
+The **access token's** header stays the 27-byte `{"alg":"RS256","typ":"JWT"}` with no `kid` (§2 —
+CloudTAK's hand parser depends on the byte count), so a verifier matches it by algorithm. The **ID
+token** is read by libraries rather than by that parser and therefore *does* carry a `kid`.
+
+### 6.3 Client authentication at `POST /oauth/token`
+
+| | `public = true` (default) | `public = false` |
+|---|---|---|
+| `secret` in config | refused at `--check` | required at `--check` |
+| Authentication | none | `client_secret_post` or `client_secret_basic`, constant-time |
+| PKCE | **mandatory**, `S256` only | optional; enforced when a `code_challenge` was sent |
+
+A confidential client that does not authenticate gets `401 {"error":"invalid_client"}` — the same
+answer whether the secret was wrong, empty or absent, because the difference is an oracle for which
+identifiers are registered as confidential. Checked **before** the code, so guessing a secret never
+says whether a code exists, and rate limited on the shared limiter keyed by `client_id`. When the
+header and the form name different clients the request is refused rather than resolved either way.
+
+### 6.4 The `authorization_code` response
+
+`/oauth/authorize` reads `scope` and `nonce`. The OpenID scopes granted are the intersection of the
+request with `openid profile email groups`, recorded on the code beside the nonce (migration
+`0019_oauth_code_oidc.sql`). They are a **separate string** from the rustak scope, which is still
+derived from the account and clamped by the recorded ceiling.
+
+```json
+{ "access_token": "<jwt>", "token_type": "Bearer", "expires_in": 3600,
+  "refresh_token": "<opaque>", "scope": "openid profile email groups",
+  "id_token": "<jwt>" }
+```
+
+- `id_token` **only** when `openid` was granted.
+- `scope` is the granted OpenID scopes when any were, and the rustak scope (`api`, `api admin`)
+  otherwise — which is what this grant has always answered.
+- The **password grant's** body is byte-for-byte §1 and carries exactly `access_token`,
+  `token_type`, `expires_in`. Asserted by
+  `oidc_provider::tokens::the_password_grant_body_is_exactly_the_three_keys_it_has_always_been`.
+
+### 6.5 The ID token
+
+RS256, signed with the same key, `kid` in the header. Flat claims only; `groups` is a flat array of
+strings, which is allowed.
+
+| Claim | Value |
+|---|---|
+| `iss` | `[auth] issuer` — the same `iss` the access token carries |
+| `sub` | the rustak username, which is also the access token's `sub` and the certificate's CN |
+| `aud` | the `client_id`, as a **string**, never an array |
+| `exp`, `iat` | the access token's own window |
+| `auth_time` | when the code was issued, which is when the session was last confirmed |
+| `nonce` | echoed byte for byte when one was sent; **absent** when none was |
+| `name`, `email`, `groups` | per the granted scopes, §6.6 |
+
+An ID token is not a credential for rustak and cannot become one: `JwtIssuer::verify`
+deserialises the access-token claims, which need a `jti`, a `scope` and an `nbf` an ID token does
+not carry, and requires `aud == [auth] audience` rather than a client identifier.
+
+### 6.6 `GET|POST /oauth/userinfo`
+
+Bearer only — never a cookie. Exactly `application/json`, `no-store`. `401` with
+`WWW-Authenticate: Bearer` when the token is missing, expired, revoked, forged or belongs to an
+account this installation no longer admits, all reported identically.
+
+```json
+{ "sub": "alice", "preferred_username": "alice", "name": "Alice",
+  "email": "alice@example.com", "groups": ["__ANON__", "ops", "admin"] }
+```
+
+- `sub` and `preferred_username` are both the rustak username.
+- `email` is the account's `email` column **only when it is set**, never synthesised.
+- `groups` is the channels held (a membership in either direction, deduplicated — not per-device
+  active state), plus `[auth.oauth] admin_group` (default `"admin"`) for an administrator.
+
+**Deviation from the M8-01 brief.** The brief asked for the claim set to be narrowed to the OIDC
+scopes granted at the authorization endpoint, releasing the full set only for a password-grant
+token. rustak records those scopes against the **code**, and a code is spent in seconds: there is
+nowhere on an access token to carry them and no table that remembers them. So userinfo releases the
+full set for every live token. It is not a widening — `GET /api/v1/me` already answers the same
+four facts to the same token — and the ID token *is* narrowed by scope, which is where a relying
+party reads them from anyway. Recording per-token OIDC scopes is backlog.
+
+### 6.7 `GET|POST /logout` as `end_session_endpoint`
+
+`204` when called bare, exactly as §4's table says. With `client_id` **and**
+`post_logout_redirect_uri`, a `302` to that URI — but **only** when it is registered on that client
+under `post_logout_redirect_uris`, byte for byte; `state` is preserved on the redirect. Every other
+case is the `204`: an unregistered URI, a client that registered none, a URI with no `client_id`, an
+unknown `client_id`. `id_token_hint` is deliberately **not** read: taking the client from an
+attacker-supplied token's `aud` would mean parsing that token before deciding where to send a
+browser.
 
 ## Gotchas
 

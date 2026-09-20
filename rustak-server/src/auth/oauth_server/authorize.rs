@@ -11,7 +11,7 @@
 //! of one. Once both are known good, every later refusal goes back to the
 //! client the way the specification says, carrying its `state`.
 //!
-//! # Why proof key for code exchange is not optional
+//! # Why proof key for code exchange is not optional for a public client
 //!
 //! Every client registered here is public unless it says otherwise, and a
 //! public client has no secret — so without a proof key the only thing standing
@@ -19,6 +19,22 @@
 //! code travels through a browser redirect. `S256` only: `plain` puts the
 //! verifier in the authorization request, which is the request an interceptor
 //! already has.
+//!
+//! A **confidential** client (`public = false`) is registered with a secret it
+//! presents at `/oauth/token`, and that secret is the binding an interceptor
+//! does not have — so its proof key is optional, and enforced only when it sent
+//! a `code_challenge`. That is the trade the specification makes, and serving
+//! it is the difference between working with CloudTAK's relying party and not:
+//! it sends no `code_challenge` at all (`compat/oauth.md` §6).
+//!
+//! # The OpenID scopes are a separate string
+//!
+//! `scope` here is read as an OpenID request ([`super::scopes`]) and recorded
+//! on the code as what may be *said* about the account. It is never the rustak
+//! scope, which is derived from the account at [`deliver_code`] and clamped
+//! again at redemption: a client that could widen one by asking for the other
+//! would turn "tell me this person's email address" into administrative
+//! access.
 //!
 //! # Consent
 //!
@@ -39,6 +55,7 @@ use crate::web::helpers::request::client_ip;
 
 use super::codes::{self, NewCode, S256};
 use super::login;
+use super::scopes;
 use super::state::PendingKind;
 
 /// The query `GET /oauth/authorize` accepts.
@@ -62,6 +79,9 @@ pub struct AuthorizeQuery {
     pub code_challenge_method: Option<String>,
     #[serde(default)]
     pub scope: Option<String>,
+    /// The relying party's `nonce`, which its ID token has to echo.
+    #[serde(default)]
+    pub nonce: Option<String>,
 }
 
 /// `GET /oauth/authorize`.
@@ -102,7 +122,7 @@ pub async fn authorize(
         return error_redirect(redirect_uri, "unsupported_response_type", &query.state);
     }
 
-    let Some(challenge) = proof_key(client, &query) else {
+    let Ok(challenge) = proof_key(client, &query) else {
         return error_redirect(redirect_uri, "invalid_request", &query.state);
     };
 
@@ -111,6 +131,8 @@ pub async fn authorize(
         redirect_uri: redirect_uri.to_string(),
         client_state: query.state.clone(),
         code_challenge: challenge,
+        oidc_scope: scopes::granted(query.scope.as_deref()),
+        client_nonce: query.nonce.clone(),
     };
 
     match browser_session(context.get_ref(), &request).await {
@@ -196,6 +218,8 @@ pub async fn deliver_code(
         redirect_uri,
         client_state,
         code_challenge,
+        oidc_scope,
+        client_nonce,
     } = pending
     else {
         error!("An authorization code was asked for by a flow that never requested one.");
@@ -212,6 +236,8 @@ pub async fn deliver_code(
             user_id: user.id,
             redirect_uri: redirect_uri.clone(),
             scope,
+            oidc_scope: oidc_scope.clone(),
+            nonce: client_nonce.clone(),
             code_challenge: code_challenge.clone(),
         },
     )
@@ -244,16 +270,17 @@ pub async fn deliver_code(
 
 /// The client's proof-key challenge, when the request carries a usable one.
 ///
-/// Required of **every** client, not only the public ones. The specification
-/// lets a confidential client lean on its secret instead, but this server
-/// accepts no client secret yet — so `public = false` would otherwise register
-/// a client that can start a flow and never finish it, which is a configuration
-/// that looks like it works. When client authentication arrives, relaxing this
-/// is a change here and nowhere else.
+/// Three answers rather than two. `Ok(Some(_))` is a challenge to register;
+/// `Ok(None)` is a confidential client that sent none, which is allowed because
+/// it will present a secret at `/oauth/token` instead; `Err(())` is a request
+/// that may not proceed at all.
 ///
-/// `S256` only. `plain` puts the verifier in the authorization request, which
-/// is the request an interceptor already has.
-fn proof_key(client: &OAuthClient, query: &AuthorizeQuery) -> Option<String> {
+/// A **public** client with no challenge is `Err(())` and always will be: it
+/// holds no secret, so an intercepted code would be a session. `plain` is
+/// `Err(())` for every client, because it puts the verifier in the
+/// authorization request — which is the request an interceptor already has.
+#[allow(clippy::result_unit_err)]
+fn proof_key(client: &OAuthClient, query: &AuthorizeQuery) -> Result<Option<String>, ()> {
     let method = query.code_challenge_method.as_deref();
 
     match query.code_challenge.as_deref() {
@@ -261,19 +288,20 @@ fn proof_key(client: &OAuthClient, query: &AuthorizeQuery) -> Option<String> {
             if method.is_some_and(|method| method != S256) {
                 debug!(method = ?method, "Refused a proof-key method that is not S256.");
 
-                return None;
+                return Err(());
             }
 
-            Some(challenge.to_string())
+            Ok(Some(challenge.to_string()))
         }
-        _ => {
+        _ if client.public => {
             debug!(
                 client = %client.id,
-                "Refused an authorization request that carries no proof key.",
+                "Refused an authorization request from a public client that carries no proof key.",
             );
 
-            None
+            Err(())
         }
+        _ => Ok(None),
     }
 }
 
@@ -329,8 +357,9 @@ fn separator(redirect_uri: &str) -> char {
 ///
 /// Only `state` goes through here — an opaque string the client chose — and it
 /// has to come back byte for byte or the client cannot match it to the request
-/// it made.
-fn encode(value: &str) -> String {
+/// it made. Public so that [`super::session`]'s sign-out redirect returns a
+/// client's `state` by the same rule this one does.
+pub fn encode(value: &str) -> String {
     value
         .bytes()
         .map(|byte| match byte {
@@ -355,6 +384,7 @@ mod tests {
             code_challenge: challenge.map(str::to_string),
             code_challenge_method: method.map(str::to_string),
             scope: None,
+            nonce: None,
         }
     }
 
@@ -363,30 +393,32 @@ mod tests {
             id: "app".to_string(),
             redirect_uris: vec!["https://app.example.com/cb".to_string()],
             public,
+            secret: (!public).then(|| "s3cret".to_string()),
+            post_logout_redirect_uris: Vec::new(),
         }
     }
 
     #[test]
     fn a_public_client_cannot_start_a_flow_without_a_proof_key() {
         // It holds no secret, so without one an intercepted code is a session.
-        assert_eq!(proof_key(&client(true), &query(None, None)), None);
+        assert_eq!(proof_key(&client(true), &query(None, None)), Err(()));
         assert_eq!(
             proof_key(&client(true), &query(Some(""), Some("S256"))),
-            None
+            Err(()),
         );
     }
 
     #[test]
     fn plain_is_not_a_proof_key_this_server_will_register() {
         // `plain` puts the verifier in the authorization request, which is the
-        // request an interceptor already has.
+        // request an interceptor already has — for either kind of client.
         assert_eq!(
             proof_key(&client(true), &query(Some("a-challenge"), Some("plain"))),
-            None,
+            Err(()),
         );
         assert_eq!(
             proof_key(&client(false), &query(Some("a-challenge"), Some("plain"))),
-            None,
+            Err(()),
         );
     }
 
@@ -394,24 +426,43 @@ mod tests {
     fn an_s256_challenge_is_taken_as_given_and_a_missing_method_means_s256() {
         assert_eq!(
             proof_key(&client(true), &query(Some("a-challenge"), Some("S256"))),
-            Some("a-challenge".to_string()),
+            Ok(Some("a-challenge".to_string())),
         );
         assert_eq!(
             proof_key(&client(true), &query(Some("a-challenge"), None)),
-            Some("a-challenge".to_string()),
+            Ok(Some("a-challenge".to_string())),
         );
     }
 
     #[test]
-    fn a_client_that_says_it_is_confidential_still_needs_a_proof_key() {
-        // This server accepts no client secret, so `public = false` would
-        // otherwise register a client that can start a flow and never finish
-        // it.
-        assert_eq!(proof_key(&client(false), &query(None, None)), None);
+    fn a_confidential_client_may_start_a_flow_without_a_proof_key() {
+        // Its secret at `/oauth/token` is the binding an interceptor does not
+        // have, which is what the specification trades the proof key for — and
+        // CloudTAK's relying party sends no `code_challenge` at all.
+        assert_eq!(proof_key(&client(false), &query(None, None)), Ok(None));
         assert_eq!(
             proof_key(&client(false), &query(Some(""), Some("S256"))),
-            None,
+            Ok(None),
         );
+    }
+
+    #[test]
+    fn a_confidential_client_that_did_send_one_is_still_held_to_it() {
+        // Offering a proof key and then not being asked for it would make the
+        // control optional at the attacker's choice rather than the client's.
+        assert_eq!(
+            proof_key(&client(false), &query(Some("a-challenge"), Some("S256"))),
+            Ok(Some("a-challenge".to_string())),
+        );
+    }
+
+    #[test]
+    fn the_openid_scopes_are_read_from_the_request_and_narrowed() {
+        assert_eq!(
+            scopes::granted(Some("openid profile email groups offline_access")).as_deref(),
+            Some("openid profile email groups"),
+        );
+        assert_eq!(scopes::granted(None), None);
     }
 
     #[test]
