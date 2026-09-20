@@ -724,7 +724,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs:
+      # `build` alone would mean `:latest` says "it compiled". These four make
+      # it say "it passed CI", which is what a deployment pulling `:latest`
+      # needs it to mean.
+      #
+      # The correctness jobs by name rather than the `ci` aggregator: `ci` also
+      # needs `tap`, and a Homebrew formula that failed to publish should not
+      # stop images reaching a deployment — v0.0.1 published its images with a
+      # red `tap`, which was the right outcome. `ui` is not listed because
+      # `build`, `e2e` and `interop-node-tak` all need it already.
+      #
+      # The cost: images now publish *after* `test`, which is 16-20 minutes
+      # normally and up to an hour on a slow host under its 60-minute bound.
+      # That delay is the price of `:latest` meaning something.
       - build
+      - lint
+      - test
+      - e2e
+      - interop-node-tak
 
     # Unlike automate (release-only), rustak's M0 exit criterion requires
     # `ghcr.io/sierrasoftworks/rustak:latest` to exist on a green `main`, so

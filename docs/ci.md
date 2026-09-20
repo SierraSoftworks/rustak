@@ -144,6 +144,22 @@ deduplicate ──┬─ version ───────────────�
   every push to `main`,
   because rustak's M0 exit criterion is a multi-arch
   `ghcr.io/sierrasoftworks/rustak:latest` on a green `main`.
+
+  **`docker-build` needs `lint`, `test`, `e2e` and `interop-node-tak` as well
+  as `build`, so `:latest` means "passed CI" rather than "compiled".** It used
+  to need `build` alone, which was fine while nothing pulled `:latest`
+  automatically — a deployment that does cannot tell a green run from a red one
+  otherwise, because `build` only proves the crates compile. The correctness
+  jobs are listed by name rather than depending on the `ci` aggregator: `ci`
+  also needs `tap`, and a Homebrew formula that failed to publish should not
+  stop images reaching a deployment (v0.0.1 published its images with a red
+  `tap`, which was the right outcome). `ui` is not listed because `build`,
+  `e2e` and `interop-node-tak` all need it already.
+
+  **The trade-off is delay.** Images now publish after `test` rather than
+  alongside it — 16–20 minutes on a normal runner, and up to an hour on a slow
+  one under `test`'s 60-minute bound. A push whose images are wanted sooner has
+  to wait; that is the price of the tag meaning something.
 - **`tap`** updates the `SierraSoftworks` Homebrew tap with the `rustak`
   formula (aliased as `major`/`minor`) on a published release.
 
