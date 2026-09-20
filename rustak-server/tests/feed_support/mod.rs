@@ -87,6 +87,8 @@ impl RunningFeed {
             secret: &Secret::new(enrolment_token),
             client_uid: &format!("SERVICE-{service}"),
             truststore: None,
+            // A one-time token is a password, not a bearer credential.
+            credential: rustak_client::enroll::Presentation::Basic,
         })
         .await
         .expect("the sidecar enrols");

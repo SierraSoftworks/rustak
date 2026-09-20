@@ -24,7 +24,7 @@ use std::sync::LazyLock;
 use filt_rs::Filter;
 use serde::{Deserialize, Serialize};
 
-use super::{OAuthServerConfig, OidcConfig};
+use super::{OAuthServerConfig, OidcConfig, WorkloadConfig};
 
 /// What a redacted secret renders as in a `Debug` dump.
 const REDACTED: &str = "<redacted>";
@@ -209,6 +209,13 @@ pub struct AuthConfig {
     /// The identity provider to federate with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oidc: Option<OidcConfig>,
+
+    /// The orchestrators whose workload identity is accepted as a credential.
+    ///
+    /// Empty by default, which switches the whole path off: a token nobody has
+    /// registered an issuer for is not a credential here, whoever signed it.
+    #[serde(default, skip_serializing_if = "WorkloadConfig::is_empty")]
+    pub workload: WorkloadConfig,
 }
 
 impl Default for AuthConfig {
@@ -235,6 +242,7 @@ impl Default for AuthConfig {
             previous_secret_keys: Vec::new(),
             rate_limit: RateLimitConfig::default(),
             oidc: None,
+            workload: WorkloadConfig::default(),
         }
     }
 }
@@ -267,6 +275,7 @@ impl fmt::Debug for AuthConfig {
             .field("rate_limit", &self.rate_limit)
             .field("oauth", &self.oauth)
             .field("oidc", &self.oidc)
+            .field("workload", &self.workload)
             .finish()
     }
 }

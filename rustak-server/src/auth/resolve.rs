@@ -421,6 +421,16 @@ pub async fn resolve_principal<S: Services>(
         }
     }
 
+    // An orchestrator's workload identity, which arrives in either header and
+    // reaches the enrolment routes alone. It is tried *before* the Basic
+    // credential below because a JWT presented as a password would otherwise be
+    // argon2-verified against every credential the named account holds, at a
+    // cost the caller chose; a token this does not claim answers [`None`] and
+    // leaves the request exactly as it found it.
+    if let Some(outcome) = super::workload::from_request(services, request, address).await {
+        return outcome;
+    }
+
     let Some(purpose) = policy.basic_purpose(request.path()) else {
         return Err(AuthFailure::Rejected);
     };

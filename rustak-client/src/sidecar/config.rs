@@ -31,6 +31,8 @@ use rustak_core::config::{duration, env};
 use rustak_core::prelude::*;
 use rustak_core::service::{Capability, ServiceDescriptor, ServiceEndpoints, ServiceIdentity};
 
+use super::workload::{self, Source, WorkloadIdentity};
+
 /// Advice for a value whose `${{ env.NAME }}` expression was never substituted.
 const ADVICE_UNRESOLVED: &[&str] = &[
     "Set the environment variable the expression names, or pass an environment file with --env.",
@@ -182,6 +184,17 @@ pub struct ServiceConfig {
     /// directory the configuration file itself is in.
     #[serde(default)]
     pub pki_dir: Option<PathBuf>,
+
+    /// Where this sidecar's orchestrator put the identity it already has:
+    /// `{ env = "NOMAD_TOKEN_rustak" }` or
+    /// `{ file = "/var/run/secrets/tokens/rustak" }`.
+    ///
+    /// Unset — the default — looks in the three places Nomad and Kubernetes
+    /// use, in that order, and finding one is how a deployment enrols and
+    /// reaches the control API while holding **no rustak secret at all**. See
+    /// [`super::workload`].
+    #[serde(default)]
+    pub workload_identity: Option<WorkloadIdentity>,
 }
 
 impl ServiceConfig {
@@ -195,6 +208,19 @@ impl ServiceConfig {
         self.account
             .as_ref()
             .map_or_else(|| self.name.as_str(), Username::as_str)
+    }
+
+    /// Where this sidecar's workload identity is, if it has one.
+    ///
+    /// Reads no network and opens no file it has not found first, so `--check`
+    /// can report what a start would use without doing anything.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`human_errors::Kind::User`] error when
+    /// `workload_identity` names both an `env` and a `file`, or neither.
+    pub fn workload_source(&self) -> Result<Option<Source>, Error> {
+        workload::detect(self.workload_identity.as_ref())
     }
 
     /// Whether a one-time enrolment token was supplied at all, by either route.

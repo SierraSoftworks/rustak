@@ -58,7 +58,8 @@ const ANONYMOUS_SUBJECT: &str = "oauth-token";
 /// see [`token`].
 #[derive(Clone, Deserialize)]
 pub struct TokenForm {
-    /// `password`, `refresh_token` or `authorization_code`.
+    /// `password`, `refresh_token`, `authorization_code`, or the RFC 7523
+    /// `urn:ietf:params:oauth:grant-type:jwt-bearer`.
     pub grant_type: String,
 
     #[serde(default)]
@@ -100,6 +101,15 @@ pub struct TokenForm {
     /// [`TokenForm`] is never rendered with one.
     #[serde(default)]
     pub client_secret: Option<String>,
+
+    /// The `jwt-bearer` grant: the orchestrator-signed assertion a sidecar
+    /// already holds, exchanged for one of our access tokens.
+    ///
+    /// Never logged and never traced, for the same reason `client_secret` is
+    /// not: it is a credential, and one that is live for the whole of its
+    /// orchestrator's token lifetime.
+    #[serde(default)]
+    pub assertion: Option<String>,
 }
 
 /// `POST /oauth/token`.
@@ -132,6 +142,15 @@ pub async fn token(
     match form.grant_type.as_str() {
         "password" => password_grant(&request, &context, limiter, &form).await,
         "refresh_token" => refresh_grant(&context, &form).await,
+        // RFC 7523 §2.1: a sidecar exchanges the identity its orchestrator
+        // gave it for one of ours, and holds no rustak secret of its own.
+        crate::auth::workload::GRANT_TYPE => Ok(crate::auth::workload::jwt_bearer(
+            &request,
+            &context,
+            limiter,
+            form.assertion.as_deref(),
+        )
+        .await),
         "authorization_code" => Ok(code_grant::grant(
             &request,
             &context,
@@ -151,7 +170,7 @@ pub async fn token(
             Ok(oauth_error(
                 StatusCode::BAD_REQUEST,
                 "unsupported_grant_type",
-                "This server supports the password, refresh_token and authorization_code grants.",
+                "This server supports the password, refresh_token, authorization_code and jwt-bearer grants.",
             ))
         }
     }
@@ -362,7 +381,7 @@ mod tests {
         let response = oauth_error(
             StatusCode::BAD_REQUEST,
             "unsupported_grant_type",
-            "This server supports the password, refresh_token and authorization_code grants.",
+            "This server supports the password, refresh_token, authorization_code and jwt-bearer grants.",
         );
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);

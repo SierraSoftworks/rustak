@@ -24,6 +24,16 @@
 //! configured and lets the certificate speak for itself when one is not; the
 //! server prefers the certificate when both arrive.
 //!
+//! # The bearer credential can be replaced while the client is running
+//!
+//! Under an orchestrator the token is not a fixed secret from a file: it is an
+//! access token the harness bought with the workload identity the task already
+//! holds, and it expires. [`ControlClient::set_credential`] is how the harness
+//! puts a fresh one in place, and the harness finds out that the one in place
+//! has stopped working from the `401` this client records — one shared slot, so
+//! the clone the plugin calls through and the one the event feed holds are both
+//! carrying the new token the moment it lands.
+//!
 //! # Nothing here stops a sidecar
 //!
 //! Every call answers a `Result`, and the harness treats a failed registration or
@@ -35,8 +45,8 @@
 mod events;
 mod register;
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 
 use rustak_core::prelude::*;
 use rustak_core::service::ServiceIdentity;
@@ -58,7 +68,19 @@ pub struct ControlClient {
     http: reqwest::Client,
     base: Url,
     name: ServiceName,
-    token: Option<Secret>,
+
+    /// The bearer credential, replaceable while the client is in use.
+    ///
+    /// Behind an [`Arc`] because every clone of this client — the plugin's, the
+    /// harness's, the event feed's — has to see the token the harness last
+    /// exchanged for, not the one it was built with.
+    token: Arc<RwLock<Option<Secret>>>,
+
+    /// Whether the server has answered `401` since the harness last looked.
+    ///
+    /// Read once per tick. Waiting for the cached expiry instead would leave a
+    /// sidecar unable to report for up to an hour after a signing key rotated.
+    unauthorized: Arc<AtomicBool>,
 
     /// Whether [`heartbeat`](Self::heartbeat) has been called since the harness
     /// last looked.
@@ -107,8 +129,9 @@ impl ControlClient {
             http,
             base: http::base_url(base, "control")?,
             name: identity.name().clone(),
-            token: identity.credential().cloned(),
+            token: Arc::new(RwLock::new(identity.credential().cloned())),
             reported: Arc::new(AtomicBool::new(false)),
+            unauthorized: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -137,6 +160,34 @@ impl ControlClient {
         &self.base
     }
 
+    /// Replaces the bearer credential every later request carries.
+    ///
+    /// Shared with every clone of this client, so a token the harness has just
+    /// exchanged for reaches the event feed as well as the next heartbeat.
+    pub fn set_credential(&self, token: Option<Secret>) {
+        if let Ok(mut held) = self.token.write() {
+            *held = token;
+        }
+    }
+
+    /// Whether the server refused this client's credential since the harness
+    /// last asked, clearing the flag as it answers.
+    pub(crate) fn take_unauthorized(&self) -> bool {
+        self.unauthorized.swap(false, Ordering::Relaxed)
+    }
+
+    /// Records a `401`, so the harness knows to exchange again.
+    fn note(&self, status: reqwest::StatusCode) {
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            self.unauthorized.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// The credential to present, if there is one.
+    fn credential(&self) -> Option<Secret> {
+        self.token.read().ok()?.clone()
+    }
+
     /// A request against a control-API path, carrying the service token when one
     /// is configured.
     pub(crate) fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
@@ -145,7 +196,7 @@ impl ControlClient {
             .unwrap_or_else(|_| path.to_string());
         let request = self.http.request(method, url);
 
-        match &self.token {
+        match self.credential() {
             Some(token) => request.bearer_auth(token.expose()),
             None => request,
         }
@@ -163,6 +214,8 @@ impl ControlClient {
         what: &str,
     ) -> Result<reqwest::Response, Error> {
         let response = self.raw(request, what).await?;
+
+        self.note(response.status());
 
         succeeded(response, what).await
     }
@@ -263,8 +316,17 @@ mod tests {
         )
         .unwrap();
 
-        assert!(without.token.is_none());
-        assert!(with.token.is_some());
+        assert!(without.credential().is_none());
+        assert!(with.credential().is_some());
+
+        // And it can be replaced without rebuilding the client, which is what
+        // an exchanged access token needs.
+        without.set_credential(Some(Secret::new("rsk_exchanged")));
+        assert_eq!(
+            without.credential().map(|token| token.expose().to_string()),
+            Some("rsk_exchanged".to_string()),
+        );
+        assert!(!without.take_unauthorized());
         assert!(
             !format!("{with:?}").contains("rsk_secret"),
             "a client is logged at start-up and must not carry its token into the log",

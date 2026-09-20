@@ -369,6 +369,114 @@ allow_access_token_retrieval = true
 # rate_limit = { attempts = 10, window = "1m", lockout = "15m" }
 
 
+# Accepting an orchestrator's workload identity as a credential.
+#
+# A task running under Nomad or Kubernetes already holds a short-lived, signed
+# statement of what it is. With an issuer and a rule registered here, that
+# statement enrols the sidecar (POST /Marti/api/tls/signClient/v2, in an
+# Authorization: Bearer header or as the password of a Basic one) and buys it an
+# access token for the control API (POST /oauth/token, grant_type =
+# "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion = <the JWT>) — so the
+# deployment holds NO rustak secret at all. Empty by default, which switches the
+# whole path off: a token nobody registered an issuer for is not a credential
+# here, whoever signed it.
+#
+# An assertion reaches exactly the account a rule names, and that account must
+# already exist as kind "service", must be enabled, and must satisfy `user_acl`
+# above. NOTE: a `user_acl` written for an identity provider ("claims.groups
+# contains …") will refuse every workload enrolment, because the claims it is
+# judged against are the orchestrator's. Widen it — for example
+# `source == "service" || claims.groups contains "tak-users"` — and the refusal
+# is logged with the expression that caused it so this is a five-second
+# diagnosis rather than an afternoon.
+#
+# Whether issuing a certificate takes back the ones the same account already
+# holds from a workload identity. On by default, and the reason is rescheduling:
+# a task that moves to another node enrols again, and nothing was spent to get
+# the certificate the old node's volume is still holding. Certificates from an
+# ordinary enrolment are never touched.
+#
+# [auth.workload]
+# revoke_previous = true
+#
+# Each issuer:
+#   name          what this installation calls it; named by every rule below and
+#                 recorded in the audit trail of every enrolment it authorises.
+#   issuer        the `iss` a token must carry, checked AFTER the signature.
+#                 Required in practice — a Nomad cluster with `oidc_issuer` set
+#                 and every Kubernetes API server publish one. Leave it out only
+#                 for a Nomad cluster with no `oidc_issuer`, where the key set is
+#                 then the only thing binding a token to this issuer.
+#   jwks_url      where the key set is published, fetched directly. Nomad:
+#                 /.well-known/jwks.json on the HTTP API (no ACL token needed).
+#                 Kubernetes: /openid/v1/jwks on the API server, readable
+#                 anonymously only with a binding to the
+#                 system:service-account-issuer-discovery ClusterRole.
+#   discovery_url an OpenID discovery document to read `jwks_uri` out of instead.
+#   jwks_file     a key set on disk, for an installation that pins the keys.
+#                 Exactly one of these three.
+#   audience      the `aud` a token must name. REQUIRED: a Nomad cluster mints
+#                 identities for Vault and Consul from the same keys, and this is
+#                 what stops one of those enrolling here.
+#   algorithms    the signature algorithms accepted, as an allow-list. Default:
+#                 ["RS256", "ES256", "EdDSA"]. Nomad 2.0 signs RS256 and EdDSA.
+#   clock_skew    how far `exp`, `nbf` and `iat` may be out. Default: "30s".
+#   jwks_refresh  how long a fetched key set is kept. Default: "1h" — a rotation
+#                 is normally noticed sooner, because a token naming a key we do
+#                 not hold refetches on the spot, at most once a minute.
+#   allow_insecure_jwks
+#                 whether `jwks_url` may be plain http:// to a host that is not a
+#                 loopback one. Off by default, refused at --check, and logged as
+#                 a warning at every start-up when it is on: whoever can answer
+#                 that request decides which signatures this server accepts.
+#                 `issuer` and `jwks_url` are deliberately independent, because a
+#                 cluster may publish its `iss` on one name and serve its keys on
+#                 another address entirely.
+#
+# [[auth.workload.issuers]]
+# name = "nomad"
+# issuer = "https://nomad.example.com"
+# jwks_url = "https://nomad.example.com:4646/.well-known/jwks.json"
+# audience = "rustak"
+# algorithms = ["RS256", "EdDSA"]
+# clock_skew = "30s"
+# jwks_refresh = "1h"
+# allow_insecure_jwks = false
+#
+# Each rule says which ACCOUNT a token from that issuer speaks for. All of them
+# are evaluated, not just the first that matches: a token two rules disagree
+# about is REFUSED rather than resolved by the order they happen to be written
+# in, and the obvious cases of that are caught at --check.
+#   issuer          the issuer name above.
+#   namespace_claim the claim carrying the workload's namespace —
+#                   "nomad_namespace", or "kubernetes.io.namespace" for the
+#                   nested Kubernetes object (dots address nested objects, and
+#                   `kubernetes.io` is read as one key because that is its name).
+#   namespace       the value it must have. Compared exactly, case sensitively.
+#                   Nomad ACLs cannot filter by job name, so the namespace is the
+#                   boundary you control with Nomad's own `submit-job`
+#                   capability. Sentinel policies are Enterprise.
+#   subject_claim   the claim carrying the workload's own name — "nomad_job_id",
+#                   or "kubernetes.io.serviceaccount.name".
+#   subject_prefix  the prefix it must start with. Required when `account` strips
+#                   it, and a rule that strips a prefix it does not set is
+#                   refused at --check.
+#   account         "strip-prefix" — the account is the subject with the prefix
+#                   removed, so "rustak-plugin-ais" becomes "ais" — or an account
+#                   name written out in full, for one job to one account.
+#   match           an optional filt-rs expression over the claims, which NARROWS
+#                   a rule and can never widen it: `claims.nomad_task == "ais"`.
+#                   It sees claims.<path>, plus issuer, namespace and subject.
+#
+# [[auth.workload.rules]]
+# issuer = "nomad"
+# namespace_claim = "nomad_namespace"
+# namespace = "default"
+# subject_claim = "nomad_job_id"
+# subject_prefix = "rustak-plugin-"
+# account = "strip-prefix"
+
+
 # The OAuth2 clients GET /oauth/authorize will issue authorization codes to,
 # and therefore what rustak publishes at /.well-known/openid-configuration.
 # Empty by default, which switches the authorization-code flow off entirely: an

@@ -41,6 +41,7 @@ pub mod ratelimit;
 pub mod resolve;
 pub mod setup;
 pub mod tokens;
+pub mod workload;
 
 pub use acl::{AclOutcome, AuthRequestFilter};
 pub use basic::{BasicCredential, basic_credential};

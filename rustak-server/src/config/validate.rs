@@ -53,7 +53,8 @@ pub(super) fn validate(config: &Config) -> Result<(), Error> {
     certificate_source(config)?;
     acme(config)?;
     credentials(config)?;
-    // Within one section rather than across two; see `stream.limits` above.
+    // Both within one section rather than across two; see `stream.limits`.
+    config.auth.workload.validate()?;
     config.auth.oauth.validate()?;
     pki(config)?;
     distinct_listeners(config)
@@ -324,7 +325,7 @@ fn distinct_listeners(config: &Config) -> Result<(), Error> {
 }
 
 /// Refuses a duration that names no window at all.
-fn positive(value: chrono::Duration, key: &str) -> Result<(), Error> {
+pub(in crate::config) fn positive(value: chrono::Duration, key: &str) -> Result<(), Error> {
     if value <= chrono::Duration::zero() {
         return Err(human_errors::user(
             format!("`{key}` must be longer than zero."),

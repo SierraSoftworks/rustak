@@ -80,6 +80,19 @@ pub enum AuthMethod {
     },
     /// The one-time first-run token, valid only until an administrator exists.
     SetupToken,
+    /// An orchestrator's workload identity — a Nomad or Kubernetes JWT
+    /// presented by a sidecar that holds no rustak secret of its own.
+    ///
+    /// It carries the *orchestrator's* two names rather than a credential row,
+    /// because there is no row: nothing was minted here, and what the audit
+    /// trail has to tie the request back to is the job that presented it.
+    Workload {
+        /// The `[auth.workload]` issuer that verified the assertion.
+        issuer: String,
+        /// The subject a binding rule matched — a Nomad job id, a Kubernetes
+        /// service account name.
+        subject: String,
+    },
 }
 
 impl AuthMethod {
@@ -91,6 +104,7 @@ impl AuthMethod {
             Self::Basic { .. } => "basic",
             Self::Passkey { .. } => "passkey",
             Self::SetupToken => "setup-token",
+            Self::Workload { .. } => "workload",
         }
     }
 }
@@ -265,6 +279,10 @@ mod tests {
                 credential_id: CredentialId::from(2),
             },
             AuthMethod::SetupToken,
+            AuthMethod::Workload {
+                issuer: "nomad".to_string(),
+                subject: "rustak-plugin-ais".to_string(),
+            },
         ];
 
         let labels: std::collections::HashSet<&str> =

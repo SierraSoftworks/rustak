@@ -457,6 +457,11 @@ that runs without an identity. See [`docs/plugins.md`](plugins.md) for the rest
 of the first-start story, including where the files land and what verifies the
 server while the sidecar has no truststore yet.
 
+Under Nomad or Kubernetes there is a third option, and it is the one to reach
+for: the sidecar presents the identity its orchestrator already gave it and
+needs no rustak secret at all, neither an enrolment token nor a service token.
+See [Workload identity](#workload-identity).
+
 #### With CloudTAK
 
 CloudTAK stores one `server` record with three independent base URLs rather
@@ -605,6 +610,236 @@ chown -R rustak:rustak /var/lib/rustak
 systemctl daemon-reload
 systemctl enable --now rustak
 ```
+
+## Workload identity
+
+A sidecar under Nomad or Kubernetes is already holding a short-lived, signed
+statement of what it is. rustak accepts that statement as a credential, which
+means **the deployment holds no rustak secret at all**: no enrolment token to
+mint and hand over on the first start, no service token to copy into a file.
+There is nothing to rotate and nothing to leak, because nothing was issued.
+
+It replaces both credentials:
+
+| Instead of | The assertion buys |
+|---|---|
+| a one-time enrolment token | the client certificate, from `POST /Marti/api/tls/signClient/v2` |
+| a service token | an access token for `/api/v1/services/*`, from `POST /oauth/token` with the RFC 7523 `jwt-bearer` grant |
+
+Deployments that have no orchestrator identity keep the enrolment token exactly
+as it was; nothing below is required, and the two can run side by side against
+one server.
+
+### Nomad
+
+Give the task an identity. The `aud` is what rustak checks, and `name` is what
+decides the variable and the file the sidecar reads:
+
+```hcl
+task "ais" {
+  driver = "docker"
+
+  identity {
+    name        = "rustak"
+    aud         = ["rustak"]
+    ttl         = "1h"
+    env         = true
+    file        = true
+    change_mode = "noop"
+  }
+
+  config {
+    image = "ghcr.io/sierrasoftworks/rustak-plugin-ais:latest"
+  }
+}
+```
+
+Nomad exposes that as `NOMAD_TOKEN_rustak` in the environment and
+`${NOMAD_SECRETS_DIR}/nomad_rustak.jwt` on disk, and its client renews it at
+about half the TTL. The sidecar finds either without being told
+(`workload_identity` in the plugin's `config.example.toml` names one explicitly
+if you would rather be specific) and **re-reads it every time it is used**,
+which is what makes the renewal invisible.
+
+On the rustak side, one issuer and one rule:
+
+```toml
+[auth.workload]
+revoke_previous = true
+
+[[auth.workload.issuers]]
+name = "nomad"
+# The `iss` a token carries — present only when the Nomad servers set
+# `oidc_issuer`. Leave it out for a cluster that does not.
+issuer = "https://nomad.example.com"
+# Where the keys come from, which is deliberately a *separate* setting: a
+# cluster may publish its `iss` on one name and serve its keys on another.
+jwks_url = "https://nomad.example.com:4646/.well-known/jwks.json"
+audience = "rustak"
+algorithms = ["RS256", "EdDSA"]
+
+# The reference rule: a job called `rustak-plugin-<x>` in this namespace is the
+# account `<x>`. `rustak-plugin-ais` enrols as `ais`.
+[[auth.workload.rules]]
+issuer = "nomad"
+namespace_claim = "nomad_namespace"
+namespace = "default"
+subject_claim = "nomad_job_id"
+subject_prefix = "rustak-plugin-"
+account = "strip-prefix"
+```
+
+The account must already exist, as kind `service` and enabled. The rule names
+one; it never creates one.
+
+**The namespace is the boundary, and it is the only one.** Nomad's ACLs cannot
+filter by job name — a token holder who may submit a job in `default` may call
+it anything, including `rustak-plugin-ais` — and job-name policy is Sentinel,
+which is Enterprise. So what a namespace admits is what the `submit-job`
+capability on that namespace admits, and an installation that wants a finer
+boundary gives its sidecars a namespace of their own rather than a cleverer
+prefix.
+
+For one job to one account, write the account out instead of stripping:
+
+```toml
+[[auth.workload.rules]]
+issuer = "nomad"
+namespace_claim = "nomad_namespace"
+namespace = "feeds"
+subject_claim = "nomad_job_id"
+subject_prefix = "ais-"
+account = "svc.ais"
+match = 'claims.nomad_task == "ais"'
+```
+
+`match` is a [filt-rs](https://crates.io/crates/filt-rs) expression over the
+token's claims. It **narrows** a rule and can never widen one: the namespace and
+the prefix are checked first, and this decides what is left.
+
+### Kubernetes
+
+Project a service-account token into the pod. The `path` is what the sidecar
+looks for by convention, and `expirationSeconds` must be at least 600:
+
+```yaml
+spec:
+  serviceAccountName: rustak-plugin-ais
+  containers:
+    - name: ais
+      image: ghcr.io/sierrasoftworks/rustak-plugin-ais:latest
+      volumeMounts:
+        - name: rustak-identity
+          mountPath: /var/run/secrets/tokens
+          readOnly: true
+  volumes:
+    - name: rustak-identity
+      projected:
+        sources:
+          - serviceAccountToken:
+              audience: rustak
+              expirationSeconds: 3600
+              path: rustak
+```
+
+The kubelet rewrites that file as it rotates the token, which is why the sidecar
+re-reads it rather than holding a copy.
+
+rustak has to be able to fetch the API server's keys, and it does so
+**anonymously** — it is not itself a pod and holds no service-account token. A
+default binding already gives the `system:service-account-issuer-discovery`
+ClusterRole to the `system:serviceaccounts` group, which does not cover an
+anonymous caller, so bind it to `system:unauthenticated` as well (or run rustak
+in the cluster and give its own service account the role):
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rustak-issuer-discovery
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:service-account-issuer-discovery
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: system:unauthenticated
+```
+
+Then the issuer and the rule. Everything Kubernetes says about a pod lives
+inside one claim whose own name contains a dot, and a dotted path reads it:
+
+```toml
+[[auth.workload.issuers]]
+name = "kubernetes"
+# The API server's `--service-account-issuer`, as it appears in `iss`.
+issuer = "https://kubernetes.default.svc"
+discovery_url = "https://kubernetes.default.svc/.well-known/openid-configuration"
+audience = "rustak"
+
+[[auth.workload.rules]]
+issuer = "kubernetes"
+namespace_claim = "kubernetes.io.namespace"
+namespace = "tak"
+subject_claim = "kubernetes.io.serviceaccount.name"
+subject_prefix = "rustak-plugin-"
+account = "strip-prefix"
+```
+
+### What it costs to get wrong, and what catches it
+
+`rustak --check` refuses an issuer with no audience, an issuer with no key set
+(or two), a rule naming an issuer nobody registered, a prefix rule with no
+prefix, and two rules that could hand one token to two accounts. It also refuses
+a `jwks_url` over plain `http://` to a host that is not a loopback one — set
+`allow_insecure_jwks = true` on that issuer to accept it deliberately, and every
+start-up logs a warning saying so, because whoever can answer that request
+decides which signatures this server accepts.
+
+`[auth] user_acl` gates this credential like every other. If yours is written
+for an identity provider (`claims.groups contains "tak-users"`), it will refuse
+every workload enrolment — the claims it is judged against are the
+orchestrator's, not a directory's. Widen it:
+
+```toml
+user_acl = 'source == "service" || claims.groups contains "tak-users"'
+```
+
+A refusal for that reason is logged with the expression that caused it, so it is
+a five-second diagnosis rather than an afternoon.
+
+### Rescheduling, and why a new certificate takes back the old one
+
+`revoke_previous` is on by default. When a workload identity buys a certificate,
+the certificates that account already held **from a workload identity** are
+revoked (`certificate.superseded` in the audit log), live stream sessions on
+them included.
+
+An orchestrator reschedules: an allocation moves to another node, a pod is
+replaced, and the old node's volume is still holding a perfectly valid
+certificate for the same account. Nothing else would ever revoke it, because
+nothing was spent to get it — there is no one-time token whose consumption marks
+the old identity as finished with. Certificates from an ordinary enrolment are
+never touched. Turn it off only for a deployment that genuinely runs several
+copies of one account at once.
+
+### Handing over an existing deployment
+
+Nothing to do. A sidecar that already has its three PEMs does not enrol, so
+adding `[auth.workload]` on the server and an `identity` block to the jobspec
+changes nothing until the volume is emptied — at which point the next start
+enrols with the assertion instead of the token. Drop `RUSTAK_ENROLLMENT_TOKEN`
+and `RUSTAK_SERVICE_TOKEN` from the job when you are satisfied it has.
+
+The start-up line says which of the four credentials was used, who signed it,
+and who rustak decided that made the process:
+
+```text
+INFO Identity: this sidecar is 'ais', from the workload identity from NOMAD_TOKEN_rustak
+```
+
+It is one line, at `info`, on every start. Grep for `Identity:`.
 
 ## Logging and telemetry
 

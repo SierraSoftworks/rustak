@@ -17,6 +17,7 @@
 //!     secret: &Secret::new(std::env::var("RUSTAK_ENROLLMENT_TOKEN").unwrap()),
 //!     client_uid: "SERVICE-weather",
 //!     truststore: None,
+//!     credential: Default::default(),
 //! })
 //! .await?;
 //!
@@ -82,6 +83,29 @@ pub struct Enrolment<'a> {
     /// with a private CA has to distribute it before a sidecar can enrol, exactly
     /// as it does for a device.
     pub truststore: Option<&'a Path>,
+
+    /// How `secret` is presented.
+    ///
+    /// An enrolment token or a client password goes in an HTTP Basic header,
+    /// because that is the only thing ATAK and CloudTAK can send. An
+    /// orchestrator's workload identity is a **bearer** credential and goes in
+    /// `Authorization: Bearer` — the server accepts it either way, and sending
+    /// a 900-byte JWT as a password is a shape nothing but a compatibility
+    /// client should be writing.
+    pub credential: Presentation,
+}
+
+/// Which header a credential travels in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Presentation {
+    /// `Authorization: Basic <base64(username:secret)>` — an enrolment token
+    /// or a client password.
+    #[default]
+    Basic,
+
+    /// `Authorization: Bearer <assertion>` — an orchestrator's workload
+    /// identity.
+    Bearer,
 }
 
 /// A freshly issued identity: the certificate, its key, and the CA chain.
@@ -204,15 +228,19 @@ pub async fn enroll(request: &Enrolment<'_>) -> Result<Enrolled, Error> {
     let base = http::base_url(request.marti, "marti")?;
     let (csr, key) = signing_request(request.username)?;
 
-    let response = client
+    let signing = client
         .post(http::endpoint(&base, "/Marti/api/tls/signClient/v2")?)
-        .basic_auth(request.username, Some(request.secret.expose()))
-        .query(&[("clientUid", request.client_uid), ("version", "3")])
-        .header("accept", "application/json")
-        .body(csr)
-        .send()
-        .await
-        .map_err(|err| http::transport(err, "ask the server to sign a certificate"))?;
+        .query(&[("clientUid", request.client_uid), ("version", "3")]);
+
+    let response = match request.credential {
+        Presentation::Basic => signing.basic_auth(request.username, Some(request.secret.expose())),
+        Presentation::Bearer => signing.bearer_auth(request.secret.expose()),
+    }
+    .header("accept", "application/json")
+    .body(csr)
+    .send()
+    .await
+    .map_err(|err| http::transport(err, "ask the server to sign a certificate"))?;
 
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
@@ -382,6 +410,7 @@ mod tests {
             secret: &Secret::new("one-time-token"),
             client_uid: "SERVICE-weather",
             truststore: None,
+            credential: Presentation::Basic,
         })
         .await
     }

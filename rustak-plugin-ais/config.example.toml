@@ -40,6 +40,28 @@ capabilities = ["cot.publish"]
 # and one that is still set when the certificate exists is ignored.
 # enrollment_token = "${{ env.RUSTAK_ENROLLMENT_TOKEN }}"
 
+# The identity this sidecar's orchestrator already gave it, which buys both the
+# certificate and the control-API token — so a deployment under Nomad or
+# Kubernetes holds **no rustak secret at all**: no enrolment token to mint and
+# hand over, no service token to copy into a file.
+#
+# Unset — the default — looks in three places, in this order:
+#
+#   1. the NOMAD_TOKEN_rustak environment variable   (Nomad, `env = true`)
+#   2. ${NOMAD_SECRETS_DIR}/nomad_rustak.jwt          (Nomad, `file = true`)
+#   3. /var/run/secrets/tokens/rustak                 (a Kubernetes projected
+#                                                      serviceAccountToken)
+#
+# Set it to name exactly one source outright — exactly one, and naming both is
+# refused. A source named here that holds nothing is a start-up failure rather
+# than a quiet fall-back to the enrolment token: naming one is deliberate.
+#
+# The token is re-read from its source every time it is used, because both
+# orchestrators rotate it. The server side is `[auth.workload]`; see
+# "Workload identity" in docs/deployment.md for the jobspec and the rules.
+# workload_identity = { env = "NOMAD_TOKEN_rustak" }
+# workload_identity = { file = "/var/run/secrets/tokens/rustak" }
+
 # The client certificate and private key this service opens the CoT stream with,
 # in PEM. Default: none; both are required as soon as [server] stream names an
 # "ssl://" endpoint, which every real deployment does. Files that are not there

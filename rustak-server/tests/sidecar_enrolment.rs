@@ -400,3 +400,310 @@ async fn a_token_the_server_refuses_stops_start_up_rather_than_running_half_iden
     harness.stop().await;
     api_handle.stop(true).await;
 }
+
+// ---------------------------------------------------------------------------
+// The same start-up sequence, with the identity the orchestrator already gave
+// it instead of a one-time token.
+// ---------------------------------------------------------------------------
+
+/// The environment variable the workload deployment below reads its assertion
+/// from.
+///
+/// Deliberately *not* `NOMAD_TOKEN_rustak`: the process environment is shared
+/// by every test in this binary, and a variable auto-detection looks for would
+/// make the enrolment-token tests above pick up a workload identity instead.
+const WORKLOAD_ENV: &str = "RUSTAK_TEST_WORKLOAD_TOKEN";
+
+/// `[auth.workload]` for a server that trusts `issuer` and maps its `sidecar`
+/// job to this suite's account.
+///
+/// A **fixed** account rather than a stripped prefix, which is the other half
+/// of the rule vocabulary and the shape an installation uses when its service
+/// accounts are named to its own convention (`svc.enrolling`) rather than after
+/// the job.
+fn workload_config(
+    issuer: &rustak_server::testing::TestWorkloadIssuer,
+) -> rustak_server::config::WorkloadConfig {
+    let mut workload: rustak_server::config::WorkloadConfig = toml::from_str(&format!(
+        r#"
+        [[rules]]
+        issuer = "nomad"
+        namespace_claim = "nomad_namespace"
+        namespace = "default"
+        subject_claim = "nomad_job_id"
+        subject_prefix = "rustak-plugin-"
+        account = "{ACCOUNT}"
+        "#
+    ))
+    .expect("the reference section parses");
+
+    workload.issuers = vec![issuer.config("nomad")];
+
+    workload
+}
+
+/// Creates the service account, and nothing else: a deployment under an
+/// orchestrator holds no rustak secret, so there is nothing to mint.
+async fn service_account(harness: &Harness) {
+    rustak_core::identity::password::use_testing_params();
+
+    harness
+        .context
+        .db()
+        .users()
+        .create(NewUser {
+            kind: UserKind::Service,
+            ..NewUser::person(Username::parse(ACCOUNT).expect("a usable username"))
+        })
+        .await
+        .expect("the service account");
+}
+
+/// Writes a deployment whose only credential is its workload identity.
+///
+/// `source` is the `workload_identity` inline table, so one helper serves both
+/// the file form and the environment form.
+fn workload_deployment(
+    directory: &Path,
+    stream: std::net::SocketAddr,
+    control: &str,
+    source: &str,
+) -> (PathBuf, PathBuf) {
+    let config = directory.join("plugin.toml");
+    let env = directory.join(".env");
+
+    std::fs::write(
+        &config,
+        format!(
+            r#"
+            [service]
+            name = "{SERVICE}"
+            account = "{ACCOUNT}"
+            capabilities = ["cot.publish"]
+            workload_identity = {source}
+
+            [server]
+            stream = "ssl://{stream}"
+            control = "{control}"
+
+            [sidecar]
+            tick = "1s"
+            "#
+        ),
+    )
+    .expect("the configuration file lands");
+    std::fs::write(&env, "").expect("the environment file lands");
+
+    (config, env)
+}
+
+#[actix_web::test]
+async fn a_sidecar_under_an_orchestrator_enrols_and_reports_with_no_rustak_secret_at_all() {
+    // The whole point, end to end. The configuration file holds no token of any
+    // kind: the certificate comes from the assertion Nomad wrote into a file,
+    // and so does the access token the control API is reached with.
+    let issuer = rustak_server::testing::TestWorkloadIssuer::start().await;
+    let workload = workload_config(&issuer);
+    let harness = Harness::start_with(move |config| {
+        config.auth.anon_group_default = true;
+        config.auth.workload = workload;
+    })
+    .await;
+    let _ = harness.context.install_live(Arc::new(harness.live.clone()));
+    let (base, api_handle) = api(&harness).await;
+    service_account(&harness).await;
+
+    let directory = tempfile::tempdir().expect("a directory for the deployment");
+    let token = directory.path().join("nomad_rustak.jwt");
+    std::fs::write(
+        &token,
+        issuer.issue(issuer.nomad_claims("default", "rustak-plugin-feed", "feed")),
+    )
+    .expect("the orchestrator writes the token");
+
+    let (config, env) = workload_deployment(
+        directory.path(),
+        harness.addr,
+        &base,
+        &format!("{{ file = \"{}\" }}", token.display()),
+    );
+    let args = |enroll: bool| Args {
+        config: config.clone(),
+        env: env.clone(),
+        check: false,
+        enroll,
+    };
+
+    // 1. The init container's one-off task: it writes the three files and
+    //    exits without starting the plugin.
+    let (seen_tx, mut seen) = mpsc::unbounded_channel();
+    serve(
+        Watcher {
+            seen: seen_tx.clone(),
+        },
+        &args(true),
+        harness.context.shutdown().child(),
+    )
+    .await
+    .expect("the sidecar enrols with its workload identity");
+
+    let certificate = directory.path().join(format!("{SERVICE}.pem"));
+    let key = directory.path().join(format!("{SERVICE}.key"));
+
+    assert!(certificate.exists() && key.exists());
+    assert!(
+        seen.try_recv().is_err(),
+        "--enroll does not start the sidecar",
+    );
+
+    let issued = std::fs::read_to_string(&certificate).expect("the certificate reads");
+    let (_, pem) = x509_parser::pem::parse_x509_pem(issued.as_bytes()).expect("a PEM certificate");
+    assert!(
+        pem.parse_x509()
+            .expect("an X.509 certificate")
+            .subject()
+            .to_string()
+            .contains(ACCOUNT),
+        "the fixed-account rule names the account, not the job",
+    );
+
+    #[cfg(unix)]
+    assert_eq!(mode(&key), 0o600, "the key is ours alone");
+
+    // 2. The orchestrator rotates the token between the two uses, as both of
+    //    them do. The next start reads the file again rather than a copy it
+    //    took at enrolment time.
+    std::fs::write(
+        &token,
+        issuer.issue(issuer.nomad_claims("default", "rustak-plugin-feed", "feed")),
+    )
+    .expect("the orchestrator rotates the token");
+
+    // 3. The running start: the stream comes up with the certificate, and the
+    //    control API is reached with a token bought from the *rotated*
+    //    assertion — there is no `[service] token` anywhere in this file.
+    let shutdown = harness.context.shutdown().child();
+    let running = shutdown.clone();
+    let start = args(false);
+    let sidecar =
+        tokio::spawn(async move { serve(Watcher { seen: seen_tx }, &start, running).await });
+
+    tokio::time::timeout(EXPECT, seen.recv())
+        .await
+        .expect("the sidecar connects to the stream with the certificate it enrolled for")
+        .expect("the harness reports the connection");
+
+    let db = harness.context.db();
+    let name = ServiceName::parse(SERVICE).expect("a usable service name");
+
+    until(
+        "the sidecar to register with an exchanged token",
+        async || db.services().get_by_name(&name).await.unwrap().is_some(),
+    )
+    .await;
+
+    shutdown.cancel();
+    sidecar
+        .await
+        .expect("the sidecar task joins")
+        .expect("the sidecar stops without an error");
+
+    harness.stop().await;
+    api_handle.stop(true).await;
+}
+
+#[actix_web::test]
+async fn a_workload_identity_can_come_from_the_environment_as_nomad_also_offers_it() {
+    // Nomad's `identity` block writes both forms; a deployment that took the
+    // environment one must work exactly as well as one that took the file.
+    let issuer = rustak_server::testing::TestWorkloadIssuer::start().await;
+    let workload = workload_config(&issuer);
+    let harness = Harness::start_with(move |config| {
+        config.auth.workload = workload;
+    })
+    .await;
+    let (base, api_handle) = api(&harness).await;
+    service_account(&harness).await;
+
+    let directory = tempfile::tempdir().expect("a directory for the deployment");
+    let (config, env) = workload_deployment(
+        directory.path(),
+        harness.addr,
+        &base,
+        &format!("{{ env = \"{WORKLOAD_ENV}\" }}"),
+    );
+
+    std::fs::write(
+        &env,
+        format!(
+            "{WORKLOAD_ENV}={}\n",
+            issuer.issue(issuer.nomad_claims("default", "rustak-plugin-feed", "feed")),
+        ),
+    )
+    .expect("the environment file lands");
+
+    // The start-up order `run_with` uses: the environment file first, so that
+    // the variable is there to be read.
+    rustak_core::config::load_env_file(&env).expect("the environment file loads");
+
+    let (seen_tx, _seen) = mpsc::unbounded_channel();
+    serve(
+        Watcher { seen: seen_tx },
+        &Args {
+            config,
+            env,
+            check: false,
+            enroll: true,
+        },
+        harness.context.shutdown().child(),
+    )
+    .await
+    .expect("the sidecar enrols with the assertion from its environment");
+
+    assert!(
+        directory.path().join(format!("{SERVICE}.pem")).exists(),
+        "the certificate landed",
+    );
+
+    harness.stop().await;
+    api_handle.stop(true).await;
+}
+
+#[actix_web::test]
+async fn check_names_the_workload_identity_a_first_start_would_use() {
+    // A deployment pipeline validating a candidate file gets "valid" and a line
+    // saying which of the credentials a start would reach for — without reading
+    // the token, and without touching the network.
+    let harness = Harness::start().await;
+    let directory = tempfile::tempdir().expect("a directory for the deployment");
+    let token = directory.path().join("nomad_rustak.jwt");
+    std::fs::write(&token, "header.payload.signature").expect("the token lands");
+
+    let (config, env) = workload_deployment(
+        directory.path(),
+        harness.addr,
+        "https://tak.example.com:8446",
+        &format!("{{ file = \"{}\" }}", token.display()),
+    );
+
+    let (seen_tx, _seen) = mpsc::unbounded_channel();
+    serve(
+        Watcher { seen: seen_tx },
+        &Args {
+            config,
+            env,
+            check: true,
+            enroll: false,
+        },
+        harness.context.shutdown().child(),
+    )
+    .await
+    .expect("a file that will enrol with a workload identity is a valid file");
+
+    assert!(
+        !directory.path().join(format!("{SERVICE}.pem")).exists(),
+        "--check writes nothing",
+    );
+
+    harness.stop().await;
+}

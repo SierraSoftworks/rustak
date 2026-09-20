@@ -46,6 +46,10 @@ rcgen = { workspace = true }
 # Reads back the certificate enrolment was issued, so that the start-up line can
 # say whose it is and when it expires.
 x509-parser = { workspace = true }
+# Reads the `iss` out of this sidecar's *own* workload identity, so the start-up
+# line can say who signed it. Nothing here verifies a signature: the server does
+# that, and a client that pretended to would be a client that could be lied to.
+base64 = { workspace = true }
 futures = { workspace = true }
 tokio-util = { workspace = true }
 bytes = { workspace = true }

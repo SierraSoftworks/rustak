@@ -25,6 +25,15 @@
 //! doing it — the server notices the missing heartbeats on its own, which is
 //! what `service.status` and the sweep are for.
 //!
+//! # The credential can change under it
+//!
+//! A sidecar under an orchestrator has no `[service] token`: it buys an access
+//! token with the workload identity its task already holds, and that token
+//! expires. So every call here puts a live one in place first
+//! ([`ControlClient::set_credential`]), and a `401` — which is what a rotated
+//! signing key or a revoked token looks like — costs one fresh exchange and one
+//! retry rather than an hour of silence.
+//!
 //! # The plugin's heartbeat is the heartbeat
 //!
 //! The server stores the last heartbeat it was given — state, message and
@@ -46,6 +55,7 @@ use tokio::sync::mpsc;
 use crate::control::{ControlClient, ServerEvent};
 
 use super::SidecarContext;
+use super::workload::AccessTokens;
 
 /// How deep the channel between the feed task and the harness loop is.
 ///
@@ -73,6 +83,11 @@ pub(crate) struct ControlLink {
 
     /// Server events, from the task that keeps the feed open.
     events: Option<mpsc::Receiver<ServerEvent>>,
+
+    /// The exchange that buys the control-API token, for a sidecar whose
+    /// credential is its orchestrator's identity rather than a secret from a
+    /// file.
+    workload: Option<Arc<AccessTokens>>,
 }
 
 impl ControlLink {
@@ -87,12 +102,14 @@ impl ControlLink {
                 control: None,
                 descriptor: context.descriptor().clone(),
                 events: None,
+                workload: None,
             };
         };
 
         let (sender, receiver) = mpsc::channel(FEED_QUEUE);
         tokio::spawn(feed(
             Arc::clone(&control),
+            context.workload.clone(),
             sender,
             context.shutdown().clone(),
         ));
@@ -101,7 +118,50 @@ impl ControlLink {
             control: Some(control),
             descriptor: context.descriptor().clone(),
             events: Some(receiver),
+            workload: context.workload.clone(),
         }
+    }
+
+    /// Puts a live access token in place before a call goes out.
+    ///
+    /// A no-op for a sidecar whose credential is a `[service] token`: there is
+    /// nothing to exchange and nothing to expire.
+    async fn ensure_credential(&self) {
+        let (Some(control), Some(tokens)) = (&self.control, &self.workload) else {
+            return;
+        };
+
+        match tokens.current().await {
+            Ok(token) => control.set_credential(Some(token)),
+            Err(err) => tracing::warn!(
+                error = %err,
+                "Could not exchange this sidecar's workload identity for an access token.",
+            ),
+        }
+    }
+
+    /// Whether the last call was refused as unauthenticated, and a fresh token
+    /// has been put in place to try once more with.
+    ///
+    /// The cached access token lasts an hour; waiting for it to expire after a
+    /// signing key rotated would be an hour of a sidecar that looks alive and
+    /// reports nothing.
+    async fn refreshed_after_refusal(&self) -> bool {
+        let (Some(control), Some(tokens)) = (&self.control, &self.workload) else {
+            return false;
+        };
+
+        if !control.take_unauthorized() {
+            return false;
+        }
+
+        tracing::info!(
+            "The server refused this sidecar's access token; exchanging its workload identity again.",
+        );
+        tokens.invalidate();
+        self.ensure_credential().await;
+
+        true
     }
 
     /// Registers this sidecar, logging a refusal rather than returning it.
@@ -113,7 +173,15 @@ impl ControlLink {
             return;
         };
 
-        match control.register(&self.descriptor).await {
+        self.ensure_credential().await;
+
+        let mut outcome = control.register(&self.descriptor).await;
+
+        if outcome.is_err() && self.refreshed_after_refusal().await {
+            outcome = control.register(&self.descriptor).await;
+        }
+
+        match outcome {
             Ok(summary) => tracing::info!(
                 service = %summary.descriptor.name,
                 "Registered with the server.",
@@ -160,7 +228,15 @@ impl ControlLink {
             return;
         };
 
-        match control.post_heartbeat(beat).await {
+        self.ensure_credential().await;
+
+        let mut outcome = control.post_heartbeat(beat).await;
+
+        if outcome.is_err() && self.refreshed_after_refusal().await {
+            outcome = control.post_heartbeat(beat).await;
+        }
+
+        match outcome {
             Ok(Some(status)) => tracing::debug!(state = status.state.as_str(), "Reported health."),
             Ok(None) => {
                 tracing::info!("The server has no registration for this sidecar; registering.");
@@ -197,11 +273,29 @@ impl std::fmt::Debug for ControlLink {
 /// Resumes from the last event it delivered, so a feed that dropped for a second
 /// costs nothing; one that dropped for longer than the server's ring costs a gap
 /// in the ids, which is what a plugin that keeps state watches for.
-async fn feed(control: Arc<ControlClient>, sender: mpsc::Sender<ServerEvent>, shutdown: Shutdown) {
+async fn feed(
+    control: Arc<ControlClient>,
+    workload: Option<Arc<AccessTokens>>,
+    sender: mpsc::Sender<ServerEvent>,
+    shutdown: Shutdown,
+) {
     let mut after: Option<u64> = None;
     let mut wait = RETRY_MIN;
 
     while !shutdown.is_cancelled() {
+        // The feed is held open for hours, so the token it opened with will
+        // have expired by the time it drops and is reopened. Exchanging here
+        // rather than once at start-up is what keeps a reopened feed working.
+        if let Some(tokens) = &workload {
+            match tokens.current().await {
+                Ok(token) => control.set_credential(Some(token)),
+                Err(err) => tracing::warn!(
+                    error = %err,
+                    "Could not exchange this sidecar's workload identity for the event feed.",
+                ),
+            }
+        }
+
         match control.events(after).await {
             Ok(mut stream) => {
                 tracing::info!("The server-event feed is open.");

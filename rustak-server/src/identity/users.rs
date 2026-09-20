@@ -378,6 +378,10 @@ pub async fn principal(
 fn scope_grants_admin(via: &AuthMethod) -> bool {
     match via {
         AuthMethod::Bearer { scope, .. } => crate::auth::tokens::grants_admin(scope),
+        // A workload assertion enrols a sidecar and exchanges itself for a
+        // service token; it is never an administrative grant, whatever the
+        // account behind it is flagged as.
+        AuthMethod::Workload { .. } => false,
         _ => true,
     }
 }
@@ -410,9 +414,12 @@ pub fn via_of(method: &AuthMethod) -> AuthVia {
     match method {
         AuthMethod::ClientCert { .. } => AuthVia::ClientCert,
         AuthMethod::Basic { .. } => AuthVia::Basic,
-        AuthMethod::Bearer { .. } | AuthMethod::Passkey { .. } | AuthMethod::SetupToken => {
-            AuthVia::Bearer
-        }
+        AuthMethod::Bearer { .. }
+        | AuthMethod::Passkey { .. }
+        | AuthMethod::SetupToken
+        // The assertion arrives in an `Authorization` header like any other
+        // token, and what the UI shows is what the request actually carried.
+        | AuthMethod::Workload { .. } => AuthVia::Bearer,
     }
 }
 

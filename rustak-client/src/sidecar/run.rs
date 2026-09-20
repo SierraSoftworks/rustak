@@ -476,6 +476,7 @@ mod tests {
                 truststore: None,
                 account: None,
                 pki_dir: None,
+                workload_identity: None,
             },
             server: ServerConfig {
                 stream,

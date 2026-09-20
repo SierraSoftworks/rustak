@@ -49,6 +49,13 @@ until somebody decides otherwise.
 | Client certificate + key | The CoT stream and the Marti API — a service's *primary* identity | `[service] certificate`, `[service] key` |
 | Service token | `/api/v1/services/*`, which a plugin may need before it has a certificate | `[service] token` |
 | One-time enrolment token | Getting the client certificate above, once, on the first start | `RUSTAK_ENROLLMENT_TOKEN`, or `[service] enrollment_token` |
+| Workload identity | **Both of the two above**, for a sidecar under Nomad or Kubernetes | `[service] workload_identity`, or nothing at all |
+
+The last one is not a rustak credential: it is the JWT the orchestrator already
+gave the task. A deployment that has one holds **no rustak secret at all** —
+nothing to mint, nothing to hand over, nothing to rotate. See
+[Three credentials](#three-credentials) below and "Workload identity" in
+[`docs/deployment.md`](deployment.md).
 
 Write the token as `"${{ env.RUSTAK_SERVICE_TOKEN }}"` and supply it from the
 environment: the configuration file is the part of a deployment that gets
@@ -265,8 +272,20 @@ for `kill -9`.
 ### The first start
 
 A sidecar whose `[service] certificate` and `key` are missing — unset, or naming
-files that are not there — and that has a one-time enrolment token enrols for
-itself before it opens the stream:
+files that are not there — enrols for itself before it opens the stream, with
+the first credential it can find:
+
+| | | |
+|---|---|---|
+| 1 | its orchestrator's **workload identity** | a Nomad or Kubernetes JWT the task already holds; nothing to configure, nothing to mint |
+| 2 | a one-time **enrolment token** | the credential a deployment with no orchestrator identity starts with |
+| 3 | nothing | a fatal start-up error naming both of the ways out |
+
+Workload identity first, deliberately: a deployment that has both is one being
+migrated, and the credential that does not have to be minted, handed over and
+spent is the one to prefer. For the rest of that story see
+[Under an orchestrator](#under-an-orchestrator-none-of-the-three). With an
+enrolment token:
 
 ```sh
 RUSTAK_ENROLLMENT_TOKEN=<one-time token> rustak-plugin-adsb --config plugin.toml
@@ -295,7 +314,7 @@ error naming the cause: a sidecar must not run half-identified.
 
 | It enrols as | Which is |
 |---|---|
-| `username` | `[service] account`, or the service's own name |
+| `username` | `[service] account`, or the service's own name — for a workload identity, whatever the server's binding rule says, and the certificate's common name is the answer |
 | `clientUid` | `SERVICE-<name>`, the same uid it connects with |
 | against | `[server] marti`, or `[server] control` — rustak's public listener serves `/Marti/api/tls/*` beside the control API |
 
@@ -489,7 +508,7 @@ panel says when it saves: the change is stored, and the service picks it up on
 its next tick rather than immediately. An administrator may read the
 configuration as well as write it; a service reads only its own.
 
-### Two credentials
+### Three credentials
 
 A service token authenticates `/api/v1/services/*` and `GET /api/v1/events`, and
 nothing else; the client certificate authenticates everything (and the control
@@ -536,6 +555,43 @@ request carrying the public half, and the key is written with mode `0600`. An
 enrolment token is one-time and is spent only once the certificate has been
 issued, so a failed enrolment leaves it usable — and a sidecar enrols when it
 has no certificate rather than on every start.
+
+#### Under an orchestrator, none of the three
+
+A sidecar running under Nomad or Kubernetes already holds a signed statement of
+what it is, and rustak accepts it in place of **both** minted credentials: it
+buys the certificate, and it buys the access token the control API is reached
+with. The deployment holds no rustak secret at all.
+
+Nothing has to be configured on the sidecar. With `[service] workload_identity`
+unset, three places are tried in order — `NOMAD_TOKEN_rustak`,
+`${NOMAD_SECRETS_DIR}/nomad_rustak.jwt`, `/var/run/secrets/tokens/rustak` — and
+a source that is found beats a leftover enrolment token, because the credential
+that does not have to be minted and spent is the one to prefer. Name one
+outright if you would rather be specific:
+
+```toml
+[service]
+workload_identity = { env = "NOMAD_TOKEN_rustak" }
+# or
+workload_identity = { file = "/var/run/secrets/tokens/rustak" }
+```
+
+The token is re-read from its source **every time it is used**, because both
+orchestrators rotate it; the access token bought with it is held until a minute
+before it expires and exchanged again when the server refuses it. The server has
+to be told which issuer to trust and which account a job maps to — that is
+`[auth.workload]`, and it is the whole of the setup; see "Workload identity" in
+[`docs/deployment.md`](deployment.md) for the jobspec, the pod spec and the
+rules.
+
+Whichever of the credentials a start used, one line at `info` says so:
+
+```text
+INFO Identity: this sidecar is 'ais', from the workload identity from NOMAD_TOKEN_rustak
+INFO Identity: this sidecar is 'svc.adsb', from an enrolment token
+INFO Identity: this sidecar is 'svc.adsb', from the certificate at '/data/adsb.pem'
+```
 
 ## Reacting to server events
 

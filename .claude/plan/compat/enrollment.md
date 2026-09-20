@@ -202,6 +202,35 @@ CA mode requires operators to distribute the CA out of band (07 §1.4, §1.6; `p
 - CloudTAK's connectivity smoke test before any of this (`GET /files/api/config`, see `files.md`)
   must succeed first, or the setup wizard never reaches the enrollment step (03 §1.2).
 
+## 8. The assertion credential (rustak's own, M9-06)
+
+**Not a TAK contract.** Nothing in ATAK, CloudTAK or TAK Server knows about this; it is an
+extension rustak accepts on the *same* routes, and every rule above still holds byte for byte for
+the clients that do not use it.
+
+A sidecar under Nomad or Kubernetes presents the workload identity its orchestrator already gave
+it — a short-lived JWT the orchestrator signed — instead of a one-time enrolment token:
+
+- **Where.** `GET /Marti/api/tls/config` and `POST /Marti/api/tls/signClient/v2` (and the two
+  `/Marti/api/tls/profile/**` routes), plus `POST /oauth/token` with
+  `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer` and `assertion=<jwt>` (RFC 7523 §2.1),
+  which answers the password grant's three fields and no `refresh_token`.
+- **How.** `Authorization: Bearer <jwt>` — and, on the enrolment routes only, HTTP Basic with the
+  JWT as the **password**, because a `commoncommo`-shaped client has a username box and a password
+  box and nothing else. The Basic *username* is ignored: the server's binding rules decide the
+  account, not the header. Accepting both is the same accommodation §3 already makes for CloudTAK.
+- **Who it is.** `[auth.workload]` maps (issuer, namespace claim, subject claim + prefix) to exactly
+  one existing account of kind `service`. A token two rules disagree about is refused rather than
+  resolved.
+- **What changes on the wire.** Nothing. The request bodies, the `Accept` fork, the bare-base64
+  response and the `200`-not-`201` rule are identical; only the credential in the header differs.
+- **What changes in the register.** The certificate's `issued_via` is `workload_identity` rather
+  than `enroll_v2_json`/`enroll_v2_xml`, which is what `[auth.workload] revoke_previous` matches on
+  when a rescheduled task's new certificate supersedes the one the old node still holds.
+- **What is *not* spent.** There is no one-time token, so there is nothing to claim and nothing to
+  release: the `claim`/`release` dance of §3 does not apply, and a second enrolment by the same
+  workload is expected rather than refused.
+
 ## Gotchas
 
 - `signClient/v2` on `201` is a **failure signal to ATAK** — always `200` on success (§3).
@@ -218,6 +247,9 @@ CA mode requires operators to distribute the CA out of band (07 §1.4, §1.6; `p
 - Never require the CSR to be PEM-armoured; strip banner lines only if present (§3).
 - OpenTAKServer's docs claim `PUT` for this endpoint — real ATAK/CloudTAK always use `POST`; do not
   special-case PUT (04, "known-wrong in OTS").
+- A workload assertion that this server will not accept must leave the request **exactly as it found
+  it**, so the enrolment token an installation has always used still works on the same route; only
+  an assertion that verified and was then refused for a reason of ours ends the request (§8).
 
 ## Verified in
 

@@ -4,8 +4,21 @@
 //! certificate rather than on every start". This is the part of the harness
 //! that makes that true: before the CoT stream is opened, a sidecar whose
 //! `[service] certificate` and `key` are missing — unset, or naming files that
-//! are not there — spends a one-time enrolment token on
-//! [`crate::enroll`], writes the three PEMs, and carries on start-up with them.
+//! are not there — presents a credential to [`crate::enroll`], writes the three
+//! PEMs, and carries on start-up with them.
+//!
+//! # Which credential, in what order
+//!
+//! | | | |
+//! |---|---|---|
+//! | 1 | the PEMs in `pki_dir` | already enrolled; nothing is spent and no credential is read |
+//! | 2 | an orchestrator's **workload identity** | a Nomad or Kubernetes JWT the task already holds — a deployment with one needs no rustak secret at all |
+//! | 3 | a one-time **enrolment token** | the M9-05 path, for a deployment with no orchestrator identity |
+//! | 4 | nothing | the error M9-05 already had, now naming both of the two ways out |
+//!
+//! Workload identity beats the enrolment token deliberately: a deployment that
+//! has both is one being migrated, and the credential that does not have to be
+//! minted, handed over and spent is the one to prefer.
 //!
 //! # The private key is generated here and stays here
 //!
@@ -36,11 +49,63 @@ use std::path::{Path, PathBuf};
 use rustak_core::prelude::*;
 
 use super::config::{ServerConfig, ServiceConfig, SidecarConfig};
-use crate::enroll::{Enrolment, Paths, enroll};
+use super::workload::{self, Source};
+use crate::enroll::{Enrolment, Paths, Presentation, enroll};
 
-/// Advice for an enrolment that was asked for without a token to pay for it.
+/// Which credential a start is going to enrol with.
+enum Credential {
+    /// The identity this sidecar's orchestrator already gave it.
+    Workload { source: Source, assertion: Secret },
+    /// A one-time enrolment token, from the file or the environment.
+    Token(Secret),
+}
+
+impl Credential {
+    /// The words the start-up line and `--check` both use for it.
+    fn describe(&self) -> String {
+        match self {
+            Self::Workload { source, .. } => format!("the workload identity from {source}"),
+            Self::Token(_) => "an enrolment token".to_string(),
+        }
+    }
+
+    /// The secret itself, and the header it travels in.
+    fn present(&self) -> (&Secret, Presentation) {
+        match self {
+            Self::Workload { assertion, .. } => (assertion, Presentation::Bearer),
+            Self::Token(token) => (token, Presentation::Basic),
+        }
+    }
+
+    /// Who signed it, when that is something this end can read.
+    fn issuer(&self) -> Option<String> {
+        match self {
+            Self::Workload { assertion, .. } => workload::unverified_issuer(assertion),
+            Self::Token(_) => None,
+        }
+    }
+}
+
+/// The credential this start will enrol with, in the documented order.
+///
+/// Reads the workload identity from its source — which is the point: it is
+/// re-read on every use, because both orchestrators rotate it.
+fn credential(service: &ServiceConfig) -> Result<Option<Credential>, Error> {
+    if let Some(source) = service.workload_source()? {
+        // A source that was named in the file and holds nothing is a refusal
+        // rather than a fall-through: naming one is a deliberate act.
+        let assertion = source.read()?;
+
+        return Ok(Some(Credential::Workload { source, assertion }));
+    }
+
+    Ok(service.enrollment_token()?.map(Credential::Token))
+}
+
+/// Advice for an enrolment that was asked for with nothing to pay for it.
 const ADVICE_NO_TOKEN: &[&str] = &[
-    "Mint a one-time enrolment token for this service's account and pass it as RUSTAK_ENROLLMENT_TOKEN.",
+    "Under Nomad or Kubernetes, give the task a workload identity — see \"Workload identity\" in docs/deployment.md — and this needs no secret at all.",
+    "Otherwise mint a one-time enrolment token for this service's account and pass it as RUSTAK_ENROLLMENT_TOKEN.",
     "Or write it into the file as [service] enrollment_token = \"${{ env.RUSTAK_ENROLLMENT_TOKEN }}\".",
     "A token is spent by the enrolment it pays for, so this is needed once rather than on every start.",
 ];
@@ -67,15 +132,19 @@ const ADVICE_UNREADABLE: &[&str] = &[
 /// after saying where they will be written — and what is left is validated as
 /// usual.
 ///
-/// Nothing is written and no request is made. The one thing that *is* checked
-/// is that an `${{ env.… }}` enrolment token resolves, because an expression
-/// whose variable was never set is exactly the kind of thing `--check` exists
-/// to catch before a deployment goes out.
+/// Nothing is written and **no request is made**, including none to read a
+/// workload identity's issuer: which source a start would use is answered from
+/// the environment and the filesystem alone. What *is* checked is that an
+/// `${{ env.… }}` enrolment token resolves and that `workload_identity` names
+/// one source rather than two — an expression whose variable was never set is
+/// exactly the kind of thing `--check` exists to catch before a deployment
+/// goes out.
 ///
 /// # Errors
 ///
 /// A [`human_errors::Kind::User`] error when the enrolment token still holds an
-/// unresolved `${{ env.NAME }}` expression.
+/// unresolved `${{ env.NAME }}` expression, or when `[service]
+/// workload_identity` names both an `env` and a `file`.
 pub(crate) fn check<S>(config: &mut SidecarConfig<S>, config_path: &Path) -> Result<(), Error> {
     let paths = resolve(&config.service, config_path);
 
@@ -83,22 +152,36 @@ pub(crate) fn check<S>(config: &mut SidecarConfig<S>, config_path: &Path) -> Res
         return Ok(());
     }
 
+    // The source is worked out without reading the token: `--check` says which
+    // credential a start would use, and reading one would be work a validation
+    // has no business doing.
+    let source = config.service.workload_source()?;
+
     // An unresolved expression is refused by name here, exactly as a start
     // would refuse it — which is the point of validating a candidate file with
-    // the binary that will read it.
-    let token = config.service.enrollment_token()?;
+    // the binary that will read it. Skipped when a workload identity is going
+    // to be used instead, because then the token is a leftover.
+    let token = match &source {
+        Some(_) => None,
+        None => config.service.enrollment_token()?,
+    };
 
-    if token.is_none() && config.service.pki_dir.is_none() {
+    if source.is_none() && token.is_none() && config.service.pki_dir.is_none() {
         // Nothing says this sidecar means to enrol, so its missing certificate
         // is a missing certificate and start-up says so in its own words.
         return Ok(());
     }
 
+    let with = match &source {
+        Some(source) => format!(" with the workload identity from {source}"),
+        None => String::new(),
+    };
+
     tracing::info!(
         certificate = %paths.certificate.display(),
         key = %paths.key.display(),
         truststore = %paths.truststore.display(),
-        "The configuration is valid; this identity will be enrolled into '{}' on the first start.",
+        "The configuration is valid; this identity will be enrolled into '{}'{with} on the first start.",
         directory(&paths.certificate).display(),
     );
 
@@ -119,7 +202,7 @@ pub(crate) fn check<S>(config: &mut SidecarConfig<S>, config_path: &Path) -> Res
 /// The configuration is updated in place with the paths that were used, so that
 /// the identity the rest of start-up builds is the enrolled one. Answers where
 /// the three files are, or [`None`] for a sidecar that has no certificate, was
-/// given no token, and did not ask for one.
+/// given no credential, and did not ask for one.
 ///
 /// `required` is `--enroll`: it turns "there is nothing to do here" into a
 /// failure, because a one-off enrolment task that quietly enrolled nothing is
@@ -127,9 +210,9 @@ pub(crate) fn check<S>(config: &mut SidecarConfig<S>, config_path: &Path) -> Res
 ///
 /// # Errors
 ///
-/// A [`human_errors::Kind::User`] error when the token is unresolved or
-/// refused, when there is no endpoint to enrol against, when the server cannot
-/// be reached, or when the files cannot be written.
+/// A [`human_errors::Kind::User`] error when the credential is unresolved,
+/// missing or refused, when there is no endpoint to enrol against, when the
+/// server cannot be reached, or when the files cannot be written.
 pub(crate) async fn ensure<S>(
     config: &mut SidecarConfig<S>,
     config_path: &Path,
@@ -145,16 +228,17 @@ pub(crate) async fn ensure<S>(
             );
         }
 
+        already_enrolled(&paths);
         attach(config, &paths);
 
         return Ok(Some(paths));
     }
 
-    let Some(token) = config.service.enrollment_token()? else {
+    let Some(credential) = credential(&config.service)? else {
         if required {
             return Err(human_errors::user(
                 format!(
-                    "This sidecar has no certificate at '{}' and no enrolment token to get one with.",
+                    "This sidecar has no certificate at '{}' and nothing to get one with.",
                     paths.certificate.display()
                 ),
                 ADVICE_NO_TOKEN,
@@ -182,19 +266,23 @@ pub(crate) async fn ensure<S>(
         .as_deref()
         .filter(|path| path.exists());
 
+    let (secret, presentation) = credential.present();
+
     tracing::info!(
         account = %account,
         uid = %uid,
         %server,
+        credential = %credential.describe(),
         "This sidecar has no certificate; enrolling for one.",
     );
 
     let enrolled = enroll(&Enrolment {
         marti: &server,
         username: &account,
-        secret: &token,
+        secret,
         client_uid: uid.as_str(),
         truststore: verify_with,
+        credential: presentation,
     })
     .await
     .map_err(|err| {
@@ -221,9 +309,45 @@ pub(crate) async fn ensure<S>(
     }
 
     describe(&enrolled.certificate_pem, &paths);
+    workload::report_identity(
+        &credential.describe(),
+        credential.issuer().as_deref(),
+        &common_name(&enrolled.certificate_pem).unwrap_or(account),
+    );
     attach(config, &paths);
 
     Ok(Some(paths))
+}
+
+/// The identity line for a start that had its certificate already.
+///
+/// The same line as every other start, because "which of the four credentials
+/// did this process use" is the question, and "it already had one" is one of
+/// the four answers.
+fn already_enrolled(paths: &Paths) {
+    let pem = std::fs::read_to_string(&paths.certificate).unwrap_or_default();
+
+    workload::report_identity(
+        &format!("the certificate at '{}'", paths.certificate.display()),
+        None,
+        &common_name(&pem).unwrap_or_else(|| "an unreadable certificate".to_string()),
+    );
+}
+
+/// The common name of a PEM certificate, which is the account rustak issued it
+/// to.
+fn common_name(certificate_pem: &str) -> Option<String> {
+    let (_, pem) = x509_parser::pem::parse_x509_pem(certificate_pem.as_bytes()).ok()?;
+    let certificate = pem.parse_x509().ok()?;
+    let name = certificate
+        .subject()
+        .iter_common_name()
+        .next()?
+        .as_str()
+        .ok()?
+        .to_string();
+
+    Some(name)
 }
 
 /// Where the three files belong, given what the file says and where it is.
@@ -691,6 +815,200 @@ mod tests {
         // The cause, and the advice that goes with it, survive the wrapping.
         assert!(err.to_string().contains("one-time"), "{err}");
         assert!(!directory.path().join("example.key").exists());
+    }
+
+    /// A server that signs anything, answering the shape `signClient/v2` does.
+    async fn signing_server() -> wiremock::MockServer {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/Marti/api/tls/signClient/v2"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!({ "signedCert": "TEVBRg==", "ca0": "Uk9PVA==" }),
+                ),
+            )
+            .mount(&server)
+            .await;
+
+        server
+    }
+
+    /// A token file, and the configuration that points at it.
+    fn workload_deployment(
+        directory: &Path,
+        server: &str,
+        extra: &str,
+    ) -> (PathBuf, SidecarConfig<NoSettings>) {
+        let token = directory.join("nomad_rustak.jwt");
+        std::fs::write(&token, "header.payload.signature").unwrap();
+
+        let config = config(&format!(
+            "[service]\nname = \"example\"\naccount = \"svc.example\"\nworkload_identity = {{ file = \"{}\" }}\n{extra}\n\n[server]\ncontrol = \"{server}\"\n",
+            token.display(),
+        ));
+
+        (token, config)
+    }
+
+    #[tokio::test]
+    async fn a_workload_identity_enrols_as_a_bearer_credential_rather_than_a_password() {
+        // A 900-byte JWT in a password field is a shape only a compatibility
+        // client should be writing; the sidecar sends the header the credential
+        // actually is.
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/Marti/api/tls/signClient/v2"))
+            .and(wiremock::matchers::header(
+                "authorization",
+                "Bearer header.payload.signature",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!({ "signedCert": "TEVBRg==", "ca0": "Uk9PVA==" }),
+                ),
+            )
+            .mount(&server)
+            .await;
+
+        let directory = tempfile::tempdir().unwrap();
+        let (_, mut config) = workload_deployment(directory.path(), &server.uri(), "");
+
+        let paths = ensure(&mut config, &directory.path().join("plugin.toml"), false)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(paths.certificate.exists() && paths.key.exists());
+        // The `header` matcher above is what asserts it; a request that reached
+        // the mock at all is a request that carried a Bearer assertion.
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_workload_identity_is_preferred_over_a_leftover_enrolment_token() {
+        // A deployment being migrated has both. The credential that does not
+        // have to be minted, handed over and spent is the one to use.
+        let server = signing_server().await;
+        let directory = tempfile::tempdir().unwrap();
+        let (_, mut config) = workload_deployment(
+            directory.path(),
+            &server.uri(),
+            "enrollment_token = \"a-token-nobody-should-spend\"",
+        );
+
+        ensure(&mut config, &directory.path().join("plugin.toml"), false)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let sent = server.received_requests().await.unwrap();
+        let header = sent[0]
+            .headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+
+        assert!(
+            header.starts_with("Bearer "),
+            "the workload identity is what was spent: {header}",
+        );
+        assert!(
+            !header.starts_with("Basic "),
+            "the enrolment token was left alone: {header}",
+        );
+    }
+
+    #[tokio::test]
+    async fn the_token_is_re_read_from_its_file_on_every_start() {
+        // Both orchestrators rotate it. A sidecar that cached the one it saw at
+        // start-up would enrol with a token that expired an hour ago.
+        let server = signing_server().await;
+        let directory = tempfile::tempdir().unwrap();
+        let (token, mut config) = workload_deployment(directory.path(), &server.uri(), "");
+
+        std::fs::write(&token, "rotated.payload.signature").unwrap();
+
+        ensure(&mut config, &directory.path().join("plugin.toml"), false)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let sent = server.received_requests().await.unwrap();
+
+        assert_eq!(
+            sent[0]
+                .headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer rotated.payload.signature"),
+        );
+    }
+
+    #[tokio::test]
+    async fn a_workload_identity_that_is_not_there_is_refused_rather_than_fallen_back_from() {
+        // Naming a source is a deliberate act. Quietly falling back to an
+        // enrolment token would hide the one thing the operator got wrong.
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = config(&format!(
+            "[service]\nname = \"example\"\nworkload_identity = {{ file = \"{}\" }}\nenrollment_token = \"a-token\"\n",
+            directory.path().join("never-mounted.jwt").display(),
+        ));
+
+        let err = ensure(&mut config, &directory.path().join("plugin.toml"), false)
+            .await
+            .unwrap_err();
+
+        assert!(err.is(human_errors::Kind::User), "{err}");
+        assert!(err.to_string().contains("never-mounted.jwt"), "{err}");
+    }
+
+    #[test]
+    fn check_says_which_credential_a_first_start_would_use() {
+        // The line a deployment pipeline reads. It must name the source without
+        // reading the token and without touching the network.
+        let directory = tempfile::tempdir().unwrap();
+        let token = directory.path().join("nomad_rustak.jwt");
+        std::fs::write(&token, "a.b.c").unwrap();
+
+        let mut config = config(&format!(
+            "[service]\nname = \"example\"\npki_dir = \"/data\"\nworkload_identity = {{ file = \"{}\" }}\n",
+            token.display(),
+        ));
+
+        check(&mut config, &directory.path().join("plugin.toml"))
+            .expect("a file that will enrol with a workload identity is a valid file");
+
+        assert!(config.service.certificate.is_none());
+        assert!(config.service.key.is_none());
+    }
+
+    #[test]
+    fn check_refuses_a_workload_identity_that_names_two_sources() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = config(
+            "[service]\nname = \"example\"\nworkload_identity = { env = \"NOMAD_TOKEN_rustak\", file = \"/var/run/secrets/tokens/rustak\" }\n",
+        );
+
+        let err = check(&mut config, &directory.path().join("plugin.toml")).unwrap_err();
+
+        assert!(err.to_string().contains("exactly one"), "{err}");
+    }
+
+    #[test]
+    fn the_common_name_is_read_out_of_the_certificate_that_was_issued() {
+        let mut params = rcgen::CertificateParams::default();
+        params.distinguished_name = rcgen::DistinguishedName::new();
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "svc.example");
+        let key = rcgen::KeyPair::generate().unwrap();
+        let certificate = params.self_signed(&key).unwrap();
+
+        assert_eq!(
+            common_name(&certificate.pem()).as_deref(),
+            Some("svc.example"),
+        );
+        assert_eq!(common_name("not a certificate"), None);
     }
 
     #[test]

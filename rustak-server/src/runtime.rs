@@ -183,6 +183,11 @@ async fn listen(context: &AppContext) -> Result<(), Error> {
         false => None,
     };
 
+    // At every start-up, not only the one where it was turned on: an issuer
+    // whose key set is fetched over plain HTTP is an issuer whose signatures
+    // anybody on that network path can choose.
+    crate::auth::workload::warn_about_insecure_issuers(&config.auth.workload);
+
     info!(
         version = env!("CARGO_PKG_VERSION"),
         name = %config.server.name,

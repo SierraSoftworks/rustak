@@ -55,12 +55,12 @@ pub mod tls;
 pub use acme::{CertState, http01_routes};
 pub use ca::{CaMaterial, ca_certificate_path, load_or_create_root_ca};
 pub use csr::{CsrEncoding, CsrKey, CsrPolicy, ParsedCsr, parse_csr};
-pub use facade::{Enrollment, IssuedVia, Pki};
+pub use facade::{Enrollment, IssuedVia, Pki, WORKLOAD_IDENTITY};
 pub use issue::{IssueRequest, IssuedCert, issue_client_cert};
 pub use keys::{KeyType, generate_key, key_pair_from_pkcs8, signature_algorithm};
 pub use p12::{P12Options, client_keystore, legacy_signclient_v1, truststore};
 pub use pem::{bare_base64_64col, parse_pem_chain, pem_certificate, sha256_fingerprint};
-pub use revoke::{CertRejection, RevocationCache, RevokeReason, revoke};
+pub use revoke::{CertRejection, RevocationCache, RevokeReason, revoke, supersede_workload};
 pub use serial::{SERIAL_BYTES, random_serial, serial_hex};
 pub use server_cert::{ServerCertificate, load_or_issue as load_or_issue_server_cert};
 pub use tls::{

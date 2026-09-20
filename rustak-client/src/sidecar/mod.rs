@@ -63,6 +63,7 @@ mod control_link;
 pub(crate) mod enrolment;
 mod link;
 pub mod run;
+pub mod workload;
 
 use std::sync::Arc;
 
@@ -80,6 +81,9 @@ pub use config::{
     ENROLLMENT_TOKEN_ENV, HarnessConfig, NoSettings, ServerConfig, ServiceConfig, SidecarConfig,
 };
 pub use run::{Args, drive, run, run_with, serve};
+pub use workload::{
+    AccessTokens, KUBERNETES_TOKEN_PATH, NOMAD_TOKEN_ENV, Source, WorkloadIdentity,
+};
 
 pub(crate) use control_link::ControlLink;
 pub(crate) use link::Link;
@@ -157,6 +161,9 @@ pub struct SidecarContext<S = NoSettings> {
     config: Arc<SidecarConfig<S>>,
     marti: Option<Arc<MartiClient>>,
     control: Option<Arc<ControlClient>>,
+    /// The exchange that buys this sidecar's control-API token from its
+    /// orchestrator's identity, for a deployment that has no `[service] token`.
+    pub(crate) workload: Option<Arc<AccessTokens>>,
     shutdown: Shutdown,
     span: Span,
 }
@@ -214,15 +221,44 @@ impl<S> SidecarContext<S> {
             _ => None,
         };
 
+        // `[service] token` first: an installation that configured one meant
+        // it, and a deployment being migrated to workload identity should not
+        // have the two racing. Otherwise the orchestrator's own identity is
+        // what reaches the control API, and the deployment holds no rustak
+        // secret at all.
+        let workload = match (
+            &config.service.token,
+            config.service.workload_source()?,
+            &config.server.control,
+            &http,
+        ) {
+            (None, Some(source), Some(base), Some(http)) => Some(Arc::new(AccessTokens::new(
+                source,
+                base.clone(),
+                http.clone(),
+            ))),
+            _ => None,
+        };
+
         Ok(Self {
             identity,
             descriptor,
             config: Arc::new(config),
             marti,
             control,
+            workload,
             shutdown,
             span,
         })
+    }
+
+    /// The exchange that buys this sidecar's control-API token, when it has
+    /// one.
+    ///
+    /// [`None`] for a sidecar with a `[service] token`, or with no workload
+    /// identity, or with no `[server] control` to spend it at.
+    pub fn workload_tokens(&self) -> Option<&Arc<AccessTokens>> {
+        self.workload.as_ref()
     }
 
     /// The Marti API client, when `[server] marti` names one.
@@ -292,6 +328,7 @@ impl<S> Clone for SidecarContext<S> {
             config: self.config.clone(),
             marti: self.marti.clone(),
             control: self.control.clone(),
+            workload: self.workload.clone(),
             shutdown: self.shutdown.clone(),
             span: self.span.clone(),
         }

@@ -256,6 +256,8 @@ async fn a_sidecar_enrols_connects_registers_reports_and_hears_what_the_server_s
         secret: &Secret::new(enrolment_token),
         client_uid: &format!("SERVICE-{SERVICE}"),
         truststore: None,
+        // A one-time token is a password, not a bearer credential.
+        credential: rustak_client::enroll::Presentation::Basic,
     })
     .await
     .expect("the sidecar enrols");

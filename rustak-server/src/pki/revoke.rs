@@ -388,6 +388,86 @@ pub async fn revoke_for_credential(
     Ok(revoked)
 }
 
+/// Takes back every earlier certificate an account bought with a workload
+/// identity, keeping the one that has just been issued.
+///
+/// # Why this exists
+///
+/// An orchestrator reschedules. A Nomad allocation that moves to another node,
+/// or a Kubernetes pod that is replaced, enrols again on the new node — and the
+/// old node's volume is still holding a certificate for the same account, valid
+/// for as long as `[pki] client_cert_validity` says. Nothing revokes it,
+/// because nothing was spent to get it: the whole point of a workload identity
+/// is that there is no one-time token whose consumption marks the old identity
+/// as done with.
+///
+/// So the new certificate supersedes the old ones. `[auth.workload]
+/// revoke_previous = false` turns this off for an installation that genuinely
+/// runs several copies of one account at once and has thought about it.
+///
+/// Only certificates whose `issued_via` is
+/// [`IssuedVia::WorkloadIdentity`](super::IssuedVia::WorkloadIdentity) are
+/// touched: an account that also holds a certificate from an ordinary
+/// enrolment keeps it.
+///
+/// # Errors
+///
+/// A [`human_errors::Kind::System`] error when the read or a revocation fails.
+#[instrument("pki.revoke.superseded", skip_all, fields(user = %user_id), err(Display))]
+pub async fn supersede_workload(
+    db: &Database,
+    cache: &RevocationCache,
+    user_id: UserId,
+    keep: &str,
+    actor: Option<&Username>,
+) -> Result<Vec<String>, Error> {
+    let superseded: Vec<String> = db
+        .certificates()
+        .list_for_user(user_id)
+        .await?
+        .into_iter()
+        .filter(|row| {
+            row.revoked_at.is_none()
+                && row.fingerprint != keep
+                && row.issued_via.as_deref() == Some(super::facade::WORKLOAD_IDENTITY)
+        })
+        .map(|row| row.fingerprint)
+        .collect();
+
+    if superseded.is_empty() {
+        return Ok(superseded);
+    }
+
+    for fingerprint in &superseded {
+        // Through `revoke` rather than a bulk update, because the hooks are
+        // what drop the CoT stream the old allocation may still be holding —
+        // a handshake check alone would leave it connected for days.
+        revoke(db, cache, fingerprint, RevokeReason::Superseded, actor).await?;
+    }
+
+    let mut entry = AuditEntry::new(
+        AuditCategory::Pki,
+        "certificate.superseded",
+        AuditOutcome::Success,
+    )
+    .message(format!(
+        "{} earlier workload certificate(s) were superseded by a new enrolment.",
+        superseded.len(),
+    ))
+    .detail(serde_json::json!({
+        "fingerprints": superseded,
+        "replaced_by": keep,
+    }));
+
+    if let Some(actor) = actor {
+        entry = entry.subject(actor).actor(actor);
+    }
+
+    db.record(entry).await?;
+
+    Ok(superseded)
+}
+
 /// The leading bytes of a fingerprint, which is what a person reads.
 fn short(fingerprint: &str) -> &str {
     &fingerprint[..fingerprint.len().min(16)]

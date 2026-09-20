@@ -85,6 +85,8 @@ impl ControlClient {
         let what = format!("report the health of '{}'", self.name());
         let response = self.raw(request, &what).await?;
 
+        self.note(response.status());
+
         // The one status this call reads as an answer rather than a failure: an
         // administrator removed the registration while the sidecar was running.
         if response.status() == reqwest::StatusCode::NOT_FOUND {

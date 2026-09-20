@@ -22,11 +22,16 @@
 //! which is why [`crate::pki::Pki::enroll`] writes the row itself rather than
 //! leaving it to a caller who might not.
 
+use std::sync::Arc;
+
 use actix_web::HttpRequest;
+use rustak_api::{AuditCategory, AuditOutcome};
 use rustak_core::identity::AuthMethod;
 
 use crate::auth::resolve::Resolved;
+use crate::auth::workload::Assertion;
 use crate::db::repos::{CredentialRow, DeviceSeen};
+use crate::db::{AuditEntry, AuditStore as _};
 use crate::identity::secret_cache::VerifiedSecretCache;
 use crate::identity::{credentials, devices};
 use crate::pki::{Enrollment, IssuedCert, IssuedVia, Pki, parse_csr};
@@ -96,6 +101,16 @@ pub(super) async fn issue(
     // device and no other.
     let claimed = claim(context, resolved, query.client_uid.as_deref()).await?;
 
+    // What the certificate says it came from is the *credential*, not the
+    // representation, when the credential is a workload identity: `issued_via`
+    // is what `revoke_previous` matches on, and a supersede that had to know
+    // whether this sidecar asked for JSON or XML would be a supersede that
+    // missed one.
+    let issued_via = match assertion(request) {
+        Some(_) => IssuedVia::WorkloadIdentity,
+        None => issued_via,
+    };
+
     // One fallible block, so that *every* way of failing after the claim — a
     // device uid that is somebody else's, a signature that will not be made —
     // goes through the release below rather than only the ones a `?` here
@@ -127,6 +142,7 @@ pub(super) async fn issue(
     match issued {
         Ok(issued) => {
             record_reusable_use(context, resolved).await;
+            workload_enrolled(request, context, pki, resolved, &issued).await;
 
             Ok(issued)
         }
@@ -136,6 +152,98 @@ pub(super) async fn issue(
             Err(refusal)
         }
     }
+}
+
+/// The workload identity this request enrolled with, when it enrolled with one.
+///
+/// Read off the request rather than off the principal, because the principal
+/// carries the issuer and the subject and the audit trail wants the namespace
+/// and the `jti` as well — see [`crate::auth::workload::Assertion`].
+pub(super) fn assertion(request: &HttpRequest) -> Option<Arc<Assertion>> {
+    crate::auth::workload::assertion_of(request)
+}
+
+/// Audits an enrolment made with a workload identity, and supersedes the
+/// certificates the same account already held from one.
+///
+/// Neither half is fatal. The certificate has been issued and recorded; a
+/// failure to write the audit entry, or to take back a certificate on a node
+/// that may not even exist any more, is something to report rather than
+/// something to undo a working enrolment for.
+async fn workload_enrolled(
+    request: &HttpRequest,
+    context: &AppContext,
+    pki: &Pki,
+    resolved: &Resolved,
+    issued: &IssuedCert,
+) {
+    let Some(assertion) = assertion(request) else {
+        return;
+    };
+
+    let db = context.db();
+    let entry = AuditEntry::new(
+        AuditCategory::Enrollment,
+        "enrollment.workload",
+        AuditOutcome::Success,
+    )
+    .subject(&resolved.user.username)
+    .actor(&resolved.user.username)
+    .message(format!(
+        "'{}' in namespace '{}' enrolled '{}' with its {} workload identity.",
+        assertion.subject, assertion.namespace, resolved.user.username, assertion.issuer_name,
+    ))
+    // The token itself never appears here; see `Assertion::audit_detail`.
+    .detail(merge(
+        assertion.audit_detail(),
+        serde_json::json!({
+            "fingerprint": issued.fingerprint,
+            "serial": issued.serial_hex,
+        }),
+    ));
+
+    if let Err(err) = db.record(entry).await {
+        warn!(error = %err, "Could not record a workload enrolment in the audit log.");
+    }
+
+    if !context.config().auth.workload.revoke_previous {
+        return;
+    }
+
+    match crate::pki::supersede_workload(
+        db,
+        pki.revocations(),
+        resolved.user.id,
+        &issued.fingerprint,
+        Some(&resolved.user.username),
+    )
+    .await
+    {
+        Ok(superseded) if !superseded.is_empty() => info!(
+            account = %resolved.user.username,
+            count = superseded.len(),
+            "Took back the workload certificates this account held before.",
+        ),
+        Ok(_) => {}
+        Err(err) => warn!(
+            error = %err,
+            account = %resolved.user.username,
+            "Could not take back the workload certificates this account held before.",
+        ),
+    }
+}
+
+/// Folds two JSON objects into one, for the audit detail above.
+fn merge(mut base: serde_json::Value, extra: serde_json::Value) -> serde_json::Value {
+    let (Some(base_map), Some(extra_map)) = (base.as_object_mut(), extra.as_object()) else {
+        return base;
+    };
+
+    for (key, value) in extra_map {
+        base_map.insert(key.clone(), value.clone());
+    }
+
+    base
 }
 
 /// Records the device the certificate belongs to.

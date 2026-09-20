@@ -51,6 +51,7 @@ pub mod storage;
 pub mod stream;
 mod validate;
 pub mod web;
+pub mod workload;
 
 use std::path::PathBuf;
 
@@ -69,6 +70,9 @@ pub use server::{MAX_SHUTDOWN_TIMEOUT, ServerConfig};
 pub use storage::StorageConfig;
 pub use stream::{StreamConfig, StreamTlsConfig};
 pub use web::{ClientCertMode, MartiWebConfig, PublicWebConfig, TlsConfig, TlsMode, WebConfig};
+pub use workload::{
+    WorkloadAccount, WorkloadAlgorithm, WorkloadConfig, WorkloadIssuer, WorkloadRule,
+};
 
 /// A complete rustak server configuration.
 ///
