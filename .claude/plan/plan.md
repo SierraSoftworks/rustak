@@ -1,6 +1,6 @@
 # rustak — a lightweight Rust-native TAK server
 
-> Status: FEATURE-COMPLETE FOR THE PLANNED SCOPE (2026-09-19). M0–M7 landed (M7 = backlog closure, same day); M8 (rustak as an OIDC provider) and M9 (AIS/ADS-B feed sidecars + Services page) landed 2026-09-20; both interop suites 9/9 (re-confirmed
+> Status: FEATURE-COMPLETE FOR THE PLANNED SCOPE (2026-09-19). M0–M7 landed (M7 = backlog closure, same day); M8 (rustak as an OIDC provider) and M9 (AIS/ADS-B feed sidecars, Services page, sidecar self-enrolment and workload-identity enrolment for Nomad/Kubernetes) landed 2026-09-20/21; both interop suites 9/9 (re-confirmed
 > after the review fixes); all three independent reviews actioned; loose ends closed. Open: the first pre-release
 > tag (user decision), making the ghcr package public, the security-audit ignore list, running the manual
 > checklists in `docs/compat/` on real devices, and `.claude/plan/backlog.md`.
@@ -272,7 +272,7 @@ are the file-level source of truth for implementation briefs. Decisions they int
 | M6 | Services API + example sidecar, docs, release pipeline (tap, docker, cross) | Sidecar publishes CoT to a channel (interop/rust); `brew install` works |
 | M7 | Backlog closure (2026-09-19): `plain_bind` HTTP listener + ACME handles + wildcard refusal, CloudTAK hand-over sweep job, OIDC channel-cache invalidation, UI unit tests in CI + demo TLS sources, stdout ANSI (upstream in tracing-batteries) | Each `.claude/plan/backlog.md` line it names removed with tests; CI green |
 | M8 | rustak as an OpenID Connect provider (2026-09-20, user decision after CloudTAK SSO investigation): discovery, JWKS, ID tokens, userinfo, confidential clients with client secrets (PKCE optional for them), end-session redirects — so CloudTAK's forthcoming relying-party back end (dfpc-coe/CloudTAK#661) can point at rustak, which federates onward | A generic RP completes discovery → code → `client_secret_post` → ID token verified against JWKS → userinfo → certificate enrolment with the access token; password grant byte-identical; CI green |
-| M9 | Information-feed sidecars (2026-09-20): `rustak_client::feed` (Track model, 2525-derived CoT types, area filter, throttled publisher), `rustak-plugin-ais` (AISStream.io WebSocket, NMEA `!AIVDM` over UDP from a local receiver) and `rustak-plugin-adsb` (readsb `aircraft.json` local or from adsb.lol/adsb.fi/airplanes.live, OpenSky) — open/free sources only, licensing documented | Each plugin runs from its example config, publishes live tracks on a channel, throttles per track; in-process end-to-end tests with fake sources; images published per crate |
+| M9 | Information-feed sidecars (2026-09-20): `rustak_client::feed` (Track model, 2525-derived CoT types, area filter, throttled publisher), `rustak-plugin-ais` (AISStream.io WebSocket, NMEA `!AIVDM` over UDP from a local receiver) and `rustak-plugin-adsb` (readsb `aircraft.json` local or from adsb.lol/adsb.fi/airplanes.live, OpenSky) — open/free sources only, licensing documented | Plus M9-03 Services page, M9-04 health hook, M9-05 self-enrolment (`pki_dir`, `--enroll`), M9-06 workload identity (`[auth.workload]`, jwt-bearer grant). Each plugin runs from its example config, publishes live tracks on a channel, throttles per track; in-process end-to-end tests with fake sources; images published per crate |
 
 ## Verification
 
