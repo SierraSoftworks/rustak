@@ -102,7 +102,8 @@ test("a deep link into the console is served by the single-page fallback", async
   expect(response?.status()).toBe(200);
 
   await waitForApp(page);
-  await expect(page.getByRole("heading", { name: "Security" })).toBeVisible();
+  // Exact, because "Transport security" is a card heading on the same page.
+  await expect(page.getByRole("heading", { name: "Security", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "This server", exact: true })).toBeVisible();
 });
 
