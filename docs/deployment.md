@@ -405,8 +405,8 @@ multi-arch images:
 | Image | What it is |
 |---|---|
 | `ghcr.io/sierrasoftworks/rustak-plugin-example` | The copy-and-rename template |
-| `ghcr.io/sierrasoftworks/rustak-plugin-ais` | Vessels from open AIS data (**in progress — M9**) |
-| `ghcr.io/sierrasoftworks/rustak-plugin-adsb` | Aircraft from open ADS-B data (**in progress — M9**) |
+| `ghcr.io/sierrasoftworks/rustak-plugin-ais` | Vessels from a local AIS receiver (NMEA over UDP) or AISStream.io |
+| `ghcr.io/sierrasoftworks/rustak-plugin-adsb` | Aircraft from a local readsb receiver, the adsb.lol/adsb.fi aggregators or OpenSky |
 
 A sidecar dials out and listens on nothing, so there are no ports to publish.
 Each reads `/data/plugin.toml` and needs its certificate, key and truststore
