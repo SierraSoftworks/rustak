@@ -116,17 +116,52 @@ impl Enrolled {
             truststore: directory.join("truststore.pem"),
         };
 
-        std::fs::create_dir_all(directory).map_err(|err| cannot_write(directory, err))?;
-
-        for (path, contents) in [
-            (&paths.certificate, &self.certificate_pem),
-            (&paths.key, &self.key_pem),
-            (&paths.truststore, &self.truststore_pem),
-        ] {
-            std::fs::write(path, contents).map_err(|err| cannot_write(path, err))?;
-        }
+        self.write_files(&paths)?;
 
         Ok(paths)
+    }
+
+    /// Writes the three files exactly where `paths` names them.
+    ///
+    /// This is [`write_to`](Self::write_to) for a configuration that already
+    /// says where its certificate, key and truststore live: the harness writes
+    /// what `[service] certificate`, `key` and `truststore` point at rather than
+    /// inventing names beside them.
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::User`] error when a file or its directory cannot
+    /// be written.
+    pub fn write_files(&self, paths: &Paths) -> Result<(), Error> {
+        self.write_identity(&paths.certificate, &paths.key)?;
+        self.write_truststore(&paths.truststore)
+    }
+
+    /// Writes the certificate and its key, and nothing else.
+    ///
+    /// The key is created with mode `0600` on Unix — it is the only copy of
+    /// this sidecar's identity, and a world-readable one would make enrolment
+    /// worse than the shared file it replaces. The certificate keeps the
+    /// process umask: it is public material, and an init container that writes
+    /// it for a sidecar running as another user still has to be readable.
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::User`] error when either file or its directory
+    /// cannot be written.
+    pub fn write_identity(&self, certificate: &Path, key: &Path) -> Result<(), Error> {
+        write_pem(certificate, &self.certificate_pem, false)?;
+        write_pem(key, &self.key_pem, true)
+    }
+
+    /// Writes the CA chain the server answered with, as the truststore.
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::User`] error when the file or its directory
+    /// cannot be written.
+    pub fn write_truststore(&self, path: &Path) -> Result<(), Error> {
+        write_pem(path, &self.truststore_pem, false)
     }
 }
 
@@ -274,6 +309,48 @@ fn refused(status: reqwest::StatusCode) -> Error {
     )
 }
 
+/// Writes one PEM file, creating the directory above it.
+///
+/// `private` asks for mode `0600` on Unix, which is applied both when the file
+/// is created and afterwards — `create` leaves an existing file's mode alone,
+/// and a re-enrolment over a key somebody once made readable must not inherit
+/// that. Other platforms have no equivalent to set, so the file is written with
+/// whatever they give it.
+#[cfg_attr(not(unix), allow(unused_variables))]
+fn write_pem(path: &Path, contents: &str, private: bool) -> Result<(), Error> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent).map_err(|err| cannot_write(parent, err))?;
+    }
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::OpenOptionsExt as _;
+
+        options.mode(0o600);
+    }
+
+    let mut file = options.open(path).map_err(|err| cannot_write(path, err))?;
+
+    std::io::Write::write_all(&mut file, contents.as_bytes())
+        .map_err(|err| cannot_write(path, err))?;
+
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|err| cannot_write(path, err))?;
+    }
+
+    Ok(())
+}
+
 /// A file that could not be written, named.
 fn cannot_write(path: &Path, err: std::io::Error) -> Error {
     human_errors::user(
@@ -377,6 +454,81 @@ mod tests {
         let identity = paths.attach(ServiceIdentity::new(ServiceName::parse("weather").unwrap()));
         assert!(identity.has_client_cert());
         assert_eq!(identity.truststore(), Some(paths.truststore.as_path()));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_private_key_is_written_so_that_only_this_process_can_read_it() {
+        // The key is the whole of a sidecar's identity and there is no second
+        // copy anywhere: a mode that let the rest of the container read it would
+        // make self-enrolment weaker than the shared file it replaces.
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(signed_body()))
+            .mount(&server)
+            .await;
+        let directory = tempfile::tempdir().unwrap();
+        // A key left behind by an earlier, more generous enrolment: writing over
+        // it must tighten the mode rather than inherit it.
+        let key = directory.path().join("pki").join("weather.key");
+        std::fs::create_dir_all(key.parent().unwrap()).unwrap();
+        std::fs::write(&key, "stale").unwrap();
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let paths = enrolled(&server)
+            .await
+            .unwrap()
+            .write_to(directory.path().join("pki"), "weather")
+            .unwrap();
+
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&paths.key), 0o600, "the key is ours alone");
+        assert_eq!(
+            mode(&paths.certificate) & 0o600,
+            0o600,
+            "the certificate is public material and is left to the umask",
+        );
+    }
+
+    #[tokio::test]
+    async fn the_files_can_be_written_where_the_configuration_names_them() {
+        // What the harness does: `[service] certificate`/`key`/`truststore` are
+        // paths an operator chose, not names to invent beside a directory.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(signed_body()))
+            .mount(&server)
+            .await;
+        let directory = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            certificate: directory.path().join("nested/identity.crt"),
+            key: directory.path().join("nested/identity.key"),
+            truststore: directory.path().join("nested/ca-bundle.pem"),
+        };
+
+        enrolled(&server)
+            .await
+            .unwrap()
+            .write_files(&paths)
+            .unwrap();
+
+        assert!(
+            std::fs::read_to_string(&paths.certificate)
+                .unwrap()
+                .contains("BEGIN CERTIFICATE")
+        );
+        assert!(
+            std::fs::read_to_string(&paths.key)
+                .unwrap()
+                .contains("PRIVATE KEY")
+        );
+        assert!(
+            std::fs::read_to_string(&paths.truststore)
+                .unwrap()
+                .contains("BEGIN CERTIFICATE")
+        );
     }
 
     #[test]

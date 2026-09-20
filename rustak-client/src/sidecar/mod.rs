@@ -60,6 +60,7 @@
 
 pub mod config;
 mod control_link;
+pub(crate) mod enrolment;
 mod link;
 pub mod run;
 
@@ -75,8 +76,10 @@ use crate::control::{ControlClient, ServerEvent};
 use crate::marti::MartiClient;
 
 pub use async_trait::async_trait;
-pub use config::{HarnessConfig, NoSettings, ServerConfig, ServiceConfig, SidecarConfig};
-pub use run::{Args, drive, run, run_with};
+pub use config::{
+    ENROLLMENT_TOKEN_ENV, HarnessConfig, NoSettings, ServerConfig, ServiceConfig, SidecarConfig,
+};
+pub use run::{Args, drive, run, run_with, serve};
 
 pub(crate) use control_link::ControlLink;
 pub(crate) use link::Link;

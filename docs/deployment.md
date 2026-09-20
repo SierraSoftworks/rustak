@@ -409,16 +409,53 @@ multi-arch images:
 | `ghcr.io/sierrasoftworks/rustak-plugin-adsb` | Aircraft from a local readsb receiver, the adsb.lol/adsb.fi aggregators or OpenSky |
 
 A sidecar dials out and listens on nothing, so there are no ports to publish.
-Each reads `/data/plugin.toml` and needs its certificate, key and truststore
-under the same volume — see [`docs/plugins.md`](plugins.md):
+Each reads `/data/plugin.toml` and keeps its certificate, key and truststore
+under the same volume — which, on the first start, it writes there itself. Mint
+a one-time enrolment token against the service's account and hand it over for
+that one run:
 
 ```sh
 docker run -d \
   --name rustak-plugin-ais \
   -v "$(pwd)/ais:/data" \
   -e RUSTAK_SERVICE_TOKEN \
+  -e RUSTAK_ENROLLMENT_TOKEN \
   ghcr.io/sierrasoftworks/rustak-plugin-ais:latest
 ```
+
+The sidecar generates its own private key **inside the container** and never
+sends it: what crosses the wire is a signing request carrying the public half,
+and the key is written to the volume with mode `0600`. Nothing copies a key into
+a deployment, and there is no certificate to hand out of the admin UI.
+
+Drop `-e RUSTAK_ENROLLMENT_TOKEN` once the volume holds the three PEMs. Leaving
+it set is not dangerous — the token is spent by the enrolment it paid for, and a
+sidecar that already has a certificate ignores it with a log line rather than
+enrolling again — but it is a dead secret in an environment file.
+
+For a deployment that would rather not give the long-running container the token
+at all, `--enroll` is the same work as a one-off task: it enrols, writes the
+three PEMs and exits 0, and does nothing when the certificate is already there.
+That is an init container, a Nomad `prestart` task, or a `docker run --rm`:
+
+```sh
+docker run --rm \
+  -v "$(pwd)/ais:/data" \
+  -e RUSTAK_ENROLLMENT_TOKEN \
+  ghcr.io/sierrasoftworks/rustak-plugin-ais:latest --enroll
+```
+
+`plugin.toml` may name the directory explicitly with `[service] pki_dir =
+"/data"`; left out, the files land beside the configuration file, which is the
+same volume. `--check` validates a file that has not enrolled yet rather than
+refusing to read the certificate it is about to be issued, so a pipeline can
+test the file it is about to ship.
+
+An enrolment that fails is a fatal start-up error naming the cause — a spent or
+mistyped token, an unreachable server, a refused account — rather than a sidecar
+that runs without an identity. See [`docs/plugins.md`](plugins.md) for the rest
+of the first-start story, including where the files land and what verifies the
+server while the sidecar has no truststore yet.
 
 #### With CloudTAK
 

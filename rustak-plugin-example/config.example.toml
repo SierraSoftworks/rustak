@@ -40,15 +40,39 @@ name = "example"
 # harness logs that and carries on publishing CoT.
 # token = "${{ env.RUSTAK_SERVICE_TOKEN }}"
 
+# The one-time enrolment token this service gets its first certificate with, for
+# the start where it has none. Default: none — and RUSTAK_ENROLLMENT_TOKEN in
+# the environment does the same thing without editing this file.
+#
+# The private key is generated inside this process and never leaves it: what
+# crosses the wire is a signing request carrying the public half. The token is
+# spent by the enrolment it pays for, so it is needed once rather than on every
+# start, and one that is still set when the certificate exists is ignored with a
+# log line rather than spent again.
+# enrollment_token = "${{ env.RUSTAK_ENROLLMENT_TOKEN }}"
+
 # The client certificate and private key this service opens the CoT stream with,
 # in PEM. Default: none — and neither half is usable without the other, so
 # setting one without the other is refused. Both are required as soon as
 # [server] stream names an "ssl://" endpoint, which every real deployment does.
+# Paths that do not exist yet are what self-enrolment writes on the first start.
 # certificate = "/etc/rustak/example.pem"
 # key = "/etc/rustak/example.key"
 
-# The truststore used to verify the server's certificate, in PEM.
-# Default: the platform's own roots.
+# Where self-enrolment writes the certificate, key and truststore that the
+# settings around this one do not name. Default: the directory this file is in,
+# which is the volume a container image already mounts.
+# pki_dir = "/etc/rustak"
+
+# The account this service enrols and signs in as, which is the common name of
+# the certificate it is issued. Default: the service's name above; set it when
+# the installation names its service accounts to its own convention.
+# account = "svc.example"
+
+# The truststore used to verify the server's certificate, in PEM. Default: the
+# platform's own roots — or, once this sidecar has enrolled, the CA chain the
+# server answered the enrolment with, which is what an "internal" CA needs and
+# what the platform roots can never supply. Set it to keep your own instead.
 # truststore = "/etc/rustak/truststore.pem"
 
 

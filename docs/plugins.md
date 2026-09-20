@@ -48,6 +48,7 @@ until somebody decides otherwise.
 |---|---|---|
 | Client certificate + key | The CoT stream and the Marti API — a service's *primary* identity | `[service] certificate`, `[service] key` |
 | Service token | `/api/v1/services/*`, which a plugin may need before it has a certificate | `[service] token` |
+| One-time enrolment token | Getting the client certificate above, once, on the first start | `RUSTAK_ENROLLMENT_TOKEN`, or `[service] enrollment_token` |
 
 Write the token as `"${{ env.RUSTAK_SERVICE_TOKEN }}"` and supply it from the
 environment: the configuration file is the part of a deployment that gets
@@ -192,9 +193,12 @@ which is what makes `--check` and an offline unit test work without a server.
 name = "adsb"                       # → uid SERVICE-adsb, and the callsign
 capabilities = ["cot.publish"]
 # token = "${{ env.RUSTAK_SERVICE_TOKEN }}"
+# enrollment_token = "${{ env.RUSTAK_ENROLLMENT_TOKEN }}"   # the first start only
 certificate = "/etc/rustak/adsb.pem"    # required by an ssl:// stream
-key = "/etc/rustak/adsb.key"
+key = "/etc/rustak/adsb.key"            # written by enrolment if it is not there
 truststore = "/etc/rustak/truststore.pem"
+# pki_dir = "/data"                     # where enrolment writes what the three above do not name
+# account = "svc.adsb"                  # the account it enrols as; default: the name above
 
 [server]
 stream = "ssl://tak.example.com:8089"
@@ -225,7 +229,7 @@ it from `${{ env.… }}`, exactly as `[service] token` is.
 ## Running one
 
 ```text
-rustak-plugin-adsb --config plugin.toml [--env .env] [--check]
+rustak-plugin-adsb --config plugin.toml [--env .env] [--check] [--enroll]
 ```
 
 - `--config` (or `RUSTAK_SIDECAR_CONFIG`) is the TOML file above.
@@ -233,19 +237,73 @@ rustak-plugin-adsb --config plugin.toml [--env .env] [--check]
   before the configuration is read, so `${{ env.X }}` can see it. Absence is not
   an error.
 - `--check` loads and validates the configuration and exits, so a deployment
-  pipeline can test a candidate file against the binary that will read it.
+  pipeline can test a candidate file against the binary that will read it. It
+  touches nothing: no network, no files, no enrolment. A file whose certificate
+  and key are paths nothing has written yet still validates — it reports where
+  the identity *will* be enrolled to instead of refusing to read it — as long as
+  the file says it means to enrol, by `[service] pki_dir` or an enrolment token.
+  An `${{ env.… }}` token whose variable is not set is refused by name, which is
+  what makes this a real check of a pre-enrolment deployment.
+- `--enroll` does what a first start would do about a missing certificate — it
+  enrols, writes the three PEMs, says where they went — and exits 0 without
+  starting the plugin. For an init container or a one-off task. A sidecar that
+  already has a certificate exits 0 having done nothing, so it is safe to run
+  before every start.
 - `--help` and `--version` report the plugin's own name and version.
 
 The start-up order is the one every rustak binary uses: environment file →
-telemetry → shutdown signal → configuration → CoT stream → `start`. Telemetry
-comes up before the configuration is read because the most common start-up
-failure *is* the configuration file, and the stream is opened before `start`
-because the next most common one is the certificate paths.
+telemetry → shutdown signal → configuration → **enrolment** → CoT stream →
+`start`. Telemetry comes up before the configuration is read because the most
+common start-up failure *is* the configuration file, and the stream is opened
+before `start` because the next most common one is the certificate paths.
 
 `SIGINT`/`SIGTERM` stops the sidecar: the tick loop ends, `stop` is given its
 grace period, telemetry is flushed, and the process exits 0. A second signal
 exits immediately with status 130, so an impatient operator never has to reach
 for `kill -9`.
+
+### The first start
+
+A sidecar whose `[service] certificate` and `key` are missing — unset, or naming
+files that are not there — and that has a one-time enrolment token enrols for
+itself before it opens the stream:
+
+```sh
+RUSTAK_ENROLLMENT_TOKEN=<one-time token> rustak-plugin-adsb --config plugin.toml
+```
+
+It generates a key, sends a signing request, and writes three files: the
+certificate, the key (mode `0600`) and the CA chain the server answered with, as
+the truststore. Where they go is `[service] certificate`/`key`/`truststore` when
+those name paths, `[service] pki_dir` for what they do not, and the directory
+the configuration file is in for what *that* does not — which is the volume a
+container image already mounts. The certificate's subject and expiry are logged
+at `info`, and start-up carries on with them.
+
+**The private key is generated inside the sidecar's own process and never leaves
+it.** What crosses the wire is a signing request carrying the public half. There
+is no "download my certificate" call to re-run, which is why a lost key is a
+re-enrolment rather than a recovery — and why nothing has to ship a key into a
+deployment.
+
+On the next start the files are there, so nothing is enrolled and no token is
+needed. A token that is still set is **ignored with an `info` line** rather than
+spent again, so a leftover environment variable never re-enrols a running
+deployment. An enrolment that fails — a spent or mistyped token, a server that
+cannot be reached, a signing request the server refuses — is a fatal start-up
+error naming the cause: a sidecar must not run half-identified.
+
+| It enrols as | Which is |
+|---|---|
+| `username` | `[service] account`, or the service's own name |
+| `clientUid` | `SERVICE-<name>`, the same uid it connects with |
+| against | `[server] marti`, or `[server] control` — rustak's public listener serves `/Marti/api/tls/*` beside the control API |
+
+The enrolment call itself verifies the server against the **platform's** root
+store, which is right for a public listener behind a publicly issued certificate
+(ACME). An installation running rustak's `internal` CA has to hand the sidecar
+that CA out of band first, as `[service] truststore`; a truststore that is
+already there is kept rather than replaced by the chain the server sends.
 
 ## Testing one
 
@@ -439,8 +497,23 @@ API too, so a sidecar that has enrolled needs no token at all). Both are bounded
 by the same things every other credential is: the account must not be disabled,
 `[auth] user_acl` must allow the request, and a registration an administrator
 has switched off stops authenticating. The token exists for the case where the
-plugin has no certificate **yet** — which is also what `rustak_client::enroll`
-is for:
+plugin has no certificate **yet**.
+
+There is a third, and it is the one a deployment starts with: a **one-time
+enrolment token**, which buys the certificate. The harness spends it for you on
+the first start — see [The first start](#the-first-start) for the whole story,
+the environment variable and the `--enroll` flag:
+
+```sh
+RUSTAK_ENROLLMENT_TOKEN=<one-time token> rustak-plugin-adsb --config plugin.toml
+```
+
+Mint one in the admin UI against the service's account, or with
+`POST /api/v1/credentials` and kind `enrollment_token`. It is spent by the
+enrolment it pays for and needed once, not on every start.
+
+The same thing is a function for a plugin that wants to do it itself —
+`rustak_client::enroll`:
 
 ```rust
 use rustak_client::enroll::{Enrolment, enroll};
@@ -457,11 +530,12 @@ let enrolled = enroll(&Enrolment {
 let paths = enrolled.write_to("/etc/rustak", "adsb")?;
 ```
 
-The private key is generated in the plugin's own process and never sent: what
-crosses the wire is a signing request carrying the public half. An enrolment
-token is one-time and is spent only once the certificate has been issued, so a
-failed enrolment leaves it usable — and a sidecar enrols when it has no
-certificate rather than on every start.
+**The private key is generated in the sidecar's own process and never leaves
+it** — not on enrolment, not afterwards. What crosses the wire is a signing
+request carrying the public half, and the key is written with mode `0600`. An
+enrolment token is one-time and is spent only once the certificate has been
+issued, so a failed enrolment leaves it usable — and a sidecar enrols when it
+has no certificate rather than on every start.
 
 ## Reacting to server events
 

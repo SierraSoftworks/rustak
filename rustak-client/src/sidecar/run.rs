@@ -2,9 +2,9 @@
 //!
 //! [`run`] is the whole of a plugin's `main`. It performs the start-up sequence
 //! every rustak binary shares — environment file, telemetry, shutdown signal,
-//! configuration, in that order and for the reasons `rustak_core` gives — and
-//! then drives the plugin's [`Sidecar`] implementation until the process is
-//! asked to stop.
+//! configuration, in that order and for the reasons `rustak_core` gives —
+//! enrols for a certificate if it has none, and then drives the plugin's
+//! [`Sidecar`] implementation until the process is asked to stop.
 //!
 //! # The command line
 //!
@@ -12,11 +12,13 @@
 //! `--help` and `--version`:
 //!
 //! ```text
-//! rustak-plugin-example --config plugin.toml [--env .env] [--check]
+//! rustak-plugin-example --config plugin.toml [--env .env] [--check] [--enroll]
 //! ```
 //!
 //! `--check` loads and validates the configuration and exits, so a deployment
-//! pipeline can test a candidate file against the binary that will read it.
+//! pipeline can test a candidate file against the binary that will read it, and
+//! `--enroll` gets the certificate the first start would get and exits, for an
+//! init container. Neither starts the plugin.
 //!
 //! A plugin that needs options of its own parses its own [`clap`] type and calls
 //! [`run_with`] with an [`Args`] it has filled in.
@@ -68,7 +70,7 @@ use rustak_core::telemetry::{self, TelemetryOptions};
 use rustak_cot::Event;
 use tracing::Instrument;
 
-use super::{ControlLink, Link, Sidecar, SidecarConfig, SidecarContext, SidecarEvent};
+use super::{ControlLink, Link, Sidecar, SidecarConfig, SidecarContext, SidecarEvent, enrolment};
 
 /// The command line every sidecar shares.
 #[derive(Clone, Debug, Parser)]
@@ -95,8 +97,19 @@ pub struct Args {
     pub env: PathBuf,
 
     /// Load and validate the configuration, then exit without starting.
+    ///
+    /// Touches nothing: no network, no files, no enrolment.
     #[arg(long)]
     pub check: bool,
+
+    /// Enrol for a certificate if there is none, then exit without starting.
+    ///
+    /// For an init container or a one-off task: it does exactly what the first
+    /// start would do, writes the three PEMs, and says where they went. A
+    /// sidecar that already has a certificate exits 0 having done nothing, so
+    /// this is safe to run on every deployment.
+    #[arg(long, conflicts_with = "check")]
+    pub enroll: bool,
 }
 
 impl Args {
@@ -166,8 +179,38 @@ pub async fn run_with<S: Sidecar>(sidecar: S, args: Args) {
 
 /// Everything [`run_with`] does once telemetry and the shutdown signal are up,
 /// in a form that returns its failures instead of exiting.
-async fn serve<S: Sidecar>(mut sidecar: S, args: &Args, shutdown: Shutdown) -> Result<(), Error> {
-    let config: SidecarConfig<S::Settings> = config::load(&args.config)?;
+///
+/// This is the start-up sequence itself — configuration, self-enrolment,
+/// `--check`, `--enroll`, and then [`drive`] — and it is public because it is
+/// also how an integration suite exercises a first start: a test that called
+/// [`run_with`] would have its process exited out from under it by
+/// [`report_and_exit`]. Load the environment file first if the configuration
+/// reads one, as [`run_with`] does.
+///
+/// # Errors
+///
+/// Whatever start-up or the sidecar returned.
+pub async fn serve<S: Sidecar>(
+    mut sidecar: S,
+    args: &Args,
+    shutdown: Shutdown,
+) -> Result<(), Error> {
+    let mut config: SidecarConfig<S::Settings> = config::load(&args.config)?;
+
+    // Before the context, because the context reads the certificate: a sidecar
+    // that has none enrols for one here and carries on with it. `--check`
+    // validates the file and touches nothing, so it skips this.
+    let enrolled = if args.check {
+        // A file that names a certificate it has not been issued yet is the
+        // ordinary state of a deployment before its first run, and validating
+        // it must not mean reading files that enrolment is going to write.
+        enrolment::check(&mut config, &args.config)?;
+
+        None
+    } else {
+        enrolment::ensure(&mut config, &args.config, args.enroll).await?
+    };
+
     let context = SidecarContext::from_config(config, S::VERSION, shutdown)?;
 
     // The descriptor is what this sidecar publishes about itself, so it is safe
@@ -185,6 +228,28 @@ async fn serve<S: Sidecar>(mut sidecar: S, args: &Args, shutdown: Shutdown) -> R
 
     if args.check {
         tracing::info!("The configuration is valid; --check does not start the sidecar.");
+        return Ok(());
+    }
+
+    if args.enroll {
+        // `ensure` answers `Some` for every path that leaves a sidecar with an
+        // identity, and fails rather than answering `None` when `--enroll`
+        // asked for one, so this names the files in both the "enrolled just
+        // now" and the "already had one" cases.
+        let paths = enrolled.ok_or_else(|| {
+            human_errors::system(
+                "The sidecar enrolled but reported no files.",
+                &["Please report this issue via GitHub."],
+            )
+        })?;
+
+        tracing::info!(
+            certificate = %paths.certificate.display(),
+            key = %paths.key.display(),
+            truststore = %paths.truststore.display(),
+            "--enroll does not start the sidecar; these are the files it will use.",
+        );
+
         return Ok(());
     }
 
@@ -405,9 +470,12 @@ mod tests {
                 display_name: None,
                 capabilities: Vec::new(),
                 token: None,
+                enrollment_token: None,
                 certificate: None,
                 key: None,
                 truststore: None,
+                account: None,
+                pki_dir: None,
             },
             server: ServerConfig {
                 stream,
@@ -700,6 +768,7 @@ mod tests {
             config: path,
             env: directory.path().join("absent.env"),
             check: true,
+            enroll: false,
         };
 
         serve(Counter::default(), &args, Shutdown::new())
@@ -713,6 +782,7 @@ mod tests {
             config: PathBuf::from("/rustak/definitely/not/here.toml"),
             env: PathBuf::from("/rustak/definitely/not/here.env"),
             check: true,
+            enroll: false,
         };
 
         let Err(err) = serve(Counter::default(), &args, Shutdown::new()).await else {
@@ -723,6 +793,77 @@ mod tests {
         assert!(err.to_string().contains("not/here.toml"), "{err}");
     }
 
+    #[tokio::test]
+    async fn check_accepts_a_deployment_whose_identity_has_not_been_enrolled_yet() {
+        // The state a container image is in before its first run: the file
+        // names a certificate, a key and a truststore that nothing has written
+        // yet. A pipeline validating that file must get "valid" rather than
+        // "could not read /data/truststore.pem", and must still touch no
+        // network — see `enrolment::check`.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("plugin.toml");
+        let pki = directory.path().join("pki");
+        std::fs::write(
+            &path,
+            format!(
+                r#"
+                [service]
+                name = "example"
+                pki_dir = "{pki}"
+                certificate = "{pki}/example.pem"
+                key = "{pki}/example.key"
+                truststore = "{pki}/truststore.pem"
+
+                [server]
+                stream = "ssl://tak.example.com:8089"
+                control = "https://tak.example.com:8446"
+                "#,
+                pki = pki.display(),
+            ),
+        )
+        .unwrap();
+
+        let args = Args {
+            config: path,
+            env: directory.path().join("absent.env"),
+            check: true,
+            enroll: false,
+        };
+
+        serve(Counter::default(), &args, Shutdown::new())
+            .await
+            .expect("a file that will enrol is a valid file");
+        assert!(!pki.exists(), "--check writes nothing");
+    }
+
+    #[tokio::test]
+    async fn check_refuses_an_enrolment_token_whose_variable_was_never_set() {
+        // The other half of validating a pre-enrolment file: the expression
+        // that pays for the certificate has to resolve, and a pipeline finding
+        // that out is the whole point of --check.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("plugin.toml");
+        std::fs::write(
+            &path,
+            "[service]\nname = \"example\"\nenrollment_token = \"${{ env.RUSTAK_CHECK_NOT_SET }}\"\n",
+        )
+        .unwrap();
+
+        let args = Args {
+            config: path,
+            env: directory.path().join("absent.env"),
+            check: true,
+            enroll: false,
+        };
+
+        let Err(err) = serve(Counter::default(), &args, Shutdown::new()).await else {
+            panic!("an unresolved enrolment token should not validate");
+        };
+
+        assert!(err.is(human_errors::Kind::User), "{err}");
+        assert!(err.to_string().contains("RUSTAK_CHECK_NOT_SET"), "{err}");
+    }
+
     #[test]
     fn the_command_line_defaults_to_the_files_a_container_image_mounts() {
         let args = Args::parse_from(["rustak-plugin-example"]);
@@ -730,6 +871,7 @@ mod tests {
         assert_eq!(args.config, PathBuf::from("config.toml"));
         assert_eq!(args.env, PathBuf::from(".env"));
         assert!(!args.check);
+        assert!(!args.enroll);
 
         let given = Args::parse_from(["rustak-plugin-example", "--config", "/data/plugin.toml"]);
         assert_eq!(given.config, PathBuf::from("/data/plugin.toml"));

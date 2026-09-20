@@ -43,6 +43,13 @@ const ADVICE_HALF_A_CERTIFICATE: &[&str] = &[
     "A certificate without its private key cannot complete a TLS handshake.",
 ];
 
+/// The environment variable a one-time enrolment token is supplied through.
+///
+/// It is read directly rather than only through `${{ env.… }}` so that a first
+/// start needs nothing but `-e RUSTAK_ENROLLMENT_TOKEN=…` beside the image's
+/// own configuration file — see `docs/plugins.md`, "The first start".
+pub const ENROLLMENT_TOKEN_ENV: &str = "RUSTAK_ENROLLMENT_TOKEN";
+
 /// How often [`tick`](super::Sidecar::tick) runs when the file does not say.
 fn default_tick() -> chrono::Duration {
     chrono::Duration::seconds(30)
@@ -122,6 +129,15 @@ pub struct ServiceConfig {
     /// server is two names.
     pub name: ServiceName,
 
+    /// The account this service signs in as, which is the common name of the
+    /// certificate enrolment issues it. Default: the service's own name.
+    ///
+    /// It is separate from `name` because an installation names its service
+    /// accounts to its own convention — `svc.adsb` for the service `adsb` — and
+    /// enrolment has to present the account, not the service.
+    #[serde(default)]
+    pub account: Option<Username>,
+
     /// What to call this service in the admin UI. Default: its name.
     #[serde(default)]
     pub display_name: Option<String>,
@@ -138,6 +154,16 @@ pub struct ServiceConfig {
     #[serde(default, deserialize_with = "optional_secret")]
     pub token: Option<Secret>,
 
+    /// The one-time enrolment token this service gets its first certificate
+    /// with, for the start where it has none.
+    ///
+    /// Write it as `"${{ env.RUSTAK_ENROLLMENT_TOKEN }}"`, or leave it out and
+    /// set [`ENROLLMENT_TOKEN_ENV`] for that one start: it is spent by the
+    /// enrolment it pays for, and a file that still holds it after the fact is
+    /// a file holding a dead secret.
+    #[serde(default, deserialize_with = "optional_secret")]
+    pub enrollment_token: Option<Secret>,
+
     /// The client certificate this service opens the CoT stream with, in PEM.
     #[serde(default)]
     pub certificate: Option<PathBuf>,
@@ -150,9 +176,57 @@ pub struct ServiceConfig {
     /// the platform's own roots.
     #[serde(default)]
     pub truststore: Option<PathBuf>,
+
+    /// Where self-enrolment writes the certificate, key and truststore that
+    /// `certificate`, `key` and `truststore` do not name. Default: the
+    /// directory the configuration file itself is in.
+    #[serde(default)]
+    pub pki_dir: Option<PathBuf>,
 }
 
 impl ServiceConfig {
+    /// The account this service enrols and signs in as.
+    ///
+    /// `account` when it is set, and the service's own name when it is not —
+    /// the same name the `SERVICE-<name>` uid is derived from, so the two halves
+    /// of an identity stay consistent for an installation that does not name its
+    /// accounts separately.
+    pub fn account(&self) -> &str {
+        self.account
+            .as_ref()
+            .map_or_else(|| self.name.as_str(), Username::as_str)
+    }
+
+    /// Whether a one-time enrolment token was supplied at all, by either route.
+    ///
+    /// Answered without reading the value, so that the "you already have a
+    /// certificate" path can say a token was ignored without having to resolve
+    /// one that may be a leftover `${{ env.… }}` expression.
+    pub fn has_enrollment_token(&self) -> bool {
+        self.enrollment_token.is_some() || std::env::var_os(ENROLLMENT_TOKEN_ENV).is_some()
+    }
+
+    /// The one-time enrolment token, from the file or from the environment.
+    ///
+    /// `[service] enrollment_token` wins when it is set, because it is the
+    /// deliberate one; [`ENROLLMENT_TOKEN_ENV`] is the route a container takes
+    /// on its first start without editing the file it was built with.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`human_errors::Kind::User`] error when the setting still holds
+    /// an unresolved `${{ env.NAME }}` expression, which would otherwise be sent
+    /// as a password and refused as one.
+    pub fn enrollment_token(&self) -> Result<Option<Secret>, Error> {
+        if let Some(token) = &self.enrollment_token {
+            refuse_unresolved("service.enrollment_token", token.expose())?;
+
+            return Ok(Some(token.clone()));
+        }
+
+        Ok(std::env::var(ENROLLMENT_TOKEN_ENV).ok().map(Secret::new))
+    }
+
     /// Assembles the [`ServiceIdentity`] this section describes.
     ///
     /// # Errors
@@ -510,6 +584,29 @@ mod tests {
         let printed = format!("{config:?}");
         assert!(!printed.contains("rsk_supersecret"), "{printed}");
         assert!(printed.contains("Secret(***)"), "{printed}");
+    }
+
+    #[test]
+    fn an_enrolment_token_is_a_secret_like_any_other() {
+        // It buys a certificate for this service's account, so it is exactly as
+        // worth redacting as the service token beside it — and it is read back
+        // as a `Secret` rather than a `String` so that nothing downstream has to
+        // remember that.
+        let config =
+            load("[service]\nname = \"example\"\nenrollment_token = \"rsk_one_time_secret\"\n");
+
+        let printed = format!("{config:?}");
+        assert!(!printed.contains("rsk_one_time_secret"), "{printed}");
+        assert!(printed.contains("Secret(***)"), "{printed}");
+        assert!(config.service.has_enrollment_token());
+        assert_eq!(
+            config
+                .service
+                .enrollment_token()
+                .unwrap()
+                .map(|token| token.expose().to_string()),
+            Some("rsk_one_time_secret".to_string()),
+        );
     }
 
     #[test]

@@ -43,6 +43,9 @@ reqwest = { workspace = true, features = ["query"] }
 # Enrolment generates the sidecar's key pair and its signing request locally;
 # the private half never leaves the process.
 rcgen = { workspace = true }
+# Reads back the certificate enrolment was issued, so that the start-up line can
+# say whose it is and when it expires.
+x509-parser = { workspace = true }
 futures = { workspace = true }
 tokio-util = { workspace = true }
 bytes = { workspace = true }
