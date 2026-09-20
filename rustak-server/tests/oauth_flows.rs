@@ -59,7 +59,10 @@ async fn server_with(provider: Option<&TestIdentityProvider>) -> TestServer {
                 id: CLIENT.to_string(),
                 redirect_uris: vec![REDIRECT.to_string()],
                 public: true,
+                secret: None,
+                post_logout_redirect_uris: Vec::new(),
             }],
+            ..OAuthServerConfig::default()
         };
         config.auth.oidc = oidc;
         config.auth.user_acl = Some(filt_rs::Filter::new("true").unwrap());
@@ -264,6 +267,10 @@ mod authorization_code {
 
     #[actix_web::test]
     async fn a_code_with_no_verifier_at_all_is_refused() {
+        // `invalid_grant` rather than `invalid_request`: since M8-01 the
+        // verifier is required of a *public* client rather than of the form, so
+        // its absence is a binding that did not hold rather than a field that
+        // was left out. RFC 7636 §4.6 says `invalid_grant` for exactly this.
         let server = server_with(None).await;
         let app = test::init_service(App::new().configure(server.app())).await;
         let code = code_for!(&server, &app, REDIRECT);
@@ -279,7 +286,7 @@ mod authorization_code {
         );
 
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body["error"], "invalid_request");
+        assert_eq!(body["error"], "invalid_grant");
     }
 
     #[actix_web::test]

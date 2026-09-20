@@ -27,7 +27,7 @@
 
 use actix_web::web;
 
-use crate::auth::oauth_server::{authorize, login, session};
+use crate::auth::oauth_server::{authorize, discovery, login, session};
 
 use super::extract::ListenerRole;
 
@@ -41,6 +41,13 @@ pub fn routes(role: ListenerRole) -> impl FnOnce(&mut web::ServiceConfig) + Clon
         config
             // Before the `/oauth` scope registered after it; see above.
             .route("/oauth/authorize", web::get().to(authorize::authorize))
+            // The path OpenID Connect Discovery reserves, describing **this**
+            // server. The `/login/` one below is TAK Server's invention and
+            // describes the upstream provider; see `oauth_server::discovery`.
+            .route(
+                "/.well-known/openid-configuration",
+                web::get().to(discovery::openid_configuration),
+            )
             .service(
                 web::scope("/login")
                     // The two literal children before `/auth`, which would not
@@ -70,6 +77,7 @@ mod tests {
     /// Every path this file mounts.
     const PATHS: &[&str] = &[
         "/oauth/authorize",
+        "/.well-known/openid-configuration",
         "/login/auth",
         "/login/redirect",
         "/login/authserver",

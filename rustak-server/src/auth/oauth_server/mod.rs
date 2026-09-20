@@ -26,9 +26,13 @@
 //! | `state` cookie, compared as `sha256(cookie) == state` | a callback replayed into somebody else's browser |
 //! | one-shot [`state::PendingAuth`], ten minutes | that same callback replayed into *this* browser twice |
 //! | our proof key on the provider's code | a code lifted from a redirect or a proxy log being redeemed |
-//! | `nonce` in the ID token | an ID token minted for a different flow being presented to this one |
-//! | the client's proof key on our code ([`codes`]) | a code lifted from the client's redirect being redeemed |
+//! | our `nonce` in the provider's ID token | an ID token minted for a different flow being presented to this one |
+//! | the client's proof key on our code ([`codes`]) | a code lifted from a **public** client's redirect being redeemed |
+//! | the client's secret at `/oauth/token` ([`clients`]) | the same, for a **confidential** client, which is what lets its proof key be optional |
 //! | exact `redirect_uri` match, at issue and at redemption | a code being delivered to, or redeemed against, another registered URI |
+//! | exact `post_logout_redirect_uri` match ([`session`]) | `/logout` becoming an open redirector on the path every session ends at |
+//! | the client's `nonce` echoed into **our** ID token ([`id_token`]) | one of our ID tokens being replayed into a relying party's other flow |
+//! | `aud` = the one client id | one of our ID tokens being presented to a different relying party |
 //!
 //! None of them is redundant. The state cookie is a cross-site-request-forgery
 //! control and knows nothing about codes; proof key for code exchange is a code
@@ -36,6 +40,25 @@
 //! binds the *token* rather than the *code*. Removing any one of them leaves a
 //! flow that still works in a browser and no longer resists the attack that one
 //! was there for.
+//!
+//! The one row that *replaces* another is client authentication. A public
+//! client has no secret, so its proof key is the only thing between an
+//! intercepted code and a session and stays mandatory. A confidential client
+//! presents a secret an interceptor does not have, so RFC 6749 lets the proof
+//! key be optional there — and it has to be, because CloudTAK's relying party
+//! sends no `code_challenge` at all. `--check` refuses a client that is
+//! configured as one and credentialled as the other, so neither can be half a
+//! control.
+//!
+//! # rustak as an OpenID provider (M8-01)
+//!
+//! [`discovery`] publishes what a relying party needs to find, [`jwt::jwks`]
+//! the keys it verifies with, [`id_token`] the assertion it reads and
+//! [`mod@userinfo`] the account behind it. The access token that comes out of
+//! same exchange is an ordinary rustak token, which is the point: the client
+//! holding it can go straight on to `/Marti/api/tls/*` and enrol.
+//!
+//! [`jwt::jwks`]: crate::auth::JwtIssuer::jwks
 //!
 //! # Cookies
 //!
@@ -47,16 +70,26 @@
 //! and this module tree must not give it one.
 
 pub mod authorize;
+pub mod claims;
+pub mod clients;
+pub mod code_grant;
 pub mod codes;
 pub mod cookies;
+pub mod discovery;
+pub mod id_token;
 pub mod login;
+pub mod responses;
+pub mod scopes;
 pub mod session;
 pub mod state;
+pub mod userinfo;
 
 pub use authorize::authorize;
 pub use codes::{CodeError, NewCode, Redemption};
 pub use cookies::{access_token_from_cookies, cookies_allowed};
+pub use discovery::openid_configuration;
 pub use state::{PendingAuth, PendingKind};
+pub use userinfo::userinfo;
 
 /// Compares two strings without leaking where they first differ.
 ///

@@ -5,6 +5,113 @@ what remains. Brief: `.claude/plan/briefs/CI-01-ci-steward.md`.
 
 ---
 
+## 2026-09-19 — the M7 wave is green, and four network fetch failures in one day
+
+**`main` is green on `2fb1a2a`.** Every commit in the wave now has a green run:
+`8463177` (ui tests), `146bd11` (CloudTAK sweep), `be435e9` (OIDC channel
+cache), `f1e6864` (trunk retry), `2c86ba3` (ACME plain listener, green on
+re-run), `49b0f41` (docs) and `2fb1a2a` (trunk cache).
+
+### F11 — the network, four times, and what it cost
+
+| # | Where | Failure | Consequence |
+|---|---|---|---|
+| 1 | `build` / darwin | `upload-artifact` → `ENOTFOUND` | one job red on a docs commit |
+| 2 | `build` / `cross` | binstall fetchers timed out | one job red on a docs commit |
+| 3 | `ui` / trunk | binstall fetchers timed out | **v0.0.2 published nothing** |
+| 4 | `ui` / trunk | same, sustained four minutes | `2c86ba3` red |
+
+Number 3 is the one that mattered: `Build UI` died, `build` needs `ui`, and the
+whole release pipeline behind it skipped — no assets, no images, no formula.
+The `ci` aggregator reported **failure**, which is the change made after
+v0.0.1's silent formula miss doing its job for an unrelated reason.
+
+**The discriminator, now proven rather than asserted.** `2c86ba3`'s `Build UI`
+ran 17:05:54–17:10:02 and exhausted all three retry attempts; `49b0f41`'s
+started at **17:08:58, inside that window, on another runner, and installed
+trunk without trouble**. Two concurrent jobs, same step, opposite outcomes —
+that rules out an outage and names it runner-local. A `build` or `ui` job
+failing at a *fetch* step, on a commit that cannot have caused it, is
+infrastructure; the test is whether a concurrent run passed the identical step.
+
+**Three durable changes came out of it:**
+
+- `fdd36f2` — retry around `cargo binstall cross`.
+- `f1e6864` — the same around `trunk`, in `rust.yml`'s `ui` job and both of
+  `nightly.yml`'s.
+- `2fb1a2a` — **cache the trunk binary** (`~/.cargo/bin/trunk`, keyed
+  `trunk-<version>-<os>`), because a retry cannot cover a host degraded for four
+  minutes. `TRUNK_VERSION` moved to the workflow `env:` so the key and the
+  install read one value; a mismatch would serve a stale binary, which is the
+  obvious way to get this wrong. `actionlint` findings went 9 → 8.
+
+First run of the cache was a miss by definition and behaved exactly right:
+`Cache not found for input keys: trunk-0.21.14-Linux`, one install, then
+`Cache saved with key: trunk-0.21.14-Linux`. **The next push proves the hit.**
+
+`nightly.yml`'s two trunk installs keep the retry without the cache: they are
+off the release critical path, and one run does not justify three more cache
+keys. If it bites there, the same change applies.
+
+### A good sign worth recording
+
+`rustak-server/tests/acme_plain_listener.rs` arrived already using both
+conventions this session established — it binds `TcpListener::bind(:0)` and
+hands the **pre-bound socket** to the server (PR #6's lesson), and waits on a
+`READY_TIMEOUT` poll rather than assuming a spawned server is serving
+(`await_marti`'s). Nobody coordinated that. The port-reservation flake cost
+three separate investigations (M6-01, M5-02 and my own wrong load-dependency
+call); new suites are now written so it cannot recur.
+
+---
+
+## 2026-09-19 — the onboarding 500 was the missing UI, and I misdiagnosed it twice
+
+M5-04 found it: **CI never builds the UI**. `rust.yml`'s `test` job has no
+`trunk` step, so `web::ui::shell` answered `500 — "The user interface has not
+been built"` on every fall-through, deterministically. Locally the UI is built,
+so the same request answered `200`. Fixed in `761a389`.
+
+**Two errors of mine, worth recording because the reasoning is reusable:**
+
+1. I wrote that `ui::serve` "returns `HttpResponse`, not `Result`, so it cannot
+   produce a 500". An infallible *signature* is not an inability to answer an
+   error *status* — `shell()` returned one on purpose, four lines below the code
+   I had open.
+2. Worse: I concluded "not reproducible locally, therefore load-dependent" from
+   three clean local runs and a 12× slower CI. The right inference from *passes
+   here, fails there every time* is an **environment difference** — and the
+   difference was in the workflow I own, which runs `test` with no `ui` job and
+   no `ui-dist` artefact.
+
+**The rule I have written into that note:** a test that passes locally and fails
+in CI is an environment difference until proven otherwise. Load is the
+explanation of last resort. "I could not reproduce it" is evidence about my
+machine, not about the test — and where the two environments differ is knowable,
+for this repository from `docs/ci.md`'s own job graph.
+
+The `api_auth` thread was half right — the middleware does resolve the token on
+an unmatched path — but it passed through, so it was never the failure. Ruling
+out the `users/{username}` routes was correct and saved time; what I concluded
+afterwards was not.
+
+**Standing note:** `rust.yml`'s `test` job runs **without a built UI**. If a
+UI-dependent test ever differs between CI and local again, check that first.
+
+### The 45-minute `Test` bound (landed, `c8a3c16`)
+
+Run 35450602916 was **cancelled at exactly 30 minutes** with four binaries still
+to run — it never reached the diagnostic, so no body came back. The per-binary
+shape was uniform 3–4× against a fast run (`rustak_server` 102 s → 341 s,
+`stream_routing` 81 s → 309 s, `bootstrap` — three tests, untouched — 14 s →
+100 s), i.e. the host, on a suite that had also grown to 1754 library tests plus
+`cloudtak_onboarding`. That is the trigger the capacity note pre-committed to,
+so `test` is now **45** and `docs/ci.md` carries the exception explicitly: a job
+hitting its timeout is a bug report *except* where it is slow for where it runs
+rather than what it does — and a `test` job that hits 45 is a bug report again.
+
+---
+
 ## 2026-09-19 — run 35445173785 (`ec7320f`) red on e2e: the specs were stale, not the product
 
 Two specs failed, both on the same assertion, and `End-to-End Tests` was the only

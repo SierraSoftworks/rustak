@@ -19,6 +19,8 @@
  * - **M4** Data Sync (the mission API).
  * - **M5-03** the CloudTAK hand-over, which is `/api/v1` rather than Marti —
  *   the one rustak endpoint that generates a client's private key.
+ * - **M8-01** rustak's own OpenID provider documents, which CloudTAK's
+ *   forthcoming single sign-on (dfpc-coe/CloudTAK#661) will read.
  */
 
 import type { SurfaceProbe } from "../../shared/src/probe.js";
@@ -90,6 +92,11 @@ export const SURFACES = {
     // probe would read it as absent. An unknown download id is a clean `410`.
     path: "/api/v1/cloudtak-onboarding/probe.p12",
     todo: "TODO(M5-03): POST /api/v1/users/{username}/cloudtak-onboarding is not served yet — the CloudTAK hand-over lands with M5-03 (web/api/cloudtak_onboarding.rs).",
+  },
+  oidcDiscovery: {
+    on: "webtak",
+    path: "/.well-known/openid-configuration",
+    todo: "TODO(M8-01): GET /.well-known/openid-configuration is not served yet — rustak's own OpenID provider documents land with M8-01 (auth/oauth_server/discovery.rs).",
   },
   stream: {
     on: "stream",

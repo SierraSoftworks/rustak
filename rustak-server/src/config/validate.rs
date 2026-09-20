@@ -53,7 +53,8 @@ pub(super) fn validate(config: &Config) -> Result<(), Error> {
     certificate_source(config)?;
     acme(config)?;
     credentials(config)?;
-    oauth_clients(config)?;
+    // Within one section rather than across two; see `stream.limits` above.
+    config.auth.oauth.validate()?;
     pki(config)?;
     distinct_listeners(config)
 }
@@ -244,87 +245,6 @@ fn credentials(config: &Config) -> Result<(), Error> {
     }
 
     Ok(())
-}
-
-/// Every registered OAuth2 client has to name somewhere a code may be sent.
-///
-/// These are checked at load time rather than at the first authorization
-/// request because every one of them is a redirect target: a duplicate
-/// identifier means whichever entry happens to be first wins, a client with no
-/// redirect URI can never complete a sign-in, and a URI that is not an absolute
-/// `https` address is either unusable or — with a fragment, or over plain HTTP
-/// — a way to leak a code out of the browser.
-fn oauth_clients(config: &Config) -> Result<(), Error> {
-    let mut seen: Vec<&str> = Vec::new();
-
-    for client in &config.auth.oauth.clients {
-        if client.id.trim().is_empty() {
-            return Err(oauth_refusal(
-                "a client under `[auth.oauth] clients` has an empty `id`",
-            ));
-        }
-
-        if seen.contains(&client.id.as_str()) {
-            return Err(oauth_refusal(&format!(
-                "`[auth.oauth] clients` registers `{}` twice",
-                client.id
-            )));
-        }
-
-        seen.push(&client.id);
-
-        if client.redirect_uris.is_empty() {
-            return Err(oauth_refusal(&format!(
-                "the client `{}` has no `redirect_uris`, so a code could never be delivered to it",
-                client.id
-            )));
-        }
-
-        for uri in &client.redirect_uris {
-            redirect_uri(&client.id, uri)?;
-        }
-    }
-
-    Ok(())
-}
-
-/// One registered redirect URI has to be one a browser could be sent to safely.
-fn redirect_uri(client: &str, uri: &str) -> Result<(), Error> {
-    let Ok(parsed) = url::Url::parse(uri) else {
-        return Err(oauth_refusal(&format!(
-            "the client `{client}` lists `{uri}`, which is not an absolute URI"
-        )));
-    };
-
-    if parsed.fragment().is_some() {
-        return Err(oauth_refusal(&format!(
-            "the client `{client}` lists `{uri}`, and a redirect URI may not carry a fragment"
-        )));
-    }
-
-    let loopback = matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
-
-    // A native client is registered with a loopback address, which is why the
-    // scheme rule has an exception rather than being absolute; anything else
-    // carrying a code over plain HTTP puts it in a proxy log.
-    if parsed.scheme() != "https" && !(parsed.scheme() == "http" && loopback) {
-        return Err(oauth_refusal(&format!(
-            "the client `{client}` lists `{uri}`, which would carry an authorization code over plaintext"
-        )));
-    }
-
-    Ok(())
-}
-
-/// The one shape an `[auth.oauth]` refusal takes.
-fn oauth_refusal(what: &str) -> Error {
-    human_errors::user(
-        format!("`[auth.oauth]` is not usable as written: {what}."),
-        &[
-            "Each client is `{ id = \"...\", redirect_uris = [\"https://...\"], public = true }`, with the URIs written out in full.",
-            "A redirect URI is compared byte for byte, so it has to be exactly the one the client sends.",
-        ],
-    )
 }
 
 /// The certificate authority has to be able to issue what it is asked for.
@@ -707,49 +627,6 @@ mod tests {
     fn a_credential_lifetime_of_zero_is_refused() {
         let message = refusal("[auth]\nenrollment_token_ttl = \"0s\"\n");
         assert!(message.contains("enrollment_token_ttl"), "{message}");
-    }
-
-    /// `[auth.oauth]` with one client whose redirect URIs are `uris`.
-    fn with_client(id: &str, uris: &str) -> String {
-        format!("[auth.oauth]\nclients = [{{ id = \"{id}\", redirect_uris = {uris} }}]\n")
-    }
-
-    #[test]
-    fn a_registered_client_needs_somewhere_to_send_a_code() {
-        let message = refusal(&with_client("app", "[]"));
-        assert!(message.contains("redirect_uris"), "{message}");
-    }
-
-    #[test]
-    fn a_client_identifier_cannot_be_registered_twice() {
-        // Otherwise whichever entry is first silently wins, and the redirect
-        // URIs of the other one are never honoured.
-        let message = refusal(
-            "[auth.oauth]\nclients = [\
-             { id = \"app\", redirect_uris = [\"https://a.example.com/cb\"] },\
-             { id = \"app\", redirect_uris = [\"https://b.example.com/cb\"] }]\n",
-        );
-
-        assert!(message.contains("twice"), "{message}");
-    }
-
-    #[test]
-    fn a_redirect_uri_that_would_leak_a_code_is_refused_at_load_time() {
-        for uris in [
-            r#"["http://app.example.com/cb"]"#,
-            r#"["/cb"]"#,
-            r#"["https://app.example.com/cb#fragment"]"#,
-        ] {
-            let message = refusal(&with_client("app", uris));
-            assert!(message.contains("[auth.oauth]"), "{uris}: {message}");
-        }
-    }
-
-    #[test]
-    fn a_loopback_client_may_use_plain_http_because_nothing_leaves_the_machine() {
-        let config = parse(&with_client("native", r#"["http://127.0.0.1:1234/cb"]"#));
-
-        assert_eq!(config.auth.oauth.clients.len(), 1);
     }
 
     #[test]

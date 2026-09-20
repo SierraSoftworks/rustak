@@ -271,6 +271,7 @@ are the file-level source of truth for implementation briefs. Decisions they int
 | M5 | OAuth2 server + OIDC federation (`/oauth/authorize`, `/login/*`), group claim mapping, admin UI polish | CloudTAK login with client password (node-tak + compose); browser SSO + passkeys for Yew UI (e2e) |
 | M6 | Services API + example sidecar, docs, release pipeline (tap, docker, cross) | Sidecar publishes CoT to a channel (interop/rust); `brew install` works |
 | M7 | Backlog closure (2026-09-19): `plain_bind` HTTP listener + ACME handles + wildcard refusal, CloudTAK hand-over sweep job, OIDC channel-cache invalidation, UI unit tests in CI + demo TLS sources, stdout ANSI (upstream in tracing-batteries) | Each `.claude/plan/backlog.md` line it names removed with tests; CI green |
+| M8 | rustak as an OpenID Connect provider (2026-09-20, user decision after CloudTAK SSO investigation): discovery, JWKS, ID tokens, userinfo, confidential clients with client secrets (PKCE optional for them), end-session redirects — so CloudTAK's forthcoming relying-party back end (dfpc-coe/CloudTAK#661) can point at rustak, which federates onward | A generic RP completes discovery → code → `client_secret_post` → ID token verified against JWKS → userinfo → certificate enrolment with the access token; password grant byte-identical; CI green |
 
 ## Verification
 

@@ -102,8 +102,23 @@ pub enum PendingKind {
         redirect_uri: String,
         /// The client's own `state`, returned untouched.
         client_state: Option<String>,
-        /// The client's `S256` proof-key challenge.
-        code_challenge: String,
+        /// The client's `S256` proof-key challenge, when it sent one. Always
+        /// [`Some`] for a public client; see [`super::codes`].
+        #[serde(default)]
+        code_challenge: Option<String>,
+        /// The OpenID scopes granted to the client, space-separated.
+        ///
+        /// Not the rustak scope, which is derived from the account when the
+        /// code is delivered and clamped again when it is redeemed.
+        #[serde(default)]
+        oidc_scope: Option<String>,
+        /// The **client's** `nonce`, which its ID token has to echo.
+        ///
+        /// Distinct from [`PendingAuth::nonce`], which is the one *we* sent the
+        /// upstream provider. Confusing the two would echo a value an attacker
+        /// chose into a token a relying party trusts.
+        #[serde(default)]
+        client_nonce: Option<String>,
     },
 }
 

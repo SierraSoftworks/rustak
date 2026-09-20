@@ -125,6 +125,16 @@ pub fn services(role: ListenerRole) -> impl FnOnce(&mut web::ServiceConfig) + Cl
                     .route("/token", web::post().to(oauth::token))
                     .route("/token_key", web::get().to(oauth::token_key))
                     .route("/jwks", web::get().to(oauth::jwks))
+                    // Both verbs: RFC 6750 §5.3.1 allows either and libraries
+                    // differ about which they send.
+                    .route(
+                        "/userinfo",
+                        web::get().to(crate::auth::oauth_server::userinfo),
+                    )
+                    .route(
+                        "/userinfo",
+                        web::post().to(crate::auth::oauth_server::userinfo),
+                    )
                     .default_service(web::to(unmatched)),
             );
     }

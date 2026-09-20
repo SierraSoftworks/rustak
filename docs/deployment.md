@@ -753,10 +753,19 @@ and that proof key — so a code lifted from an address bar, a `Referer` or a
 proxy log buys nothing.
 
 `public = true` (the default) says the client keeps no secret, which is every
-browser and mobile client. It is recorded but not yet acted on: rustak accepts
-no client secret, so proof key for code exchange is required whatever it says,
-and `public = false` changes nothing today. It exists so that adding client
-authentication later is not a change to the shape of your config file.
+browser and mobile client. A **confidential** client says `public = false`,
+carries a `secret`, and authenticates at `/oauth/token` with
+`client_secret_post` or `client_secret_basic`; for one of those the proof key
+becomes optional and is enforced only when the client sent a `code_challenge`.
+`rustak --check` refuses `public = false` with no `secret` and `public = true`
+with one, so a client cannot be half-configured.
+
+```toml
+[auth.oauth]
+clients = [
+  { id = "cloudtak", redirect_uris = ["https://map.example.com/api/login/oidc/callback"], public = false, secret = "${{ env.RUSTAK_OAUTH_CLIENT_SECRET }}" },
+]
+```
 
 There is no consent screen. Every client here was registered in this server's
 own configuration file by an operator, which makes them all first-party.
@@ -771,12 +780,79 @@ own configuration file by an operator, which makes them all first-party.
 | `GET /login/redirect` | Where the identity provider returns the browser. |
 | `GET /login/authserver` | The sign-in button's name (`[auth.oidc] display_name`), or `404` when no provider is configured. |
 | `GET /login/.well-known/openid-configuration` | The **upstream** provider's `authorization_endpoint` and `token_endpoint`, in TAK Server's bare shape. Not rustak's own discovery document. |
+| `GET /.well-known/openid-configuration` | rustak's **own** OpenID discovery document. See below. |
+| `GET /oauth/jwks` | The RS256 public keys, as a JSON Web Key Set. Cacheable for an hour. |
+| `GET\|POST /oauth/userinfo` | The account behind a bearer token: `sub`, `preferred_username`, `name`, `email`, `groups`. |
 | `GET /token/access` | The caller's own access token. |
-| `GET\|POST /logout` | Revokes the session and clears its cookies. `204`. |
+| `GET\|POST /logout` | Revokes the session and clears its cookies. `204`, or `302` to a registered `post_logout_redirect_uri`. |
 
 All of them are served on `[web.public]` only — never on the mutually
 authenticated `[web.marti]` listener, where a device already holds a stronger
 credential than any cookie and a browser has no business.
+
+### rustak as CloudTAK's identity provider
+
+CloudTAK's forthcoming single sign-on (upstream issue dfpc-coe/CloudTAK#661;
+TAK.NZ's fork runs it today) makes CloudTAK an OpenID Connect **relying
+party** — and rustak can be the provider it points at. That is worth doing even
+though rustak usually federates to a real identity provider itself: the token
+CloudTAK ends up holding is then rustak's own, so it can go straight on to
+`/Marti/api/tls/config` and `/Marti/api/tls/signClient/v2` and enrol a
+certificate with it. A third-party provider's token cannot do that.
+
+> **Not usable with a stock CloudTAK yet.** Upstream CloudTAK has not shipped
+> its relying-party back end (issue #661); its login form still posts a username
+> and password, which rustak serves at `/oauth/token` exactly as before. This
+> section is ready for that back end, not a replacement for what works today.
+
+Register CloudTAK as a confidential client:
+
+```toml
+[auth.oauth]
+admin_group = "admin"
+clients = [
+  { id = "cloudtak",
+    redirect_uris = ["https://<cloudtak>/api/login/oidc/callback"],
+    public = false,
+    secret = "${{ env.RUSTAK_OAUTH_CLIENT_SECRET }}",
+    post_logout_redirect_uris = ["https://<cloudtak>/"] },
+]
+```
+
+and tell CloudTAK:
+
+| CloudTAK setting | Value |
+|---|---|
+| Discovery URL | `https://<rustak>/.well-known/openid-configuration` |
+| Client ID | `cloudtak` — the `id` above |
+| Client secret | the `secret` above |
+| Scopes | `openid profile email groups` |
+
+The claims it will read:
+
+| Claim | What rustak puts in it |
+|---|---|
+| `preferred_username` | the rustak username — the same string as the access token's `sub` and the certificate's common name |
+| `email` | the account's email address, **only when it has one**. Never synthesised from the username |
+| `name` | the account's display name, when it has one |
+| `groups` | the channels the account holds, plus `[auth.oauth] admin_group` (default `"admin"`) for an administrator |
+
+`groups` is how a relying party maps its own roles: a channel is a group, and
+"this person administers rustak" is the one fact that is not a channel, so it is
+released as a group of its own. Rename it if you already have a channel called
+`admin`.
+
+rustak publishes `authorization_endpoint`, `token_endpoint`, `userinfo_endpoint`,
+`jwks_uri` and `end_session_endpoint` as absolute URLs built from `[auth] issuer`
+— which defaults to `[server] base_url` and is exactly the `iss` its tokens
+carry. Set one of those or the document is not served at all, because a document
+built from a `Host` header somebody else chose is a document that names
+somebody else's server.
+
+A sign-out may return the browser to the relying party with
+`/logout?client_id=…&post_logout_redirect_uri=…&state=…`, and does so **only**
+when that URI is one of the client's registered `post_logout_redirect_uris`,
+matched byte for byte. Anything else is the ordinary `204`.
 
 ### Where a cookie counts as a credential
 

@@ -57,7 +57,10 @@ database is embedded.
 - **No passwords by default.** Administrators sign in with passkeys (WebAuthn) or an OpenID
   Connect provider; first-run setup is unlocked by a one-time token written to disk. The only
   reusable secret is an opt-in, expiring *client password* minted explicitly for clients that need
-  one — CloudTAK's `/oauth/token` password grant — and it is accepted nowhere else.
+  one — CloudTAK's `/oauth/token` password grant — and it is accepted nowhere else. rustak is also
+  an OpenID Connect **provider** in its own right, with a discovery document, a key set, ID tokens
+  and `/oauth/userinfo`, so a client can sign people in against it and enrol a certificate with the
+  very same token.
 - **Channels, contacts and data packages as ATAK expects them.** Channel membership with IN/OUT
   direction and per-device active state, `t-x-g-c` change notices, contact and client-endpoint
   listings, mission-package upload and download over `/Marti/sync/*`, and `b-f-t-r` relay between

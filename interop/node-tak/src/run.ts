@@ -46,6 +46,7 @@ const SCENARIOS = [
   "missions.test.ts",
   "files.test.ts",
   "cloudtak-onboarding.test.ts",
+  "oidc-provider.test.ts",
 ].map((name) => path.join("tests", name));
 
 /** Runs a Node child with TypeScript support and the server's authority trusted. */

@@ -21,6 +21,16 @@
 //! wrong guess must not be a way to burn the code the legitimate browser is
 //! about to redeem. Guessing is not a concern — the verifier is 256 bits.
 //!
+//! # The code with no proof key
+//!
+//! A code may be issued with no challenge at all, and then (3) is skipped. That
+//! is only reachable for a **confidential** client: `authorize.rs` refuses to
+//! issue a public client a code without one, and `/oauth/token` refuses to
+//! redeem a confidential client's code without its secret. So a row with a NULL
+//! challenge is one whose theft still buys nothing, because the thief would
+//! also need the secret — which is the trade the specification makes and the
+//! one CloudTAK's relying party relies on (it sends no `code_challenge`).
+//!
 //! The code itself is never stored, only its SHA-256: it is randomness we
 //! generated, so there is no dictionary for a slow hash to defend against and
 //! nothing for a reader of the database to learn.
@@ -63,10 +73,16 @@ pub struct NewCode {
     pub user_id: UserId,
     /// The exact URI it will be delivered to.
     pub redirect_uri: String,
-    /// The scope of the session it will be exchanged for.
+    /// The rustak scope of the session it will be exchanged for.
     pub scope: String,
-    /// The client's `S256` proof-key challenge.
-    pub code_challenge: String,
+    /// The OpenID scopes granted, space-separated. [`None`] when the request
+    /// asked for none, which is every client that is not a relying party.
+    pub oidc_scope: Option<String>,
+    /// The relying party's `nonce`, which its ID token has to echo.
+    pub nonce: Option<String>,
+    /// The client's `S256` proof-key challenge. [`None`] only for a
+    /// confidential client that sent none; see the module documentation.
+    pub code_challenge: Option<String>,
 }
 
 /// What a redemption established.
@@ -74,8 +90,16 @@ pub struct NewCode {
 pub struct Redemption {
     /// Whose session this becomes.
     pub user_id: UserId,
-    /// The scope recorded when the code was issued.
+    /// The rustak scope recorded when the code was issued, which is a ceiling
+    /// rather than a grant.
     pub scope: String,
+    /// The OpenID scopes granted when the code was issued.
+    pub oidc_scope: Option<String>,
+    /// The `nonce` the ID token has to echo, when one was sent.
+    pub nonce: Option<String>,
+    /// When the code was issued, which is when the account's session was last
+    /// confirmed at `/oauth/authorize` — an ID token's `auth_time`.
+    pub authorized_at: DateTime<Utc>,
 }
 
 /// Why a code was not redeemed.
@@ -112,20 +136,24 @@ pub async fn issue(db: &Database, new: NewCode) -> Result<String, Error> {
     let expires_at = Utc::now() + chrono::Duration::minutes(CODE_TTL_MINUTES);
     let hash = hash(&code);
 
+    let method = new.code_challenge.as_ref().map(|_| S256);
+
     db.write(move |tx| {
         tx.execute(
             "INSERT INTO oauth_codes \
-               (code_hash, client_id, user_id, redirect_uri, scope, code_challenge, \
-                code_challenge_method, created_at, expires_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+               (code_hash, client_id, user_id, redirect_uri, scope, oidc_scope, nonce, \
+                code_challenge, code_challenge_method, created_at, expires_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             rusqlite::params![
                 hash,
                 new.client_id,
                 new.user_id.get(),
                 new.redirect_uri,
                 new.scope,
+                new.oidc_scope,
+                new.nonce,
                 new.code_challenge,
-                S256,
+                method,
                 Timestamp::now(),
                 Timestamp::from(expires_at),
             ],
@@ -148,30 +176,33 @@ pub async fn redeem(
     code: &str,
     client_id: &str,
     redirect_uri: &str,
-    code_verifier: &str,
+    code_verifier: Option<&str>,
 ) -> Result<Redemption, CodeError> {
     let hash = hash(code);
     let client_id = client_id.to_string();
     let redirect_uri = redirect_uri.to_string();
-    let presented = pkce::challenge_for(code_verifier);
+    let presented = code_verifier.map(pkce::challenge_for);
 
     db.write(move |tx| {
-        let Some((stored_client, stored_uri, stored_challenge, user_id, scope, expires, consumed)) =
-            tx.query_one(
+        let Some(row) = tx
+            .query_one(
                 "SELECT client_id, redirect_uri, code_challenge, user_id, scope, expires_at, \
-                        consumed_at \
+                        consumed_at, oidc_scope, nonce, created_at \
                  FROM oauth_codes WHERE code_hash = ?1",
                 [&hash],
                 |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        crate::db::row::id_col::<UserId>(row, 3)?,
-                        row.get::<_, String>(4)?,
-                        crate::db::row::ts(row, 5)?,
-                        crate::db::row::opt_ts(row, 6)?,
-                    ))
+                    Ok(Stored {
+                        client_id: row.get::<_, String>(0)?,
+                        redirect_uri: row.get::<_, String>(1)?,
+                        code_challenge: row.get::<_, Option<String>>(2)?,
+                        user_id: crate::db::row::id_col::<UserId>(row, 3)?,
+                        scope: row.get::<_, String>(4)?,
+                        expires_at: crate::db::row::ts(row, 5)?,
+                        consumed_at: crate::db::row::opt_ts(row, 6)?,
+                        oidc_scope: row.get::<_, Option<String>>(7)?,
+                        nonce: row.get::<_, Option<String>>(8)?,
+                        created_at: crate::db::row::ts(row, 9)?,
+                    })
                 },
             )
             .optional()?
@@ -180,17 +211,17 @@ pub async fn redeem(
         };
 
         let now = Utc::now();
-        let spent: Option<DateTime<Utc>> = consumed;
+        let spent: Option<DateTime<Utc>> = row.consumed_at;
 
-        if spent.is_some() || expires <= now {
+        if spent.is_some() || row.expires_at <= now {
             return Ok(None);
         }
 
         // Checked before the row is marked, so that a wrong guess cannot burn
         // the code the legitimate browser is about to present.
-        if !constant_time_eq(&stored_client, &client_id)
-            || !constant_time_eq(&stored_uri, &redirect_uri)
-            || !constant_time_eq(&stored_challenge, &presented)
+        if !constant_time_eq(&row.client_id, &client_id)
+            || !constant_time_eq(&row.redirect_uri, &redirect_uri)
+            || !proof_key_holds(row.code_challenge.as_deref(), presented.as_deref())
         {
             return Ok(None);
         }
@@ -208,10 +239,45 @@ pub async fn redeem(
             return Ok(None);
         }
 
-        Ok(Some(Redemption { user_id, scope }))
+        Ok(Some(Redemption {
+            user_id: row.user_id,
+            scope: row.scope,
+            oidc_scope: row.oidc_scope,
+            nonce: row.nonce,
+            authorized_at: row.created_at,
+        }))
     })
     .await?
     .ok_or(CodeError::Invalid)
+}
+
+/// One `oauth_codes` row, as a redemption reads it.
+struct Stored {
+    client_id: String,
+    redirect_uri: String,
+    code_challenge: Option<String>,
+    user_id: UserId,
+    scope: String,
+    expires_at: DateTime<Utc>,
+    consumed_at: Option<DateTime<Utc>>,
+    oidc_scope: Option<String>,
+    nonce: Option<String>,
+    created_at: DateTime<Utc>,
+}
+
+/// Whether the proof key a code was issued with is satisfied.
+///
+/// A code issued **with** a challenge needs the matching verifier and nothing
+/// else will do — a missing verifier is a refusal, not a waiver. A code issued
+/// **without** one is satisfied whatever the caller sent, because the binding
+/// that stands in for it is the client secret `/oauth/token` has already
+/// checked; see the module documentation for why only a confidential client can
+/// hold such a code.
+fn proof_key_holds(registered: Option<&str>, presented: Option<&str>) -> bool {
+    match registered {
+        Some(challenge) => presented.is_some_and(|value| constant_time_eq(challenge, value)),
+        None => true,
+    }
 }
 
 /// Deletes codes that expired before `before`.
@@ -253,7 +319,9 @@ mod tests {
                 user_id: user.id,
                 redirect_uri: "https://app.example.com/cb".to_string(),
                 scope: "api".to_string(),
-                code_challenge: pkce.challenge.clone(),
+                oidc_scope: Some("openid profile".to_string()),
+                nonce: Some("a-nonce".to_string()),
+                code_challenge: Some(pkce.challenge.clone()),
             },
         )
         .await
@@ -263,7 +331,14 @@ mod tests {
     }
 
     async fn redeemed(db: &Database, code: &str, verifier: &str) -> Result<Redemption, CodeError> {
-        redeem(db, code, "app", "https://app.example.com/cb", verifier).await
+        redeem(
+            db,
+            code,
+            "app",
+            "https://app.example.com/cb",
+            Some(verifier),
+        )
+        .await
     }
 
     #[tokio::test]
@@ -274,6 +349,8 @@ mod tests {
 
         assert_eq!(first.user_id, user);
         assert_eq!(first.scope, "api");
+        assert_eq!(first.oidc_scope.as_deref(), Some("openid profile"));
+        assert_eq!(first.nonce.as_deref(), Some("a-nonce"));
         assert!(
             matches!(
                 redeemed(&db, &code, &verifier).await,
@@ -314,7 +391,7 @@ mod tests {
                 &code,
                 "app",
                 "https://app.example.com/cb/elsewhere",
-                &verifier
+                Some(&verifier)
             )
             .await,
             Err(CodeError::Invalid),
@@ -333,7 +410,7 @@ mod tests {
                 &code,
                 "another-app",
                 "https://app.example.com/cb",
-                &verifier
+                Some(&verifier)
             )
             .await,
             Err(CodeError::Invalid),
@@ -351,7 +428,9 @@ mod tests {
                 user_id: user,
                 redirect_uri: "https://app.example.com/cb".to_string(),
                 scope: "api".to_string(),
-                code_challenge: challenge,
+                oidc_scope: None,
+                nonce: None,
+                code_challenge: Some(challenge),
             },
         )
         .await
@@ -371,6 +450,68 @@ mod tests {
             Err(CodeError::Invalid)
         ));
         assert_eq!(prune(&db, Utc::now()).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_code_issued_with_a_proof_key_is_not_redeemed_without_one() {
+        // The missing verifier is a refusal, not a waiver: otherwise the
+        // control would be switched off by leaving a field out of the form.
+        let (db, _, code, verifier) = fixture().await;
+
+        assert!(matches!(
+            redeem(&db, &code, "app", "https://app.example.com/cb", None).await,
+            Err(CodeError::Invalid),
+        ));
+
+        assert!(
+            redeemed(&db, &code, &verifier).await.is_ok(),
+            "and the omission must not have burnt the code either",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_code_issued_without_a_proof_key_is_redeemed_without_one() {
+        // Only a confidential client can hold one of these, and `/oauth/token`
+        // has already checked its secret by the time this runs.
+        let db = Database::open_in_memory().await.unwrap();
+        let user = db
+            .users()
+            .create(NewUser::person(Username::parse("ada").unwrap()))
+            .await
+            .unwrap();
+
+        let code = issue(
+            &db,
+            NewCode {
+                client_id: "app".to_string(),
+                user_id: user.id,
+                redirect_uri: "https://app.example.com/cb".to_string(),
+                scope: "api".to_string(),
+                oidc_scope: Some("openid".to_string()),
+                nonce: None,
+                code_challenge: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let redeemed = redeem(&db, &code, "app", "https://app.example.com/cb", None)
+            .await
+            .expect("a confidential client's code needs no verifier");
+
+        assert_eq!(redeemed.user_id, user.id);
+        assert_eq!(redeemed.oidc_scope.as_deref(), Some("openid"));
+        assert_eq!(redeemed.nonce, None);
+    }
+
+    #[test]
+    fn a_registered_proof_key_is_never_satisfied_by_a_missing_one() {
+        assert!(proof_key_holds(None, None));
+        assert!(proof_key_holds(None, Some("anything")));
+        assert!(proof_key_holds(Some("challenge"), Some("challenge")));
+        assert!(!proof_key_holds(Some("challenge"), None));
+        assert!(!proof_key_holds(Some("challenge"), Some("")));
+        assert!(!proof_key_holds(Some("challenge"), Some("challeng")));
     }
 
     #[tokio::test]

@@ -32,11 +32,13 @@
 //! emitted, with the substring CloudTAK looks for.
 
 use actix_web::http::StatusCode;
-use actix_web::http::header::RETRY_AFTER;
-use actix_web::{HttpRequest, HttpResponse, web};
+use actix_web::{HttpRequest, web};
 use std::sync::Arc;
 
-use crate::auth::oauth_server::codes::{self, CodeError};
+use crate::auth::oauth_server::code_grant;
+use crate::auth::oauth_server::responses::{
+    TOKEN_TYPE, bad_credentials, expires_in, granted, oauth_error, rate_limited, unavailable,
+};
 use crate::auth::{RateLimiter, tokens};
 use crate::identity::secret_cache::VerifiedSecretCache;
 use crate::identity::verify::{Purpose, VerifyError, verify};
@@ -46,19 +48,15 @@ use crate::web::helpers::request::client_address;
 use super::error::MartiResult;
 use super::response;
 
-/// The `token_type` every response carries. Capitalised, as both clients send
-/// it back.
-const TOKEN_TYPE: &str = "Bearer";
-
 /// The rate-limiter subject used when a request named no account.
 const ANONYMOUS_SUBJECT: &str = "oauth-token";
 
 /// The form `POST /oauth/token` accepts.
 ///
-/// `client_id`, `client_secret` and `scope` are deliberately absent: neither
-/// verified client sends them and TAK Server ignores them when they arrive.
-/// They are tolerated rather than rejected — see [`token`].
-#[derive(Debug, Clone, Deserialize)]
+/// `scope` is deliberately absent: neither verified client sends it and TAK
+/// Server ignores it when it arrives. It is tolerated rather than rejected —
+/// see [`token`].
+#[derive(Clone, Deserialize)]
 pub struct TokenForm {
     /// `password`, `refresh_token` or `authorization_code`.
     pub grant_type: String,
@@ -93,6 +91,15 @@ pub struct TokenForm {
     /// do (`compat/oauth.md` §1).
     #[serde(default)]
     pub client_id: Option<String>,
+
+    /// The `authorization_code` grant: `client_secret_post`, for a confidential
+    /// client that does not use `client_secret_basic`.
+    ///
+    /// Read for that grant alone, and never logged or traced: the field is
+    /// deliberately not in this struct's `Debug` output, which is why
+    /// [`TokenForm`] is never rendered with one.
+    #[serde(default)]
+    pub client_secret: Option<String>,
 }
 
 /// `POST /oauth/token`.
@@ -125,7 +132,19 @@ pub async fn token(
     match form.grant_type.as_str() {
         "password" => password_grant(&request, &context, limiter, &form).await,
         "refresh_token" => refresh_grant(&context, &form).await,
-        "authorization_code" => code_grant(&context, &form).await,
+        "authorization_code" => Ok(code_grant::grant(
+            &request,
+            &context,
+            limiter,
+            code_grant::Form {
+                code: form.code.as_deref(),
+                redirect_uri: form.redirect_uri.as_deref(),
+                client_id: form.client_id.as_deref(),
+                client_secret: form.client_secret.as_deref(),
+                code_verifier: form.code_verifier.as_deref(),
+            },
+        )
+        .await),
         other => {
             debug!(grant = %other, "Refused a grant type this endpoint does not serve.");
 
@@ -156,6 +175,14 @@ pub async fn token_key(context: web::Data<AppContext>) -> MartiResult {
 /// `GET /oauth/jwks` — the same key as a JSON Web Key Set, plus any retired key
 /// whose tokens could still be presented.
 ///
+/// The set a relying party verifies an ID token against, so it is deliberately
+/// cacheable: a library fetches it on the first token it sees and again when a
+/// `kid` it does not know turns up, and an hour is short enough that a rotation
+/// is not felt while being long enough that a busy relying party is not
+/// refetching it per sign-in. Nothing here is secret — that is what makes a
+/// public cache safe, and why the key material never leaves
+/// [`crate::auth::jwt`].
+///
 /// # Errors
 ///
 /// As [`token_key`].
@@ -164,7 +191,14 @@ pub async fn jwks(context: web::Data<AppContext>) -> MartiResult {
         return Ok(unavailable());
     };
 
-    Ok(response::bare_json(&jwt.jwks()))
+    let mut response = response::bare_json(&jwt.jwks());
+
+    response.headers_mut().insert(
+        actix_web::http::header::CACHE_CONTROL,
+        actix_web::http::header::HeaderValue::from_static("public, max-age=3600"),
+    );
+
+    Ok(response)
 }
 
 /// `grant_type=password`: a username and a client password for a token.
@@ -317,210 +351,34 @@ async fn refresh_grant(context: &AppContext, form: &TokenForm) -> MartiResult {
     }
 }
 
-/// `grant_type=authorization_code`: redeeming a code from `/oauth/authorize`.
-///
-/// The three bindings the code carries — the client, the redirect URI and the
-/// proof-key challenge — are checked by
-/// [`codes::redeem`](crate::auth::oauth_server::codes::redeem), inside the same
-/// transaction that spends the code, so a wrong guess cannot burn the code a
-/// browser is about to present and two simultaneous redemptions cannot both
-/// win. Every refusal is the same `invalid_grant`, whichever binding failed.
-async fn code_grant(context: &AppContext, form: &TokenForm) -> MartiResult {
-    let (Some(code), Some(redirect_uri), Some(verifier), Some(client_id)) = (
-        form.code.as_deref(),
-        form.redirect_uri.as_deref(),
-        form.code_verifier.as_deref(),
-        form.client_id.as_deref(),
-    ) else {
-        return Ok(oauth_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "An authorization_code grant needs a code, a redirect_uri, a code_verifier and a client_id.",
-        ));
-    };
-
-    // Checked before the code is looked at, so that a client removed from the
-    // configuration cannot redeem a code issued while it was still registered.
-    if context.config().auth.oauth.client(client_id).is_none() {
-        debug!(client = %client_id, "Refused a code grant from an unregistered client.");
-
-        return Ok(invalid_grant());
-    }
-
-    let redemption =
-        match codes::redeem(context.db(), code, client_id, redirect_uri, verifier).await {
-            Ok(redemption) => redemption,
-            Err(CodeError::Unavailable(err)) => {
-                error!(error = %err, "Could not redeem an authorization code.");
-                context.session().record_human_error(&err);
-
-                return Ok(unavailable());
-            }
-            Err(CodeError::Invalid) => {
-                debug!(client = %client_id, "Refused an authorization code.");
-
-                return Ok(invalid_grant());
-            }
-        };
-
-    let Ok(Some(user)) = context.db().users().get(redemption.user_id).await else {
-        return Ok(invalid_grant());
-    };
-
-    if user.disabled {
-        return Ok(invalid_grant());
-    }
-
-    // Derived from the account now rather than from the scope recorded when
-    // the code was issued, exactly as `tokens::rotate` does: a code stands for
-    // up to ten minutes, and somebody demoted inside that window must not be
-    // handed the administrative scope their code still remembers. The recorded
-    // scope is not simply trusted — it is the *ceiling*, so a code minted for an
-    // ordinary session cannot become an administrative one either.
-    let is_admin = user.is_effective_admin() && tokens::grants_admin(&redemption.scope);
-    let scope = tokens::scope_for(is_admin);
-    let session = match tokens::issue_session(context, &user, is_admin, Some(client_id)).await {
-        Ok(session) => session,
-        Err(err) => {
-            error!(error = %err, "Could not issue a session for an authorization code.");
-            context.session().record_human_error(&err);
-
-            return Ok(unavailable());
-        }
-    };
-
-    info!(
-        client = %client_id,
-        username = %user.username,
-        "Exchanged an authorization code for a session.",
-    );
-
-    Ok(granted(serde_json::json!({
-        "access_token": session.token,
-        "token_type": TOKEN_TYPE,
-        "expires_in": session.expires_in,
-        "refresh_token": session.refresh_token,
-        "scope": scope,
-    })))
-}
-
-/// The one refusal a code grant ever gets, whichever binding failed.
-fn invalid_grant() -> HttpResponse {
-    oauth_error(
-        StatusCode::BAD_REQUEST,
-        "invalid_grant",
-        "That authorization code was not accepted.",
-    )
-}
-
-/// How long an access token has left, in whole seconds.
-fn expires_in(exp: i64) -> u64 {
-    u64::try_from(exp - chrono::Utc::now().timestamp()).unwrap_or(0)
-}
-
-/// A successful grant: exactly `application/json`, and never cached.
-fn granted(body: serde_json::Value) -> HttpResponse {
-    let mut response = response::bare_json(&body);
-
-    response.headers_mut().insert(
-        actix_web::http::header::CACHE_CONTROL,
-        actix_web::http::header::HeaderValue::from_static("no-store"),
-    );
-
-    response
-}
-
-/// The one refusal a bad credential ever gets.
-///
-/// `Bad credentials` is the substring CloudTAK sniffs for to show a friendlier
-/// message; nothing branches on the rest of the wording.
-fn bad_credentials() -> HttpResponse {
-    oauth_error(
-        StatusCode::UNAUTHORIZED,
-        "invalid_grant",
-        "Bad credentials: that username and password were not accepted.",
-    )
-}
-
-/// An OAuth error object, with the status it belongs to.
-fn oauth_error(status: StatusCode, error: &str, description: &str) -> HttpResponse {
-    response::bare_json_with(
-        status,
-        &serde_json::json!({ "error": error, "error_description": description }),
-    )
-}
-
-/// Too many attempts, and when to come back.
-fn rate_limited(retry_after: chrono::Duration) -> HttpResponse {
-    let seconds = retry_after.num_seconds().max(1);
-    let mut response = oauth_error(
-        StatusCode::TOO_MANY_REQUESTS,
-        "invalid_grant",
-        "Bad credentials: too many attempts. Try again later.",
-    );
-
-    if let Ok(value) = actix_web::http::header::HeaderValue::from_str(&seconds.to_string()) {
-        response.headers_mut().insert(RETRY_AFTER, value);
-    }
-
-    response
-}
-
-/// A failure of ours, in the shape this endpoint's callers parse.
-fn unavailable() -> HttpResponse {
-    oauth_error(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "temporarily_unavailable",
-        "This server cannot issue tokens right now.",
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn a_refusal_carries_the_substring_cloudtak_looks_for() {
-        // CloudTAK turns a body containing `Bad credentials` into a friendlier
-        // message; nothing else about the wording is parsed.
-        let response = bad_credentials();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(
-            response
-                .headers()
-                .get(actix_web::http::header::CONTENT_TYPE),
-            Some(&response::JSON),
-            "node-tak compares this header with string equality",
+    fn the_grants_this_endpoint_serves_are_named_in_its_refusal() {
+        // A client that sent something else should be told what is on offer
+        // rather than left guessing which of the three it wanted.
+        let response = oauth_error(
+            StatusCode::BAD_REQUEST,
+            "unsupported_grant_type",
+            "This server supports the password, refresh_token and authorization_code grants.",
         );
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
-    #[test]
-    fn a_granted_token_is_never_cached() {
-        let response = granted(serde_json::json!({ "access_token": "x" }));
+    #[actix_web::test]
+    async fn the_key_endpoints_say_so_when_no_key_is_installed() {
+        // A start-up ordering problem rather than anything the caller did.
+        let context = AppContext::new_mock(|_| {}).await.expect("a mock context");
+        let data = web::Data::new(context);
 
-        assert_eq!(
-            response
-                .headers()
-                .get(actix_web::http::header::CACHE_CONTROL)
-                .unwrap(),
-            "no-store",
-        );
-    }
-
-    #[test]
-    fn a_lockout_says_when_to_come_back() {
-        let response = rate_limited(chrono::Duration::minutes(15));
-
-        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(response.headers().get(RETRY_AFTER).unwrap(), "900");
-    }
-
-    #[test]
-    fn an_expiry_in_the_past_is_zero_rather_than_an_enormous_number() {
-        // `expires_in` is unsigned on the wire; a token that expired while the
-        // response was being built must not become 18 quintillion seconds.
-        assert_eq!(expires_in(chrono::Utc::now().timestamp() - 60), 0);
-        assert!(expires_in(chrono::Utc::now().timestamp() + 60) > 0);
+        for response in [
+            token_key(data.clone()).await.unwrap(),
+            jwks(data.clone()).await.unwrap(),
+        ] {
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        }
     }
 }
