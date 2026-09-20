@@ -1,6 +1,6 @@
 # rustak — a lightweight Rust-native TAK server
 
-> Status: FEATURE-COMPLETE FOR THE PLANNED SCOPE (2026-09-19). M0–M7 landed (M7 = backlog closure, same day); both interop suites 9/9 (re-confirmed
+> Status: FEATURE-COMPLETE FOR THE PLANNED SCOPE (2026-09-19). M0–M7 landed (M7 = backlog closure, same day); M8 (rustak as an OIDC provider) and M9 (AIS/ADS-B feed sidecars + Services page) landed 2026-09-20; both interop suites 9/9 (re-confirmed
 > after the review fixes); all three independent reviews actioned; loose ends closed. Open: the first pre-release
 > tag (user decision), making the ghcr package public, the security-audit ignore list, running the manual
 > checklists in `docs/compat/` on real devices, and `.claude/plan/backlog.md`.
