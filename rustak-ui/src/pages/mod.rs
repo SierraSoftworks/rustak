@@ -2,13 +2,13 @@
 
 mod activity;
 mod auth_callback;
-mod clients;
 mod cot_browser;
 mod cot_drawer;
 mod dashboard;
 #[cfg(debug_assertions)]
 mod demo;
-mod devices;
+mod eud_rows;
+mod euds;
 mod group_members;
 mod groups;
 mod landing;
@@ -42,12 +42,11 @@ mod users;
 
 pub use activity::Activity;
 pub use auth_callback::AuthCallback;
-pub use clients::Clients;
 pub use cot_browser::Situation;
 pub use dashboard::Dashboard;
 #[cfg(debug_assertions)]
 pub use demo::DemoControls;
-pub use devices::Euds;
+pub use euds::Euds;
 pub use groups::Groups;
 pub use landing::Landing;
 pub use login::Login;
