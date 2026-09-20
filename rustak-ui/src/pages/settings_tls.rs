@@ -82,7 +82,7 @@ fn is_fetched(source: TlsSource) -> bool {
 fn renew_label(source: TlsSource) -> (&'static str, &'static str, &'static str) {
     match source {
         TlsSource::Files => (
-            "Re-read the files",
+            "Reload certs",
             "Read the certificate files now rather than waiting for the next check.",
             "We could not re-read the certificate files.",
         ),
@@ -386,7 +386,7 @@ mod tests {
         assert!(!is_fetched(TlsSource::Internal));
         assert!(!is_fetched(TlsSource::None));
 
-        assert_eq!(renew_label(TlsSource::Files).0, "Re-read the files");
+        assert_eq!(renew_label(TlsSource::Files).0, "Reload certs");
         assert_eq!(renew_label(TlsSource::Acme).0, "Renew now");
         assert_eq!(
             renew_label(TlsSource::Files).2,

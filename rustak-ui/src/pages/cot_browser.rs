@@ -23,8 +23,8 @@ use crate::util::{format_iso8601, short_relative};
 use super::cot_drawer::CotDrawer;
 use super::load::{use_refresh_action, use_resource};
 
-#[function_component(CotBrowser)]
-pub fn cot_browser() -> Html {
+#[function_component(Situation)]
+pub fn situation() -> Html {
     let filter = use_state(CotFilter::default);
     let wanted = (*filter).clone();
 

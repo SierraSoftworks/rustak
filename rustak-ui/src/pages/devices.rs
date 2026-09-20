@@ -8,7 +8,7 @@ use yew::prelude::*;
 
 use super::panels::DevicesPanel;
 
-#[function_component(Devices)]
-pub fn devices() -> Html {
+#[function_component(Euds)]
+pub fn euds() -> Html {
     html! { <DevicesPanel title="Enrolled devices" filterable=true show_owner=true /> }
 }

@@ -39,8 +39,8 @@ macro_rules! stub {
 }
 
 stub!(
-    Services,
-    services,
+    AddOns,
+    add_ons,
     "M6",
     "The sidecars connected to this server, what they can do, and whether they \
      are still reporting in."

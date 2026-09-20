@@ -25,7 +25,7 @@ test.beforeEach(async ({ page }) => {
 test("a listener waiting for its certificate files says so, and says which files", async ({
   page,
 }) => {
-  await gotoApp(page, "/admin/settings?demo&tls=files");
+  await gotoApp(page, "/admin/settings/security?demo&tls=files");
 
   await expect(page.getByRole("heading", { name: "Transport security" })).toBeVisible();
   await expect(page.getByText("Read from the files named in the configuration.")).toBeVisible();
@@ -46,14 +46,14 @@ test("a listener waiting for its certificate files says so, and says which files
 
   // A files listener places no orders, so the button is a re-read and the ACME
   // rows are not on the card at all.
-  await expect(page.getByRole("button", { name: "Re-read the files" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Reload certs" })).toBeVisible();
   await expect(page.getByText("Directory", { exact: true })).toHaveCount(0);
 });
 
 test("an ACME listener whose orders keep failing shows the authority's own reason", async ({
   page,
 }) => {
-  await gotoApp(page, "/admin/settings?demo");
+  await gotoApp(page, "/admin/settings/security?demo");
 
   await expect(page.getByText("3 orders in a row have failed.")).toBeVisible();
   await expect(page.getByText("no valid A record found", { exact: false })).toBeVisible();

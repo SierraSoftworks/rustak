@@ -31,7 +31,7 @@ Do not re-check these by hand; they fail the build (or the nightly job) if they 
 ## 1. QR enrolment
 
 1. In the admin UI, open **Account** (`/admin/users/{username}`) → **Credentials** — or, signed in as
-   the enrolling user, **Credentials** (`/admin/credentials`) — and mint a one-time enrolment token.
+   the enrolling user, **Account** (`/admin/settings/account`) — and mint a one-time enrolment token.
    The QR code and the `tak://com.atakmap.app/enroll?...` link are shown once; note them before
    navigating away.
 2. On the device: ATAK → the server/network icon → **+** → **Quick Connect**, and scan the QR (or
@@ -72,7 +72,7 @@ this page.
 
 Prereq: an enrolled device from §1 with `prefs_enable_channels` turned on.
 
-1. In **Channels** (`/admin/groups`), create two channels: e.g. `Blue` (grant the enrolled account
+1. In **Channels** (`/admin/channels`), create two channels: e.g. `Blue` (grant the enrolled account
    both `IN` and `OUT`) and `Red` (grant `OUT` only).
 2. On the device, open the Channels overlay (map overlays → Channels).
    - [ ] Both channels are listed. Neither silently disappears — a channel with no `bitpos` would

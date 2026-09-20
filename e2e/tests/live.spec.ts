@@ -49,7 +49,7 @@ test("a server with nothing connected says so rather than failing", async ({ pag
 });
 
 test("the situational-awareness browser is empty rather than broken", async ({ page }) => {
-  await gotoApp(page, "/admin/cot");
+  await gotoApp(page, "/admin/situation");
 
   await expect(
     page.getByText("This server holds the latest message per identifier", { exact: false }),

@@ -107,7 +107,8 @@ test("an administrator signs in with a passkey, and signing out ends the session
 
   // The passkey the wizard registered lives in a browser profile that has
   // already gone, so this profile registers its own — which is also the thing
-  // `/admin/settings` exists to let somebody do before they lose their first.
+  // `/admin/settings/account` exists to let somebody do before they lose their
+  // first.
   const registered = await registerPasskey(page, {
     label: uniqueName("This device"),
     token: session.token,
