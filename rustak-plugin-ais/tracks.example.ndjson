@@ -1,0 +1,10 @@
+# Five vessels in the Maas approach, for the `replay` source: one JSON track per
+# line. This is the fixture format documented in docs/plugins.md -> "Feed
+# sidecars"; `observed_at` is when the observation was made, and a replay
+# re-stamps it as it offers each line so that a demonstration does not publish
+# tracks that every client expires on arrival.
+{"id":"AIS-244660000","kind":{"vessel":"merchant"},"position":[51.9512,4.1338],"speed_mps":6.2,"course_deg":271.5,"heading_deg":270.0,"callsign":"ZEEBRUGGE","remarks":[["MMSI","244660000"],["Type","Cargo"],["Destination","ROTTERDAM"]],"observed_at":"2026-09-20T12:00:00Z"}
+{"id":"AIS-235094384","kind":{"vessel":"fishing"},"position":[51.9840,3.9521],"speed_mps":2.4,"course_deg":38.0,"callsign":"NORDKAP","remarks":[["MMSI","235094384"],["Type","Fishing"],["Status","Engaged in fishing"]],"observed_at":"2026-09-20T12:00:02Z"}
+{"id":"AIS-244123456","kind":{"vessel":"leisure"},"position":[51.8977,4.0104],"speed_mps":3.1,"course_deg":184.0,"callsign":"WINDSONG","remarks":[["MMSI","244123456"],["Type","Sailing"]],"observed_at":"2026-09-20T12:00:03Z"}
+{"id":"AIS-246789012","kind":{"vessel":"law_enforcement"},"position":[51.9203,4.2711],"speed_mps":9.8,"course_deg":92.0,"callsign":"RWS PATROL","remarks":[["MMSI","246789012"],["Type","Law enforcement"]],"observed_at":"2026-09-20T12:00:04Z"}
+{"id":"AIS-205123456","kind":{"vessel":"merchant"},"position":[52.0188,4.0462],"speed_mps":0.1,"course_deg":15.0,"callsign":"ANTWERP EXPRESS","remarks":[["MMSI","205123456"],["Type","Tanker"],["Status","At anchor"]],"observed_at":"2026-09-20T12:00:05Z"}

@@ -11,6 +11,7 @@
 //! | [`control`] | `/api/v1/services/*`: registration, heartbeats, per-service configuration, and the server-event feed |
 //! | [`enroll`] | CSR → `signClient/v2`, which is how a sidecar gets its certificate |
 //! | [`sidecar`] | The [`Sidecar`](sidecar::Sidecar) trait and the [`run()`](sidecar::run()) harness that drives one over all of the above |
+//! | [`feed`] | Information feeds: an observation model, the CoT type mapping, an area of interest and a rate-limiting publisher |
 //! | [`http`] | The shared `reqwest` client the two HTTP clients are built on |
 //!
 //! A plugin author writes against [`sidecar`] and reaches the rest through the
@@ -20,6 +21,7 @@
 
 pub mod control;
 pub mod enroll;
+pub mod feed;
 pub mod http;
 pub mod marti;
 pub mod sidecar;

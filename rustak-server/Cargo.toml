@@ -108,6 +108,13 @@ rustak-server = { path = ".", features = ["testing"] }
 # `testing` brings in `stream::testing::Eud`, the fake EUD the `stream_*`
 # integration suites drive the listener with.
 rustak-client = { workspace = true, features = ["testing"] }
+# `feed_sidecars` drives the two feed plugins as libraries rather than
+# re-implementing them, so that what the suite proves is the plugin that ships.
+# Path dependencies rather than workspace ones: these are dev-only, and a plugin
+# crate has no business in `[workspace.dependencies]` where every crate can
+# reach it (the dependency direction is plugins -> client, never the reverse).
+rustak-plugin-ais = { path = "../rustak-plugin-ais" }
+rustak-plugin-adsb = { path = "../rustak-plugin-adsb" }
 rstest = { workspace = true }
 # The squashed-change fold is held against a naive replay model over generated
 # histories; nothing else in this crate needs generated input.

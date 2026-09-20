@@ -1,0 +1,130 @@
+# rustak-plugin-ais configuration.
+#
+# Every key is shown with its default. A key that is commented out has its
+# default written beside it; a key that is shown uncommented is set to its
+# default, so this file describes a working sidecar as it stands.
+#
+# Any value may be written as "${{ env.NAME }}", which is substituted from the
+# environment (or from the file passed to --env) before the file is parsed. That
+# is how a feed's API key stays out of a file you commit or bind-mount.
+#
+# Unknown and misplaced keys are refused rather than ignored, so
+# `rustak-plugin-ais --config config.example.toml --check` is a real check of
+# this file. This crate's test suite loads it, so it cannot drift from the code
+# either.
+#
+# Durations are written as "45s", "15m", "12h" or "30d".
+
+
+[service]
+# The service's name. Required: the stream uid (SERVICE-<name>), the control-API
+# path and the certificate subject are all derived from it. One AIS receiver per
+# port is one name each: "ais-rotterdam", "ais-solent".
+name = "ais"
+
+# What to call this service in the admin UI. Default: its name.
+# display_name = "AIS (Maas approach)"
+
+# What this service advertises that it does. Default: [].
+capabilities = ["cot.publish"]
+
+# The token this service authenticates to /api/v1/services/* with. Default:
+# none. It is a credential, so it belongs in the environment rather than here.
+# token = "${{ env.RUSTAK_SERVICE_TOKEN }}"
+
+# The client certificate and private key this service opens the CoT stream with,
+# in PEM. Default: none; both are required as soon as [server] stream names an
+# "ssl://" endpoint, which every real deployment does.
+# certificate = "/etc/rustak/ais.pem"
+# key = "/etc/rustak/ais.key"
+
+# The truststore used to verify the server's certificate, in PEM.
+# Default: the platform's own roots.
+# truststore = "/etc/rustak/truststore.pem"
+
+
+[server]
+# The CoT stream, as a TAK connect string. Default: none — and a sidecar without
+# one runs its ticks and opens no connection at all, which is what makes this
+# file usable offline.
+# stream = "ssl://tak.example.com:8089"
+
+# The service control API, which is what registers this sidecar and reports its
+# health to the admin UI. Default: none.
+# control = "https://tak.example.com:8446"
+
+
+[sidecar]
+# How often the feed is polled and the publisher drained. The first tick happens
+# as soon as the sidecar has started. Default: "30s" — this file sets it lower
+# because AIS position reports arrive every few seconds and a longer tick would
+# hold them back.
+tick = "5s"
+
+# How long `stop` is given before the harness stops waiting.
+shutdown_grace = "10s"
+
+
+[settings]
+# What these tracks are to an operator: "unknown", "friend", "neutral",
+# "hostile" or "pending". Default: "unknown" — open AIS says nothing about whose
+# side a hull is on, and a plugin that claimed otherwise would be putting an
+# assertion on the map that nothing in the data supports.
+affiliation = "unknown"
+
+
+# Where this feed is looking. The source subscribes with it and the publisher
+# re-checks it, so an upstream that rounds a bounding box outwards does not fill
+# a channel with the North Sea. Default: the whole world.
+#
+# Either a box:
+[settings.area]
+kind = "bbox"
+south = 51.7
+west = 3.6
+north = 52.3
+east = 4.7
+
+# …or a circle, which is what most HTTP feeds take:
+# [settings.area]
+# kind = "circle"
+# lat = 51.95
+# lon = 4.13
+# radius_km = 60.0
+
+
+# How often a vessel may be republished, and how long one lives on a map.
+[settings.publish]
+# How long a published track stays on a map without another report. Default:
+# "2m", which suits AIS: a vessel at anchor reports only every three minutes,
+# and `max_interval` below refreshes it before this passes. No delete message is
+# ever sent — TAK clients expire a track by this attribute, so a sidecar that is
+# stopped leaves a map that empties itself.
+stale = "2m"
+
+# The shortest gap between two publications of the same vessel, however much it
+# moved. Default: "5s".
+min_interval = "5s"
+
+# The longest a vessel that is still being reported goes unpublished. This is
+# what keeps a moored ship on the map. Default: "60s".
+max_interval = "60s"
+
+# How far a vessel must move since its last publication to be published again,
+# in metres. Default: 25.
+min_move_m = 25.0
+
+# How many vessels this sidecar holds before it drops the least recently seen.
+# A ceiling on a runaway area rather than a working limit. Default: 5000.
+max_tracks = 5000
+
+
+# Where the observations come from. Required.
+#
+# M9-00 ships one source: "replay", a file of tracks offered on every tick, for
+# demonstrations and for the integration suite. The live AIS sources — an
+# AISStream.io WebSocket subscription, !AIVDM sentences over UDP from a local
+# receiver, JSON over HTTP — arrive in M9-01 as further values of `kind`.
+[settings.source]
+kind = "replay"
+path = "tracks.example.ndjson"

@@ -1,0 +1,10 @@
+# Five aircraft around Heathrow, for the `replay` source: one JSON track per
+# line. This is the fixture format documented in docs/plugins.md -> "Feed
+# sidecars"; `observed_at` is when the observation was made, and a replay
+# re-stamps it as it offers each line so that a demonstration does not publish
+# tracks that every client expires on arrival.
+{"id":"ADSB-3c6444","kind":{"aircraft":"civil_fixed_wing"},"position":[51.4602,-0.3947],"altitude_hae_m":762.0,"speed_mps":77.2,"course_deg":88.0,"callsign":"BAW117","remarks":[["ICAO","3c6444"],["Registration","G-XLEA"],["Type","A388"],["Squawk","5271"]],"observed_at":"2026-09-20T12:00:00Z"}
+{"id":"ADSB-4008f2","kind":{"aircraft":"civil_fixed_wing"},"position":[51.5510,-0.6218],"altitude_hae_m":3048.0,"speed_mps":154.3,"course_deg":271.0,"callsign":"EZY84NM","remarks":[["ICAO","4008f2"],["Type","A20N"],["Squawk","7412"]],"observed_at":"2026-09-20T12:00:01Z"}
+{"id":"ADSB-406b1a","kind":{"aircraft":"civil_rotary"},"position":[51.4820,-0.1600],"altitude_hae_m":396.0,"speed_mps":41.2,"course_deg":15.0,"callsign":"HLE21","remarks":[["ICAO","406b1a"],["Type","EC35"]],"observed_at":"2026-09-20T12:00:02Z"}
+{"id":"ADSB-43c1d2","kind":{"aircraft":"military_fixed_wing"},"position":[51.6100,-0.7400],"altitude_hae_m":7620.0,"speed_mps":205.8,"course_deg":312.0,"callsign":"RRR7231","remarks":[["ICAO","43c1d2"],["Type","A332"]],"observed_at":"2026-09-20T12:00:03Z"}
+{"id":"ADSB-4ca7b3","kind":"ground_vehicle","position":[51.4700,-0.4543],"speed_mps":6.7,"course_deg":200.0,"callsign":"LHR TUG 4","remarks":[["ICAO","4ca7b3"],["Category","Surface vehicle"]],"observed_at":"2026-09-20T12:00:04Z","on_ground":true}
