@@ -305,12 +305,12 @@ async fn a_second_tick_inside_the_interval_publishes_nothing_new() {
 }
 
 #[tokio::test]
-async fn the_sidecar_reports_its_feed_and_its_upstream_to_the_control_api() {
-    // What an administrator sees on the Services page. The harness sends a bare
-    // `Heartbeat::healthy()` of its own after every tick, which currently lands
-    // *after* this one and overwrites it in the server's row — see this brief's
-    // status note. What is asserted here is the plugin's half: that it builds
-    // the richer heartbeat and posts it through the documented surface.
+async fn the_sidecar_reports_its_feed_and_its_upstream_through_the_health_hook() {
+    // What an administrator sees on the Services page. `Sidecar::health` is
+    // where it comes from since M9-04: the harness asks after every tick and
+    // sends the answer *instead of* its own `Heartbeat::healthy()`, so this
+    // plugin no longer posts a heartbeat of its own and nothing overwrites
+    // what it says.
     let receiver = receiver().await;
     let control = MockServer::start().await;
     Mock::given(method("POST"))
@@ -358,36 +358,25 @@ async fn the_sidecar_reports_its_feed_and_its_upstream_to_the_control_api() {
 
     assert_eq!(plugin.tick().await.expect("a tick").len(), 5);
 
-    let beats: Vec<serde_json::Value> = control
-        .received_requests()
-        .await
-        .expect("a request log")
-        .iter()
-        .filter(|request| request.url.path().ends_with("/heartbeat"))
-        .map(|request| serde_json::from_slice(&request.body).expect("a heartbeat body"))
-        .collect();
+    let beat = plugin.health().await.expect("a started sidecar reports");
 
-    assert_eq!(beats.len(), 1, "one tick, one heartbeat of our own");
-
-    let beat = &beats[0];
-
-    assert_eq!(beat["state"], "healthy");
-    assert_eq!(beat["metrics"]["source"]["kind"], "readsb");
-    assert_eq!(beat["metrics"]["source"]["connection"], "connected");
-    assert_eq!(beat["metrics"]["tracked"], 5);
-    assert_eq!(beat["metrics"]["feed"]["published"], 5);
+    assert_eq!(beat.state, rustak_api::ServiceState::Healthy);
+    assert_eq!(beat.metrics["source"]["kind"], "readsb");
+    assert_eq!(beat.metrics["source"]["connection"], "connected");
+    assert_eq!(beat.metrics["tracked"], 5);
+    assert_eq!(beat.metrics["feed"]["published"], 5);
     assert!(
-        beat["message"]
-            .as_str()
+        beat.message
+            .as_deref()
             .expect("a message")
             .contains("5 aircraft"),
-        "{beat}",
+        "{beat:?}",
     );
 
-    // The second tick says the same thing, so it is not worth a request.
-    let _ = plugin.tick().await.expect("a tick");
-
-    let after = control
+    // And nothing was posted from inside the plugin: the harness makes the one
+    // request, from what the hook answered, which is what stopped this report
+    // being overwritten a millisecond after it landed.
+    let posted = control
         .received_requests()
         .await
         .expect("a request log")
@@ -395,10 +384,7 @@ async fn the_sidecar_reports_its_feed_and_its_upstream_to_the_control_api() {
         .filter(|request| request.url.path().ends_with("/heartbeat"))
         .count();
 
-    assert_eq!(
-        after, 1,
-        "an unchanged heartbeat is repeated on a timer, not a tick"
-    );
+    assert_eq!(posted, 0, "the hook is a value, not a request");
 }
 
 #[tokio::test]

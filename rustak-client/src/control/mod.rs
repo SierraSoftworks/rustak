@@ -35,6 +35,9 @@
 mod events;
 mod register;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use rustak_core::prelude::*;
 use rustak_core::service::ServiceIdentity;
 use url::Url;
@@ -56,6 +59,16 @@ pub struct ControlClient {
     base: Url,
     name: ServiceName,
     token: Option<Secret>,
+
+    /// Whether [`heartbeat`](Self::heartbeat) has been called since the harness
+    /// last looked.
+    ///
+    /// The server keeps the *last* heartbeat it was given, so a harness that
+    /// always sent its own would overwrite a plugin's a moment after it landed.
+    /// Behind an [`Arc`] because the clone the harness holds and the clone the
+    /// plugin calls through are the same client; shared with
+    /// `sidecar::ControlLink`, which reads and clears it once per tick.
+    reported: Arc<AtomicBool>,
 }
 
 impl ControlClient {
@@ -95,12 +108,28 @@ impl ControlClient {
             base: http::base_url(base, "control")?,
             name: identity.name().clone(),
             token: identity.credential().cloned(),
+            reported: Arc::new(AtomicBool::new(false)),
         })
     }
 
     /// The service this client speaks for.
     pub fn name(&self) -> &ServiceName {
         &self.name
+    }
+
+    /// Whether the plugin has reported a heartbeat of its own since this was
+    /// last asked, clearing the flag as it answers.
+    ///
+    /// The harness asks once per tick, after
+    /// [`Sidecar::health`](crate::sidecar::Sidecar::health), and stays quiet
+    /// when the answer is `true`.
+    pub(crate) fn take_reported(&self) -> bool {
+        self.reported.swap(false, Ordering::Relaxed)
+    }
+
+    /// Records that the plugin has said something about its own health.
+    fn mark_reported(&self) {
+        self.reported.store(true, Ordering::Relaxed);
     }
 
     /// The server this client calls.

@@ -24,6 +24,15 @@
 //! and a server that cannot take a heartbeat right now is not a reason to stop
 //! doing it — the server notices the missing heartbeats on its own, which is
 //! what `service.status` and the sweep are for.
+//!
+//! # The plugin's heartbeat is the heartbeat
+//!
+//! The server stores the last heartbeat it was given — state, message and
+//! metrics, wholesale — so only one of them can be the one an administrator
+//! sees. [`ControlLink::report`] is where that is decided: what
+//! [`Sidecar::health`](super::Sidecar::health) answered, or nothing at all when
+//! the plugin has already called [`ControlClient::heartbeat`] itself during the
+//! tick, and only failing both of those the harness's own `healthy()`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -116,13 +125,42 @@ impl ControlLink {
         }
     }
 
+    /// Reports the heartbeat this tick should carry, unless the plugin has
+    /// already reported one of its own.
+    ///
+    /// `beat` is whatever [`Sidecar::health`](super::Sidecar::health) answered,
+    /// and [`None`] is the default hook — a plugin with nothing in particular to
+    /// say, which the harness reports as [`Heartbeat::healthy`].
+    ///
+    /// Nothing at all is sent when the plugin called
+    /// [`ControlClient::heartbeat`] itself during this tick. The server keeps
+    /// the last heartbeat it was given, so a harness that always sent its own
+    /// would overwrite the plugin's a moment after it landed — which is the
+    /// whole reason [`health`](super::Sidecar::health) exists.
+    pub(crate) async fn report(&self, beat: Option<Heartbeat>) {
+        let Some(control) = &self.control else {
+            return;
+        };
+
+        if control.take_reported() {
+            tracing::debug!(
+                "The plugin reported its own health this tick; the harness will not talk over it.",
+            );
+
+            return;
+        }
+
+        self.heartbeat(&beat.unwrap_or_else(Heartbeat::healthy))
+            .await;
+    }
+
     /// Reports a heartbeat, and re-registers if the server has forgotten us.
     pub(crate) async fn heartbeat(&self, beat: &Heartbeat) {
         let Some(control) = &self.control else {
             return;
         };
 
-        match control.heartbeat(beat).await {
+        match control.post_heartbeat(beat).await {
             Ok(Some(status)) => tracing::debug!(state = status.state.as_str(), "Reported health."),
             Ok(None) => {
                 tracing::info!("The server has no registration for this sidecar; registering.");
@@ -258,6 +296,123 @@ mod tests {
         // Returns `()`: there is no failure for the harness to act on.
         link.register().await;
         link.heartbeat(&Heartbeat::healthy()).await;
+    }
+
+    /// A control API that takes any heartbeat, and remembers what it was sent.
+    async fn recording() -> wiremock::MockServer {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path_regex(r".*/heartbeat$"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "state": "healthy" })),
+            )
+            .mount(&server)
+            .await;
+
+        server
+    }
+
+    /// Every heartbeat body the server was sent, in order.
+    async fn beats(server: &wiremock::MockServer) -> Vec<Heartbeat> {
+        server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter(|request| request.url.path().ends_with("/heartbeat"))
+            .map(|request| request.body_json::<Heartbeat>().expect("a heartbeat body"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_plugin_with_nothing_to_say_is_reported_healthy() {
+        let server = recording().await;
+        let link = ControlLink::open(&context(&format!(
+            r#"
+            [service]
+            name = "example"
+
+            [server]
+            control = "{}"
+            "#,
+            server.uri()
+        )));
+
+        link.report(None).await;
+
+        assert_eq!(beats(&server).await, vec![Heartbeat::healthy()]);
+    }
+
+    #[tokio::test]
+    async fn what_the_health_hook_answered_is_what_goes_out() {
+        // The whole point: the plugin's state, message and metrics reach the
+        // server *instead of* the harness's `healthy()`, not before it.
+        let server = recording().await;
+        let link = ControlLink::open(&context(&format!(
+            r#"
+            [service]
+            name = "example"
+
+            [server]
+            control = "{}"
+            "#,
+            server.uri()
+        )));
+        let reported = Heartbeat {
+            state: rustak_api::ServiceState::Degraded,
+            message: Some("The upstream has not answered for four minutes.".into()),
+            metrics: serde_json::json!({ "tracked": 612 }),
+        };
+
+        link.report(Some(reported.clone())).await;
+
+        assert_eq!(beats(&server).await, vec![reported]);
+    }
+
+    #[tokio::test]
+    async fn a_plugin_that_reported_for_itself_is_not_talked_over() {
+        // The escape hatch: a plugin calling `control.heartbeat` during its tick
+        // claims the tick, and the harness sends nothing on top of it. The
+        // server keeps the last heartbeat it was given, so a second one here
+        // would be the plugin's report lost a millisecond after it landed.
+        let server = recording().await;
+        let context = context(&format!(
+            r#"
+            [service]
+            name = "example"
+
+            [server]
+            control = "{}"
+            "#,
+            server.uri()
+        ));
+        let link = ControlLink::open(&context);
+        let reported = Heartbeat {
+            state: rustak_api::ServiceState::Unhealthy,
+            message: Some("The receiver is not answering.".into()),
+            metrics: serde_json::Value::Null,
+        };
+
+        context
+            .control()
+            .expect("a control client")
+            .heartbeat(&reported)
+            .await
+            .expect("the mock takes it");
+        link.report(None).await;
+
+        assert_eq!(
+            beats(&server).await,
+            vec![reported],
+            "the harness must not have added one of its own",
+        );
+
+        // And the next tick is reported normally: claiming a tick claims one.
+        link.report(None).await;
+
+        assert_eq!(beats(&server).await.len(), 2);
+        assert_eq!(beats(&server).await[1], Heartbeat::healthy());
     }
 
     #[tokio::test]

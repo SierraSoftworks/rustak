@@ -45,12 +45,13 @@ pub mod vessels;
 use std::collections::HashSet;
 use std::time::Duration;
 
+use chrono::Utc;
+use rustak_api::Heartbeat;
 use rustak_client::feed::{Affiliation, Area, Feed, FeedCounters, FeedPublisher, PublishPolicy};
 use rustak_client::sidecar::{Sidecar, SidecarContext, SidecarEvent, async_trait};
 use rustak_core::config::duration;
 use rustak_core::prelude::*;
 use rustak_cot::Event;
-use tokio::sync::watch;
 
 use sources::{Source, SourceContext};
 use status::{ConnectionRx, FeedStatus};
@@ -146,7 +147,6 @@ pub struct AisSidecar {
     publisher: Option<FeedPublisher>,
     feed: Option<Box<dyn Feed>>,
     connection: Option<ConnectionRx>,
-    status: Option<watch::Sender<FeedStatus>>,
     under_way_stale: Duration,
 }
 
@@ -274,10 +274,6 @@ impl Sidecar for AisSidecar {
         self.publisher =
             Some(FeedPublisher::new(settings.publish, settings.affiliation).with_area(area));
 
-        let (status, updates) = watch::channel(FeedStatus::default());
-        self.status = Some(status);
-        tokio::spawn(status::report(ctx.clone(), updates));
-
         info!(
             uid = %ctx.identity().uid(),
             source = settings.source.kind(),
@@ -314,11 +310,20 @@ impl Sidecar for AisSidecar {
             publisher.tick();
         }
 
-        if let Some(status) = &self.status {
-            status.send_replace(self.snapshot());
-        }
-
         Ok(self.drain(&stationary))
+    }
+
+    /// The harness asks after every tick, and reports exactly this.
+    ///
+    /// Everything it answers was worked out during the tick that has just
+    /// finished — the source's connection state, the publisher's counters — so
+    /// this reads rather than polls. [`None`] only before
+    /// [`start`](Sidecar::start) has run, which is the one moment this plugin
+    /// has nothing to say.
+    async fn health(&mut self) -> Option<Heartbeat> {
+        let poll = self.context.as_ref()?.config().sidecar.tick();
+
+        Some(self.snapshot().heartbeat(poll, Utc::now()))
     }
 
     async fn on_event(&mut self, event: SidecarEvent) -> Result<Vec<Event>, Error> {
@@ -595,14 +600,22 @@ mod tests {
         .await;
         let _ = sidecar.tick().await.expect("a tick");
 
-        let beat = sidecar
-            .snapshot()
-            .heartbeat(Duration::from_secs(5), chrono::Utc::now());
+        // Through the hook rather than the builder: what this answers is what
+        // the harness reports, and what the Services page therefore shows.
+        let beat = sidecar.health().await.expect("a started sidecar reports");
 
         assert_eq!(beat.state, rustak_api::ServiceState::Healthy);
         assert_eq!(beat.metrics["source"]["kind"], "replay");
         assert_eq!(beat.metrics["tracked"], 5);
         assert_eq!(beat.metrics["published"], 5);
+        assert!(beat.message.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_sidecar_that_has_not_started_leaves_the_harness_its_floor() {
+        // `None` is "nothing to add", which the harness reports as healthy —
+        // the window between the process starting and `start` opening a source.
+        assert!(AisSidecar::default().health().await.is_none());
     }
 
     #[test]

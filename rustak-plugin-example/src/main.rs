@@ -175,6 +175,23 @@ impl Sidecar for ExampleSidecar {
         Ok(self.position())
     }
 
+    // This plugin does not implement `Sidecar::health`, so the harness reports
+    // `Heartbeat::healthy()` for it after every tick and the Services page shows
+    // that. A plugin with something to say — a `degraded` state, a sentence, its
+    // own counters — overrides it:
+    //
+    //     async fn health(&mut self) -> Option<rustak_api::Heartbeat> {
+    //         Some(Heartbeat {
+    //             state: ServiceState::Degraded,
+    //             message: Some("The upstream has not answered for 4 minutes.".into()),
+    //             metrics: serde_json::json!({ "events_published": 1204 }),
+    //         })
+    //     }
+    //
+    // Whatever it answers *is* the heartbeat, rather than something the
+    // harness's own then overwrites; see `docs/plugins.md` -> "Saying more than
+    // healthy".
+
     async fn on_event(&mut self, event: SidecarEvent) -> Result<Vec<Event>, Error> {
         // `SidecarEvent` is `#[non_exhaustive]`: the wildcard arm is what keeps
         // this plugin compiling as M2 and M6 add variants.

@@ -47,11 +47,34 @@ impl ControlClient {
     /// Answers [`None`] when the registration has gone, which is the server
     /// saying "register again" rather than a failure.
     ///
+    /// Calling this marks the tick as *reported*, so that the harness does not
+    /// send one of its own over the top of it — see
+    /// [`Sidecar::health`](crate::sidecar::Sidecar::health), which is the
+    /// preferred way for a plugin to say more than "healthy".
+    ///
     /// # Errors
     ///
     /// A [`human_errors::Kind::User`] error when the credential is refused, the
     /// service is not this caller's, or the server cannot be reached.
     pub async fn heartbeat(&self, beat: &Heartbeat) -> Result<Option<ServiceStatus>, Error> {
+        // Before the request rather than after it: a plugin that has spoken is
+        // one the harness must not talk over, whether or not the server took
+        // what it said.
+        self.mark_reported();
+
+        self.post_heartbeat(beat).await
+    }
+
+    /// [`heartbeat`](Self::heartbeat) without claiming the tick, which is how
+    /// the harness sends its own.
+    ///
+    /// # Errors
+    ///
+    /// As [`heartbeat`](Self::heartbeat).
+    pub(crate) async fn post_heartbeat(
+        &self,
+        beat: &Heartbeat,
+    ) -> Result<Option<ServiceStatus>, Error> {
         let request = self
             .request(
                 reqwest::Method::POST,

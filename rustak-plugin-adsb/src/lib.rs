@@ -39,9 +39,7 @@ pub mod settings;
 pub mod sources;
 pub mod wire;
 
-use std::time::Instant;
-
-use rustak_api::ServiceState;
+use rustak_api::{Heartbeat, ServiceState};
 use rustak_client::feed::{Area, FeedCounters, FeedPublisher};
 use rustak_client::sidecar::{Sidecar, SidecarContext, SidecarEvent, async_trait};
 use rustak_core::prelude::*;
@@ -53,13 +51,10 @@ pub use sources::{AdsbFeed, Provider};
 /// The plugin: one upstream, one publisher, and what it has done so far.
 #[derive(Default)]
 pub struct AdsbSidecar {
-    context: Option<SidecarContext<Settings>>,
     publisher: Option<FeedPublisher>,
     feed: Option<Box<dyn AdsbFeed>>,
     /// Which kind of source is open, for the heartbeat.
     kind: &'static str,
-    /// When the last heartbeat of our own went out, and what it said.
-    reported: Option<(Instant, ServiceState)>,
 }
 
 impl AdsbSidecar {
@@ -86,40 +81,21 @@ impl AdsbSidecar {
         })
     }
 
-    /// Tells the server what this sidecar is carrying and how its upstream is.
+    /// What this sidecar is carrying and how its upstream is, as the heartbeat
+    /// the harness reports.
     ///
-    /// Best-effort and rate-limited: a heartbeat that did not land is not a
-    /// reason to stop publishing CoT, and one that says the same thing as the
-    /// last is not worth a request. A change of state always goes out.
-    async fn report(&mut self) {
-        let (Some(context), Some(feed), Some(publisher)) =
-            (self.context.clone(), &self.feed, &self.publisher)
-        else {
-            return;
-        };
-        let Some(control) = context.control() else {
-            return;
-        };
+    /// [`None`] until [`Sidecar::start`] has opened a source, which is the only
+    /// window in which this plugin has nothing to say.
+    #[must_use]
+    pub fn heartbeat(&self) -> Option<Heartbeat> {
+        let (feed, publisher) = (self.feed.as_ref()?, self.publisher.as_ref()?);
 
-        let beat = health::heartbeat(
+        Some(health::heartbeat(
             self.kind,
             feed.state(),
             publisher.counters(),
             publisher.tracked(),
-        );
-        let due = self
-            .reported
-            .is_none_or(|(at, state)| state != beat.state || at.elapsed() >= health::REPEAT_AFTER);
-
-        if !due {
-            return;
-        }
-
-        self.reported = Some((Instant::now(), beat.state));
-
-        if let Err(err) = control.heartbeat(&beat).await {
-            debug!("The server did not take this sidecar's heartbeat: {err}");
-        }
+        ))
     }
 }
 
@@ -195,8 +171,6 @@ impl Sidecar for AdsbSidecar {
             "The ADS-B sidecar is watching.",
         );
 
-        self.context = Some(ctx);
-
         Ok(())
     }
 
@@ -211,20 +185,27 @@ impl Sidecar for AdsbSidecar {
                 // An upstream that is down, rate-limiting or restarting is an
                 // ordinary Tuesday for an open feed: logged, never a stopped
                 // sidecar. The aircraft it was carrying age out on their own
-                // `stale`, and the heartbeat below says what happened.
+                // `stale`, and the health hook says what happened.
                 Err(err) => warn!(source = feed.name(), "The ADS-B feed did not answer: {err}"),
             }
 
             publisher.tick();
         }
 
-        self.report().await;
-
         Ok(self
             .publisher
             .as_mut()
             .map(FeedPublisher::drain)
             .unwrap_or_default())
+    }
+
+    /// The harness asks after every tick, and reports exactly this.
+    ///
+    /// Everything it answers was worked out during the tick that has just
+    /// finished — the source's connection state, the publisher's counters —
+    /// so this reads rather than polls.
+    async fn health(&mut self) -> Option<Heartbeat> {
+        self.heartbeat()
     }
 
     async fn on_event(&mut self, event: SidecarEvent) -> Result<Vec<Event>, Error> {
@@ -394,6 +375,30 @@ mod tests {
         let sidecar = started().await;
 
         assert_eq!(sidecar.state(), ServiceState::Healthy);
+    }
+
+    #[tokio::test]
+    async fn the_health_hook_is_what_the_harness_reports_for_this_plugin() {
+        // The hook, not a request of our own: whatever this answers is the
+        // heartbeat the Services page shows, so it has to carry the whole
+        // picture rather than a floor.
+        let mut sidecar = started().await;
+        let _ = sidecar.tick().await.expect("a tick");
+
+        let beat = sidecar.health().await.expect("a started sidecar reports");
+
+        assert_eq!(beat.state, ServiceState::Healthy);
+        assert_eq!(beat.metrics["source"]["kind"], "replay");
+        assert_eq!(beat.metrics["tracked"], 5);
+        assert_eq!(beat.metrics["feed"]["published"], 5);
+        assert!(beat.message.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_sidecar_that_has_not_started_leaves_the_harness_its_floor() {
+        // `None` is "nothing to add", which the harness reports as healthy —
+        // the window between the process starting and `start` opening a source.
+        assert!(AdsbSidecar::default().health().await.is_none());
     }
 
     #[test]

@@ -415,3 +415,233 @@ async fn a_sidecar_whose_registration_is_removed_registers_again() {
     harness.stop().await;
     api_handle.stop(true).await;
 }
+
+/// A plugin that reports its own health through the hook, rather than letting
+/// the harness report the floor.
+///
+/// What a feed plugin does: the state, the sentence and the counters are all
+/// worked out during the tick, and `health` hands them over afterwards. Written
+/// out here for the same reason `Watcher` is — `rustak-plugin-example` has no
+/// library target, and what is under test is the harness.
+#[derive(Default)]
+struct Reporter {
+    ticks: usize,
+}
+
+#[async_trait]
+impl Sidecar for Reporter {
+    const NAME: &'static str = "rustak-plugin-test";
+    const VERSION: &'static str = "0.0.0-test";
+    type Settings = NoSettings;
+
+    async fn start(&mut self, _ctx: SidecarContext<Self::Settings>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn tick(&mut self) -> Result<Vec<Event>, Error> {
+        self.ticks += 1;
+
+        Ok(Vec::new())
+    }
+
+    async fn health(&mut self) -> Option<rustak_api::Heartbeat> {
+        Some(rustak_api::Heartbeat {
+            state: ServiceState::Degraded,
+            message: Some("The upstream has not answered for 4 minutes.".into()),
+            metrics: serde_json::json!({ "tracked": 612, "ticks": self.ticks }),
+        })
+    }
+}
+
+/// An administrator, and the `Authorization` header they read the listing with.
+///
+/// `GET /api/v1/services` is administrative — a listing of every sidecar, its
+/// endpoints and its metrics is not something a service account may read (R-01
+/// M16) — so the assertion below goes through a real session rather than the
+/// database.
+async fn administrator(harness: &Harness) -> String {
+    let user = harness
+        .context
+        .db()
+        .users()
+        .create(NewUser {
+            is_admin: true,
+            ..NewUser::person(Username::parse("grace").expect("a usable username"))
+        })
+        .await
+        .expect("the administrator's account");
+    let session = rustak_server::testing::context::session_for(&harness.context, &user, true).await;
+
+    rustak_server::testing::context::bearer(&session)
+}
+
+/// The service, as `GET /api/v1/services` lists it.
+async fn listed(base: &str, bearer: &str, name: &str) -> Option<rustak_api::ServiceSummary> {
+    let listing: Vec<rustak_api::ServiceSummary> = reqwest::Client::new()
+        .get(format!("{base}/api/v1/services"))
+        .header("authorization", bearer)
+        .send()
+        .await
+        .expect("the services listing answers")
+        .json()
+        .await
+        .expect("a list of services");
+
+    listing
+        .into_iter()
+        .find(|service| service.descriptor.name.as_str() == name)
+}
+
+/// Starts a control-only sidecar: no stream, no enrolment, one tick a second.
+///
+/// Everything these two cases are about happens between `tick` and the control
+/// API, so the CoT listener would only be a certificate authority they do not
+/// use.
+fn spawn<S: Sidecar + Default>(
+    harness: &Harness,
+    base: &str,
+    token: &str,
+) -> (Shutdown, tokio::task::JoinHandle<Result<(), Error>>) {
+    let context = SidecarContext::from_config(
+        rustak_core::config::load_str(&format!(
+            r#"
+            [service]
+            name = "{SERVICE}"
+            token = "{token}"
+
+            [server]
+            control = "{base}"
+
+            [sidecar]
+            tick = "1s"
+            "#
+        ))
+        .expect("the configuration loads"),
+        S::VERSION,
+        harness.context.shutdown().child(),
+    )
+    .expect("a sidecar with no stream is a usable sidecar");
+    let shutdown = context.shutdown().clone();
+
+    let sidecar = tokio::spawn(async move {
+        let mut plugin = S::default();
+
+        drive(&mut plugin, context).await
+    });
+
+    (shutdown, sidecar)
+}
+
+#[actix_web::test]
+async fn a_plugins_own_health_report_is_what_the_services_listing_shows() {
+    // The bug M9-01 and M9-02 both hit: the harness used to post
+    // `Heartbeat::healthy()` unconditionally after every tick, so a plugin that
+    // reported `degraded` with metrics was overwritten a few milliseconds later
+    // and the Services page showed a plain healthy row with nothing in it.
+    let harness = Harness::start().await;
+    let (base, api_handle) = api(&harness).await;
+    let (_, service_token) = credentials(&harness).await;
+    let bearer = administrator(&harness).await;
+    let (shutdown, sidecar) = spawn::<Reporter>(&harness, &base, &service_token);
+
+    until("the plugin's own health to be listed", async || {
+        listed(&base, &bearer, SERVICE)
+            .await
+            .is_some_and(|service| service.status.state == ServiceState::Degraded)
+    })
+    .await;
+
+    let after_one = listed(&base, &bearer, SERVICE)
+        .await
+        .expect("the service is listed");
+
+    assert_eq!(
+        after_one.status.message.as_deref(),
+        Some("The upstream has not answered for 4 minutes."),
+        "the sentence the page shows is the plugin's, in full",
+    );
+    assert_eq!(after_one.metrics["tracked"], 612);
+
+    // The second tick, and every one after it, must still be the plugin's. The
+    // failure this is here to catch is a harness heartbeat *after* the hook's,
+    // which would show up as a healthy row with no metrics at all.
+    let first = after_one.metrics["ticks"].as_u64().expect("a tick count");
+
+    until("a later tick", async || {
+        listed(&base, &bearer, SERVICE)
+            .await
+            .and_then(|service| service.metrics["ticks"].as_u64())
+            .is_some_and(|ticks| ticks > first)
+    })
+    .await;
+
+    let after_more = listed(&base, &bearer, SERVICE)
+        .await
+        .expect("the service is still listed");
+
+    assert_eq!(after_more.status.state, ServiceState::Degraded);
+    assert_eq!(
+        after_more.status.message, after_one.status.message,
+        "nothing overwrote it",
+    );
+    assert_eq!(after_more.metrics["tracked"], 612);
+
+    shutdown.cancel();
+    sidecar.await.unwrap().unwrap();
+    harness.stop().await;
+    api_handle.stop(true).await;
+}
+
+#[actix_web::test]
+async fn a_sidecar_with_the_default_health_hook_is_listed_healthy() {
+    // The other half of the contract: a plugin that says nothing about its own
+    // health still gets the floor, which is what makes `[server] control` worth
+    // setting for a plugin that has nothing to report.
+    let harness = Harness::start().await;
+    let (base, api_handle) = api(&harness).await;
+    let (_, service_token) = credentials(&harness).await;
+    let bearer = administrator(&harness).await;
+    let (shutdown, sidecar) = spawn::<Quiet>(&harness, &base, &service_token);
+
+    until("the harness to report the floor", async || {
+        listed(&base, &bearer, SERVICE)
+            .await
+            .is_some_and(|service| service.status.state == ServiceState::Healthy)
+    })
+    .await;
+
+    let listed = listed(&base, &bearer, SERVICE)
+        .await
+        .expect("the service is listed");
+
+    assert_eq!(listed.status.message, None, "healthy needs no sentence");
+    assert!(
+        listed
+            .metrics
+            .as_object()
+            .is_none_or(serde_json::Map::is_empty),
+        "and carries no metrics: {}",
+        listed.metrics,
+    );
+
+    shutdown.cancel();
+    sidecar.await.unwrap().unwrap();
+    harness.stop().await;
+    api_handle.stop(true).await;
+}
+
+/// A plugin with no `health` of its own, which is every plugin that has nothing
+/// to say — including `rustak-plugin-example`.
+#[derive(Default)]
+struct Quiet;
+
+#[async_trait]
+impl Sidecar for Quiet {
+    const NAME: &'static str = "rustak-plugin-test";
+    const VERSION: &'static str = "0.0.0-test";
+    type Settings = NoSettings;
+
+    async fn start(&mut self, _ctx: SidecarContext<Self::Settings>) -> Result<(), Error> {
+        Ok(())
+    }
+}

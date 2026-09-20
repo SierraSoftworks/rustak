@@ -35,10 +35,14 @@
 //! A sidecar with `[server] control` registers itself before
 //! [`Sidecar::start`] and reports a heartbeat after every tick, without the
 //! plugin writing a line. Both are best-effort: a control API that is down is
-//! logged and retried, never a reason to stop publishing CoT. A plugin that
-//! wants to report more than "healthy" — its own metrics, a degraded state —
-//! calls [`SidecarContext::control`] itself and the harness's heartbeat becomes
-//! the floor rather than the whole story.
+//! logged and retried, never a reason to stop publishing CoT.
+//!
+//! What that heartbeat says is the plugin's to decide: the harness asks
+//! [`Sidecar::health`] after each tick and sends what it answers, falling back
+//! to `Heartbeat::healthy()` only for the default hook. A plugin that calls
+//! [`ControlClient::heartbeat`](crate::control::ControlClient::heartbeat)
+//! itself instead keeps the tick it reported in — the harness stays quiet
+//! rather than overwriting it a moment later.
 //!
 //! The connection is opened *before* [`Sidecar::start`], so an operator who got
 //! the connect string or the certificate paths wrong is told that rather than
@@ -56,7 +60,6 @@ use std::path::PathBuf;
 
 use clap::{CommandFactory, FromArgMatches, Parser};
 use futures::StreamExt;
-use rustak_api::Heartbeat;
 use rustak_core::config;
 use rustak_core::errors::report_and_exit;
 use rustak_core::prelude::*;
@@ -276,8 +279,10 @@ async fn tick_until_shutdown<S: Sidecar>(
                 let published = sidecar.tick().await?;
 
                 // After the plugin's own tick, so that a heartbeat says how the
-                // sidecar is *after* the work rather than before it.
-                control.heartbeat(&Heartbeat::healthy()).await;
+                // sidecar is *after* the work rather than before it, and from
+                // the plugin's own hook so that the harness reports the floor
+                // rather than flattening what the plugin had to say.
+                control.report(sidecar.health().await).await;
 
                 published
             }
@@ -319,6 +324,9 @@ mod tests {
         /// Where every event this sidecar is handed is reported, for the tests
         /// that assert on the sequence rather than the count.
         seen: Option<tokio::sync::mpsc::UnboundedSender<SidecarEvent>>,
+        /// What the health hook answers, for the test that watches the control
+        /// API rather than the wire.
+        health: Option<rustak_api::Heartbeat>,
     }
 
     #[async_trait]
@@ -346,6 +354,10 @@ mod tests {
             }
 
             Ok(self.publishes.clone())
+        }
+
+        async fn health(&mut self) -> Option<rustak_api::Heartbeat> {
+            self.health.clone()
         }
 
         async fn on_event(&mut self, event: SidecarEvent) -> Result<Vec<Event>, Error> {
@@ -378,6 +390,15 @@ mod tests {
         grace_ms: i64,
         stream: Option<String>,
     ) -> SidecarContext<NoSettings> {
+        context_with(tick_ms, grace_ms, stream, None)
+    }
+
+    fn context_with(
+        tick_ms: i64,
+        grace_ms: i64,
+        stream: Option<String>,
+        control: Option<String>,
+    ) -> SidecarContext<NoSettings> {
         let config = SidecarConfig {
             service: ServiceConfig {
                 name: ServiceName::parse("example").unwrap(),
@@ -390,6 +411,7 @@ mod tests {
             },
             server: ServerConfig {
                 stream,
+                control,
                 ..ServerConfig::default()
             },
             sidecar: crate::sidecar::HarnessConfig {
@@ -416,6 +438,51 @@ mod tests {
 
         assert_eq!(sidecar.ticks, 3);
         assert!(sidecar.stopped);
+    }
+
+    #[tokio::test]
+    async fn the_loop_reports_what_the_health_hook_answers_rather_than_its_own_healthy() {
+        // The hook, through the loop: three ticks, three heartbeats, and every
+        // one of them the plugin's own words. A harness that still sent
+        // `healthy()` afterwards would show up here as six.
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "state": "degraded" })),
+            )
+            .mount(&server)
+            .await;
+
+        let reported = rustak_api::Heartbeat {
+            state: rustak_api::ServiceState::Degraded,
+            message: Some("The upstream is slow.".into()),
+            metrics: serde_json::json!({ "queue_depth": 3 }),
+        };
+        let mut sidecar = Counter {
+            stop_after: 3,
+            health: Some(reported.clone()),
+            ..Counter::default()
+        };
+
+        drive(
+            &mut sidecar,
+            context_with(1, 1_000, None, Some(server.uri())),
+        )
+        .await
+        .unwrap();
+
+        let beats: Vec<rustak_api::Heartbeat> = server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter(|request| request.url.path().ends_with("/heartbeat"))
+            .map(|request| request.body_json().expect("a heartbeat body"))
+            .collect();
+
+        assert_eq!(beats.len(), 3, "one per tick, and no floor over the top");
+        assert!(beats.iter().all(|beat| beat == &reported), "{beats:?}");
     }
 
     #[tokio::test]

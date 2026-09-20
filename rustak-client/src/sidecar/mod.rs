@@ -41,9 +41,10 @@
 //! The harness loads the configuration, brings telemetry up, builds the
 //! [`ServiceIdentity`] and the [`ServiceDescriptor`] the plugin will register
 //! with, opens the CoT stream that `[server] stream` names, calls
-//! [`Sidecar::start`], calls [`Sidecar::tick`] on an interval, delivers
-//! everything the stream produces to [`Sidecar::on_event`], and calls
-//! [`Sidecar::stop`] when the process is asked to stop.
+//! [`Sidecar::start`], calls [`Sidecar::tick`] on an interval, asks
+//! [`Sidecar::health`] what to report after each one, delivers everything the
+//! stream produces to [`Sidecar::on_event`], and calls [`Sidecar::stop`] when
+//! the process is asked to stop.
 //!
 //! Publishing runs the other way: [`tick`](Sidecar::tick) and
 //! [`on_event`](Sidecar::on_event) *return* the [`Event`]s they want written,
@@ -64,6 +65,7 @@ pub mod run;
 
 use std::sync::Arc;
 
+use rustak_api::Heartbeat;
 use rustak_core::prelude::*;
 use rustak_core::service::{ServiceDescriptor, ServiceIdentity};
 use rustak_cot::Event;
@@ -231,9 +233,12 @@ impl<S> SidecarContext<S> {
     /// The control-API client, when `[server] control` names one.
     ///
     /// The harness already registers this sidecar and reports a heartbeat on
-    /// every tick through it; this is for a plugin that wants to say more than
-    /// "healthy" — its own metrics, a degraded state, or the configuration an
-    /// administrator set for it.
+    /// every tick through it, so this is for the rest of what the control API
+    /// offers — the configuration an administrator set, a registration a plugin
+    /// is retiring. To say more than "healthy", implement
+    /// [`Sidecar::health`] rather than calling
+    /// [`heartbeat`](ControlClient::heartbeat) here: both work, but the hook is
+    /// what the harness asks for and cannot be overwritten by it.
     pub fn control(&self) -> Option<&ControlClient> {
         self.control.as_deref()
     }
@@ -381,6 +386,35 @@ pub trait Sidecar: Send + 'static {
     /// [trait documentation](Sidecar).
     async fn tick(&mut self) -> Result<Vec<Event>, Error> {
         Ok(Vec::new())
+    }
+
+    /// What this sidecar's next heartbeat should say, asked after every
+    /// [`tick`](Sidecar::tick).
+    ///
+    /// [`None`] — the default — is a plugin with nothing in particular to
+    /// report, and the harness sends [`Heartbeat::healthy`] for it. Anything
+    /// else *is* the heartbeat: the server stores the last one it was given, so
+    /// the harness sends what this answers instead of its own rather than as
+    /// well as it.
+    ///
+    /// This is the way to say more than "healthy" — a `degraded` state, a
+    /// sentence for the Services page, the counters behind it. Calling
+    /// [`ControlClient::heartbeat`](crate::control::ControlClient::heartbeat)
+    /// through [`SidecarContext::control`] still works and is left as the escape
+    /// hatch for a plugin that must report between ticks; the harness stays
+    /// quiet for the tick a plugin reported in, so the two never race. Prefer
+    /// this hook: it runs after the tick's work, it cannot be overwritten, and
+    /// it is a value rather than a request a plugin has to remember to make.
+    ///
+    /// Answering is cheap and must stay that way: this is called on every tick,
+    /// on the harness's own task, and a plugin that waits on an upstream here
+    /// delays its own publishing. Read what the tick already worked out.
+    ///
+    /// A failure has nowhere to go and should not have one — a plugin that
+    /// cannot say how it is doing answers [`None`] and lets the harness report
+    /// the floor.
+    async fn health(&mut self) -> Option<Heartbeat> {
+        None
     }
 
     /// Called for every [`SidecarEvent`] the harness observes, with whatever

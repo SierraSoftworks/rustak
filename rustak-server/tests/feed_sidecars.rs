@@ -484,3 +484,98 @@ async fn the_ais_sidecar_publishes_what_a_receiver_sends_it_over_udp() {
 
     feed.stop().await;
 }
+
+/// A `readsb` receiver's own document, from the ADS-B plugin's fixtures.
+///
+/// Shared with `rustak-plugin-adsb`'s own suite rather than copied, so that a
+/// change to the receiver's shape is made in one place: written by hand from
+/// the public field names, never captured from anybody's antenna.
+const READSB: &str = include_str!("../../rustak-plugin-adsb/tests/fixtures/readsb.json");
+
+#[actix_web::test]
+async fn the_adsb_sidecar_publishes_what_a_readsb_receiver_serves() {
+    // The live-source half of the ADS-B story, which M9-02 could not add from
+    // its own brief: a real HTTP receiver on the other end of the plugin's
+    // `readsb` source, and the same real certificate authority, `:8089`
+    // handshake and fake EUD as every other case here. The `replay` case above
+    // proves the publisher; this proves the source and the mapping reach a
+    // device.
+    let receiver = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/data/aircraft.json"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(READSB))
+        .mount(&receiver)
+        .await;
+
+    let settings = format!(
+        "[settings.source]\nkind = \"readsb\"\nurl_or_path = \"{}/data/aircraft.json\"\npoll = \"1s\"\n",
+        receiver.uri(),
+    );
+    let mut feed = RunningFeed::start::<AdsbSidecar>("adsb", &settings).await;
+
+    let airliner = feed
+        .eud
+        .expect_uid("ADSB-3c6444", EXPECT)
+        .await
+        .expect("the receiver's first aircraft arrives");
+
+    assert_eq!(airliner.r#type, "a-u-A-C-F");
+    assert_eq!(airliner.callsign(), Some("BAW117"));
+    assert!(
+        (airliner.point.hae - 982.98).abs() < 0.01,
+        "3225 ft geometric as metres above the ellipsoid: {}",
+        airliner.point.hae,
+    );
+
+    let track: rustak_cot::detail::Track = airliner.detail.get().expect("a <track>");
+    assert!((track.course - 88.0).abs() < 1e-3, "{track:?}");
+    assert!(
+        (track.speed - 127.37).abs() < 0.1,
+        "247.6 kt in metres per second: {track:?}",
+    );
+    assert!(
+        rustak_cot::detail::chat::remarks(&airliner.detail)
+            .is_some_and(|remarks| remarks.text.contains("Registration: G-XLEA")),
+    );
+
+    // The military flag and the surface vehicle, because those are the two
+    // mappings a receiver's document exercises that a replay fixture does not.
+    for (uid, expected) in [("ADSB-43c1d2", "a-u-A-M-F"), ("ADSB-4ca7b3", "a-u-G-E-V-C")] {
+        let event = feed
+            .eud
+            .expect_uid(uid, EXPECT)
+            .await
+            .unwrap_or_else(|err| panic!("{uid} should arrive: {err}"));
+
+        assert_eq!(event.r#type, expected, "{uid}");
+    }
+
+    // And the sidecar told the server what its upstream is doing, through the
+    // health hook rather than over the harness's own healthy().
+    let name = ServiceName::parse("adsb").expect("a usable service name");
+    let services = feed.harness.context.db().services();
+
+    let reported = tokio::time::timeout(EXPECT, async {
+        loop {
+            if let Some(row) = services
+                .get_by_name(&name)
+                .await
+                .expect("the services table")
+                && row.metrics.get("source").is_some()
+            {
+                return row;
+            }
+
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the sidecar reports its own health");
+
+    assert_eq!(reported.status, rustak_api::ServiceState::Healthy);
+    assert_eq!(reported.metrics["source"]["kind"], "readsb");
+    assert_eq!(reported.metrics["source"]["connection"], "connected");
+    assert_eq!(reported.metrics["tracked"], 5);
+
+    feed.stop().await;
+}

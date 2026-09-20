@@ -4,10 +4,11 @@
 //! enough to run a feed from: an administrator looking at the Services page
 //! wants to know whether the upstream is answering, how many aircraft are on
 //! the map, and how much of what the feed offered actually went out. This
-//! module builds that heartbeat and sends it through
-//! [`SidecarContext::control`](rustak_client::sidecar::SidecarContext::control),
-//! which is the documented way for a plugin to say more than "healthy"
-//! (`docs/plugins.md` → Registering with the server).
+//! module builds that heartbeat, and
+//! [`AdsbSidecar::health`](rustak_client::sidecar::Sidecar::health) hands it to
+//! the harness after every tick — the hook `docs/plugins.md` → "Saying more
+//! than healthy" documents, which the harness reports *instead of* its own
+//! floor rather than a moment before it.
 //!
 //! # The three states
 //!
@@ -24,19 +25,10 @@
 //! last error, which comes from [`SourceState`], whose messages are built from
 //! `human_errors` text rather than from a request that carried a credential.
 
-use std::time::Duration;
-
 use rustak_api::{Heartbeat, ServiceState};
 use rustak_client::feed::FeedCounters;
 
 use crate::sources::SourceState;
-
-/// How often the sidecar repeats a heartbeat that has not changed.
-///
-/// A plugin that reported on every tick would double the control API's load for
-/// a line that says the same thing; one that only reported on a change would
-/// leave a stale row behind after the server's sweep.
-pub const REPEAT_AFTER: Duration = Duration::from_secs(30);
 
 /// Everything this sidecar knows about itself, as a heartbeat.
 #[must_use]
@@ -109,6 +101,8 @@ fn message(state: &SourceState, tracked: usize, connection: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     fn state() -> SourceState {

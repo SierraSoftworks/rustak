@@ -141,6 +141,7 @@ async fn main() {
 |---|---|---|
 | `start` | Once, after the configuration loads and the stream is opened | The only method given the `SidecarContext`; keep it if you need it |
 | `tick` | On `[sidecar] tick`, starting immediately | The events to publish |
+| `health` | After every `tick` | The heartbeat to report, or `None` for "healthy" — see *Saying more than "healthy"* |
 | `on_event` | For every `SidecarEvent` | The events to publish in reply |
 | `stop` | Once, after the shutdown signal | Bounded by `[sidecar] shutdown_grace` |
 
@@ -280,7 +281,7 @@ Set `[server] control` and the harness does three things for you:
 | When | What it does |
 |---|---|
 | Before `start` | `POST /api/v1/services/register` with the `ServiceDescriptor` built from `[service]` and `[server]` |
-| After every `tick` | `POST /api/v1/services/<name>/heartbeat` with a healthy state |
+| After every `tick` | Asks `Sidecar::health`, and `POST /api/v1/services/<name>/heartbeat` with what it answered — a healthy state when it answered `None` |
 | Continuously | Holds `GET /api/v1/events` open and delivers what arrives as `SidecarEvent::Server` |
 
 None of them can stop a plugin. A control API that refuses a registration, loses
@@ -301,27 +302,63 @@ next heartbeat is a `404` — and the harness registers again rather than exitin
 
 ### Saying more than "healthy"
 
-The harness's heartbeat is the floor. A plugin with something to report reaches
-the client itself:
+`Heartbeat::healthy()` is the floor, and it is all the harness has to say on its
+own. A plugin that knows more implements **`Sidecar::health`**, which the harness
+asks after every `tick` and reports instead of the floor:
 
 ```rust
 use rustak_api::{Heartbeat, ServiceState};
 
-if let Some(control) = self.context.as_ref().and_then(|ctx| ctx.control()) {
-    let _ = control
-        .heartbeat(&Heartbeat {
-            state: ServiceState::Degraded,
-            message: Some("The upstream feed has not answered for 4 minutes.".into()),
-            metrics: serde_json::json!({ "events_published": 1204, "queue_depth": 3 }),
-        })
-        .await;
+async fn health(&mut self) -> Option<Heartbeat> {
+    let upstream = self.upstream.as_ref()?;
+
+    Some(Heartbeat {
+        state: match upstream.is_answering() {
+            true => ServiceState::Healthy,
+            false => ServiceState::Degraded,
+        },
+        message: Some(upstream.describe()),
+        metrics: serde_json::json!({ "events_published": 1204, "queue_depth": 3 }),
+    })
 }
 ```
 
-`metrics` is whatever your plugin says it is. The admin console renders it as
-a key/value table without interpreting any of it (see *Monitoring a sidecar*
-below), so nothing secret belongs in it. Swallow the failure, as above — a
-heartbeat that did not go through is not a reason to stop.
+Three things make the hook the way to report, rather than one of two ways:
+
+* **It cannot be overwritten.** The server stores the last heartbeat it was
+  given — state, message and metrics, wholesale — so only one of them can be the
+  row an administrator sees. What `health` answers *is* the heartbeat for that
+  tick; the harness does not send one of its own as well.
+* **It runs after the tick's work**, so it reports how the sidecar is *now*
+  rather than how it was before it polled.
+* **It is a value, not a request.** Nothing to await, nothing to swallow, and
+  nothing to remember to call on the tick where it matters.
+
+Answering is meant to be cheap — read what the tick already worked out, never
+poll an upstream here, because the harness is waiting on it before it publishes.
+`None` is "nothing to add", which the harness reports as healthy: that is what a
+plugin answers before `start` has opened anything.
+
+`metrics` is whatever your plugin says it is. The admin console renders it as a
+key/value table without interpreting any of it (see *Monitoring a sidecar*
+below), so nothing secret belongs in it.
+
+#### The escape hatch
+
+A plugin that must report *between* ticks — something that cannot wait for the
+next one — still calls the control client itself:
+
+```rust
+if let Some(control) = self.context.as_ref().and_then(|ctx| ctx.control()) {
+    let _ = control.heartbeat(&self.status()).await;
+}
+```
+
+Swallow the failure, as above: a heartbeat that did not go through is not a
+reason to stop publishing CoT. The harness notices that the plugin reported and
+stays quiet for that tick rather than talking over it, so the two never race —
+but the last word is then whichever of them spoke last, which is why `health` is
+the one to reach for. Do not implement both for the same report.
 
 ### Monitoring a sidecar
 
@@ -334,6 +371,13 @@ front. Selecting a row opens the detail beneath it: the endpoints the sidecar
 reported, its `metrics`, its configuration, and a **Remove** button that takes
 the registration away without touching the account, the certificate or the
 channels behind it.
+
+**What the page draws is the last heartbeat the sidecar sent**, which for a
+plugin that implements `Sidecar::health` is exactly what that hook answered on
+its last tick: the state beside the row, the `message` under it, the `metrics`
+in the detail pane. A plugin that does not implement it shows as *healthy* with
+nothing beside it, which is the harness saying the process is still ticking and
+nothing more.
 
 `metrics` is drawn as a key/value table:
 

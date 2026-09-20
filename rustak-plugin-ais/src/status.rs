@@ -8,31 +8,22 @@
 //! *connected, 412 vessels, 3 400 published* or *reconnecting since 12:04,
 //! connection refused* without anybody reading a log.
 //!
-//! # Why the report is a task rather than a line in `tick`
+//! # How it reaches the server
 //!
-//! The sidecar harness posts `Heartbeat::healthy()` itself immediately after
-//! every [`Sidecar::tick`](rustak_client::sidecar::Sidecar::tick), and the
-//! server keeps the last heartbeat it was given. A richer one posted *during*
-//! the tick would therefore be overwritten a moment later and never be seen.
-//! [`report`] runs on a task of its own and waits half a second before
-//! posting, which puts this plugin's status last — the only ordering the SDK
-//! lets a plugin choose today. See the M9-01 status note for the harness change
-//! that would make this unnecessary.
+//! Through [`Sidecar::health`](rustak_client::sidecar::Sidecar::health), which
+//! the harness asks after every tick and reports *instead of* its own
+//! `Heartbeat::healthy()`. The server keeps the last heartbeat it was given, so
+//! only one of the two can be the one an administrator sees; the hook is how a
+//! plugin makes it this one. `AisSidecar::health` is three lines around
+//! [`FeedStatus::heartbeat`].
 
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use rustak_api::{Heartbeat, ServiceState};
 use rustak_client::feed::FeedCounters;
-use rustak_client::sidecar::SidecarContext;
 use rustak_core::prelude::*;
 use tokio::sync::watch;
-
-/// How long the reporter waits after a tick before posting its own heartbeat.
-///
-/// Long enough for the harness's `healthy()` — one request to the same server,
-/// issued the instant `tick` returns — to have landed first.
-const REPORT_AFTER: Duration = Duration::from_millis(500);
 
 /// How a source's connection to its upstream is doing.
 ///
@@ -189,38 +180,6 @@ pub type ConnectionRx = watch::Receiver<Connection>;
 #[must_use]
 pub fn connection() -> (ConnectionTx, ConnectionRx) {
     watch::channel(Connection::Waiting)
-}
-
-/// Posts this sidecar's own status to the control API, for as long as the
-/// sidecar runs.
-///
-/// Spawned once from `start`. Every failure is swallowed: a heartbeat that did
-/// not go through is not a reason to stop publishing CoT.
-pub async fn report<S>(context: SidecarContext<S>, mut status: watch::Receiver<FeedStatus>)
-where
-    S: Send + Sync + 'static,
-{
-    let poll = context.config().sidecar.tick();
-    let shutdown = context.shutdown().clone();
-
-    while status.changed().await.is_ok() {
-        tokio::select! {
-            biased;
-
-            () = shutdown.cancelled() => return,
-            () = tokio::time::sleep(REPORT_AFTER) => {}
-        }
-
-        let Some(control) = context.control() else {
-            return;
-        };
-
-        let beat = status.borrow_and_update().heartbeat(poll, Utc::now());
-
-        if let Err(err) = control.heartbeat(&beat).await {
-            debug!(error = %err, "Could not report the feed's status.");
-        }
-    }
 }
 
 #[cfg(test)]
