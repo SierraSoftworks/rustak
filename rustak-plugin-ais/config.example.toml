@@ -49,8 +49,10 @@ capabilities = ["cot.publish"]
 # file usable offline.
 # stream = "ssl://tak.example.com:8089"
 
-# The service control API, which is what registers this sidecar and reports its
-# health to the admin UI. Default: none.
+# The service control API, which is what registers this sidecar, reports the
+# feed's counters and connection state to the admin UI's Services page, and
+# carries the optional server-side `area` override described below.
+# Default: none.
 # control = "https://tak.example.com:8446"
 
 
@@ -58,7 +60,8 @@ capabilities = ["cot.publish"]
 # How often the feed is polled and the publisher drained. The first tick happens
 # as soon as the sidecar has started. Default: "30s" — this file sets it lower
 # because AIS position reports arrive every few seconds and a longer tick would
-# hold them back.
+# hold them back. It is also what "degraded" is measured in: a source that has
+# been reconnecting for more than two ticks says so on its heartbeat.
 tick = "5s"
 
 # How long `stop` is given before the harness stops waiting.
@@ -72,10 +75,31 @@ shutdown_grace = "10s"
 # assertion on the map that nothing in the data supports.
 affiliation = "unknown"
 
+# How long a vessel that is **under way** stays on a map without another report.
+# Default: "2m". Anchored, moored and aground vessels get [settings.publish]
+# stale instead, which is far longer, because they report only every few
+# minutes; everything else is expected every few seconds and should disappear
+# soon after it stops being heard.
+#
+# Raised to `max_interval + min_interval` when that is longer — a track whose
+# staleness is shorter than the gap between two refreshes would drop off the map
+# and come back — and the raise is logged at `info` when it happens. With the
+# intervals below, an under-way vessel is published with a staleness of 3m05s.
+under_way_stale = "2m"
+
 
 # Where this feed is looking. The source subscribes with it and the publisher
 # re-checks it, so an upstream that rounds a bounding box outwards does not fill
 # a channel with the North Sea. Default: the whole world.
+#
+# An administrator may override this from the admin UI by setting an "area" key
+# in the service's configuration (Services → this service → Configuration):
+#
+#     {"area": {"kind": "circle", "lat": 51.95, "lon": 4.13, "radius_km": 60}}
+#
+# Server-side configuration wins over this file and the substitution is logged
+# at `info` on start-up, because the file is baked into a container image and
+# the UI is where an area gets moved without a redeploy.
 #
 # Either a box:
 [settings.area]
@@ -93,38 +117,80 @@ east = 4.7
 # radius_km = 60.0
 
 
-# How often a vessel may be republished, and how long one lives on a map.
+# How often a vessel may be republished, and how long an anchored one lives on a
+# map.
+#
+# Note: a *partial* [settings.publish] table is filled in key by key from the
+# shared PublishPolicy's own defaults ("2m" and "60s"), not from this plugin's,
+# so every key is written out here rather than left to a default that a partial
+# table would not reach.
 [settings.publish]
-# How long a published track stays on a map without another report. Default:
-# "2m", which suits AIS: a vessel at anchor reports only every three minutes,
-# and `max_interval` below refreshes it before this passes. No delete message is
-# ever sent — TAK clients expire a track by this attribute, so a sidecar that is
-# stopped leaves a map that empties itself.
-stale = "2m"
+# How long a published track stays on a map without another report — for
+# anchored, moored and aground vessels; see `under_way_stale` above for the
+# rest. Default: "10m", which suits a vessel at anchor: it reports every three
+# minutes, `max_interval` below refreshes it well inside this, and a receiver
+# that goes quiet leaves the hull on the map for ten minutes rather than for
+# ever. No delete message is ever sent — TAK clients expire a track by this
+# attribute, so a sidecar that is stopped leaves a map that empties itself.
+stale = "10m"
 
 # The shortest gap between two publications of the same vessel, however much it
 # moved. Default: "5s".
 min_interval = "5s"
 
 # The longest a vessel that is still being reported goes unpublished. This is
-# what keeps a moored ship on the map. Default: "60s".
-max_interval = "60s"
+# what keeps a moored ship on the map. Default: "3m".
+max_interval = "3m"
 
 # How far a vessel must move since its last publication to be published again,
 # in metres. Default: 25.
 min_move_m = 25.0
 
 # How many vessels this sidecar holds before it drops the least recently seen.
-# A ceiling on a runaway area rather than a working limit. Default: 5000.
+# A ceiling on a runaway area rather than a working limit. It also bounds the
+# per-MMSI name cache. Default: 5000.
 max_tracks = 5000
 
 
-# Where the observations come from. Required.
+# Where the observations come from. Required. Exactly one of the three below.
 #
-# M9-00 ships one source: "replay", a file of tracks offered on every tick, for
-# demonstrations and for the integration suite. The live AIS sources — an
-# AISStream.io WebSocket subscription, !AIVDM sentences over UDP from a local
-# receiver, JSON over HTTP — arrive in M9-01 as further values of `kind`.
+# ── kind = "replay" ──────────────────────────────────────────────────────────
+# A file of tracks, offered on every tick. For demonstrations, for the
+# integration suite, and for working on the plugin with no upstream at all.
 [settings.source]
 kind = "replay"
 path = "tracks.example.ndjson"
+
+# ── kind = "aisstream" ───────────────────────────────────────────────────────
+# AISStream.io: worldwide AIS over a WebSocket, subscribed with the area above.
+# A free API key from https://aisstream.io/account (shown once), and the terms
+# published on that site. Three connections per account and per IP.
+#
+# The key is a credential: keep it in the environment, never in this file.
+#
+# [settings.source]
+# kind = "aisstream"
+# api_key = "${{ env.AISSTREAM_API_KEY }}"
+#
+# # Which message types to subscribe to. Default: the four below, which are the
+# # ones that carry a position or a name.
+# message_types = [
+#     "PositionReport",
+#     "ShipStaticData",
+#     "StandardClassBPositionReport",
+#     "ExtendedClassBPositionReport",
+# ]
+
+# ── kind = "udp" ─────────────────────────────────────────────────────────────
+# NMEA 0183 !AIVDM sentences from a receiver of your own — AIS-catcher,
+# rtl_ais, a dAISy hat, a transponder's network output. No key, no terms, and
+# no internet: point the receiver's UDP output at this address.
+#
+# 127.0.0.1 takes datagrams from this host only, which is what a receiver in the
+# same container or on the same machine should send to; 0.0.0.0 takes them from
+# anywhere on the network, which means anyone on it can put a vessel on your
+# map, so prefer a specific interface address.
+#
+# [settings.source]
+# kind = "udp"
+# listen = "127.0.0.1:10110"

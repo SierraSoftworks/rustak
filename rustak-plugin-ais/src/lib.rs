@@ -6,15 +6,27 @@
 //! internet for nothing, and this sidecar is what turns it into CoT tracks on a
 //! rustak channel.
 //!
-//! # What is here, and what is not
+//! # What is here
 //!
-//! This is the M9-00 skeleton: the plugin, its settings and its wiring, with
-//! [`Source::Replay`] — a file of tracks — as its only upstream. The real
-//! sources (an AISStream.io WebSocket subscription, `!AIVDM` sentences over UDP
-//! from a receiver on the roof, JSON over HTTP) arrive in M9-01 as further
-//! variants of [`Source`], and nothing else here changes: the model, the CoT
-//! mapping, the area filter and the publishing rate all live in
-//! [`rustak_client::feed`].
+//! | Module | What it does |
+//! |---|---|
+//! | [`sources`] | The upstreams: AISStream.io, a receiver of your own over UDP, and a replay file |
+//! | [`mapping`] | AIS's vocabulary — ship types, navigational statuses, sentinels — as a [`Track`](rustak_client::feed::Track) |
+//! | [`vessels`] | The per-MMSI memory that joins a position report to the name that arrives six minutes later |
+//! | [`status`] | What the admin UI's Services page shows about this feed |
+//!
+//! Everything else — the CoT type, the area filter, the publishing rate, the
+//! staleness — lives in [`rustak_client::feed`] and is shared with the ADS-B
+//! plugin.
+//!
+//! # Two staleness horizons
+//!
+//! A vessel at anchor reports every three minutes and a vessel under way every
+//! few seconds, so one staleness cannot suit both: too short and the anchored
+//! hull flickers, too long and a track that stopped being reported sits on the
+//! map for ten minutes pretending to be current. Anchored, moored and aground
+//! vessels therefore get `[settings.publish] stale`, and everything else gets
+//! [`Settings::under_way_stale`] — see `config.example.toml`.
 //!
 //! # Running it
 //!
@@ -25,55 +37,40 @@
 //! See `config.example.toml` for every setting with its default, and
 //! `docs/plugins.md` for the sidecar contract this follows.
 
-use std::path::PathBuf;
+pub mod mapping;
+pub mod sources;
+pub mod status;
+pub mod vessels;
 
-use rustak_client::feed::{
-    Affiliation, Area, Feed, FeedCounters, FeedPublisher, PublishPolicy, Replay,
-};
+use std::collections::HashSet;
+use std::time::Duration;
+
+use rustak_client::feed::{Affiliation, Area, Feed, FeedCounters, FeedPublisher, PublishPolicy};
 use rustak_client::sidecar::{Sidecar, SidecarContext, SidecarEvent, async_trait};
+use rustak_core::config::duration;
 use rustak_core::prelude::*;
 use rustak_cot::Event;
+use tokio::sync::watch;
 
-/// Where this plugin reads observations from.
-///
-/// `#[serde(tag = "kind")]`, so a settings file names the upstream it means and
-/// a variant added in M9-01 is an additive change to the file format:
-///
-/// ```toml
-/// [settings.source]
-/// kind = "replay"
-/// path = "tracks.ndjson"
-/// ```
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Source {
-    /// A file of tracks, replayed on every tick. What the demonstration and the
-    /// integration suite use, and what proves the rest of the plugin works
-    /// without an upstream to be down.
-    Replay {
-        /// The newline-delimited JSON file; see [`Replay`] for the format.
-        path: PathBuf,
-    },
+use sources::{Source, SourceContext};
+use status::{ConnectionRx, FeedStatus};
+
+/// How long a vessel that is under way stays on a map without another report.
+fn default_under_way_stale() -> chrono::Duration {
+    chrono::Duration::seconds(120)
 }
 
-impl Source {
-    /// Opens the upstream this setting names.
-    ///
-    /// # Errors
-    ///
-    /// Whatever the source could not do, as something the operator can fix: a
-    /// replay file that is missing or malformed names itself.
-    pub fn open(&self) -> Result<Box<dyn Feed>, Error> {
-        match self {
-            Self::Replay { path } => Ok(Box::new(Replay::open(path)?)),
-        }
-    }
-}
-
-/// The file replayed when a configuration has no `[settings]` table at all.
-fn default_source() -> Source {
-    Source::Replay {
-        path: PathBuf::from("tracks.ndjson"),
+/// The publishing policy this plugin starts from.
+///
+/// Not [`PublishPolicy::default`]: AIS wants a longer memory than the module
+/// default, because that is what an anchored vessel reporting every three
+/// minutes needs, and a `max_interval` under it so that such a vessel is
+/// refreshed before it expires.
+fn default_publish() -> PublishPolicy {
+    PublishPolicy {
+        stale: chrono::Duration::seconds(600),
+        max_interval: chrono::Duration::seconds(180),
+        ..PublishPolicy::default()
     }
 }
 
@@ -85,12 +82,20 @@ pub struct Settings {
     #[serde(default)]
     pub area: Area,
 
-    /// How often a vessel may be republished, and how long it lives.
-    /// Default: the [`PublishPolicy`] defaults, whose `stale` of two minutes
-    /// suits AIS — a vessel at anchor reports only every three minutes, and the
-    /// publisher refreshes it before then.
-    #[serde(default)]
+    /// How often a vessel may be republished, and how long an *anchored* one
+    /// lives. Default: `stale = "10m"`, `min_interval = "5s"`,
+    /// `max_interval = "3m"`, `min_move_m = 25`, `max_tracks = 5000`.
+    #[serde(default = "default_publish")]
     pub publish: PublishPolicy,
+
+    /// How long a vessel that is **not** anchored, moored or aground stays on a
+    /// map without another report. Default: `"2m"`.
+    ///
+    /// Raised to `max_interval + min_interval` when that is longer, and logged
+    /// at `info` when it is: a track whose staleness is shorter than the gap
+    /// between two refreshes drops off the map and comes back.
+    #[serde(default = "default_under_way_stale", with = "duration::humane")]
+    pub under_way_stale: chrono::Duration,
 
     /// What these tracks are to the operator. Default: `unknown`, because open
     /// AIS says nothing about whose side a hull is on.
@@ -110,10 +115,27 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             area: Area::default(),
-            publish: PublishPolicy::default(),
+            publish: default_publish(),
+            under_way_stale: default_under_way_stale(),
             affiliation: Affiliation::default(),
-            source: default_source(),
+            source: Source::Replay {
+                path: "tracks.ndjson".into(),
+            },
         }
+    }
+}
+
+impl Settings {
+    /// How long a vessel that is under way lives on a map, never shorter than
+    /// the gap between two refreshes of one that is not moving.
+    #[must_use]
+    pub fn under_way_stale(&self) -> Duration {
+        let asked = self
+            .under_way_stale
+            .to_std()
+            .unwrap_or_else(|_| Duration::from_secs(120));
+
+        asked.max(self.publish.max_interval() + self.publish.min_interval())
     }
 }
 
@@ -123,6 +145,9 @@ pub struct AisSidecar {
     context: Option<SidecarContext<Settings>>,
     publisher: Option<FeedPublisher>,
     feed: Option<Box<dyn Feed>>,
+    connection: Option<ConnectionRx>,
+    status: Option<watch::Sender<FeedStatus>>,
+    under_way_stale: Duration,
 }
 
 impl AisSidecar {
@@ -133,6 +158,73 @@ impl AisSidecar {
         self.publisher
             .as_ref()
             .map_or_else(FeedCounters::default, FeedPublisher::counters)
+    }
+
+    /// The area an administrator set in the admin UI, when they set one.
+    ///
+    /// Server-side configuration wins over the file, because the file is baked
+    /// into a container image and the UI is where an operator moves the box
+    /// without a redeploy. Anything unreadable is a warning and the file's own
+    /// area, never a sidecar that will not start.
+    async fn configured_area(context: &SidecarContext<Settings>) -> Option<Area> {
+        let document = match context.control()?.config().await {
+            Ok(document) => document,
+            Err(err) => {
+                warn!(error = %err, "Could not read this service's configuration.");
+
+                return None;
+            }
+        };
+
+        match serde_json::from_value::<Area>(document.get("area")?.clone()) {
+            Ok(area) => Some(area),
+            Err(err) => {
+                warn!("The 'area' this service is configured with is unusable ({err}).");
+
+                None
+            }
+        }
+    }
+
+    /// Everything the harness should write, with each vessel's own staleness.
+    ///
+    /// The publisher stamps every event with one `stale`, which is the right
+    /// shape for a feed whose tracks are alike; AIS's are not, so a vessel that
+    /// is not anchored has its staleness shortened here. `stationary` is what
+    /// was offered in this same tick, which is everything the publisher can
+    /// have buffered.
+    fn drain(&mut self, stationary: &HashSet<String>) -> Vec<Event> {
+        let Some(publisher) = &mut self.publisher else {
+            return Vec::new();
+        };
+
+        let under_way = self.under_way_stale;
+        let mut events = publisher.drain();
+
+        for event in &mut events {
+            if !stationary.contains(&event.uid) {
+                event.stale = event.time.stale_after(under_way);
+            }
+        }
+
+        events
+    }
+
+    /// What this sidecar would report about itself right now.
+    fn snapshot(&self) -> FeedStatus {
+        FeedStatus {
+            source: self
+                .feed
+                .as_ref()
+                .map_or_else(|| "none".to_string(), |feed| feed.name().to_string()),
+            connection: self
+                .connection
+                .as_ref()
+                .map(|state| state.borrow().clone())
+                .unwrap_or_default(),
+            counters: self.counters(),
+            tracked: self.publisher.as_ref().map_or(0, FeedPublisher::tracked),
+        }
     }
 }
 
@@ -145,17 +237,51 @@ impl Sidecar for AisSidecar {
 
     async fn start(&mut self, ctx: SidecarContext<Self::Settings>) -> Result<(), Error> {
         let settings = ctx.settings();
+        let area = match Self::configured_area(&ctx).await {
+            Some(area) => {
+                info!(?area, "Using the area this service is configured with.");
+                area
+            }
+            None => settings.area,
+        };
+
+        self.under_way_stale = settings.under_way_stale();
+
+        if self.under_way_stale
+            > settings
+                .under_way_stale
+                .to_std()
+                .unwrap_or(self.under_way_stale)
+        {
+            info!(
+                stale = ?self.under_way_stale,
+                "A vessel under way is refreshed less often than it would expire; \
+                 its staleness has been raised to match.",
+            );
+        }
+
+        let (connection, state) = status::connection();
 
         // Before anything else: a source that cannot be opened is a setting the
         // operator got wrong, and the one thing `start` should refuse over.
-        self.feed = Some(settings.source.open()?);
-        self.publisher = Some(
-            FeedPublisher::new(settings.publish, settings.affiliation).with_area(settings.area),
-        );
+        self.feed = Some(settings.source.open(SourceContext {
+            area,
+            policy: settings.publish,
+            shutdown: ctx.shutdown().clone(),
+            connection,
+        })?);
+        self.connection = Some(state);
+        self.publisher =
+            Some(FeedPublisher::new(settings.publish, settings.affiliation).with_area(area));
+
+        let (status, updates) = watch::channel(FeedStatus::default());
+        self.status = Some(status);
+        tokio::spawn(status::report(ctx.clone(), updates));
 
         info!(
             uid = %ctx.identity().uid(),
-            area = ?settings.area,
+            source = settings.source.kind(),
+            ?area,
             affiliation = ?settings.affiliation,
             "The AIS sidecar is watching.",
         );
@@ -166,25 +292,33 @@ impl Sidecar for AisSidecar {
     }
 
     async fn tick(&mut self) -> Result<Vec<Event>, Error> {
-        let (Some(feed), Some(publisher)) = (&mut self.feed, &mut self.publisher) else {
-            return Ok(Vec::new());
-        };
+        let mut stationary = HashSet::new();
 
-        match feed.poll().await {
-            Ok(tracks) => {
-                for track in tracks {
-                    publisher.offer(track);
+        if let (Some(feed), Some(publisher)) = (&mut self.feed, &mut self.publisher) {
+            match feed.poll().await {
+                Ok(tracks) => {
+                    for track in tracks {
+                        if mapping::is_stationary(&track) {
+                            stationary.insert(track.id.clone());
+                        }
+
+                        publisher.offer(track);
+                    }
                 }
+                // An upstream that is down is an ordinary Tuesday for an open
+                // feed: logged, never a stopped sidecar. The tracks it was
+                // carrying age out on their own `stale`.
+                Err(err) => warn!(source = feed.name(), "The AIS feed did not answer: {err}"),
             }
-            // An upstream that is down is an ordinary Tuesday for an open feed:
-            // logged, never a stopped sidecar. The tracks it was carrying age
-            // out on their own `stale`.
-            Err(err) => warn!(source = feed.name(), "The AIS feed did not answer: {err}"),
+
+            publisher.tick();
         }
 
-        publisher.tick();
+        if let Some(status) = &self.status {
+            status.send_replace(self.snapshot());
+        }
 
-        Ok(publisher.drain())
+        Ok(self.drain(&stationary))
     }
 
     async fn on_event(&mut self, event: SidecarEvent) -> Result<Vec<Event>, Error> {
@@ -239,22 +373,41 @@ mod tests {
         rustak_core::config::load_str(EXAMPLE).expect("config.example.toml should load")
     }
 
+    async fn started(settings: &str) -> AisSidecar {
+        let config: SidecarConfig<Settings> =
+            rustak_core::config::load_str(&format!("[service]\nname = \"ais\"\n\n{settings}"))
+                .expect("the configuration loads");
+        let mut sidecar = AisSidecar::default();
+
+        sidecar
+            .start(
+                SidecarContext::from_config(config, AisSidecar::VERSION, Shutdown::new())
+                    .expect("a usable identity"),
+            )
+            .await
+            .expect("the source opens");
+
+        sidecar
+    }
+
     #[test]
     fn the_example_configuration_file_is_one_this_plugin_can_load() {
         let config = config();
 
         assert_eq!(config.service.name.as_str(), "ais");
         assert_eq!(config.settings.affiliation, Affiliation::Unknown);
-        assert_eq!(
-            config.settings.source,
-            Source::Replay {
-                path: PathBuf::from("tracks.example.ndjson")
-            }
-        );
+        assert!(matches!(config.settings.source, Source::Replay { .. }));
         assert!(config.settings.area.contains(51.95, 4.13));
+        assert_eq!(config.settings.publish.stale(), Duration::from_secs(600));
         assert_eq!(
-            config.settings.publish.stale(),
-            std::time::Duration::from_secs(120),
+            config.settings.publish.max_interval(),
+            Duration::from_secs(180),
+        );
+        assert_eq!(config.settings.publish.min_move_m, 25.0);
+        assert_eq!(
+            config.settings.under_way_stale(),
+            Duration::from_secs(185),
+            "raised off 2m by the three-minute refresh interval",
         );
     }
 
@@ -288,27 +441,11 @@ mod tests {
         let path = directory.path().join("tracks.ndjson");
         std::fs::write(&path, FIXTURE).expect("the fixture lands");
 
-        let config: SidecarConfig<Settings> = rustak_core::config::load_str(&format!(
-            r#"
-            [service]
-            name = "ais"
-
-            [settings.source]
-            kind = "replay"
-            path = "{}"
-            "#,
+        let mut sidecar = started(&format!(
+            "[settings.source]\nkind = \"replay\"\npath = \"{}\"\n",
             path.display(),
         ))
-        .expect("the configuration loads");
-
-        let mut sidecar = AisSidecar::default();
-        sidecar
-            .start(
-                SidecarContext::from_config(config, AisSidecar::VERSION, Shutdown::new())
-                    .expect("a usable identity"),
-            )
-            .await
-            .expect("the replay file opens");
+        .await;
 
         let published = sidecar.tick().await.expect("the first tick publishes");
 
@@ -327,6 +464,70 @@ mod tests {
         assert_eq!(sidecar.counters().suppressed, 5);
 
         sidecar.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_anchored_vessel_lives_five_times_as_long_on_the_map() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("tracks.ndjson");
+        let moored = mapping::track(
+            &mapping::Position {
+                mmsi: 244_660_000,
+                position: (51.95, 4.13),
+                sog_knots: Some(0.0),
+                cog_deg: None,
+                heading_deg: None,
+                nav_status: Some(5),
+                observed_at: chrono::Utc::now(),
+            },
+            None,
+            "replay",
+        );
+        let under_way = mapping::track(
+            &mapping::Position {
+                mmsi: 244_660_001,
+                position: (51.96, 4.14),
+                sog_knots: Some(12.0),
+                cog_deg: Some(90.0),
+                heading_deg: None,
+                nav_status: Some(0),
+                observed_at: chrono::Utc::now(),
+            },
+            None,
+            "replay",
+        );
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&moored).expect("a fixture line"),
+                serde_json::to_string(&under_way).expect("a fixture line"),
+            ),
+        )
+        .expect("the fixture lands");
+
+        let mut sidecar = started(&format!(
+            "[settings.source]\nkind = \"replay\"\npath = \"{}\"\n",
+            path.display(),
+        ))
+        .await;
+
+        let published = sidecar.tick().await.expect("both vessels");
+        let moored = published
+            .iter()
+            .find(|event| event.uid == "AIS-244660000")
+            .expect("the moored vessel");
+        let under_way = published
+            .iter()
+            .find(|event| event.uid == "AIS-244660001")
+            .expect("the vessel under way");
+
+        assert_eq!(moored.stale.millis() - moored.time.millis(), 600_000);
+        assert_eq!(
+            under_way.stale.millis() - under_way.time.millis(),
+            185_000,
+            "2m raised to the refresh interval plus the floor",
+        );
     }
 
     #[tokio::test]
@@ -379,5 +580,38 @@ mod tests {
         let err = refused.expect_err("a sidecar with no upstream is not a sidecar");
 
         assert!(err.to_string().contains("source"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_running_sidecar_reports_what_it_is_carrying() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("tracks.ndjson");
+        std::fs::write(&path, FIXTURE).expect("the fixture lands");
+
+        let mut sidecar = started(&format!(
+            "[settings.source]\nkind = \"replay\"\npath = \"{}\"\n",
+            path.display(),
+        ))
+        .await;
+        let _ = sidecar.tick().await.expect("a tick");
+
+        let beat = sidecar
+            .snapshot()
+            .heartbeat(Duration::from_secs(5), chrono::Utc::now());
+
+        assert_eq!(beat.state, rustak_api::ServiceState::Healthy);
+        assert_eq!(beat.metrics["source"]["kind"], "replay");
+        assert_eq!(beat.metrics["tracked"], 5);
+        assert_eq!(beat.metrics["published"], 5);
+    }
+
+    #[test]
+    fn an_under_way_staleness_longer_than_the_refresh_is_left_alone() {
+        let settings: Settings = toml::from_str(
+            "under_way_stale = \"10m\"\n\n[source]\nkind = \"replay\"\npath = \"t.ndjson\"\n",
+        )
+        .expect("the settings load");
+
+        assert_eq!(settings.under_way_stale(), Duration::from_secs(600));
     }
 }

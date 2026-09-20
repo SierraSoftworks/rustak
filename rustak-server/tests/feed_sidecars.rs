@@ -314,3 +314,173 @@ async fn a_feed_publishes_nothing_for_a_track_outside_its_area() {
 
     feed.stop().await;
 }
+
+/// The `!AIVDM` sentences the UDP case sends.
+///
+/// **Encoded by us**, not captured from anybody's antenna: they are the output
+/// of the encoder in `rustak-plugin-ais`'s own `sources::udp` test module,
+/// which builds each payload field by field from the public ITU-R M.1371
+/// layout. The assertions below are what keeps them honest — a sentence that
+/// decoded to something else would fail here rather than pass quietly.
+mod aivdm {
+    /// A class A position report: MMSI 244660000, under way, 6.2 knots on 271.5.
+    pub const POSITION: &str = "!AIVDM,1,1,,A,13aDo80P0vPBs4hMfP`:VpMD0000,0*43";
+
+    /// The same vessel, half a kilometre further north.
+    pub const MOVED: &str = "!AIVDM,1,1,,A,13aDo80P0vPBs4hMfcp:VpMD0000,0*60";
+
+    /// A class B position report: MMSI 244123456, and no navigational status.
+    pub const CLASS_B: &str = "!AIVDM,1,1,,A,B3`l7@00:H4Ufh7K8kho3wm4P000,0*64";
+
+    /// A type 5 static and voyage report for MMSI 244660000 — ZEEBRUGGE, call
+    /// sign PBZE, ship type 70, bound for Rotterdam — which is 424 bits and
+    /// therefore always two sentences.
+    pub const STATIC: [&str; 2] = [
+        "!AIVDM,2,1,3,A,53aDo802>65U09`D001`DD99DLLD000000000016?0N;;6JV0GlSm51DQ0C@,0*1F",
+        "!AIVDM,2,2,3,A,00000000000,2*27",
+    ];
+}
+
+/// The `[settings]` block the UDP case runs with: the plugin's own defaults,
+/// written out in full because a partial `[settings.publish]` table is filled
+/// in from the shared policy's defaults rather than from this plugin's, with
+/// `min_interval` dropped so that the test is not waiting out a rate limit.
+fn udp_settings(listen: std::net::SocketAddr) -> String {
+    format!(
+        r#"
+        [settings.source]
+        kind = "udp"
+        listen = "{listen}"
+
+        [settings.publish]
+        stale = "10m"
+        min_interval = "0s"
+        max_interval = "3m"
+        min_move_m = 25.0
+        max_tracks = 5000
+        "#,
+    )
+}
+
+/// Sends each sentence as its own datagram, as a receiver does.
+async fn transmit(sender: &tokio::net::UdpSocket, to: std::net::SocketAddr, lines: &[&str]) {
+    for line in lines {
+        sender
+            .send_to(format!("{line}\r\n").as_bytes(), to)
+            .await
+            .expect("the datagram is sent");
+    }
+}
+
+#[actix_web::test]
+async fn the_ais_sidecar_publishes_what_a_receiver_sends_it_over_udp() {
+    // The live path, end to end: a UDP socket standing in for the receiver on
+    // the roof, the real `nmea-parser` decoding a two-fragment message, the
+    // real AIS mapping, the real publisher, and a device on the channel
+    // asserting on the CoT it gets.
+    let listener = std::net::UdpSocket::bind("127.0.0.1:0").expect("an ephemeral port");
+    let listen = listener.local_addr().expect("the bound address");
+    drop(listener);
+
+    let mut feed = RunningFeed::start::<AisSidecar>("ais", &udp_settings(listen)).await;
+    let sender = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("a sender");
+
+    // The plugin binds its port a moment after this harness returns — it enrols
+    // and connects first — and a datagram sent into an unbound port lands
+    // nowhere, so the first two are repeated until one is heard. Repeating them
+    // costs nothing: a vessel that has not moved is suppressed.
+    let mut first = None;
+    for _ in 0..40 {
+        transmit(&sender, listen, &[aivdm::POSITION, aivdm::CLASS_B]).await;
+
+        if let Ok(event) = feed
+            .eud
+            .expect_uid("AIS-244660000", Duration::from_millis(250))
+            .await
+        {
+            first = Some(event);
+            break;
+        }
+    }
+
+    let first = first.expect("the class A position arrives");
+
+    assert_eq!(first.r#type, "a-u-S-X", "no static data has arrived yet");
+    assert_eq!(first.callsign(), Some("MMSI 244660000"));
+    assert_eq!(first.how.as_deref(), Some("m-g"));
+    assert_eq!(
+        first.endpoint(),
+        None,
+        "a ship is a thing on the map, not a chat peer",
+    );
+
+    let track: rustak_cot::detail::Track = first.detail.get().expect("a <track>");
+    assert!(
+        (track.speed - 3.189_555).abs() < 1e-3,
+        "6.2 knots in metres per second: {track:?}",
+    );
+    assert!((track.course - 271.5).abs() < 1e-3, "{track:?}");
+
+    // The class B hull, which carries no navigational status at all.
+    let class_b = feed
+        .eud
+        .expect_uid("AIS-244123456", EXPECT)
+        .await
+        .expect("the class B position arrives");
+
+    assert_eq!(class_b.callsign(), Some("MMSI 244123456"));
+    assert!(
+        rustak_cot::detail::chat::remarks(&class_b.detail)
+            .is_some_and(|remarks| !remarks.text.contains("Status:")),
+        "class B has no status field to report",
+    );
+
+    // Now the static report, and the same vessel half a kilometre on: the
+    // static report alone changes nothing the publisher cares about, and the
+    // move is what carries the newly known name onto the map.
+    transmit(
+        &sender,
+        listen,
+        &[aivdm::STATIC[0], aivdm::STATIC[1], aivdm::MOVED],
+    )
+    .await;
+
+    let named = feed
+        .eud
+        .expect(
+            |event| event.uid == "AIS-244660000" && event.callsign() == Some("ZEEBRUGGE"),
+            EXPECT,
+        )
+        .await
+        .expect("the static report names the hull");
+
+    assert_eq!(named.r#type, "a-u-S-X-M", "ship type 70 is a merchant hull");
+
+    let remarks = rustak_cot::detail::chat::remarks(&named.detail).expect("remarks");
+
+    for expected in [
+        "MMSI: 244660000",
+        "Call sign: PBZE",
+        "IMO: 9312345",
+        "Type: 70 (cargo)",
+        "Status: under way using engine",
+        "Destination: ROTTERDAM",
+        "Length/Beam: 150 m / 22 m",
+        "Source: nmea-udp",
+    ] {
+        assert!(
+            remarks.text.contains(expected),
+            "{expected:?} in {remarks:?}"
+        );
+    }
+
+    assert_eq!(
+        named.stale.millis() - named.time.millis(),
+        180_000,
+        "a vessel under way, raised off two minutes by the refresh interval",
+    );
+
+    feed.stop().await;
+}

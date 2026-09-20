@@ -24,18 +24,31 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+rustak-api = { workspace = true }
 rustak-client = { workspace = true }
 rustak-core = { workspace = true }
 rustak-cot = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
 tracing = { workspace = true }
 human-errors = { workspace = true }
 clap = { workspace = true }
+futures = { workspace = true }
+# The AISStream.io subscription and the receiver on the roof.
+tokio-tungstenite = { workspace = true }
+nmea-parser = { workspace = true }
+# Only for `install_default`: rustls chooses its backend from crate features and
+# rustak's graph enables two, so the process has to name one before
+# `tokio-tungstenite` builds a client configuration of its own.
+rustls = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-# The fixture test reads the demonstration file the example configuration names,
-# and the reconnection test needs an observation time to offer.
-serde_json = { workspace = true }
-chrono = { workspace = true }
+# The settings tests load fragments of the example file directly.
+toml = { workspace = true }
+# `test-util` is what `#[tokio::test(start_paused = true)]` needs; the backoff
+# ceiling is a minute, and a test that actually waited for it would be a test
+# nobody runs.
+tokio = { workspace = true, features = ["test-util"] }
