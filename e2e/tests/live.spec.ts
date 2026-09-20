@@ -12,7 +12,9 @@
  * The rest of both pages — the rows, the role and channel columns, the
  * incognito switch, the XML drawer — is exercised against the demo fixtures in
  * the walkthrough, because producing a real stream connection needs an EUD and
- * belongs to the interop suite rather than here.
+ * belongs to the interop suite rather than here. The one exception below runs
+ * against `?demo` for the same reason `services.spec.ts` does: it is about the
+ * page, not the data, and the page needs more than one row to show it.
  */
 
 import { bootstrapAdmin, expect, gotoApp, signIn, test } from "./helpers";
@@ -68,6 +70,32 @@ test("the situational-awareness browser is empty rather than broken", async ({ p
   await page.getByLabel("Type").fill("a-f");
   await page.getByLabel("Callsign").fill("ALPHA");
   await expect(page.getByText("Nothing matches.", { exact: false })).toBeVisible();
+});
+
+test("clicking straight from one row to another shows the second row's message", async ({
+  page,
+}) => {
+  await gotoApp(page, "/admin/situation?demo");
+
+  // The drawer fetches its document and history when it mounts. Selecting a
+  // second row while the first is open used to hand the same instance new
+  // props, so the heading changed and the bytes under it did not — a marker
+  // being diagnosed under another marker's XML. The two rows differ in
+  // everything this asserts on: the uid in the document, and how much history
+  // the last hour holds.
+  const xml = page.locator("pre.xml");
+  const history = page.locator(".cot-history__row");
+
+  await page.locator(".cot-row__select", { hasText: "QUINN" }).click();
+  await expect(page.getByRole("heading", { name: "ANDROID-2f1c9a7b4e0d" })).toBeVisible();
+  await expect(xml).toContainText("ANDROID-2f1c9a7b4e0d");
+  await expect(history).toHaveCount(3);
+
+  await page.locator(".cot-row__select", { hasText: "RAO" }).click();
+  await expect(page.getByRole("heading", { name: "IOS-91ac4d55f207" })).toBeVisible();
+  await expect(xml).toContainText("IOS-91ac4d55f207");
+  await expect(xml).not.toContainText("ANDROID-2f1c9a7b4e0d");
+  await expect(history).toHaveCount(1);
 });
 
 test("both live pages are reachable from the navigation sidebar", async ({ page }) => {
