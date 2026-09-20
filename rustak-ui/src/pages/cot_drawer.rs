@@ -4,6 +4,13 @@
 //! document and the history window — and one destructive action, each with its
 //! own failure.
 //!
+//! # One instance per identifier
+//!
+//! Both resources are fetched when the component mounts, and only then. The
+//! browser therefore keys this component on the uid, so that a different row
+//! is a new instance rather than new props for the old one — which would keep
+//! the previous row's document under the new heading.
+//!
 //! # The XML is the answer, not a debugging aid
 //!
 //! A `<detail>` a plugin wrote, a stale time a minute in the past, a callsign

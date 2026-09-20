@@ -95,18 +95,28 @@ pub fn situation() -> Html {
             </Card>
 
             if let Some(uid) = selected.as_deref() {
-                <CotDrawer
-                    uid={uid.to_string()}
-                    on_forgotten={
-                        let (selected, reload) = (selected.clone(), messages.reload.clone());
-                        Callback::from(move |_| {
-                            selected.set(None);
-                            reload.emit(());
-                        })
-                    }
-                />
+                { drawer(uid, {
+                    let (selected, reload) = (selected.clone(), messages.reload.clone());
+                    Callback::from(move |_| {
+                        selected.set(None);
+                        reload.emit(());
+                    })
+                }) }
             }
         </>
+    }
+}
+
+/// The drawer for the selected identifier.
+///
+/// Keyed on the identifier so that selecting a different row *remounts* it.
+/// `use_resource` fetches on mount and on reload, not when a prop changes, so
+/// an instance re-used across the selection would keep showing the previous
+/// row's document and history under the new row's heading — the same trap
+/// `services.rs` keys `ServiceDetail` against.
+fn drawer(uid: &str, on_forgotten: Callback<()>) -> Html {
+    html! {
+        <CotDrawer key={uid.to_string()} uid={uid.to_string()} {on_forgotten} />
     }
 }
 
@@ -281,5 +291,17 @@ mod tests {
     fn a_message_whose_stale_time_has_passed_is_stale() {
         assert!(is_stale(&summary(-1)));
         assert!(!is_stale(&summary(2)));
+    }
+
+    #[test]
+    fn the_drawer_is_keyed_on_the_identifier_so_a_new_selection_remounts_it() {
+        let first = drawer("ANDROID-1", Callback::noop());
+        let second = drawer("ANDROID-2", Callback::noop());
+
+        assert_eq!(
+            first.key().map(|key| key.to_string()).as_deref(),
+            Some("ANDROID-1")
+        );
+        assert_ne!(first.key(), second.key());
     }
 }
