@@ -252,7 +252,7 @@ jobs:
       # needing the network at all on most runs.
       - name: Cache Trunk
         id: trunk-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/trunk
           key: trunk-${{ env.TRUNK_VERSION }}-${{ runner.os }}
@@ -601,7 +601,7 @@ jobs:
       - name: Cache Cross
         id: cross-cache
         if: matrix.builder == 'cross'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           # Both binaries: binstall installs `cross-util` beside `cross`, and a
           # cache holding only one restores a half-installed toolchain.

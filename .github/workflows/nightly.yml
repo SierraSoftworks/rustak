@@ -82,7 +82,7 @@ jobs:
       # network is unreliable, and it took out a release doing exactly that.
       - name: Cache Trunk
         id: trunk-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/trunk
           key: trunk-${{ env.TRUNK_VERSION }}-${{ runner.os }}
@@ -314,7 +314,7 @@ jobs:
       # network is unreliable, and it took out a release doing exactly that.
       - name: Cache Trunk
         id: trunk-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/trunk
           key: trunk-${{ env.TRUNK_VERSION }}-${{ runner.os }}
