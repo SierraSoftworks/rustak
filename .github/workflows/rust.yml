@@ -90,10 +90,25 @@ jobs:
         run: sed -i "s/^version\s*=\s*\".*\"/version = \"$VERSION\"/g" Cargo.toml
 
       - name: Stash Versioned Cargo.toml
+        id: stash-cargofile
+        # First of two attempts; the retry below fails the job.
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: cargofile
           path: Cargo.toml
+
+      - name: Wait before retrying stash versioned cargo.toml
+        if: steps.stash-cargofile.outcome == 'failure'
+        run: sleep 15
+
+      - name: Retry stash versioned cargo.toml
+        if: steps.stash-cargofile.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: cargofile
+          path: Cargo.toml
+          overwrite: true
 
   lint:
     name: Lint
@@ -325,20 +340,50 @@ jobs:
         run: trunk build
 
       - name: Upload E2E UI artifacts
+        id: upload-ui-e2e
+        # First of two attempts; the retry below fails the job.
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: ui-dist-e2e
           path: rustak-ui/dist
+
+      - name: Wait before retrying upload e2e ui artifacts
+        if: steps.upload-ui-e2e.outcome == 'failure'
+        run: sleep 15
+
+      - name: Retry upload e2e ui artifacts
+        if: steps.upload-ui-e2e.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-dist-e2e
+          path: rustak-ui/dist
+          overwrite: true
 
       - name: Build release UI
         working-directory: rustak-ui
         run: trunk build --release
 
       - name: Upload release UI artifacts
+        id: upload-ui-dist
+        # First of two attempts; the retry below fails the job.
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: ui-dist
           path: rustak-ui/dist
+
+      - name: Wait before retrying upload release ui artifacts
+        if: steps.upload-ui-dist.outcome == 'failure'
+        run: sleep 15
+
+      - name: Retry upload release ui artifacts
+        if: steps.upload-ui-dist.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-dist
+          path: rustak-ui/dist
+          overwrite: true
 
   e2e:
     name: End-to-End Tests
@@ -669,10 +714,25 @@ jobs:
           overwrite: "true"
 
       - name: Upload build artifacts
+        id: upload-build
+        # First of two attempts; the retry below fails the job.
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.crate.bin }}-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.extension }}
           path: target/${{ matrix.target }}/release/${{ matrix.crate.bin }}${{ matrix.extension }}
+
+      - name: Wait before retrying upload build artifacts
+        if: steps.upload-build.outcome == 'failure'
+        run: sleep 15
+
+      - name: Retry upload build artifacts
+        if: steps.upload-build.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.crate.bin }}-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.extension }}
+          path: target/${{ matrix.target }}/release/${{ matrix.crate.bin }}${{ matrix.extension }}
+          overwrite: true
 
   ci:
     name: CI
@@ -878,12 +938,29 @@ jobs:
           touch "/tmp/digests/${{ matrix.crate.bin }}/${digest#sha256:}"
 
       - name: Upload digest
+        id: upload-digest
+        # First of two attempts; the retry below fails the job.
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: image-digest-${{ matrix.crate.bin }}-${{ env.PLATFORM_PAIR }}
           path: /tmp/digests/${{ matrix.crate.bin }}/*
           if-no-files-found: error
           retention-days: 1
+
+      - name: Wait before retrying upload digest
+        if: steps.upload-digest.outcome == 'failure'
+        run: sleep 15
+
+      - name: Retry upload digest
+        if: steps.upload-digest.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: image-digest-${{ matrix.crate.bin }}-${{ env.PLATFORM_PAIR }}
+          path: /tmp/digests/${{ matrix.crate.bin }}/*
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
 
   docker-publish:
     name: "Docker Publish: ${{ matrix.crate.bin }}"

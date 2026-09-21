@@ -340,6 +340,33 @@ Both archives are flat — `trunk` contains one
 binary, `cross` contains `cross` and `cross-util`, and **both** of cross's must
 be extracted or a later cache hit restores half a toolchain.
 
+### Artifact uploads are retried once
+
+Every `actions/upload-artifact` step **on the critical path** runs twice if it
+has to: the first attempt carries `continue-on-error: true` and an `id`, a
+`sleep 15` follows, and a second identical upload runs
+`if: steps.<id>.outcome == 'failure'` with `overwrite: true`. The **second**
+attempt is the one that fails the job.
+
+The five covered are the ones something downstream needs — `cargofile`,
+`ui-dist-e2e`, `ui-dist`, the build-matrix binaries and the image digests. The
+Playwright report is deliberately **not** covered: it uploads only on
+`if: failure()`, so retrying it would add noise to runs that are already failing
+for a reason we have.
+
+Why: GitHub's artifact service failed twice in three days, each time after the
+work was done and each time fatally. On 2026-09-19 a darwin build died with
+`Failed to CreateArtifact: … ENOTFOUND`; on 2026-09-22 `linux-arm64-rustak-plugin-ais`
+died with `Failed to FinalizeArtifact: … (403) Forbidden: Error from
+intermediary`. Neither had anything to do with this repository, and the second
+one mattered more than the first: with images gated on the test suite, **one
+failed upload now blocks all four images**, so `9c6f6f4` — a fix for a
+three-day production outage — published nothing at all.
+
+This is the same reasoning as the `trunk` and `cross` download retries, applied
+to the other end of the pipeline: a network step that fails after the expensive
+work is finished should be retried, not allowed to discard the work.
+
 ### The cache quota is a shared, finite resource
 
 An `actions/cache` step sits in front of each download, so a normal run does not
