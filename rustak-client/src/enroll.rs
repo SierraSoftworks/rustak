@@ -17,7 +17,9 @@
 //!     secret: &Secret::new(std::env::var("RUSTAK_ENROLLMENT_TOKEN").unwrap()),
 //!     client_uid: "SERVICE-weather",
 //!     truststore: None,
+//!     control_truststore: None,
 //!     credential: Default::default(),
+//!     trust: rustak_client::http::Trust::Internal,
 //! })
 //! .await?;
 //!
@@ -45,7 +47,7 @@ use std::path::{Path, PathBuf};
 use rustak_core::prelude::*;
 use rustak_core::service::ServiceIdentity;
 
-use crate::http;
+use crate::http::{self, Trust};
 
 /// What the sign response carries, once it is JSON.
 #[derive(Debug, Deserialize)]
@@ -76,13 +78,23 @@ pub struct Enrolment<'a> {
     /// service is `SERVICE-<name>`.
     pub client_uid: &'a str,
 
-    /// A truststore to verify the *server* with during enrolment.
+    /// `[service] truststore` — the deployment's own CA, when it has one.
     ///
     /// [`None`] uses the platform's roots, which is right for a server behind a
     /// public certificate and wrong for one behind its own CA — an installation
     /// with a private CA has to distribute it before a sidecar can enrol, exactly
     /// as it does for a device.
+    ///
+    /// Whether it *replaces* the platform's roots or *joins* them is `trust`'s
+    /// business, not this field's: see [`Trust`].
     pub truststore: Option<&'a Path>,
+
+    /// `[service] control_truststore` — the public listener's own roots.
+    ///
+    /// Only consulted when `trust` is [`Trust::Public`], and then it replaces
+    /// everything else. [`None`] is the ordinary case, including every
+    /// enrolment against `[server] marti`.
+    pub control_truststore: Option<&'a Path>,
 
     /// How `secret` is presented.
     ///
@@ -93,6 +105,15 @@ pub struct Enrolment<'a> {
     /// a 900-byte JWT as a password is a shape nothing but a compatibility
     /// client should be writing.
     pub credential: Presentation,
+
+    /// Which roots the *server* is verified against for this call.
+    ///
+    /// [`Trust::Internal`] for `[server] marti`, the mTLS listener, which
+    /// always presents the deployment's own CA. [`Trust::Public`] for
+    /// `[server] control`, the public listener, which serves
+    /// `/Marti/api/tls/*` beside the control API and may hold an ACME or
+    /// operator-supplied certificate. There is no default: see [`Trust`].
+    pub trust: Trust,
 }
 
 /// Which header a credential travels in.
@@ -220,11 +241,19 @@ pub async fn enroll(request: &Enrolment<'_>) -> Result<Enrolled, Error> {
         human_errors::user(err.to_string(), &["Please report this issue via GitHub."])
     })?);
 
+    // Attached to the same two slots `[service]` fills, so that the policy in
+    // `http::roots_for` is the one policy — an enrolment verified by a
+    // different rule from the calls that follow it is the bug this all came
+    // from, one step earlier.
     if let Some(truststore) = request.truststore {
         identity = identity.with_truststore(truststore);
     }
 
-    let client = http::client(&identity, http::DEFAULT_TIMEOUT)?;
+    if let Some(truststore) = request.control_truststore {
+        identity = identity.with_control_truststore(truststore);
+    }
+
+    let client = http::client(&identity, request.trust, http::DEFAULT_TIMEOUT)?;
     let base = http::base_url(request.marti, "marti")?;
     let (csr, key) = signing_request(request.username)?;
 
@@ -410,7 +439,9 @@ mod tests {
             secret: &Secret::new("one-time-token"),
             client_uid: "SERVICE-weather",
             truststore: None,
+            control_truststore: None,
             credential: Presentation::Basic,
+            trust: Trust::Internal,
         })
         .await
     }

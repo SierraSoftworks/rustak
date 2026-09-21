@@ -47,6 +47,7 @@ pub struct ServiceIdentity {
     certificate: Option<PathBuf>,
     key: Option<PathBuf>,
     truststore: Option<PathBuf>,
+    control_truststore: Option<PathBuf>,
 }
 
 impl ServiceIdentity {
@@ -63,6 +64,7 @@ impl ServiceIdentity {
             certificate: None,
             key: None,
             truststore: None,
+            control_truststore: None,
         }
     }
 
@@ -104,9 +106,24 @@ impl ServiceIdentity {
     }
 
     /// Attaches the truststore used to verify the server's certificate.
+    ///
+    /// This is the deployment's own CA: it *replaces* the platform's roots for
+    /// the CoT stream and the Marti mTLS listener, and *joins* them for the
+    /// public listener. See `rustak_client::http::Trust`.
     #[must_use]
     pub fn with_truststore(mut self, truststore: impl Into<PathBuf>) -> Self {
         self.truststore = Some(truststore.into());
+        self
+    }
+
+    /// Attaches the truststore that verifies the **public** listener alone.
+    ///
+    /// For an operator pinning `[server] control` to a PKI of their own: it
+    /// replaces both the platform's roots and `truststore` for that endpoint,
+    /// and says nothing about the stream or Marti.
+    #[must_use]
+    pub fn with_control_truststore(mut self, truststore: impl Into<PathBuf>) -> Self {
+        self.control_truststore = Some(truststore.into());
         self
     }
 
@@ -123,6 +140,11 @@ impl ServiceIdentity {
     /// The truststore's path, if one was configured.
     pub fn truststore(&self) -> Option<&Path> {
         self.truststore.as_deref()
+    }
+
+    /// The public listener's own truststore, if one was configured.
+    pub fn control_truststore(&self) -> Option<&Path> {
+        self.control_truststore.as_deref()
     }
 
     /// Whether this identity can open a mutually authenticated stream
@@ -161,6 +183,7 @@ impl std::fmt::Debug for ServiceIdentity {
             .field("certificate", &self.certificate)
             .field("key", &self.key)
             .field("truststore", &self.truststore)
+            .field("control_truststore", &self.control_truststore)
             .finish()
     }
 }
@@ -218,6 +241,16 @@ mod tests {
     }
 
     #[test]
+    fn the_two_truststores_are_separate_answers_to_separate_questions() {
+        // One deployment may verify the CoT stream against its own CA and the
+        // public listener against a different one; neither implies the other.
+        let identity = identity().with_truststore("/t.pem");
+
+        assert_eq!(identity.truststore(), Some(Path::new("/t.pem")));
+        assert_eq!(identity.control_truststore(), None);
+    }
+
+    #[test]
     fn mutual_tls_needs_both_halves_of_the_certificate() {
         // Half a client certificate is a connection that fails at handshake
         // with an opaque TLS error, so the identity says up front whether it
@@ -235,12 +268,17 @@ mod tests {
         let identity = identity()
             .with_credential(Secret::new("rsk_token"))
             .with_client_cert("/c.pem", "/k.pem")
-            .with_truststore("/t.pem");
+            .with_truststore("/t.pem")
+            .with_control_truststore("/public.pem");
 
         assert_eq!(identity.credential().map(Secret::expose), Some("rsk_token"));
         assert_eq!(identity.certificate(), Some(Path::new("/c.pem")));
         assert_eq!(identity.key(), Some(Path::new("/k.pem")));
         assert_eq!(identity.truststore(), Some(Path::new("/t.pem")));
+        assert_eq!(
+            identity.control_truststore(),
+            Some(Path::new("/public.pem")),
+        );
         assert_eq!(identity.name().as_str(), "adsb-feed");
     }
 }

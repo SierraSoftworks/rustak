@@ -25,6 +25,18 @@
 //! doing it — the server notices the missing heartbeats on its own, which is
 //! what `service.status` and the sweep are for.
 //!
+//! # …and it says so once, not once a tick
+//!
+//! Everything that calls the control API from here goes through
+//! [`LinkHealth`]: an outage is one warning with the cause chain, then `debug`
+//! until it changes, a reminder every five minutes, and one line when it comes
+//! back. Attempts are backed off rather than repeated every tick, and a
+//! heartbeat that is due into a link known to be down is skipped rather than
+//! sent and logged. A refusal is not an outage — the server answered — so it is
+//! throttled but holds nothing else back. See
+//! [`link_health`](super::link_health) for the numbers the first live
+//! deployment produced without any of this.
+//!
 //! # The credential can change under it
 //!
 //! A sidecar under an orchestrator has no `[service] token`: it buys an access
@@ -44,7 +56,6 @@
 //! tick, and only failing both of those the harness's own `healthy()`.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use futures::StreamExt;
 use rustak_api::Heartbeat;
@@ -55,6 +66,7 @@ use tokio::sync::mpsc;
 use crate::control::{ControlClient, ServerEvent};
 
 use super::SidecarContext;
+use super::link_health::{Failure, LinkHealth, Report, humanised};
 use super::workload::AccessTokens;
 
 /// How deep the channel between the feed task and the harness loop is.
@@ -63,12 +75,6 @@ use super::workload::AccessTokens;
 /// deep queue here would only hide a plugin whose `on_event` is too slow, and
 /// hide it as a growing delay rather than as a dropped event.
 const FEED_QUEUE: usize = 32;
-
-/// How long the feed task waits before reopening a feed that ended.
-const RETRY_MIN: Duration = Duration::from_secs(1);
-
-/// The longest it waits, however many times it has failed.
-const RETRY_MAX: Duration = Duration::from_secs(60);
 
 /// The sidecar's control-API connection, and what the harness does with it.
 pub(crate) struct ControlLink {
@@ -88,6 +94,10 @@ pub(crate) struct ControlLink {
     /// credential is its orchestrator's identity rather than a secret from a
     /// file.
     workload: Option<Arc<AccessTokens>>,
+
+    /// Whether the link is up, shared with the feed task: one link, one answer,
+    /// and one log line when it changes.
+    health: Arc<LinkHealth>,
 }
 
 impl ControlLink {
@@ -103,13 +113,16 @@ impl ControlLink {
                 descriptor: context.descriptor().clone(),
                 events: None,
                 workload: None,
+                health: Arc::new(LinkHealth::new()),
             };
         };
 
+        let health = Arc::new(LinkHealth::new());
         let (sender, receiver) = mpsc::channel(FEED_QUEUE);
         tokio::spawn(feed(
             Arc::clone(&control),
             context.workload.clone(),
+            Arc::clone(&health),
             sender,
             context.shutdown().clone(),
         ));
@@ -119,24 +132,37 @@ impl ControlLink {
             descriptor: context.descriptor().clone(),
             events: Some(receiver),
             workload: context.workload.clone(),
+            health,
         }
     }
 
-    /// Puts a live access token in place before a call goes out.
+    /// Puts a live access token in place before a call goes out, answering
+    /// whether the call is worth making.
     ///
-    /// A no-op for a sidecar whose credential is a `[service] token`: there is
-    /// nothing to exchange and nothing to expire.
-    async fn ensure_credential(&self) {
+    /// A no-op — and a `true` — for a sidecar whose credential is a
+    /// `[service] token`: there is nothing to exchange and nothing to expire.
+    /// A failed exchange is a failure *of the link*, and the call it was for is
+    /// abandoned rather than sent with a credential we know is missing: two
+    /// failures for one cause is exactly the noise this is here to stop.
+    async fn ensure_credential(&self) -> bool {
         let (Some(control), Some(tokens)) = (&self.control, &self.workload) else {
-            return;
+            return true;
         };
 
         match tokens.current().await {
-            Ok(token) => control.set_credential(Some(token)),
-            Err(err) => tracing::warn!(
-                error = %err,
-                "Could not exchange this sidecar's workload identity for an access token.",
-            ),
+            Ok(token) => {
+                control.set_credential(Some(token));
+
+                true
+            }
+            Err(err) => {
+                self.note(
+                    "exchange this sidecar's workload identity for an access token",
+                    &err,
+                );
+
+                false
+            }
         }
     }
 
@@ -159,9 +185,8 @@ impl ControlLink {
             "The server refused this sidecar's access token; exchanging its workload identity again.",
         );
         tokens.invalidate();
-        self.ensure_credential().await;
 
-        true
+        self.ensure_credential().await
     }
 
     /// Registers this sidecar, logging a refusal rather than returning it.
@@ -173,7 +198,13 @@ impl ControlLink {
             return;
         };
 
-        self.ensure_credential().await;
+        if !self.due("register") {
+            return;
+        }
+
+        if !self.ensure_credential().await {
+            return;
+        }
 
         let mut outcome = control.register(&self.descriptor).await;
 
@@ -182,14 +213,14 @@ impl ControlLink {
         }
 
         match outcome {
-            Ok(summary) => tracing::info!(
-                service = %summary.descriptor.name,
-                "Registered with the server.",
-            ),
-            Err(err) => tracing::warn!(
-                error = %err,
-                "Could not register with the server; the sidecar is running anyway.",
-            ),
+            Ok(summary) => {
+                recovered(self.health.succeeded());
+                tracing::info!(
+                    service = %summary.descriptor.name,
+                    "Registered with the server.",
+                );
+            }
+            Err(err) => self.note("register with the server", &err),
         }
     }
 
@@ -228,7 +259,13 @@ impl ControlLink {
             return;
         };
 
-        self.ensure_credential().await;
+        if !self.due("report a heartbeat") {
+            return;
+        }
+
+        if !self.ensure_credential().await {
+            return;
+        }
 
         let mut outcome = control.post_heartbeat(beat).await;
 
@@ -237,13 +274,51 @@ impl ControlLink {
         }
 
         match outcome {
-            Ok(Some(status)) => tracing::debug!(state = status.state.as_str(), "Reported health."),
+            Ok(Some(status)) => {
+                recovered(self.health.succeeded());
+                tracing::debug!(state = status.state.as_str(), "Reported health.");
+            }
             Ok(None) => {
+                recovered(self.health.succeeded());
                 tracing::info!("The server has no registration for this sidecar; registering.");
                 self.register().await;
             }
-            Err(err) => tracing::warn!(error = %err, "Could not report a heartbeat."),
+            Err(err) => self.note("report a heartbeat", &err),
         }
+    }
+
+    /// Records a failed call and says as much about it as its state calls for.
+    ///
+    /// Classified by [`http::is_transport`](crate::http::is_transport): only a
+    /// server we could not reach is an outage, and a refusal — which is the
+    /// server answering — leaves everything else free to carry on.
+    fn note(&self, what: &str, err: &Error) {
+        let failure = match crate::http::is_transport(err) {
+            true => Failure::Unreachable,
+            false => Failure::Refused,
+        };
+
+        announce(self.health.failed(failure), failure, what, err);
+    }
+
+    /// Whether a call is worth making, given what the link last did.
+    ///
+    /// While the link is down the answer is `false` until the backoff has run
+    /// out, and the tick that finds it still down says so at `debug` — which is
+    /// how a heartbeat every thirty seconds stops being a request every thirty
+    /// seconds into a server that is not answering. The attempt that *is*
+    /// allowed through is what finds out that the link is back.
+    fn due(&self, what: &str) -> bool {
+        if self.health.due() {
+            return true;
+        }
+
+        tracing::debug!(
+            retry_in = %humanised(self.health.backoff()),
+            "The control link is down; not trying to {what} yet.",
+        );
+
+        false
     }
 
     /// The next server event, or a future that never resolves for a sidecar
@@ -264,6 +339,7 @@ impl std::fmt::Debug for ControlLink {
             .debug_struct("ControlLink")
             .field("service", &self.descriptor.name)
             .field("configured", &self.control.is_some())
+            .field("down", &self.health.is_down())
             .finish_non_exhaustive()
     }
 }
@@ -276,53 +352,72 @@ impl std::fmt::Debug for ControlLink {
 async fn feed(
     control: Arc<ControlClient>,
     workload: Option<Arc<AccessTokens>>,
+    health: Arc<LinkHealth>,
     sender: mpsc::Sender<ServerEvent>,
     shutdown: Shutdown,
 ) {
     let mut after: Option<u64> = None;
-    let mut wait = RETRY_MIN;
 
     while !shutdown.is_cancelled() {
         // The feed is held open for hours, so the token it opened with will
         // have expired by the time it drops and is reopened. Exchanging here
         // rather than once at start-up is what keeps a reopened feed working.
-        if let Some(tokens) = &workload {
-            match tokens.current().await {
-                Ok(token) => control.set_credential(Some(token)),
-                Err(err) => tracing::warn!(
-                    error = %err,
-                    "Could not exchange this sidecar's workload identity for the event feed.",
-                ),
-            }
-        }
+        let exchanged = match &workload {
+            None => true,
+            Some(tokens) => match tokens.current().await {
+                Ok(token) => {
+                    control.set_credential(Some(token));
 
-        match control.events(after).await {
-            Ok(mut stream) => {
-                tracing::info!("The server-event feed is open.");
-                wait = RETRY_MIN;
-
-                loop {
-                    let event = tokio::select! {
-                        biased;
-
-                        () = shutdown.cancelled() => return,
-                        event = stream.next() => event,
-                    };
-
-                    let Some(event) = event else { break };
-
-                    after = Some(event.id);
-
-                    // A closed receiver is the harness stopping, not a failure.
-                    if sender.send(event).await.is_err() {
-                        return;
-                    }
+                    true
                 }
+                Err(err) => {
+                    note(
+                        &health,
+                        "exchange this sidecar's workload identity for the event feed",
+                        &err,
+                    );
 
-                tracing::debug!("The server-event feed ended; it will be reopened.");
+                    false
+                }
+            },
+        };
+
+        // Opening the feed with a credential we know is missing would be a
+        // second failure for one cause, and a second log line for it.
+        if exchanged {
+            match control.events(after).await {
+                Ok(mut stream) => {
+                    recovered(health.succeeded());
+                    tracing::info!("The server-event feed is open.");
+
+                    loop {
+                        let event = tokio::select! {
+                            biased;
+
+                            () = shutdown.cancelled() => return,
+                            event = stream.next() => event,
+                        };
+
+                        let Some(event) = event else { break };
+
+                        after = Some(event.id);
+
+                        // A closed receiver is the harness stopping, not a
+                        // failure.
+                        if sender.send(event).await.is_err() {
+                            return;
+                        }
+                    }
+
+                    tracing::debug!("The server-event feed ended; it will be reopened.");
+                }
+                Err(err) => note(&health, "open the server-event feed", &err),
             }
-            Err(err) => tracing::warn!(error = %err, "Could not open the server-event feed."),
         }
+
+        // The shared backoff: the heartbeat that failed a moment ago moved this
+        // on too, so one outage is one sequence of attempts rather than two.
+        let wait = health.backoff();
 
         tokio::select! {
             biased;
@@ -330,13 +425,61 @@ async fn feed(
             () = shutdown.cancelled() => return,
             () = tokio::time::sleep(wait) => {}
         }
+    }
+}
 
-        wait = (wait * 2).min(RETRY_MAX);
+/// [`ControlLink::note`], for the feed task, which holds the health directly.
+fn note(health: &LinkHealth, what: &str, err: &Error) {
+    let failure = match crate::http::is_transport(err) {
+        true => Failure::Unreachable,
+        false => Failure::Refused,
+    };
+
+    announce(health.failed(failure), failure, what, err);
+}
+
+/// Logs one control-API failure at the level the link's state calls for.
+///
+/// The first failure of a run carries the whole rendered error — the cause
+/// chain `http::transport` built, and the advice that names
+/// `[service] control_truststore` — because that is the line an operator reads.
+/// Everything after it is `debug` until the state changes, and a reminder is
+/// one line rather than a block.
+fn announce(report: Report, failure: Failure, what: &str, err: &Error) {
+    match (report, failure) {
+        (Report::First, Failure::Unreachable) => tracing::warn!(
+            error = %err,
+            "Could not {what}. The control link is down; further failures are logged at debug until it is back.",
+        ),
+        (Report::First, Failure::Refused) => tracing::warn!(
+            error = %err,
+            "Could not {what}. The server answered, so the link is up; repeats are logged at debug until this changes.",
+        ),
+        (Report::Reminder { failing_for }, _) => tracing::warn!(
+            error = %err.description(),
+            "The control link has been failing for {}; the last attempt was to {what}.",
+            humanised(failing_for),
+        ),
+        (Report::Quiet, _) => tracing::debug!(
+            error = %err.description(),
+            "Could not {what}; nothing has changed since this was last reported.",
+        ),
+        // A failure cannot be a recovery.
+        (Report::Recovered { .. }, _) => {}
+    }
+}
+
+/// Says so, once, when the link starts working again.
+fn recovered(report: Report) {
+    if let Report::Recovered { failing_for } = report {
+        tracing::info!("The control link is back after {}.", humanised(failing_for),);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use rustak_core::config;
 
     use super::*;
@@ -390,6 +533,39 @@ mod tests {
         // Returns `()`: there is no failure for the harness to act on.
         link.register().await;
         link.heartbeat(&Heartbeat::healthy()).await;
+
+        // And the link is *up*: the server answered, which is what matters for
+        // whether anything else is worth trying. A 503 on one route must not
+        // stop a heartbeat going to another.
+        assert!(format!("{link:?}").contains("down: false"), "{link:?}");
+    }
+
+    #[tokio::test]
+    async fn a_server_that_cannot_be_reached_at_all_takes_the_link_down() {
+        // Port 1 refuses the connection, which is a transport failure — the
+        // shape a TLS handshake failure has, and the one the first live
+        // deployment produced 428 log lines from. From here the harness backs
+        // off and skips heartbeats instead of sending one per tick.
+        let link = ControlLink::open(&context(
+            r#"
+            [service]
+            name = "example"
+
+            [server]
+            control = "http://127.0.0.1:1"
+            "#,
+        ));
+
+        link.heartbeat(&Heartbeat::healthy()).await;
+
+        assert!(format!("{link:?}").contains("down: true"), "{link:?}");
+
+        // Still no failure for the harness to act on, and the calls inside the
+        // backoff are skipped rather than sent.
+        link.heartbeat(&Heartbeat::healthy()).await;
+        link.register().await;
+
+        assert!(format!("{link:?}").contains("down: true"), "{link:?}");
     }
 
     /// A control API that takes any heartbeat, and remembers what it was sent.

@@ -474,6 +474,7 @@ mod tests {
                 certificate: None,
                 key: None,
                 truststore: None,
+                control_truststore: None,
                 account: None,
                 pki_dir: None,
                 workload_identity: None,

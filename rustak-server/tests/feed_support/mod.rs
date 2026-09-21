@@ -87,8 +87,12 @@ impl RunningFeed {
             secret: &Secret::new(enrolment_token),
             client_uid: &format!("SERVICE-{service}"),
             truststore: None,
+            control_truststore: None,
             // A one-time token is a password, not a bearer credential.
             credential: rustak_client::enroll::Presentation::Basic,
+            // `base` is the public route tree, which is the listener that may
+            // hold a publicly issued certificate.
+            trust: rustak_client::http::Trust::Public,
         })
         .await
         .expect("the sidecar enrols");

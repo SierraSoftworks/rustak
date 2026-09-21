@@ -40,7 +40,13 @@ impl MartiClient {
     /// or when the certificate, key or truststore the identity names cannot be
     /// read — see [`http::client`].
     pub fn new(base: &str, identity: &ServiceIdentity) -> Result<Self, Error> {
-        Self::with_http(base, http::client(identity, http::DEFAULT_TIMEOUT)?)
+        // [`http::Trust::Internal`]: the Marti mTLS listener always presents a
+        // certificate from the deployment's own CA, so `[service] truststore`
+        // replaces the platform's roots rather than joining them.
+        Self::with_http(
+            base,
+            http::client(identity, http::Trust::Internal, http::DEFAULT_TIMEOUT)?,
+        )
     }
 
     /// Builds a client over an HTTP client somebody else made.

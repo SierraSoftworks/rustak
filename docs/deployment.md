@@ -457,6 +457,29 @@ that runs without an identity. See [`docs/plugins.md`](plugins.md) for the rest
 of the first-start story, including where the files land and what verifies the
 server while the sidecar has no truststore yet.
 
+**A public listener with a publicly trusted certificate needs nothing here.**
+The truststore enrolment writes is rustak's own CA, and a sidecar uses it to
+verify the two listeners that always present it — the CoT stream and
+`[server] marti` — while verifying `[server] control` against the platform's
+roots *and* that CA. So `acme` and `files` deployments and `internal` ones both
+work with the same configuration and the same image.
+
+The one case that needs a setting is a **private PKI on the public listener**:
+an installation whose `:8446` certificate comes from a corporate CA that neither
+the platform's roots nor rustak's own cover. Distribute that CA to the sidecar's
+volume and name it:
+
+```toml
+[service]
+control_truststore = "/data/public-ca.pem"
+```
+
+It *replaces* both the platform's roots and `[service] truststore` for the
+control API alone, and says nothing about the stream or Marti — which keep
+rustak's CA, because that is what they present. Nothing writes it, and a
+deployment that does not need it should not set it: a pin that names a file
+which is not there is a start-up failure, by design.
+
 Under Nomad or Kubernetes there is a third option, and it is the one to reach
 for: the sidecar presents the identity its orchestrator already gave it and
 needs no rustak secret at all, neither an enrolment token nor a service token.
@@ -629,6 +652,14 @@ It replaces both credentials:
 Deployments that have no orchestrator identity keep the enrolment token exactly
 as it was; nothing below is required, and the two can run side by side against
 one server.
+
+Both of those calls go to the **public** listener, which is verified against the
+platform's roots *and* the truststore enrolment wrote — so a public listener
+holding an ACME or otherwise publicly trusted certificate needs nothing added
+here, and one behind rustak's own `internal` CA works for the same reason. Only
+a public listener behind a *private* CA that neither covers needs a setting, and
+that setting is `[service] control_truststore`; see
+[The sidecar images](#the-sidecar-images).
 
 ### Nomad
 

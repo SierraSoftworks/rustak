@@ -51,6 +51,7 @@ use rustak_core::prelude::*;
 use super::config::{ServerConfig, ServiceConfig, SidecarConfig};
 use super::workload::{self, Source};
 use crate::enroll::{Enrolment, Paths, Presentation, enroll};
+use crate::http::Trust;
 
 /// Which credential a start is going to enrol with.
 enum Credential {
@@ -253,7 +254,7 @@ pub(crate) async fn ensure<S>(
     // moment later.
     config.server.endpoints()?;
 
-    let server = target(&config.server)?;
+    let (server, trust) = target(&config.server)?;
     let account = config.service.account().to_string();
     let uid = config.service.name.uid();
     // An explicitly configured truststore that is already there is what the
@@ -265,6 +266,14 @@ pub(crate) async fn ensure<S>(
         .truststore
         .as_deref()
         .filter(|path| path.exists());
+    // Not filtered on existence: an operator who pinned the public listener and
+    // named a file that is not there must be told so, rather than quietly given
+    // the platform's roots — which is the whole class of bug this setting
+    // exists to close.
+    let pin_control_with = match trust {
+        Trust::Public => config.service.control_truststore.as_deref(),
+        Trust::Internal => None,
+    };
 
     let (secret, presentation) = credential.present();
 
@@ -282,7 +291,9 @@ pub(crate) async fn ensure<S>(
         secret,
         client_uid: uid.as_str(),
         truststore: verify_with,
+        control_truststore: pin_control_with,
         credential: presentation,
+        trust,
     })
     .await
     .map_err(|err| {
@@ -409,17 +420,26 @@ fn attach<S>(config: &mut SidecarConfig<S>, paths: &Paths) {
     }
 }
 
-/// The endpoint the enrolment surface is served on.
+/// The endpoint the enrolment surface is served on, and how it is verified.
 ///
 /// `[server] marti` when it is set, because an installation that names it has
 /// said where its Marti API is; `[server] control` otherwise, because the
 /// public listener serves `/Marti/api/tls/*` beside the control API and that is
 /// the one every sidecar is configured with.
-fn target(server: &ServerConfig) -> Result<String, Error> {
+///
+/// The policy follows the endpoint rather than the call: the mTLS listener is
+/// always the deployment's own CA ([`Trust::Internal`]), and the public one may
+/// be anything ([`Trust::Public`]). Enrolment is the *first* call a deployment
+/// makes, so getting this wrong is a deployment that never starts.
+fn target(server: &ServerConfig) -> Result<(String, Trust), Error> {
+    if let Some(marti) = server.marti.clone() {
+        return Ok((marti, Trust::Internal));
+    }
+
     server
-        .marti
+        .control
         .clone()
-        .or_else(|| server.control.clone())
+        .map(|control| (control, Trust::Public))
         .ok_or_else(|| {
             human_errors::user(
                 "This sidecar has no certificate and no [server] endpoint to enrol against.",
@@ -534,14 +554,22 @@ mod tests {
 
     #[test]
     fn marti_takes_precedence_over_control_as_the_enrolment_surface() {
+        // And each endpoint brings its own trust policy: the mTLS listener is
+        // always the deployment's own CA, the public one may be anything.
         let both = config(
             "[service]\nname = \"example\"\n\n[server]\nmarti = \"https://tak:8443\"\ncontrol = \"https://tak:8446\"\n",
         );
-        assert_eq!(target(&both.server).unwrap(), "https://tak:8443");
+        assert_eq!(
+            target(&both.server).unwrap(),
+            ("https://tak:8443".to_string(), Trust::Internal),
+        );
 
         let control =
             config("[service]\nname = \"example\"\n\n[server]\ncontrol = \"https://tak:8446\"\n");
-        assert_eq!(target(&control.server).unwrap(), "https://tak:8446");
+        assert_eq!(
+            target(&control.server).unwrap(),
+            ("https://tak:8446".to_string(), Trust::Public),
+        );
 
         let neither = config("[service]\nname = \"example\"\n");
         let err = target(&neither.server).unwrap_err();

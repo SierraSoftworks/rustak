@@ -62,6 +62,7 @@ pub mod config;
 mod control_link;
 pub(crate) mod enrolment;
 mod link;
+mod link_health;
 pub mod run;
 pub mod workload;
 
@@ -196,23 +197,36 @@ impl<S> SidecarContext<S> {
             uid = %identity.uid(),
         );
 
-        // One HTTPS client behind both, so a sidecar that uses both APIs shares
-        // a connection pool and a TLS session cache rather than opening two of
-        // everything. Built only when something is configured to call: a plugin
-        // that only publishes CoT reads no certificate it does not need.
-        let http = match (&config.server.marti, &config.server.control) {
-            (None, None) => None,
-            _ => Some(crate::http::client(
-                &identity,
-                crate::http::DEFAULT_TIMEOUT,
-            )?),
+        // Two HTTPS clients, not one: the Marti listener always presents the
+        // deployment's own CA and the public listener may present an ACME or
+        // operator-supplied certificate, so they are verified against different
+        // roots and cannot share a client. Each is built only when something is
+        // configured to call it — a plugin that only publishes CoT reads no
+        // certificate it does not need. The connection pool a shared client
+        // used to give away was never worth much: these are two listeners, on
+        // two ports, and usually only one of them is configured at all.
+        let marti = match &config.server.marti {
+            Some(base) => Some(Arc::new(MartiClient::with_http(
+                base,
+                crate::http::client(
+                    &identity,
+                    crate::http::Trust::Internal,
+                    crate::http::DEFAULT_TIMEOUT,
+                )?,
+            )?)),
+            None => None,
         };
 
-        let marti = match (&config.server.marti, &http) {
-            (Some(base), Some(http)) => Some(Arc::new(MartiClient::with_http(base, http.clone())?)),
-            _ => None,
+        let public = match &config.server.control {
+            Some(_) => Some(crate::http::client(
+                &identity,
+                crate::http::Trust::Public,
+                crate::http::DEFAULT_TIMEOUT,
+            )?),
+            None => None,
         };
-        let control = match (&config.server.control, &http) {
+
+        let control = match (&config.server.control, &public) {
             (Some(base), Some(http)) => Some(Arc::new(ControlClient::with_http(
                 base,
                 http.clone(),
@@ -226,11 +240,13 @@ impl<S> SidecarContext<S> {
         // have the two racing. Otherwise the orchestrator's own identity is
         // what reaches the control API, and the deployment holds no rustak
         // secret at all.
+        // The token exchange is a control-API call, so it goes over the public
+        // client: `/oauth/token` is served by the same listener as `/api/v1`.
         let workload = match (
             &config.service.token,
             config.service.workload_source()?,
             &config.server.control,
-            &http,
+            &public,
         ) {
             (None, Some(source), Some(base), Some(http)) => Some(Arc::new(AccessTokens::new(
                 source,

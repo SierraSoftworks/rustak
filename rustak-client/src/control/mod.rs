@@ -104,9 +104,12 @@ impl ControlClient {
     /// or when the certificate, key or truststore the identity names cannot be
     /// read.
     pub fn new(base: &str, identity: &ServiceIdentity) -> Result<Self, Error> {
+        // [`http::Trust::Public`]: the control API is served by the public
+        // listener, which may hold an ACME or operator-supplied certificate as
+        // easily as one from the deployment's own CA.
         Self::with_http(
             base,
-            http::client(identity, http::DEFAULT_TIMEOUT)?,
+            http::client(identity, http::Trust::Public, http::DEFAULT_TIMEOUT)?,
             identity,
         )
     }

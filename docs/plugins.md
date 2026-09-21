@@ -204,6 +204,7 @@ capabilities = ["cot.publish"]
 certificate = "/etc/rustak/adsb.pem"    # required by an ssl:// stream
 key = "/etc/rustak/adsb.key"            # written by enrolment if it is not there
 truststore = "/etc/rustak/truststore.pem"
+# control_truststore = "/etc/rustak/public-ca.pem"   # only to pin the public listener; see below
 # pki_dir = "/data"                     # where enrolment writes what the three above do not name
 # account = "svc.adsb"                  # the account it enrols as; default: the name above
 
@@ -318,11 +319,41 @@ error naming the cause: a sidecar must not run half-identified.
 | `clientUid` | `SERVICE-<name>`, the same uid it connects with |
 | against | `[server] marti`, or `[server] control` — rustak's public listener serves `/Marti/api/tls/*` beside the control API |
 
-The enrolment call itself verifies the server against the **platform's** root
-store, which is right for a public listener behind a publicly issued certificate
-(ACME). An installation running rustak's `internal` CA has to hand the sidecar
-that CA out of band first, as `[service] truststore`; a truststore that is
-already there is kept rather than replaced by the chain the server sends.
+### Which roots verify which endpoint
+
+A sidecar talks to three things, and they do **not** all present the same kind
+of certificate — see the listener table in `plan.md`. So `[service] truststore`
+means something slightly different for each, and the sidecar decides per
+endpoint rather than once:
+
+| Endpoint | What the server presents | What the sidecar verifies it against |
+|---|---|---|
+| the CoT stream (`ssl://…:8089`) | rustak's internal CA, always | `[service] truststore`, **replacing** the platform's roots |
+| `[server] marti` (`:8443`) | rustak's internal CA, always | `[service] truststore`, **replacing** the platform's roots |
+| `[server] control` (`:8446`) | ACME, `files`, **or** the internal CA | the platform's roots **and** `[service] truststore` — or `[service] control_truststore` alone, when one is set |
+
+The public listener is the odd one out because it is the one an installation is
+most likely to have put a publicly trusted certificate on, while enrolment
+writes rustak's own CA into `[service] truststore` on the first start. Joining
+the two is what lets a sidecar enrol against an internal CA and then call a
+control API behind Let's Encrypt — or the other way round — without being told
+which shape its server has.
+
+**`[service] control_truststore` replaces that set.** Set it only when you want
+the public listener *pinned* to a PKI of your own and the platform's roots out
+of the picture: an installation whose `:8446` certificate comes from a corporate
+CA, say. It says nothing about the stream or Marti, nothing writes it, and a
+deployment whose public listener holds an ACME or otherwise publicly trusted
+certificate needs no such setting at all.
+
+The enrolment call follows the same rule, because it is the first call a
+deployment makes: against `[server] marti` it verifies with `[service]
+truststore` alone, and against `[server] control` with the platform's roots plus
+that truststore — or with `[service] control_truststore` when one is named. An
+installation running rustak's `internal` CA on a listener the platform's roots
+do not cover has to hand the sidecar that CA out of band first; a truststore
+that is already there is kept rather than replaced by the chain the server
+sends.
 
 ## Testing one
 
@@ -535,7 +566,8 @@ The same thing is a function for a plugin that wants to do it itself —
 `rustak_client::enroll`:
 
 ```rust
-use rustak_client::enroll::{Enrolment, enroll};
+use rustak_client::enroll::{Enrolment, Presentation, enroll};
+use rustak_client::http::Trust;
 
 let enrolled = enroll(&Enrolment {
     marti: "https://tak.example.com:8443",
@@ -543,6 +575,11 @@ let enrolled = enroll(&Enrolment {
     secret: &Secret::new(std::env::var("RUSTAK_ENROLLMENT_TOKEN")?),
     client_uid: "SERVICE-adsb",
     truststore: None,
+    control_truststore: None,
+    credential: Presentation::Basic,
+    // The mTLS listener, so the truststore replaces the platform's roots.
+    // `Trust::Public` for an enrolment against [server] control.
+    trust: Trust::Internal,
 })
 .await?;
 

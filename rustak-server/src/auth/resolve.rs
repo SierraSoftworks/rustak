@@ -112,7 +112,13 @@ impl From<Error> for AuthFailure {
 /// does not exist and an account that has been switched off;
 /// [`AuthFailure::Forbidden`] when a configured access-control expression
 /// refuses the request; [`AuthFailure::Unavailable`] when a read fails.
-#[instrument("auth.resolve.bearer", skip_all, err(Debug))]
+// `err(level = "debug")`: this is tried speculatively on every request carrying
+// any bearer header, and by design 04 D2 a token that is not one of ours is
+// *not an identity* rather than a failure — the same header carries mission
+// tokens and an orchestrator's workload identity. At the default `error` level
+// a perfectly ordinary workload enrolment logged `error=Rejected` immediately
+// before the request it belongs to was accepted.
+#[instrument("auth.resolve.bearer", skip_all, err(level = "debug", Debug))]
 pub async fn bearer<S: Services>(
     services: &S,
     token: &str,

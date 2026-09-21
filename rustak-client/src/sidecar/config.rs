@@ -176,8 +176,25 @@ pub struct ServiceConfig {
 
     /// The truststore used to verify the server's certificate, in PEM. Default:
     /// the platform's own roots.
+    ///
+    /// It **replaces** the platform's roots for the CoT stream and
+    /// `[server] marti`, which always present the deployment's own CA, and
+    /// **joins** them for `[server] control`, which may present a publicly
+    /// issued certificate instead. Self-enrolment writes the chain the server
+    /// sent here when nothing names one.
     #[serde(default)]
     pub truststore: Option<PathBuf>,
+
+    /// The truststore that verifies `[server] control` alone, in PEM. Default:
+    /// the platform's roots joined with `truststore`.
+    ///
+    /// Set it only to **pin** the public listener to a PKI of your own: it
+    /// replaces both the platform's roots and `truststore` for that endpoint,
+    /// and says nothing about the stream or Marti. Nothing writes it — a
+    /// deployment whose public listener holds an ACME or publicly issued
+    /// certificate needs no such setting.
+    #[serde(default)]
+    pub control_truststore: Option<PathBuf>,
 
     /// Where self-enrolment writes the certificate, key and truststore that
     /// `certificate`, `key` and `truststore` do not name. Default: the
@@ -290,6 +307,10 @@ impl ServiceConfig {
 
         if let Some(truststore) = &self.truststore {
             identity = identity.with_truststore(truststore);
+        }
+
+        if let Some(truststore) = &self.control_truststore {
+            identity = identity.with_control_truststore(truststore);
         }
 
         Ok(identity)

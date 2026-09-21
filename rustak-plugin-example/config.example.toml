@@ -95,7 +95,21 @@ name = "example"
 # platform's own roots — or, once this sidecar has enrolled, the CA chain the
 # server answered the enrolment with, which is what an "internal" CA needs and
 # what the platform roots can never supply. Set it to keep your own instead.
+#
+# It *replaces* the platform's roots for the CoT stream and [server] marti,
+# which always present rustak's own CA, and *joins* them for [server] control,
+# which may present an ACME or otherwise publicly trusted certificate instead.
 # truststore = "/etc/rustak/truststore.pem"
+
+# The truststore that verifies [server] control alone, in PEM. Default: unset —
+# the platform's roots joined with `truststore` above, which covers both a
+# publicly trusted public listener and one behind rustak's own CA.
+#
+# Set it only to *pin* the public listener to a PKI of your own: it replaces
+# both the platform's roots and `truststore` for that endpoint, and says nothing
+# about the stream or Marti. Nothing writes it, and a deployment whose public
+# listener holds an ACME certificate needs it not at all.
+# control_truststore = "/etc/rustak/public-ca.pem"
 
 
 [server]
