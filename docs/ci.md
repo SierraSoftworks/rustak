@@ -162,6 +162,32 @@ deduplicate ──┬─ version ───────────────�
   alongside it — 16–20 minutes on a normal runner, and up to an hour on a slow
   one under `test`'s 60-minute bound. A push whose images are wanted sooner has
   to wait; that is the price of the tag meaning something.
+  **Floating tags move forward only.** On a push to `main`, `docker-publish`
+  reads `org.opencontainers.image.revision` off the current `:latest` and moves
+  `:latest` and `:main` **only if that revision is an ancestor of the commit
+  being published** (`git merge-base --is-ancestor`); otherwise it logs a
+  `::notice::` and leaves them. The per-commit `:sha-<full sha>` tag is pushed
+  either way, so every build stays addressable. Release events are unaffected —
+  version tags are the point of a release, not a race.
+
+  Why it exists: two pushes to `main` publish concurrently and **race** for
+  `:latest`, and the one that finishes *second* wins the tag regardless of which
+  commit is newer. On 2026-09-22 a fix for a three-day production outage and the
+  commit stacked on top of it were in flight together; whichever landed second
+  would have decided what the deployment pulled.
+
+  Why ancestry and not "is this the tip of `main`": images are gated on the test
+  suite, so a newer commit that fails publishes nothing. Under a tip test,
+  `:latest` would then be pinned behind an older *good* build that had correctly
+  declined to move it, and nothing would ever move it again.
+
+  If the revision cannot be read, or names a commit not in the checkout, the
+  tags are **not** moved and the job says so with a `::warning::` — a publish
+  that cannot prove it is newer does not get the benefit of the doubt. That is
+  also why the job checks out with `fetch-depth: 0`: a shallow clone cannot
+  answer an ancestry question, and a wrong answer here silently refuses to
+  publish.
+
 - **`tap`** updates the `SierraSoftworks` Homebrew tap with the `rustak`
   formula (aliased as `major`/`minor`) on a published release.
 
@@ -301,7 +327,16 @@ curl -sL -o /tmp/trunk.tar.gz \
 sha256sum /tmp/trunk.tar.gz          # shasum -a 256 on macOS
 ```
 
-and the same for `cross-rs/cross`. Both archives are flat — `trunk` contains one
+and the same for `cross-rs/cross`. The `trunk` pin has been exercised
+in-workflow — `Build UI` on `c9118d9` met an evicted cache, downloaded the asset
+and passed `sha256sum --check`. The `cross` pin was **verified out-of-band on
+2026-09-21**, a fresh download matching `642375d1bcf3…`, because all four
+aarch64 jobs hit the cache and skipped the install; it will be exercised
+in-workflow on the next cache miss. Note that `cross-rs/cross` publishes no
+`.sha256` sidecar, unlike `trunk-rs/trunk`, so this repository's pinned value is
+the only recorded checksum for that asset.
+
+Both archives are flat — `trunk` contains one
 binary, `cross` contains `cross` and `cross-util`, and **both** of cross's must
 be extracted or a later cache hit restores half a toolchain.
 

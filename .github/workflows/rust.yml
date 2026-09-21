@@ -914,6 +914,15 @@ jobs:
           image="$(echo $image | tr '[:upper:]' '[:lower:]')"
           echo "FULL_IMAGE_NAME=${image}" >> $GITHUB_ENV
 
+      # `fetch-depth: 0`, because the forward-only check below asks whether one
+      # commit is an ancestor of another, and a shallow clone cannot answer
+      # that. A wrong answer would be worse than no check: it would silently
+      # refuse to publish.
+      - name: Check out history
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
       - name: Download digests
         uses: actions/download-artifact@v8
         with:
@@ -937,6 +946,10 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
+            # The immutable one. Every build gets a tag naming the commit it
+            # came from, pushed unconditionally — so a build whose floating
+            # tags are held back is still addressable by exact commit.
+            type=sha,format=long
 
       - name: Log into registry ${{ env.REGISTRY }}
         uses: docker/login-action@v4.6.0
@@ -945,10 +958,87 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Floating tags move forward only.
+      #
+      # Two pushes to `main` publish concurrently and race for `:latest`,
+      # and the loser of that race wins the tag — on 2026-09-22 a fix for a
+      # three-day production outage and the commit on top of it were in flight
+      # together, and whichever finished second would have decided what the
+      # deployment pulled. The immutable tag is always pushed; only the moving
+      # ones are held back.
+      #
+      # The test is ancestry, not "am I the tip of main". With images gated on
+      # the test suite, a newer commit that fails publishes nothing — so "tip"
+      # would leave `:latest` pinned behind an older *good* build that had
+      # correctly declined to move it.
+      - name: Would the floating tags move forward?
+        id: forward
+        if: github.event_name == 'push'
+        run: |
+          set -uo pipefail
+
+          if ! image="$(docker buildx imagetools inspect "${FULL_IMAGE_NAME}:latest" --format '{{json .Image}}' 2>/dev/null)"; then
+            echo "::notice::${FULL_IMAGE_NAME}:latest does not exist yet; setting the floating tags for the first time."
+            echo "move=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # `.Image` is the config for a single manifest and a map of
+          # platform -> config for an index, so accept either shape.
+          revision="$(
+            jq -r '
+              if type == "object" and has("config")
+              then .config.Labels["org.opencontainers.image.revision"] // empty
+              else [ .[]?.config.Labels["org.opencontainers.image.revision"] // empty ] | first // empty
+              end
+            ' <<< "$image" 2>/dev/null
+          )"
+
+          if [ -z "${revision}" ]; then
+            echo "::warning::Could not read org.opencontainers.image.revision from ${FULL_IMAGE_NAME}:latest, so it is not possible to tell whether this build is newer. Leaving the floating tags alone; this build is still published as its commit tag."
+            echo "move=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! git cat-file -e "${revision}^{commit}" 2>/dev/null; then
+            echo "::warning::${FULL_IMAGE_NAME}:latest was built from ${revision}, which is not a commit in this checkout, so ancestry cannot be decided. Leaving the floating tags alone; this build is still published as its commit tag."
+            echo "move=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if git merge-base --is-ancestor "${revision}" "${GITHUB_SHA}"; then
+            echo "${FULL_IMAGE_NAME}:latest is at ${revision}, an ancestor of ${GITHUB_SHA}: moving the floating tags."
+            echo "move=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::${FULL_IMAGE_NAME}:latest is at ${revision}, which is NOT an ancestor of ${GITHUB_SHA} — a newer build already holds the tag. Leaving the floating tags where they are; this build is still published as its commit tag."
+            echo "move=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create manifest list and push
         working-directory: /tmp/digests
+        env:
+          MOVE_FLOATING: ${{ github.event_name != 'push' || steps.forward.outputs.move == 'true' }}
         run: |
-          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+          set -euo pipefail
+
+          tags="$(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")"
+
+          # A release publishes every tag it was asked for, unchanged: version
+          # tags are the point of a release and are not a race between pushes.
+          if [ "${MOVE_FLOATING}" != "true" ]; then
+            tags="$(grep -E ':sha-[0-9a-f]+$' <<< "${tags}" || true)"
+
+            if [ -z "${tags}" ]; then
+              echo "::error::Refusing to move the floating tags, but there is no immutable tag to push either — nothing would be published."
+              exit 1
+            fi
+          fi
+
+          echo "Pushing:"
+          sed 's/^/  /' <<< "${tags}"
+
+          # shellcheck disable=SC2046  # the tag list is deliberately word-split
+          docker buildx imagetools create $(sed 's/^/-t /' <<< "${tags}" | tr '\n' ' ') \
             $(printf '${{ env.FULL_IMAGE_NAME }}@sha256:%s ' *)
 
       - name: Inspect image
