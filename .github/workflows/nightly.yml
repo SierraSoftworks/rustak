@@ -29,6 +29,9 @@ env:
   REGISTRY: ghcr.io
   ORG: sierrasoftworks
   EUD_IMAGE: rustak-interop-commoncommo
+  # Kept in step with rust.yml's `ui` job; bump both together and deliberately.
+  TRUNK_VERSION: "0.21.14"
+  TRUNK_SHA256: "f2b4680cd239693a646a2795e4633c625328d7b2a044fbe749fa3a2fe9e7036b"
 
 jobs:
   # Drives CloudTAK's own container — Postgres, the published CloudTAK API/UI
@@ -68,44 +71,41 @@ jobs:
       - name: Setup Cache
         uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: |
             . -> target
             rustak-ui -> target
 
-      - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@main
+      # Trunk from its pinned release asset, checksum-verified, with the cache
+      # in front — the same shape as rust.yml's `ui` job, and for the same
+      # reason: `cargo binstall`'s fetcher chain fails with no fallback when the
+      # network is unreliable, and it took out a release doing exactly that.
+      - name: Cache Trunk
+        id: trunk-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/trunk
+          key: trunk-${{ env.TRUNK_VERSION }}-${{ runner.os }}
 
-      # Pinned to the same release the PR pipeline's `ui` job uses; bump both
-      # together and deliberately.
       - name: Install Trunk
+        if: steps.trunk-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          # Retried: this is a network fetch and nothing else. The identical
-          # step failed the **v0.0.2 release** (run 35454908767) when every one
-          # of cargo-binstall's fetchers timed out — and because `build` needs
-          # `ui`, the whole pipeline behind it skipped and the release published
-          # **nothing**: no assets, no images, no formula. The same shape had
-          # already cost `cross` a build-matrix job earlier the same day.
-          #
-          # `--disable-strategies compile` stays, for the reason above it:
-          # compiling trunk from source has broken on transitive
-          # cssparser/lightningcss mismatches, so a slow success is not a
-          # better outcome than a fast failure. Retrying is.
-          for attempt in 1 2 3; do
-            if cargo binstall --no-confirm --disable-strategies compile trunk@0.21.14; then
-              installed=1
-              break
-            fi
+          url="https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz"
 
-            echo "::warning::cargo binstall trunk failed (attempt ${attempt} of 3)."
-            sleep $(( attempt * 10 ))
-          done
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+               --retry 5 --retry-all-errors --retry-delay 5 \
+               --output /tmp/trunk.tar.gz "$url"
 
-          if [ -z "${installed:-}" ]; then
-            echo "::error::cargo binstall could not fetch trunk after three attempts."
-            exit 1
-          fi
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo "${TRUNK_SHA256}  /tmp/trunk.tar.gz" | sha256sum --check --strict
+
+          mkdir -p "$HOME/.cargo/bin"
+          tar -xzf /tmp/trunk.tar.gz -C "$HOME/.cargo/bin" trunk
+          chmod +x "$HOME/.cargo/bin/trunk"
+
+      - name: Put Trunk on the path
+        shell: bash
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       # The UI is embedded into the binary by `include_dir!` at compile time, so
       # it has to exist before cargo build.
@@ -303,44 +303,41 @@ jobs:
       - name: Setup Cache
         uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: |
             . -> target
             rustak-ui -> target
 
-      - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@main
+      # Trunk from its pinned release asset, checksum-verified, with the cache
+      # in front — the same shape as rust.yml's `ui` job, and for the same
+      # reason: `cargo binstall`'s fetcher chain fails with no fallback when the
+      # network is unreliable, and it took out a release doing exactly that.
+      - name: Cache Trunk
+        id: trunk-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/trunk
+          key: trunk-${{ env.TRUNK_VERSION }}-${{ runner.os }}
 
-      # Pinned to the same release the PR pipeline's `ui` job uses; bump both
-      # together and deliberately.
       - name: Install Trunk
+        if: steps.trunk-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          # Retried: this is a network fetch and nothing else. The identical
-          # step failed the **v0.0.2 release** (run 35454908767) when every one
-          # of cargo-binstall's fetchers timed out — and because `build` needs
-          # `ui`, the whole pipeline behind it skipped and the release published
-          # **nothing**: no assets, no images, no formula. The same shape had
-          # already cost `cross` a build-matrix job earlier the same day.
-          #
-          # `--disable-strategies compile` stays, for the reason above it:
-          # compiling trunk from source has broken on transitive
-          # cssparser/lightningcss mismatches, so a slow success is not a
-          # better outcome than a fast failure. Retrying is.
-          for attempt in 1 2 3; do
-            if cargo binstall --no-confirm --disable-strategies compile trunk@0.21.14; then
-              installed=1
-              break
-            fi
+          url="https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz"
 
-            echo "::warning::cargo binstall trunk failed (attempt ${attempt} of 3)."
-            sleep $(( attempt * 10 ))
-          done
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+               --retry 5 --retry-all-errors --retry-delay 5 \
+               --output /tmp/trunk.tar.gz "$url"
 
-          if [ -z "${installed:-}" ]; then
-            echo "::error::cargo binstall could not fetch trunk after three attempts."
-            exit 1
-          fi
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo "${TRUNK_SHA256}  /tmp/trunk.tar.gz" | sha256sum --check --strict
+
+          mkdir -p "$HOME/.cargo/bin"
+          tar -xzf /tmp/trunk.tar.gz -C "$HOME/.cargo/bin" trunk
+          chmod +x "$HOME/.cargo/bin/trunk"
+
+      - name: Put Trunk on the path
+        shell: bash
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       # The UI is embedded into the binary by `include_dir!` at compile time, so
       # it has to exist before cargo build. Release rather than debug: nothing

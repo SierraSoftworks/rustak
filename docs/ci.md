@@ -78,9 +78,11 @@ deduplicate ──┬─ version ───────────────�
   is the host. Reading a single slow run as a trend has produced two wrong
   conclusions in this repository already, so take at least two samples and say
   so when you have not.
-- **`ui`** installs `trunk` pinned to **0.21.14** (`cargo binstall trunk@0.21.14`;
-  0.22 was still beta at the time this pipeline was written — bump the pin
-  deliberately, not via dependabot, which cannot see cargo-binstall installs).
+- **`ui`** installs `trunk` pinned to **0.21.14** — downloaded from the project's
+  own GitHub release and checked against a SHA-256 pinned beside the version in
+  the workflow's `env:` block. 0.22 was still beta at the time this pipeline was
+  written; bump the pin deliberately, not via dependabot, which cannot see
+  release-asset downloads.
   It builds a **debug** bundle (for `e2e`'s `?demo` fixtures, which are
   compiled out of release) and a **release** bundle (for the `build` matrix to
   embed).
@@ -266,6 +268,72 @@ applies to every crate that invocation builds, and the per-package equivalent
 flag through `RUSTFLAGS` and filters at report time, as `grcov` already does.
 So the levers are the three above; dropping coverage is not one, because codecov
 is a gate.
+
+## Caching, and why the binaries are fetched the way they are
+
+Two things in this pipeline are downloaded rather than built: `trunk` (the `ui`
+job and both nightly jobs) and `cross` (the four aarch64 build jobs). Between
+2026-09-19 and 2026-09-21 their downloads failed **five** times, and one of
+those failures published an **empty v0.0.2** — `Build UI` died, `build` needs
+`ui`, and the entire release pipeline behind it skipped. How they are fetched is
+therefore not an implementation detail.
+
+**Not `cargo binstall`.** It resolves through a chain of fetchers (QuickInstall,
+crate metadata, the release itself) and when that chain times out it fails with
+no fallback, because `--disable-strategies compile` is set — building `trunk`
+from source has broken before on transitive `cssparser`/`lightningcss`
+mismatches, so a slow success is not a better outcome than a fast failure.
+Retrying around it helped but could not cover a runner degraded for four
+minutes.
+
+**Instead:** one URL, `curl --fail --location --retry 5 --retry-all-errors
+--retry-delay 5`, then a **SHA-256 check against a value pinned in `env:`**.
+`--retry-all-errors` matters — plain `--retry` ignores connection resets and
+5xx, which is most of what we saw. The checksum is not ceremony: `binstall`
+verified nothing we could inspect, and a truncated download over a flaky network
+is otherwise a mysterious build failure rather than a loud one.
+
+To recompute a checksum when a pin moves:
+
+```
+curl -sL -o /tmp/trunk.tar.gz \
+  https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz
+sha256sum /tmp/trunk.tar.gz          # shasum -a 256 on macOS
+```
+
+and the same for `cross-rs/cross`. Both archives are flat — `trunk` contains one
+binary, `cross` contains `cross` and `cross-util`, and **both** of cross's must
+be extracted or a later cache hit restores half a toolchain.
+
+### The cache quota is a shared, finite resource
+
+An `actions/cache` step sits in front of each download, so a normal run does not
+touch the network for them at all. That only works while the entries survive.
+
+On 2026-09-21 this repository sat at **9.94 GB of GitHub's 10 GB** cache limit,
+**9.86 GB of it in 19 `rust-cache` entries** — the largest were 707 MB (`e2e`),
+697 MB (`interop-eud`) and three separate 649 MB copies of the darwin build.
+GitHub evicts least-recently-used entries when a repository is over quota, so
+the **7 MB trunk and 2 MB cross caches were being deleted by their 700 MB
+neighbours**. That is what failed `Build UI` on `6fac5bb`: not a network fault
+first, but a cache that had been evicted, leaving the download to face a bad
+network alone.
+
+So every `Swatinem/rust-cache` step carries:
+
+```yaml
+    with:
+      save-if: ${{ github.ref == 'refs/heads/main' }}
+```
+
+Pull requests and Dependabot branches **restore** from the cache and never
+write to it. They were the churn — each wrote entries nobody reused — and
+restoring without saving keeps their speed while leaving the quota to `main`.
+
+Do not prune caches by hand: LRU and the 7-day expiry do it, and a hand-deleted
+entry is simply rebuilt by the next run that needs it. If the quota is tight
+again, look first at *how many distinct keys* the build matrix produces, not at
+the size of any one entry.
 
 ## Other workflows
 

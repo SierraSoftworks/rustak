@@ -17,11 +17,16 @@ env:
   # 0.22 was still beta when this pipeline was written — bump deliberately, not
   # via dependabot, which cannot see cargo-binstall installs.
   TRUNK_VERSION: "0.21.14"
+  # SHA-256 of the pinned release asset, so a tampered or truncated download
+  # fails loudly instead of producing a broken binary. See docs/ci.md for how to
+  # recompute it when the version above moves.
+  TRUNK_SHA256: "f2b4680cd239693a646a2795e4633c625328d7b2a044fbe749fa3a2fe9e7036b"
   # Pinned for the same reasons, plus one of its own: the `Cache Cross` step
   # keys on this, and an *unpinned* cache would be worse than no cache — it
   # would restore whatever `cross` was current the day it was first stored,
   # forever, with nothing in the repository naming that version.
   CROSS_VERSION: "0.2.5"
+  CROSS_SHA256: "642375d1bcf3bd88272c32ba90e999f3d983050adf45e66bd2d3887e8e838bad"
 
 concurrency:
   group: rust-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
@@ -110,6 +115,18 @@ jobs:
 
       - name: Setup Cache
         uses: Swatinem/rust-cache@v2
+        # Restore always, save only from `main`. On 2026-09-21 this repository
+        # sat at **9.94 GB of GitHub's 10 GB** cache limit, 9.86 GB of it in 19
+        # `rust-cache` entries, and GitHub evicts least-recently-used entries
+        # over quota — so the 7 MB trunk and 2 MB cross binary caches were being
+        # deleted by their 700 MB neighbours. The trunk cache missing is what
+        # failed `Build UI` on 6fac5bb and blocked a third publish.
+        #
+        # Pull requests and Dependabot branches are the churn: each writes its
+        # own entries and none of them are reused. Restoring without saving
+        # keeps their speed and stops them consuming the quota.
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # No protoc step here or anywhere else in this workflow: rustak-cot builds
       # its protobuf definitions with protox (a pure-Rust protoc), so the whole
@@ -172,6 +189,8 @@ jobs:
 
       - name: Setup Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo install grcov
         uses: SierraSoftworks/setup-grcov@v1
@@ -212,12 +231,13 @@ jobs:
           target: wasm32-unknown-unknown
           components: rustfmt, clippy
 
-      - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@main
+      # No `cargo-binstall` step: nothing in this job uses it any more. Trunk
+      # comes from its release asset below, and installing binstall was itself
+      # a network fetch bought for nothing.
 
       # Pinned to the current stable release (0.21.14); 0.22 is still beta at
       # the time this pipeline was written. Bump deliberately, not via
-      # dependabot (it has no visibility into cargo-binstall installs).
+      # dependabot (it has no visibility into release-asset downloads).
       # Cached, because the install is a network fetch on the release
       # critical path and the network is the least reliable thing in this
       # pipeline. Four fetch failures in one day — the darwin artifact upload,
@@ -241,25 +261,29 @@ jobs:
         if: steps.trunk-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          # `--disable-strategies compile` stays: compiling trunk from source
-          # has broken before on transitive cssparser/lightningcss mismatches,
-          # so a slow success is not a better outcome than a fast failure.
-          # Retrying is — it covers the brief blip, and the cache above covers
-          # the sustained one.
-          for attempt in 1 2 3; do
-            if cargo binstall --no-confirm --disable-strategies compile "trunk@${TRUNK_VERSION}"; then
-              installed=1
-              break
-            fi
+          # The release asset directly, not `cargo binstall`. binstall resolves
+          # through a chain of fetchers (QuickInstall, crate metadata, the
+          # release) and when that chain times out it fails with no fallback —
+          # which took out the v0.0.2 release, an AIS build and `Build UI` on
+          # 6fac5bb. One URL with curl's own retry is both simpler and far more
+          # reliable, and `--retry-all-errors` covers the 5xx and connection
+          # resets that `--retry` alone ignores.
+          #
+          # The checksum is the point of doing it this way: binstall verified
+          # nothing we could see, and an asset fetched over a flaky network is
+          # exactly where a truncated download would otherwise become a
+          # mysterious build failure.
+          url="https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz"
 
-            echo "::warning::cargo binstall trunk failed (attempt ${attempt} of 3)."
-            sleep $(( attempt * 10 ))
-          done
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+               --retry 5 --retry-all-errors --retry-delay 5 \
+               --output /tmp/trunk.tar.gz "$url"
 
-          if [ -z "${installed:-}" ]; then
-            echo "::error::cargo binstall could not fetch trunk after three attempts."
-            exit 1
-          fi
+          echo "${TRUNK_SHA256}  /tmp/trunk.tar.gz" | sha256sum --check --strict
+
+          mkdir -p "$HOME/.cargo/bin"
+          tar -xzf /tmp/trunk.tar.gz -C "$HOME/.cargo/bin" trunk
+          chmod +x "$HOME/.cargo/bin/trunk"
 
       - name: Put Trunk on the path
         shell: bash
@@ -268,6 +292,7 @@ jobs:
       - name: Setup Cache
         uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: rustak-ui -> target
 
       # rustak-ui is excluded from the workspace (it targets wasm32, not the
@@ -336,6 +361,8 @@ jobs:
 
       - name: Setup Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # The UI is embedded into rustak-server by `include_dir!` at compile
       # time. e2e uses the debug bundle because several (future) specs rely on
@@ -409,6 +436,8 @@ jobs:
 
       - name: Setup Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # The release bundle, unlike e2e's: nothing here drives the admin UI, so
       # the `?demo` fixtures a debug bundle carries are dead weight. The UI is
@@ -585,29 +614,28 @@ jobs:
         if: matrix.builder == 'cross' && steps.cross-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          # The release asset directly, for the reasons on the trunk step above:
+          # `cargo binstall cross` failed a build-matrix job on 2026-09-19 when
+          # its fetcher chain timed out, and a retry around it could not cover a
+          # runner degraded for four minutes.
+          url="https://github.com/cross-rs/cross/releases/download/v${CROSS_VERSION}/cross-x86_64-unknown-linux-gnu.tar.gz"
 
-          for attempt in 1 2 3; do
-            if cargo binstall --no-confirm --disable-strategies compile "cross@${CROSS_VERSION}"; then
-              installed=1
-              break
-            fi
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+               --retry 5 --retry-all-errors --retry-delay 5 \
+               --output /tmp/cross.tar.gz "$url"
 
-            echo "::warning::cargo binstall cross failed (attempt ${attempt} of 3)."
-            sleep $(( attempt * 10 ))
-          done
+          echo "${CROSS_SHA256}  /tmp/cross.tar.gz" | sha256sum --check --strict
 
-          # `installed`, not `exit 0` inside the loop: that worked only because
-          # nothing followed it in the step, and would have stopped working
-          # silently the moment anything was appended.
-          if [ -z "${installed:-}" ]; then
-            echo "::error::cargo binstall could not fetch cross after three attempts."
-            exit 1
-          fi
+          mkdir -p "$HOME/.cargo/bin"
+          # Both binaries: the cache step above stores both, so a run that
+          # installs must produce both or a later cache hit is half a toolchain.
+          tar -xzf /tmp/cross.tar.gz -C "$HOME/.cargo/bin" cross cross-util
+          chmod +x "$HOME/.cargo/bin/cross" "$HOME/.cargo/bin/cross-util"
 
       - name: Setup Cache
         uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           key: ${{ matrix.target }}
 
       - name: Fetch Versioned Cargo.toml
