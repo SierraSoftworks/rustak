@@ -80,13 +80,62 @@ impl Connection {
     }
 }
 
+/// What a source has had to throw away since it started.
+///
+/// Two counters rather than one, because they mean different things to
+/// whoever is reading the Services page: frames whose bytes never became a
+/// message at all are a protocol mismatch — the shape of the bug where every
+/// AISStream position report arrived in a binary frame and nothing looked
+/// inside one — while messages that were read and not recognised are an
+/// upstream that has grown a message type since this was written.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Dropped {
+    /// Frames whose payload never became JSON: not UTF-8, not JSON, or a kind
+    /// of frame this source does not read.
+    pub frames_undecoded: u64,
+
+    /// Messages that were JSON, and carried nothing this source knows.
+    pub messages_ignored: u64,
+}
+
+/// Everything a source says about itself between ticks.
+///
+/// # Why this derefs to its connection
+///
+/// "How is the source doing" is almost always the connection, and a source
+/// that writes `*state.borrow()` is asking about the connection; the counters
+/// and the notice are what the heartbeat adds on top.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SourceState {
+    /// How the upstream is answering.
+    pub connection: Connection,
+
+    /// What was thrown away getting here.
+    pub dropped: Dropped,
+
+    /// One sentence a source wants an operator to read.
+    ///
+    /// A connection that is open and understands nothing arriving on it is
+    /// precisely the failure that looks healthy, so the source says so here
+    /// and the heartbeat carries it.
+    pub notice: Option<String>,
+}
+
+impl std::ops::Deref for SourceState {
+    type Target = Connection;
+
+    fn deref(&self) -> &Self::Target {
+        &self.connection
+    }
+}
+
 /// Everything this sidecar reports about itself on a heartbeat.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FeedStatus {
     /// The upstream's name, as the source calls itself.
     pub source: String,
-    /// How that upstream is doing.
-    pub connection: Connection,
+    /// How that upstream is doing, and what it dropped getting there.
+    pub connection: SourceState,
     /// What the publisher has done.
     pub counters: FeedCounters,
     /// How many vessels it is holding.
@@ -124,10 +173,24 @@ impl FeedStatus {
     /// sidecar" says the Services page renders as a heading with its fields
     /// indented under it.
     fn source_metric(&self) -> serde_json::Value {
-        let mut value = serde_json::to_value(&self.connection).unwrap_or_default();
+        let mut value = serde_json::to_value(&self.connection.connection).unwrap_or_default();
 
         if let Some(fields) = value.as_object_mut() {
+            let dropped = self.connection.dropped;
+
             fields.insert("kind".to_string(), self.source.clone().into());
+            fields.insert(
+                "frames_undecoded".to_string(),
+                dropped.frames_undecoded.into(),
+            );
+            fields.insert(
+                "messages_ignored".to_string(),
+                dropped.messages_ignored.into(),
+            );
+
+            if let Some(notice) = &self.connection.notice {
+                fields.insert("notice".to_string(), notice.clone().into());
+            }
         }
 
         value
@@ -135,18 +198,25 @@ impl FeedStatus {
 
     /// The state and the sentence beside it.
     fn state(&self, poll: Duration, now: DateTime<Utc>) -> (ServiceState, String) {
-        match &self.connection {
+        match &self.connection.connection {
             Connection::Waiting => (
                 ServiceState::Unhealthy,
                 format!("{} has never answered.", self.source),
             ),
-            Connection::Connected { .. } => (
-                ServiceState::Healthy,
-                format!(
+            Connection::Connected { .. } => {
+                let carrying = format!(
                     "Connected to {}; {} vessels tracked, {} published.",
                     self.source, self.tracked, self.counters.published,
-                ),
-            ),
+                );
+
+                // A socket that is open and understood nothing is the failure
+                // this whole page exists to make visible: say it, and do not
+                // call it healthy.
+                match &self.connection.notice {
+                    Some(notice) => (ServiceState::Degraded, format!("{carrying} {notice}")),
+                    None => (ServiceState::Healthy, carrying),
+                }
+            }
             Connection::Reconnecting { last_error, .. } => {
                 let held = self.connection.held_for(now).unwrap_or_default();
                 let state = match held > poll.saturating_mul(2) {
@@ -167,19 +237,78 @@ impl FeedStatus {
     }
 }
 
-/// A handle a source writes its connection state through.
+/// A handle a source writes its state through.
 ///
 /// A [`watch`] channel rather than a lock: the sources write from their own
 /// tasks, the plugin reads from its tick, and neither ever waits for the other.
-pub type ConnectionTx = watch::Sender<Connection>;
+#[derive(Debug)]
+pub struct ConnectionTx(watch::Sender<SourceState>);
 
-/// The other end, which the plugin reads.
-pub type ConnectionRx = watch::Receiver<Connection>;
+impl ConnectionTx {
+    /// Replaces the connection — keeping the counters, which outlive it — and
+    /// answers the connection it replaced.
+    pub fn send_replace(&self, connection: Connection) -> Connection {
+        let mut replaced = connection;
+
+        self.0
+            .send_modify(|state| std::mem::swap(&mut state.connection, &mut replaced));
+
+        replaced
+    }
+
+    /// Counts a frame whose bytes never became a message.
+    pub fn frame_undecoded(&self) {
+        self.0
+            .send_modify(|state| state.dropped.frames_undecoded += 1);
+    }
+
+    /// Counts a message that was read and not recognised.
+    pub fn message_ignored(&self) {
+        self.0
+            .send_modify(|state| state.dropped.messages_ignored += 1);
+    }
+
+    /// What has been dropped so far, for a log line that says how much.
+    #[must_use]
+    pub fn dropped(&self) -> Dropped {
+        self.0.borrow().dropped
+    }
+
+    /// Puts one sentence in front of whoever reads the Services page.
+    pub fn notice(&self, notice: impl Into<String>) {
+        let notice = notice.into();
+
+        self.0.send_modify(|state| state.notice = Some(notice));
+    }
+
+    /// Takes it away again, for a source that started working.
+    pub fn clear_notice(&self) {
+        self.0.send_modify(|state| state.notice = None);
+    }
+}
+
+/// The other end, which the plugin reads on its tick.
+#[derive(Clone, Debug)]
+pub struct ConnectionRx(watch::Receiver<SourceState>);
+
+impl ConnectionRx {
+    /// What the source is saying about itself right now.
+    ///
+    /// An owned value rather than a [`watch::Ref`], because the tick holds it
+    /// while it builds a heartbeat and a source writing in the meantime must
+    /// not be what blocks that.
+    #[must_use]
+    pub fn borrow(&self) -> SourceState {
+        self.0.borrow().clone()
+    }
+}
 
 /// Creates the pair, starting from "nothing has connected yet".
 #[must_use]
 pub fn connection() -> (ConnectionTx, ConnectionRx) {
-    watch::channel(Connection::Waiting)
+    let (sender, receiver) = watch::channel(SourceState::default());
+
+    (ConnectionTx(sender), ConnectionRx(receiver))
 }
 
 #[cfg(test)]
@@ -194,6 +323,13 @@ mod tests {
     }
 
     fn status(connection: Connection) -> FeedStatus {
+        state(SourceState {
+            connection,
+            ..SourceState::default()
+        })
+    }
+
+    fn state(connection: SourceState) -> FeedStatus {
         FeedStatus {
             source: "aisstream.io".into(),
             connection,
@@ -269,6 +405,84 @@ mod tests {
 
         assert!(rendered.contains("401 Unauthorized"), "{rendered}");
         assert!(!rendered.contains("APIKey"), "{rendered}");
+    }
+
+    #[test]
+    fn what_a_source_dropped_reaches_the_metrics_and_its_notice_reaches_the_sentence() {
+        // The Dublin failure, as the Services page would have shown it: a
+        // socket that is open, thousands of frames, and nothing understood.
+        let beat = state(SourceState {
+            connection: Connection::Connected { since: at(0) },
+            dropped: Dropped {
+                frames_undecoded: 412,
+                messages_ignored: 3,
+            },
+            notice: Some("Connected for two minutes and decoded nothing.".into()),
+        })
+        .heartbeat(Duration::from_secs(5), at(9));
+
+        assert_eq!(beat.metrics["source"]["frames_undecoded"], 412);
+        assert_eq!(beat.metrics["source"]["messages_ignored"], 3);
+        assert_eq!(
+            beat.metrics["source"]["notice"],
+            "Connected for two minutes and decoded nothing.",
+        );
+        assert_eq!(
+            beat.state,
+            ServiceState::Degraded,
+            "connected and understanding nothing is not healthy",
+        );
+        assert!(
+            beat.message
+                .as_deref()
+                .is_some_and(|message| message.contains("decoded nothing")),
+            "{:?}",
+            beat.message,
+        );
+    }
+
+    #[test]
+    fn a_source_with_nothing_to_report_carries_the_counters_anyway() {
+        let beat =
+            status(Connection::Connected { since: at(0) }).heartbeat(Duration::from_secs(5), at(9));
+
+        assert_eq!(beat.metrics["source"]["frames_undecoded"], 0);
+        assert_eq!(beat.metrics["source"]["messages_ignored"], 0);
+        assert_eq!(beat.metrics["source"]["notice"], serde_json::Value::Null);
+        assert_eq!(beat.state, ServiceState::Healthy);
+    }
+
+    #[test]
+    fn a_source_counts_through_its_handle_and_the_plugin_reads_it_back() {
+        let (source, plugin) = connection();
+
+        source.frame_undecoded();
+        source.frame_undecoded();
+        source.message_ignored();
+        source.notice("nothing arrived");
+        source.send_replace(Connection::connected());
+
+        let state = plugin.borrow();
+
+        assert_eq!(state.dropped.frames_undecoded, 2);
+        assert_eq!(state.dropped.messages_ignored, 1);
+        assert_eq!(state.notice.as_deref(), Some("nothing arrived"));
+        assert!(
+            matches!(*state, Connection::Connected { .. }),
+            "and the counters outlive the connection that dropped them",
+        );
+
+        source.clear_notice();
+
+        assert_eq!(plugin.borrow().notice, None);
+        assert_eq!(
+            plugin.borrow().dropped,
+            Dropped {
+                frames_undecoded: 2,
+                messages_ignored: 1,
+            },
+            "taking back a notice is not forgetting what was dropped",
+        );
     }
 
     #[test]

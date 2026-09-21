@@ -26,6 +26,7 @@
 //! **Terms:** a free API key from <https://aisstream.io/account>, and the terms
 //! published on that site. No licence text is published for the data itself.
 
+mod frames;
 mod wire;
 
 use std::time::Duration;
@@ -39,6 +40,8 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::status::{Connection, ConnectionTx};
 use crate::vessels::{Observation, Vessels};
+
+use frames::{Frames, Step};
 
 use super::{Backoff, SourceContext};
 
@@ -111,6 +114,7 @@ impl AisStream {
 
         tokio::spawn(run(
             subscription,
+            api_key.clone(),
             sender,
             context.connection,
             context.shutdown,
@@ -144,26 +148,43 @@ impl Feed for AisStream {
 /// Keeps the subscription open until the sidecar stops.
 async fn run(
     subscription: Secret,
+    api_key: Secret,
     sender: mpsc::Sender<Observation>,
     connection: ConnectionTx,
     shutdown: Shutdown,
 ) {
     let mut backoff = Backoff::default();
+    let mut said: Option<String> = None;
 
     while !shutdown.is_cancelled() {
-        match stream(&subscription, &sender, &connection, &shutdown).await {
+        match stream(&subscription, &api_key, &sender, &connection, &shutdown).await {
             Ok(()) => {
                 info!(source = NAME, "The AIS stream closed; reconnecting.");
                 backoff.reset();
+                said = None;
             }
             Err(reason) => {
-                // Only ever the endpoint and the transport: the subscription
+                // Only ever the endpoint, the transport, or the service's own
+                // words with the key taken out of them: the subscription
                 // payload, which holds the key, is never part of this.
-                warn!(
-                    source = NAME,
-                    retry_in = ?backoff.next(),
-                    "The AIS stream is unavailable: {reason}",
-                );
+                //
+                // And only once per reason: a key the service will never
+                // accept would otherwise write the same line every minute for
+                // as long as the sidecar runs. The heartbeat keeps saying it.
+                match said.as_deref() == Some(reason.as_str()) {
+                    true => debug!(
+                        source = NAME,
+                        retry_in = ?backoff.next(),
+                        "The AIS stream is still unavailable: {reason}",
+                    ),
+                    false => warn!(
+                        source = NAME,
+                        retry_in = ?backoff.next(),
+                        "The AIS stream is unavailable: {reason}",
+                    ),
+                }
+
+                said = Some(reason.clone());
                 connection.send_replace(Connection::reconnecting(reason));
             }
         }
@@ -177,6 +198,7 @@ async fn run(
 /// One connection, from the handshake to whatever ended it.
 async fn stream(
     subscription: &Secret,
+    api_key: &Secret,
     sender: &mpsc::Sender<Observation>,
     connection: &ConnectionTx,
     shutdown: &Shutdown,
@@ -199,20 +221,35 @@ async fn stream(
     info!(source = NAME, "Subscribed to the AIS stream.");
     connection.send_replace(Connection::connected());
 
+    let mut frames = Frames::new(sender, connection, api_key);
+
     loop {
         let message = tokio::select! {
             biased;
 
             () = shutdown.cancelled() => return Ok(()),
+            // One wake-up, two minutes in, so that a connection nothing ever
+            // arrives on is still heard from. After it, the frames themselves
+            // are what drive that check.
+            () = tokio::time::sleep_until(frames.silent_at()), if frames.due() => {
+                frames.check_silence();
+
+                continue;
+            }
             message = tokio::time::timeout(IDLE_TIMEOUT, socket.next()) => message,
         };
 
-        match message {
+        let message = match message {
             Err(_) => return Err(format!("nothing arrived for {IDLE_TIMEOUT:?}")),
-            Ok(None) | Ok(Some(Ok(Message::Close(_)))) => return Ok(()),
+            Ok(None) => return Ok(()),
             Ok(Some(Err(err))) => return Err(format!("the stream failed ({err})")),
-            Ok(Some(Ok(Message::Text(text)))) => deliver(&text, sender)?,
-            Ok(Some(Ok(Message::Ping(_)))) => {
+            Ok(Some(Ok(message))) => message,
+        };
+
+        match frames.accept(message)? {
+            Step::Continue => {}
+            Step::Closed => return Ok(()),
+            Step::KeepAlive => {
                 // The pong is queued by the protocol layer on read; flushing is
                 // what actually puts it on the wire, and a server that never
                 // gets one drops the connection.
@@ -221,37 +258,7 @@ async fn stream(
                     .await
                     .map_err(|err| format!("the keep-alive could not be answered ({err})"))?;
             }
-            Ok(Some(Ok(_))) => debug!(source = NAME, "A frame this source does not read."),
         }
-    }
-}
-
-/// Decodes one message and hands it to the tick.
-fn deliver(text: &str, sender: &mpsc::Sender<Observation>) -> Result<(), String> {
-    let Ok(envelope) = serde_json::from_str::<wire::Envelope>(text) else {
-        // Subscription errors and message types we did not ask for both land
-        // here; neither is a reason to drop a working connection.
-        debug!(source = NAME, "A message this source does not decode.");
-
-        return Ok(());
-    };
-
-    let Some(observation) = envelope.observation() else {
-        return Ok(());
-    };
-
-    match sender.try_send(observation) {
-        Ok(()) => Ok(()),
-        Err(mpsc::error::TrySendError::Full(_)) => {
-            debug!(
-                source = NAME,
-                "The buffer is full; an observation was dropped."
-            );
-
-            Ok(())
-        }
-        // The plugin has gone; so should this task.
-        Err(mpsc::error::TrySendError::Closed(_)) => Err("the sidecar stopped reading".into()),
     }
 }
 
@@ -318,16 +325,17 @@ mod tests {
 
     #[tokio::test]
     async fn a_decoded_message_becomes_a_track_on_the_next_poll() {
-        let (context, _state) = context();
-        context.shutdown.cancel();
-
         let (sender, observations) = mpsc::channel(8);
+        let (source, _state) = crate::status::connection();
+        let key = Secret::new("not-a-key");
+        let mut frames = Frames::new(&sender, &source, &key);
         let mut feed = AisStream {
             observations,
             vessels: Vessels::new(NAME, Duration::from_secs(120), 100),
         };
 
-        // The two halves of a vessel, in the order a receiver hears them.
+        // The two halves of a vessel, in the order a receiver hears them — and
+        // in the binary frames the service actually sends them in.
         for body in [
             r#"{"MessageType":"PositionReport",
                 "MetaData":{"MMSI":244660000,"latitude":51.95,"longitude":4.13,
@@ -339,7 +347,9 @@ mod tests {
                             "time_utc":"2026-09-20 12:00:01 +0000 UTC"},
                 "Message":{"ShipStaticData":{"Name":"ZEEBRUGGE","Type":70}}}"#,
         ] {
-            deliver(body, &sender).expect("a decodable message");
+            frames
+                .accept(Message::binary(body.as_bytes().to_vec()))
+                .expect("a decodable message");
         }
 
         let tracks = feed.poll().await.expect("the poll drains the buffer");
@@ -353,19 +363,6 @@ mod tests {
             "the static report's ship type reaches the CoT symbol",
         );
         assert!(feed.poll().await.expect("an empty poll").is_empty());
-    }
-
-    #[tokio::test]
-    async fn nonsense_on_the_wire_is_dropped_rather_than_dropping_the_connection() {
-        let (sender, _observations) = mpsc::channel(8);
-
-        for body in [
-            "",
-            "not json",
-            r#"{"MessageType":"Error","Error":"unauthorised"}"#,
-        ] {
-            assert!(deliver(body, &sender).is_ok(), "{body:?}");
-        }
     }
 
     #[test]

@@ -67,6 +67,12 @@ crossing the anti-meridian is sent as two boxes. The connection is reopened with
 a capped exponential backoff, and the key never reaches a log line, an error
 message or a heartbeat.
 
+Messages arrive in either text or binary WebSocket frames — the service sends
+binary, whose payload is the same UTF-8 JSON — and both are read; anything the
+service refuses the subscription for, and a connection that is open but
+decoding nothing, are reported on the Services page (with `frames_undecoded`
+and `messages_ignored` beside them) rather than left to a log.
+
 Two limits are worth knowing: **three connections per account and per IP**, and
 a server that drops a client which stops reading. `permessage-deflate` is *not*
 negotiated — `tungstenite` does not implement the extension — so a large box
