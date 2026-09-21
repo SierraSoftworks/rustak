@@ -492,7 +492,27 @@ jobs:
             run_on: ubuntu-24.04
             builder: cargo
             setup: |
-              sudo apt update && sudo apt install -y musl-tools
+              # `musl-tools` comes from the Ubuntu archive, but the runner image
+              # also carries third-party sources (Microsoft's, Google Chrome's)
+              # that this build has no use for. `apt update` exits non-zero if
+              # *any* source fails, so on 2026-09-20 a `403 Forbidden` from
+              # packages.microsoft.com failed `linux-amd64-rustak-plugin-ais`
+              # and, with the image gate in place, blocked a publish.
+              #
+              # So: drop the sources we do not need, retry the update, and let
+              # the install be the thing that decides. If `musl-tools` really is
+              # unavailable the next line fails loudly; an unrelated repository
+              # being unreachable no longer fails a Rust build.
+              sudo rm -f /etc/apt/sources.list.d/microsoft*.list \
+                         /etc/apt/sources.list.d/google-chrome*.list
+
+              for attempt in 1 2 3; do
+                sudo apt-get update && break
+                echo "::warning::apt-get update failed (attempt ${attempt} of 3)."
+                sleep $(( attempt * 5 ))
+              done
+
+              sudo apt-get install -y musl-tools
           - target: aarch64-unknown-linux-musl
             arch: arm64
             os: linux

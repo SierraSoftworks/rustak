@@ -107,6 +107,9 @@ impl Deployment {
         rustak_core::identity::password::use_testing_params();
 
         let issuer = TestWorkloadIssuer::start().await;
+
+        // Before anything opens a connection: see `TestWorkloadIssuer::warm`.
+        issuer.warm();
         let workload = reference(&issuer, revoke_previous);
         let harness = Harness::start_with(move |config| {
             config.auth.workload = workload;
@@ -125,7 +128,18 @@ impl Deployment {
             issuer,
             base,
             api,
-            http: reqwest::Client::new(),
+            // No connection pooling. `warm()` above closes the window this
+            // suite actually hit, but any slow step between two requests
+            // reopens it: the server drops an idle keep-alive connection, the
+            // client writes its next request onto it, and because the write
+            // succeeded hyper cannot safely retry and surfaces
+            // `IncompleteMessage`. A fresh connection per request cannot race.
+            // These tests make tens of requests against a loopback socket, so
+            // the cost is nil.
+            http: reqwest::Client::builder()
+                .pool_max_idle_per_host(0)
+                .build()
+                .expect("a client for the test listener"),
         }
     }
 
@@ -306,6 +320,12 @@ async fn listener(harness: &Harness) -> (String, actix_web::dev::ServerHandle) {
     let handle = server.handle();
 
     actix_web::rt::spawn(server);
+
+    // Binding is not serving: the socket above is listening the moment it is
+    // bound, so a client's connection completes from the backlog, but until the
+    // spawned future's workers are up actix has nobody to hand it to and drops
+    // it. See `rustak_server::testing::serving`.
+    rustak_server::testing::await_serving(address).await;
 
     (format!("http://{address}"), handle)
 }

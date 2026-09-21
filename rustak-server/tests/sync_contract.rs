@@ -963,6 +963,16 @@ async fn a_package_uploaded_over_http_2_is_advertised_at_the_authority_it_was_se
 
     actix_web::rt::spawn(listener);
 
+    // Binding is not serving; see `rustak_server::testing::serving`. This suite
+    // dials with prior-knowledge h2, which sends its preface immediately, so a
+    // listener whose workers are not up yet drops the connection before the
+    // settings frame rather than answering.
+    rustak_server::testing::await_serving(std::net::SocketAddr::from((
+        std::net::Ipv4Addr::LOCALHOST,
+        port,
+    )))
+    .await;
+
     let client = reqwest::Client::builder()
         .http2_prior_knowledge()
         .build()

@@ -175,6 +175,25 @@ impl TestWorkloadIssuer {
     ///
     /// Never: a poisoned lock leaves the set as it was, which fails the
     /// assertion the caller was about to make rather than the whole suite.
+    /// Generates the lazily-built keys now, before a test opens a connection.
+    ///
+    /// `PRIMARY`, `ROTATED` and `UNADVERTISED` are each an RSA-2048 key behind a
+    /// `LazyLock`, so whichever test first needs one pays for generating it. A
+    /// full run generates all three regardless — this only moves the cost from
+    /// the middle of a test to its set-up, which matters because RSA-2048 under
+    /// `-Cinstrument-coverage` on a two-vCPU runner is *seconds*, and seconds in
+    /// the middle of a test is long enough for the server to close an idle
+    /// keep-alive connection that the client's pool is about to reuse. That
+    /// race failed `a_rotated_key_is_picked_up_by_the_first_assertion_that_needs_it`
+    /// on two consecutive `main` runs with
+    /// `hyper::Error(IncompleteMessage)` — the shape you get when a request is
+    /// written onto a connection the server has already decided to close.
+    pub fn warm(&self) {
+        LazyLock::force(&PRIMARY);
+        LazyLock::force(&ROTATED);
+        LazyLock::force(&UNADVERTISED);
+    }
+
     pub fn rotate(&self) {
         if let Ok(mut held) = self.published.lock() {
             held.push(ROTATED.jwk.clone());

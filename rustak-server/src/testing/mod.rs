@@ -21,9 +21,11 @@ pub mod authenticator;
 pub mod context;
 pub mod keys;
 pub mod oidc;
+pub mod serving;
 pub mod workload;
 
 pub use authenticator::SoftAuthenticator;
 pub use context::{TestServer, session_for};
 pub use oidc::TestIdentityProvider;
+pub use serving::await_serving;
 pub use workload::TestWorkloadIssuer;

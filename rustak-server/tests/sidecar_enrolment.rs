@@ -173,6 +173,12 @@ async fn api(harness: &Harness) -> (String, actix_web::dev::ServerHandle) {
 
     actix_web::rt::spawn(server);
 
+    // Binding is not serving: the socket above is listening the moment it is
+    // bound, so a client's connection completes from the backlog, but until the
+    // spawned future's workers are up actix has nobody to hand it to and drops
+    // it. See `rustak_server::testing::serving`.
+    rustak_server::testing::await_serving(address).await;
+
     (format!("http://{address}"), handle)
 }
 
