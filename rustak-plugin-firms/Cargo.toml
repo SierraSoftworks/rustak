@@ -1,0 +1,46 @@
+[package]
+name = "rustak-plugin-firms"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+description = "NASA FIRMS feed sidecar: satellite active-fire detections as CoT markers and pixel footprints on a rustak channel."
+
+# A library as well as a binary, so that an integration suite can drive this
+# plugin the way the harness does rather than shelling out to it.
+[lib]
+name = "rustak_plugin_firms"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rustak-plugin-firms"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+rustak-api = { workspace = true }
+rustak-client = { workspace = true }
+rustak-core = { workspace = true }
+rustak-cot = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+human-errors = { workspace = true }
+# The live source is an HTTP GET of a CSV document per sensor.
+reqwest = { workspace = true }
+# The heartbeat's `metrics`, and the area an administrator may set server-side.
+serde_json = { workspace = true }
+# Acquisition times, and the `"10m"` durations in `[settings]`.
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# The source suites serve hand-written fixtures from a local mock: FIRMS is
+# somebody else's rate limit, and a MAP_KEY is not something a test should hold.
+wiremock = { workspace = true }

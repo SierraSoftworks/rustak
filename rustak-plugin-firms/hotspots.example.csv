@@ -1,0 +1,10 @@
+# Six detections over central Portugal, for the `replay` source: the document
+# FIRMS' area API serves for a VIIRS sensor, written by hand. Acquisition times
+# are shifted at start-up so that the newest row is "now".
+latitude,longitude,bright_ti4,scan,track,acq_date,acq_time,satellite,instrument,confidence,version,bright_ti5,frp,daynight
+40.10234,-7.91456,367.0,0.39,0.36,2026-09-20,1342,N20,VIIRS,h,2.0NRT,305.4,112.6,D
+40.10561,-7.91102,351.8,0.39,0.36,2026-09-20,1342,N20,VIIRS,h,2.0NRT,301.9,47.3,D
+40.09987,-7.92013,338.2,0.39,0.36,2026-09-20,1342,N20,VIIRS,n,2.0NRT,298.7,18.9,D
+40.09822,-7.90544,334.5,0.41,0.37,2026-09-20,1251,N21,VIIRS,n,2.0NRT,297.2,9.4,D
+40.31277,-8.20918,329.9,0.52,0.42,2026-09-20,1251,N21,VIIRS,l,2.0NRT,296.0,3.1,D
+39.84412,-7.48835,312.4,0.45,0.39,2026-09-20,0218,N,VIIRS,n,2.0NRT,286.3,6.8,N

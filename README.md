@@ -79,9 +79,10 @@ database is embedded.
 - **Sidecar plugins in any language.** A plugin is an ordinary authenticated TAK client with its
   own certificate and channel scope. The `rustak-client` crate provides a reconnecting stream,
   the Marti client and a `Sidecar` trait; `rustak-plugin-example` is the template.
-  `rustak-plugin-ais` (vessels, from an `!AIVDM` receiver of your own or the AISStream.io feed)
-  and `rustak-plugin-adsb` (aircraft, from a local `readsb` receiver, a public aggregator or the
-  OpenSky Network) put open data feeds on the map through the same contract, and
+  `rustak-plugin-ais` (vessels, from an `!AIVDM` receiver of your own or the AISStream.io feed),
+  `rustak-plugin-adsb` (aircraft, from a local `readsb` receiver, a public aggregator or the
+  OpenSky Network) and `rustak-plugin-firms` (active fires, from NASA FIRMS satellite detections)
+  put open data feeds on the map through the same contract, and
   `rustak-plugin-esb` does the same for Irish power outages from ESB Networks' PowerCheck.
 - **Compatibility proven in CI, not by hand.** Every push runs a TypeScript suite against the
   real `@tak-ps/node-tak` client CloudTAK uses; nightly, ATAK's own networking core
@@ -169,8 +170,8 @@ behaviour are out of scope for now.
 The workspace holds the server (`rustak-server`, the `rustak` binary), the protocol crate
 (`rustak-cot`), shared DTOs (`rustak-api`), the foundations crate (`rustak-core`), the sidecar
 SDK (`rustak-client`), the plugins (`rustak-plugin-example`, `rustak-plugin-ais`,
-`rustak-plugin-adsb`, `rustak-plugin-esb`) and the Yew admin UI (`rustak-ui`, built with Trunk and embedded into
-the binary).
+`rustak-plugin-adsb`, `rustak-plugin-esb`, `rustak-plugin-firms`) and the Yew admin UI (`rustak-ui`,
+built with Trunk and embedded into the binary).
 
 ```sh
 cd rustak-ui && trunk build && cd ..     # the UI is embedded at compile time

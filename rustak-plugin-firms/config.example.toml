@@ -1,0 +1,261 @@
+# rustak-plugin-firms configuration.
+#
+# Every key is shown with its default. A key that is commented out has its
+# default written beside it; a key that is shown uncommented is set to its
+# default, so this file describes a working sidecar as it stands.
+#
+# Any value may be written as "${{ env.NAME }}", which is substituted from the
+# environment (or from the file passed to --env) before the file is parsed. That
+# is how a feed's API credentials stay out of a file you commit or bind-mount.
+#
+# Unknown and misplaced keys are refused rather than ignored, so
+# `rustak-plugin-firms --config config.example.toml --check` is a real check of
+# this file. This crate's test suite loads it, so it cannot drift from the code
+# either.
+#
+# Durations are written as "45s", "15m", "12h" or "30d".
+
+
+[service]
+# The service's name. Required: the stream uid (SERVICE-<name>), the control-API
+# path and the certificate subject are all derived from it. One area of
+# interest is one name each: "firms-iberia", "firms-california".
+name = "firms"
+
+# What to call this service in the admin UI. Default: its name.
+# display_name = "FIRMS (Iberia)"
+
+# What this service advertises that it does. Default: [].
+capabilities = ["cot.publish"]
+
+# The token this service authenticates to /api/v1/services/* with. Default:
+# none. It is a credential, so it belongs in the environment rather than here.
+# token = "${{ env.RUSTAK_SERVICE_TOKEN }}"
+
+# The one-time enrolment token this service gets its first certificate with,
+# for the start where it has none. Default: none — and RUSTAK_ENROLLMENT_TOKEN
+# in the environment does the same thing without editing this file. The private
+# key is generated inside this process and never leaves it; the token is spent
+# by the enrolment it pays for, so it is needed once rather than on every start,
+# and one that is still set when the certificate exists is ignored.
+# enrollment_token = "${{ env.RUSTAK_ENROLLMENT_TOKEN }}"
+
+# The identity this sidecar's orchestrator already gave it, which buys both the
+# certificate and the control-API token — so a deployment under Nomad or
+# Kubernetes holds **no rustak secret at all**: no enrolment token to mint and
+# hand over, no service token to copy into a file.
+#
+# Unset — the default — looks in three places, in this order:
+#
+#   1. the NOMAD_TOKEN_rustak environment variable   (Nomad, `env = true`)
+#   2. ${NOMAD_SECRETS_DIR}/nomad_rustak.jwt          (Nomad, `file = true`)
+#   3. /var/run/secrets/tokens/rustak                 (a Kubernetes projected
+#                                                      serviceAccountToken)
+#
+# Set it to name exactly one source outright — exactly one, and naming both is
+# refused. A source named here that holds nothing is a start-up failure rather
+# than a quiet fall-back to the enrolment token: naming one is deliberate.
+#
+# The token is re-read from its source every time it is used, because both
+# orchestrators rotate it. The server side is `[auth.workload]`; see
+# "Workload identity" in docs/deployment.md for the jobspec and the rules.
+# workload_identity = { env = "NOMAD_TOKEN_rustak" }
+# workload_identity = { file = "/var/run/secrets/tokens/rustak" }
+
+# The client certificate and private key this service opens the CoT stream with,
+# in PEM. Default: none; both are required as soon as [server] stream names an
+# "ssl://" endpoint, which every real deployment does. Files that are not there
+# yet are what self-enrolment writes on the first start.
+# certificate = "/etc/rustak/firms.pem"
+# key = "/etc/rustak/firms.key"
+
+# Where self-enrolment writes the certificate, key and truststore that the three
+# settings around this one do not name. Default: the directory this file is in.
+# pki_dir = "/etc/rustak"
+
+# The account this service enrols and signs in as, which is the common name of
+# the certificate it is issued. Default: the service's name above.
+# account = "svc.firms"
+
+# The truststore used to verify the server's certificate, in PEM. Default: the
+# platform's own roots — or, once this sidecar has enrolled, the CA chain the
+# server answered the enrolment with, which is what an internal CA needs.
+#
+# It *replaces* the platform's roots for the CoT stream and [server] marti,
+# which always present rustak's own CA, and *joins* them for [server] control,
+# which may present an ACME or otherwise publicly trusted certificate instead.
+# truststore = "/etc/rustak/truststore.pem"
+
+# The truststore that verifies [server] control alone, in PEM. Default: unset —
+# the platform's roots joined with `truststore` above, which covers both a
+# publicly trusted public listener and one behind rustak's own CA.
+#
+# Set it only to *pin* the public listener to a PKI of your own: it replaces
+# both the platform's roots and `truststore` for that endpoint, and says nothing
+# about the stream or Marti. Nothing writes it, and a deployment whose public
+# listener holds an ACME certificate needs it not at all.
+# control_truststore = "/etc/rustak/public-ca.pem"
+
+
+[server]
+# The CoT stream, as a TAK connect string. Default: none — and a sidecar without
+# one runs its ticks and opens no connection at all, which is what makes this
+# file usable offline.
+# stream = "ssl://tak.example.com:8089"
+
+# The service control API, which is what registers this sidecar and reports its
+# health to the admin UI. Default: none.
+# control = "https://tak.example.com:8446"
+
+
+[sidecar]
+# How often the source is given the chance to poll and the publisher is drained.
+# The first tick happens as soon as the sidecar has started. Default: "30s".
+#
+# This is not how often FIRMS is asked — that is [settings.source] poll, which
+# is minutes. It is how often a batch of [settings.publish] max_per_tick
+# detections leaves, so it sets how fast a backlog drains.
+tick = "30s"
+
+# How long `stop` is given before the harness stops waiting.
+shutdown_grace = "10s"
+
+
+[settings]
+
+# Where this feed is looking. FIRMS is asked for the box around it and the
+# publisher re-checks it, so a circle really is a circle. Default: the whole
+# world — which on a bad day is tens of thousands of detections, so set one.
+#
+# An administrator can override this per service from the admin UI (the
+# service's config document, key "area", same shape as below); it is read once,
+# at start-up, and wins over this file.
+#
+# Either a circle:
+[settings.area]
+kind = "circle"
+lat = 40.0
+lon = -8.0
+radius_km = 100.0
+
+# …or a box, which may cross the anti-meridian (west greater than east):
+# [settings.area]
+# kind = "bbox"
+# south = 36.0
+# west = -9.5
+# north = 43.8
+# east = 3.3
+
+
+# Which detections are worth drawing. A detection is a thermal anomaly a
+# satellite flagged, not a confirmed fire: low-confidence ones are often sun
+# glint, gas flares or hot roofs.
+[settings.filter]
+# The least confident detection to draw: "low", "nominal" or "high". MODIS
+# reports a percentage, read as low under 30 and high from 80. A detection that
+# does not say is treated as "nominal". Default: "low", which is all of them.
+min_confidence = "low"
+
+# The least fire radiative power to draw, in megawatts. A detection that does
+# not say (Landsat never does) passes only while this is 0. Default: 0.
+min_frp_mw = 0.0
+
+
+# How a detection is drawn.
+[settings.display]
+# "marker"    - a point at the centre of the satellite pixel.
+# "footprint" - a polygon of the ground the pixel covered (375 m for VIIRS,
+#               1 km for MODIS, wider towards the edge of the swath). Laid out
+#               east-west by north-south, which is within about ten degrees of
+#               the truth; it is a sensor pixel, not a fire perimeter.
+# "both"      - both, as two objects per detection.
+# A detection FIRMS gives no pixel size for is always a marker. Default: "marker".
+shape = "marker"
+
+# The CoT type of a marker. Default: "b-m-p-s-m", the spot-map marker, which
+# every TAK client draws as a dot in the colour below. Set a symbol type of your
+# own choosing if your clients render one you prefer.
+marker_type = "b-m-p-s-m"
+
+# What the colour says.
+# "confidence" - yellow low, orange nominal, red high.
+# "intensity"  - by fire radiative power: yellow under 10 MW, orange under 50,
+#                red under 100, dark red above.
+# Default: "confidence".
+colour_by = "confidence"
+
+
+# How long a detection lives on a map, and how often it is said again.
+[settings.publish]
+# How long after the satellite saw it a detection stays on a map. It is both
+# when this sidecar forgets it and the `stale` every client is given, so a
+# sidecar that is stopped leaves a map that empties itself. No delete message is
+# ever sent. Default: "24h".
+max_age = "24h"
+
+# How often a detection that is still on the map is published again. A device
+# that connects later is only replayed one event per peer by the server, so this
+# is how long a latecomer waits for the fires. Default: "10m".
+republish = "10m"
+
+# How many detections this sidecar holds before it drops the oldest. A ceiling
+# on a runaway area rather than a working limit. Default: 5000.
+max_detections = 5000
+
+# How many detections may be published on one tick, newest first; the rest wait
+# for the next. With shape = "both" that is twice as many events. Keeps a bad
+# day from arriving at every device as one burst. 0 removes the cap.
+# Default: 500.
+max_per_tick = 500
+
+
+# Where the detections come from. Required. Exactly one of the two blocks below,
+# chosen with `kind`.
+#
+# This file ships with "replay" so that it runs with no key and no internet; a
+# deployment replaces this block with the live one. Read
+# rustak-plugin-firms/README.md first: FIRMS has terms and asks to be
+# acknowledged.
+
+
+# 1. NASA FIRMS' area API.
+#
+# [settings.source]
+# kind = "firms"
+#
+# The MAP_KEY, free from https://firms.modaps.eosdis.nasa.gov/api/map_key/.
+# Required. It is a credential — FIRMS puts it in the request URL, and this
+# plugin never logs that URL — so it belongs in the environment, not here.
+# map_key = "${{ env.FIRMS_MAP_KEY }}"
+#
+# Which instruments to read; each is one request per poll (two, for a box across
+# the anti-meridian). Default: the three VIIRS.
+#   "viirs_noaa20", "viirs_noaa21", "viirs_snpp" - 375 m pixels, global
+#   "modis"                                      - 1 km pixels, global
+#   "landsat"                                    - 30 m pixels, US and Canada only
+# sensors = ["viirs_noaa20", "viirs_noaa21", "viirs_snpp"]
+#
+# How many days each request covers, 1 to 5 (FIRMS' ceiling; anything else is
+# clamped). These are UTC calendar days, so 1 is nearly empty just after
+# midnight: keep this at least a day more than max_age spans. Default: 2.
+# days = 2
+#
+# How often to ask. The satellites pass a few times a day and FIRMS publishes
+# within about three hours of a pass (minutes, over the US and Canada), so
+# asking often buys little. A key allows 5000 transactions per ten minutes and a
+# large request costs several. Never faster than "1m" whatever this says; a 429
+# is waited out for as long as it asks. Default: "10m".
+# poll = "10m"
+#
+# A mirror or an authenticating proxy to ask instead of FIRMS itself, as an
+# http:// or https:// URL. The path FIRMS uses is appended to it. Default: none.
+# base_url = "https://firms.modaps.eosdis.nasa.gov"
+
+
+# 2. A FIRMS CSV file, replayed: what this file ships with and what the
+#    demonstration runs on. Save a FIRMS reply or write one by hand; blank lines
+#    and # comments are allowed. Times are shifted once, at start-up, so that the
+#    newest row is "now" — a replay therefore lasts one max_age.
+[settings.source]
+kind = "replay"
+path = "hotspots.example.csv"

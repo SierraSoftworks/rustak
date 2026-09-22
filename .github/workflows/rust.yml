@@ -551,6 +551,7 @@ jobs:
           - { name: rustak-plugin-ais, bin: rustak-plugin-ais }
           - { name: rustak-plugin-adsb, bin: rustak-plugin-adsb }
           - { name: rustak-plugin-esb, bin: rustak-plugin-esb }
+          - { name: rustak-plugin-firms, bin: rustak-plugin-firms }
         # `target` is a real matrix axis so the `include` entries below merge
         # onto it by key (an include list without a shared key would collapse
         # every target into one job per crate).
@@ -880,6 +881,7 @@ jobs:
           - { name: rustak-plugin-ais, bin: rustak-plugin-ais }
           - { name: rustak-plugin-adsb, bin: rustak-plugin-adsb }
           - { name: rustak-plugin-esb, bin: rustak-plugin-esb }
+          - { name: rustak-plugin-firms, bin: rustak-plugin-firms }
         platform: [linux/amd64, linux/arm64]
 
     steps:
@@ -995,6 +997,7 @@ jobs:
           - { name: rustak-plugin-ais, bin: rustak-plugin-ais }
           - { name: rustak-plugin-adsb, bin: rustak-plugin-adsb }
           - { name: rustak-plugin-esb, bin: rustak-plugin-esb }
+          - { name: rustak-plugin-firms, bin: rustak-plugin-firms }
 
     steps:
       - name: set environment variables
