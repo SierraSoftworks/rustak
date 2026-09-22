@@ -14,25 +14,40 @@
 //!
 //! # The cadence adapts to the provider
 //!
-//! adsb.lol answered the first live deployment `429`, `Retry-After: 10`, on
-//! about every other request at a five-second poll. Waiting the ten seconds out
-//! and then going straight back to five is asking to be refused again, so a
-//! provider that says that **twice inside [`LIMIT_WINDOW`] polls** is taken at
-//! its word: the interval becomes what it asked for, for the rest of the
-//! process. It is never lowered again — a service that has told us twice how
-//! often it wants to be asked has earned the benefit of the doubt until
-//! somebody restarts the sidecar having read this.
+//! The interval a source was configured with is where it **starts** and the
+//! fastest it will ever ask, not a promise about how often it asks. What moves
+//! it is in `cadence`, and there are two rules, because there are two kinds of
+//! refusal:
 //!
-//! Only a delay the provider *stated* moves the cadence. A `429` with no
-//! `Retry-After` is waited out on a guess of our own, and a number we made up
-//! is not a number to make permanent.
+//! - a provider that **states** a delay twice inside [`LIMIT_WINDOW`] polls is
+//!   taken at its word: the interval becomes what it asked for, and nothing
+//!   lowers it again while the process lives;
+//! - a provider that refuses twice inside the window and **names no delay** —
+//!   which is all adsb.lol has ever been seen to do — is backed off from by half
+//!   as much again, up to [`MAX_ADAPTED`], and [`CLEAN_RUN`] polls in a row
+//!   that nobody refused earn one step back down.
+//!
+//! The second rule is reversible because the number in it is our own guess,
+//! and a guess made permanent is how a feed slows itself to a crawl over a week
+//! of flaky minutes.
+//!
+//! # And it says who chose the number
+//!
+//! Everything this type says about a refusal comes from `wording`, which never
+//! writes "asked us to wait" about a delay the provider did not state.
+
+mod cadence;
+mod wording;
 
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use rustak_core::prelude::*;
 
-use super::notice::{Repeated, Report, humanised};
+use self::cadence::{Cadence, Change};
+use super::notice::{REMIND_EVERY, Repeated, Report, humanised};
+
+pub use self::cadence::{CLEAN_RUN, LIMIT_WINDOW, MAX_ADAPTED, RECENT_POLLS};
 
 /// The longest a source waits between attempts, however many have failed.
 ///
@@ -46,19 +61,14 @@ pub const MAX_BACKOFF: Duration = Duration::from_secs(300);
 /// failing for a week.
 const MAX_DOUBLINGS: u32 = 6;
 
-/// How many polls apart two rate limits may be and still be the provider
-/// telling us how often it wants to be asked, rather than two bad minutes.
-///
-/// Ten: at any sane interval that is a minute or two of asking, which is short
-/// enough that an unrelated pair does not slow a feed down for the rest of the
-/// day and long enough that "every other request" is caught on the second one.
-pub const LIMIT_WINDOW: u64 = 10;
-
 /// How an upstream is doing.
 #[derive(Clone, Debug)]
 pub struct SourceState {
     name: String,
-    interval: Duration,
+
+    /// How often it may ask: what was configured, and what refusals have since
+    /// made of it.
+    cadence: Cadence,
     connected: bool,
     ever_connected: bool,
     failures: u32,
@@ -74,12 +84,6 @@ pub struct SourceState {
     /// one run and not a hundred.
     limit: Repeated,
 
-    /// How many attempts have been made, which is what [`LIMIT_WINDOW`] counts.
-    polls: u64,
-
-    /// The attempt the last stated `Retry-After` arrived on.
-    limited_at: Option<u64>,
-
     /// How many `429`s this source has been sent, for the heartbeat.
     rate_limited: u64,
 }
@@ -90,7 +94,7 @@ impl SourceState {
     pub fn new(name: impl Into<String>, interval: Duration) -> Self {
         Self {
             name: name.into(),
-            interval,
+            cadence: Cadence::new(interval),
             connected: false,
             ever_connected: false,
             failures: 0,
@@ -98,9 +102,7 @@ impl SourceState {
             last_error: None,
             next_attempt: Utc::now(),
             outage: Repeated::new(Duration::ZERO),
-            limit: Repeated::new(super::notice::REMIND_EVERY),
-            polls: 0,
-            limited_at: None,
+            limit: Repeated::new(REMIND_EVERY),
             rate_limited: 0,
         }
     }
@@ -112,10 +114,29 @@ impl SourceState {
     }
 
     /// How often this source may reach its upstream **as it stands**: the
-    /// configured interval, or whatever a provider has since asked for.
+    /// configured interval, or whatever a provider's refusals have since made
+    /// of it. Never less than [`configured`](Self::configured).
     #[must_use]
     pub const fn interval(&self) -> Duration {
-        self.interval
+        self.cadence.effective()
+    }
+
+    /// The interval this source was opened with — an operator's `poll`, or the
+    /// provider's own default — which is the floor under
+    /// [`interval`](Self::interval) and not a pin on it.
+    #[must_use]
+    pub const fn configured(&self) -> Duration {
+        self.cadence.configured()
+    }
+
+    /// How many of how many recent polls were refused, when that is more than
+    /// half of the last [`RECENT_POLLS`]; [`None`] otherwise.
+    ///
+    /// Rate limiting this source absorbs by slowing down is not a degraded
+    /// feed. Being refused more often than answered is.
+    #[must_use]
+    pub const fn mostly_refused(&self) -> Option<(u32, u32)> {
+        self.cadence.mostly_refused()
     }
 
     /// How many times this source has been rate-limited, for the heartbeat.
@@ -146,7 +167,9 @@ impl SourceState {
 
     /// [`succeeded`](Self::succeeded), at an instant of the caller's choosing.
     pub fn succeeded_at(&mut self, now: DateTime<Utc>) {
-        self.polls = self.polls.saturating_add(1);
+        if let Some(change) = self.cadence.succeeded() {
+            self.announce(change);
+        }
 
         match self.outage.cleared(now) {
             Report::Recovered { count, over } => {
@@ -169,19 +192,14 @@ impl SourceState {
         }
 
         if let Report::Recovered { count, over } = self.limit.cleared(now) {
-            info!(
-                source = %self.name,
-                "The ADS-B source has stopped asking us to wait; {count} requests were held \
-                 back over {}.",
-                humanised(over),
-            );
+            info!(source = %self.name, "{}", wording::stopped_refusing(count, over));
         }
 
         self.connected = true;
         self.ever_connected = true;
         self.failures = 0;
         self.last_error = None;
-        self.next_attempt = now + self.interval;
+        self.next_attempt = now + self.interval();
     }
 
     /// Records a failure, and backs off.
@@ -195,7 +213,7 @@ impl SourceState {
     /// [`failed`](Self::failed), at an instant of the caller's choosing.
     pub fn failed_at(&mut self, error: impl Into<String>, now: DateTime<Utc>) {
         let error = error.into();
-        self.polls = self.polls.saturating_add(1);
+        self.cadence.failed();
 
         match self.outage.happened(now) {
             Report::First => {
@@ -235,62 +253,58 @@ impl SourceState {
 
     /// [`wait_for`](Self::wait_for), at an instant of the caller's choosing.
     pub fn wait_for_at(&mut self, asked: Option<Duration>, now: DateTime<Utc>) {
-        // A `429` that names no delay is waited out on twice the interval,
-        // which is our own guess and therefore never moves the cadence.
-        let delay = asked.unwrap_or(self.interval * 2).min(MAX_BACKOFF);
-
-        self.polls = self.polls.saturating_add(1);
         self.rate_limited = self.rate_limited.saturating_add(1);
 
-        if let Some(raised) = asked.and_then(|stated| self.adapt(stated.min(MAX_BACKOFF))) {
-            info!(
-                source = %self.name,
-                seconds = raised.as_secs(),
-                "{} asks for {}s between requests; polling at that rate from now on.",
-                self.name,
-                raised.as_secs(),
-            );
+        // The cadence moves first, so that the wait below — and the line that
+        // names it — are about the interval that is now in use.
+        if let Some(change) = self
+            .cadence
+            .refused(asked.map(|stated| stated.min(MAX_BACKOFF)))
+        {
+            self.announce(change);
         }
+
+        // A `429` that names no delay is waited out on twice the interval.
+        // That is our own guess, and `wording` says so.
+        let every = self.interval();
+        let waiting = asked
+            .unwrap_or_else(|| every.saturating_mul(2))
+            .min(MAX_BACKOFF)
+            .max(every);
 
         match self.limit.happened(now) {
             Report::First => info!(
                 source = %self.name,
-                seconds = delay.as_secs(),
-                "The ADS-B source asked us to wait before the next request.",
+                seconds = waiting.as_secs(),
+                stated = asked.is_some(),
+                "{}",
+                wording::refused(asked, waiting),
             ),
             Report::Reminder { count, over } => info!(
                 source = %self.name,
-                "The ADS-B source asked us to wait {count} times in the last {}.",
-                humanised(over),
+                "{}",
+                wording::still_refusing(count, over, every),
             ),
             _ => debug!(
                 source = %self.name,
-                seconds = delay.as_secs(),
-                "The ADS-B source asked us to wait again.",
+                seconds = waiting.as_secs(),
+                stated = asked.is_some(),
+                "{}",
+                wording::refused_again(asked, waiting),
             ),
         }
 
-        self.next_attempt = now + delay.max(self.interval);
+        self.next_attempt = now + waiting;
     }
 
-    /// Takes a provider at its word once it has said the same thing twice
-    /// inside [`LIMIT_WINDOW`] polls, and answers the interval it raised to.
-    fn adapt(&mut self, stated: Duration) -> Option<Duration> {
-        let asked_again = self
-            .limited_at
-            .is_some_and(|at| self.polls.saturating_sub(at) <= LIMIT_WINDOW);
-
-        self.limited_at = Some(self.polls);
-
-        // `max`, never `min`: a provider that has told us twice is not talked
-        // back down by one that asks for less later, nor by the clock.
-        if !asked_again || stated <= self.interval {
-            return None;
-        }
-
-        self.interval = stated;
-
-        Some(stated)
+    /// Says, once, that the interval is not what it was.
+    fn announce(&self, change: Change) {
+        info!(
+            source = %self.name,
+            seconds = change.interval().as_secs(),
+            "{}",
+            wording::changed(&self.name, change, self.cadence.floor()),
+        );
     }
 
     /// Whether the last attempt worked.
@@ -332,10 +346,10 @@ impl SourceState {
     fn backoff(&self) -> Duration {
         let doublings = self.failures.saturating_sub(1).min(MAX_DOUBLINGS);
 
-        self.interval
+        self.interval()
             .saturating_mul(1_u32 << doublings)
             .min(MAX_BACKOFF)
-            .max(self.interval)
+            .max(self.interval())
     }
 }
 
@@ -354,11 +368,77 @@ mod tests {
     }
 
     fn state() -> SourceState {
-        let mut state = SourceState::new("adsb.lol", Duration::from_secs(5));
+        polling_every(5)
+    }
+
+    fn polling_every(seconds: u64) -> SourceState {
+        let mut state = SourceState::new("adsb.lol", Duration::from_secs(seconds));
         state.since = at(0);
         state.next_attempt = at(0);
 
         state
+    }
+
+    /// A provider that answers one request every `tolerates`, refuses anything
+    /// sooner, and never says how long to wait: adsb.lol as the second Dublin
+    /// deployment met it, with the number nobody publishes written down.
+    struct Grudging {
+        tolerates: Duration,
+        answered_at: Option<DateTime<Utc>>,
+    }
+
+    impl Grudging {
+        fn tolerating(seconds: u64) -> Self {
+            Self {
+                tolerates: Duration::from_secs(seconds),
+                answered_at: None,
+            }
+        }
+
+        fn answers(&mut self, now: DateTime<Utc>) -> bool {
+            let answers = self
+                .answered_at
+                .is_none_or(|at| elapsed(at, now) >= self.tolerates);
+
+            if answers {
+                self.answered_at = Some(now);
+            }
+
+            answers
+        }
+    }
+
+    /// One poll's outcome: whether it was refused, and the interval after it.
+    type Outcome = (bool, Duration);
+
+    /// Polls `provider` as often as `state` allows and not a moment later,
+    /// moving the clock by hand from one attempt to the next.
+    fn drive(state: &mut SourceState, provider: &mut Grudging, polls: usize) -> Vec<Outcome> {
+        (0..polls)
+            .map(|_| {
+                let now = state.next_attempt;
+                let refused = !provider.answers(now);
+
+                assert!(state.ready_at(now));
+
+                if refused {
+                    state.wait_for_at(None, now);
+                } else {
+                    state.succeeded_at(now);
+                }
+
+                assert!(
+                    state.interval() >= state.configured(),
+                    "never below the floor"
+                );
+
+                (refused, state.interval())
+            })
+            .collect()
+    }
+
+    fn refusals(outcomes: &[Outcome]) -> usize {
+        outcomes.iter().filter(|(refused, _)| *refused).count()
     }
 
     #[test]
@@ -370,6 +450,8 @@ mod tests {
         assert!(!state.ever_connected());
         assert_eq!(state.last_error(), None);
         assert_eq!(state.interval(), Duration::from_secs(5));
+        assert_eq!(state.configured(), Duration::from_secs(5));
+        assert_eq!(state.mostly_refused(), None);
         assert_eq!(state.rate_limited(), 0);
     }
 
@@ -501,6 +583,22 @@ mod tests {
         state.wait_for_at(Some(Duration::from_secs(1)), at(50));
 
         assert_eq!(state.interval(), Duration::from_secs(10));
+
+        // Nor by any number of clean polls: a delay the provider stated is a
+        // floor, where one we guessed is only a position.
+        let mut now = at(60);
+
+        for _ in 0..(CLEAN_RUN * 5) {
+            state.succeeded_at(now);
+            now = state.next_attempt;
+        }
+
+        assert_eq!(state.interval(), Duration::from_secs(10));
+        assert_eq!(
+            state.configured(),
+            Duration::from_secs(5),
+            "what was configured is still reported as what was configured",
+        );
     }
 
     #[test]
@@ -523,17 +621,210 @@ mod tests {
     }
 
     #[test]
-    fn a_rate_limit_with_no_retry_after_waits_but_never_moves_the_cadence() {
-        // The delay is our own guess; making a guess permanent is how a feed
-        // slows itself to a crawl over a week.
+    fn one_rate_limit_with_no_retry_after_waits_twice_the_interval_and_moves_nothing() {
         let mut state = state();
 
         state.wait_for_at(None, at(0));
-        state.wait_for_at(None, at(20));
 
-        assert_eq!(state.interval(), Duration::from_secs(5));
-        assert!(!state.ready_at(at(29)), "it still waits twice the interval");
-        assert!(state.ready_at(at(30)));
+        assert_eq!(
+            state.interval(),
+            Duration::from_secs(5),
+            "one refusal is a bad minute, whether or not it named a delay",
+        );
+        assert!(!state.ready_at(at(9)), "it waits twice the interval");
+        assert!(state.ready_at(at(10)));
+    }
+
+    #[test]
+    fn a_second_one_inside_the_window_backs_the_cadence_off_by_half_as_much_again() {
+        // The second Dublin finding. M9-08 adapted to none of this, because
+        // none of it carried a `Retry-After`.
+        let mut state = polling_every(10);
+
+        state.wait_for_at(None, at(0));
+        state.succeeded_at(at(20));
+        state.wait_for_at(None, at(30));
+
+        assert_eq!(state.interval(), Duration::from_secs(15));
+        assert_eq!(state.configured(), Duration::from_secs(10));
+        assert_eq!(state.rate_limited(), 2);
+        assert!(!state.ready_at(at(59)), "and waits twice the new interval");
+        assert!(state.ready_at(at(60)));
+
+        state.succeeded_at(at(60));
+
+        assert!(!state.ready_at(at(74)), "a clean poll is 15s from the next");
+        assert!(state.ready_at(at(75)));
+    }
+
+    #[test]
+    fn unstated_rate_limits_further_apart_than_the_window_move_nothing() {
+        let mut state = polling_every(10);
+        let mut now = at(0);
+
+        for _ in 0..5 {
+            state.wait_for_at(None, now);
+
+            for _ in 0..=LIMIT_WINDOW {
+                now = state.next_attempt;
+                state.succeeded_at(now);
+            }
+
+            now = state.next_attempt;
+        }
+
+        assert_eq!(
+            state.interval(),
+            Duration::from_secs(10),
+            "five bad minutes a day are not a rate limit",
+        );
+    }
+
+    #[test]
+    fn a_refusal_every_fifth_poll_walks_the_interval_up_to_the_ceiling_and_stops() {
+        // What production looked like — six 429s in thirty polls — against a
+        // provider that goes on refusing whatever we do.
+        let mut state = polling_every(10);
+        let mut seen = Vec::new();
+
+        for _ in 0..10 {
+            for _ in 0..4 {
+                state.succeeded_at(state.next_attempt);
+            }
+
+            state.wait_for_at(None, state.next_attempt);
+            seen.push(state.interval().as_secs());
+        }
+
+        assert_eq!(seen, [10, 15, 23, 35, 53, 80, 120, 120, 120, 120]);
+        assert_eq!(state.interval(), MAX_ADAPTED);
+        assert_eq!(state.mostly_refused(), None, "one in five is not most");
+    }
+
+    #[test]
+    fn a_provider_that_tolerates_a_request_every_18s_stops_refusing_us() {
+        // Polled every 10s with no adaptation, this provider refuses every
+        // other request for ever, which is what M9-08 did against adsb.lol.
+        let mut provider = Grudging::tolerating(18);
+        let mut state = polling_every(10);
+
+        let outcomes = drive(&mut state, &mut provider, 30);
+
+        assert_eq!(
+            refusals(&outcomes[..6]),
+            3,
+            "refused on the way up: at 10s, at 10s again, and at 15s",
+        );
+        assert_eq!(
+            refusals(&outcomes[6..]),
+            0,
+            "and not once in the twenty-four polls after it settled",
+        );
+        assert_eq!(
+            state.interval(),
+            Duration::from_secs(23),
+            "the first rung of the ladder the provider will put up with",
+        );
+        assert!(state.interval() >= provider.tolerates);
+        assert_eq!(state.configured(), Duration::from_secs(10));
+        assert_eq!(state.mostly_refused(), None);
+    }
+
+    #[test]
+    fn over_a_thousand_polls_it_probes_downward_now_and_then_and_is_rarely_refused() {
+        // AIMD does not find a number and keep it: every sixty clean polls it
+        // tries one notch faster, is refused twice at 15s, and comes back to
+        // 23s. Two refusals in sixty-odd polls is the price of noticing when
+        // the provider's limit has gone away.
+        let mut provider = Grudging::tolerating(18);
+        let mut state = polling_every(10);
+
+        let outcomes = drive(&mut state, &mut provider, 1_000);
+        let (settling, settled) = outcomes.split_at(6);
+
+        assert!(
+            refusals(settled) * 20 < settled.len(),
+            "{} refusals in {} polls is more than one in twenty",
+            refusals(settled),
+            settled.len(),
+        );
+        assert!(
+            settled
+                .iter()
+                .all(|(_, interval)| (15..=23).contains(&interval.as_secs())),
+            "it never runs away upwards, and never goes back to 10s against this provider",
+        );
+        assert_eq!(refusals(settling), 3);
+    }
+
+    #[test]
+    fn sixty_clean_polls_ease_the_interval_back_and_never_below_what_was_configured() {
+        let mut state = polling_every(10);
+
+        for _ in 0..3 {
+            state.wait_for_at(None, state.next_attempt);
+        }
+
+        assert_eq!(state.interval(), Duration::from_secs(23));
+
+        let mut clean = |polls: u64| {
+            for _ in 0..polls {
+                state.succeeded_at(state.next_attempt);
+            }
+
+            state.interval()
+        };
+
+        assert_eq!(clean(CLEAN_RUN - 1), Duration::from_secs(23));
+        assert_eq!(
+            clean(1),
+            Duration::from_secs(15),
+            "the sixtieth earns a step"
+        );
+        assert_eq!(clean(CLEAN_RUN), Duration::from_secs(15 * 2 / 3));
+        assert_eq!(
+            clean(CLEAN_RUN * 10),
+            Duration::from_secs(10),
+            "an operator's `poll` is a floor: recovery stops there",
+        );
+    }
+
+    #[test]
+    fn a_refusal_in_the_middle_of_a_clean_run_starts_the_count_again() {
+        let mut state = polling_every(10);
+
+        state.wait_for_at(None, state.next_attempt);
+        state.wait_for_at(None, state.next_attempt);
+
+        for _ in 0..(CLEAN_RUN - 1) {
+            state.succeeded_at(state.next_attempt);
+        }
+
+        // Outside the window of the last one, so it raises nothing either.
+        state.wait_for_at(None, state.next_attempt);
+
+        for _ in 0..(CLEAN_RUN - 1) {
+            state.succeeded_at(state.next_attempt);
+        }
+
+        assert_eq!(state.interval(), Duration::from_secs(15), "not yet");
+
+        state.succeeded_at(state.next_attempt);
+
+        assert_eq!(state.interval(), Duration::from_secs(10));
+    }
+
+    #[test]
+    fn a_source_refused_more_often_than_answered_says_how_often() {
+        let mut state = polling_every(10);
+
+        state.succeeded_at(state.next_attempt);
+
+        for _ in 0..11 {
+            state.wait_for_at(None, state.next_attempt);
+        }
+
+        assert_eq!(state.mostly_refused(), Some((11, 12)));
     }
 
     #[test]

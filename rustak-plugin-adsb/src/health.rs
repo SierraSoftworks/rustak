@@ -15,8 +15,14 @@
 //! | State | When |
 //! |---|---|
 //! | `unhealthy` | The source has never connected — a setting is wrong, not a network having a bad minute |
-//! | `degraded` | It connected once and has been reconnecting for more than two poll intervals |
-//! | `healthy` | It is answering, or it has only just stopped |
+//! | `degraded` | It connected once and has been reconnecting for more than two poll intervals — or more than half of its last twenty polls were refused `429` |
+//! | `healthy` | It is answering, or it has only just stopped — **including while it is slowing down for a provider that rate-limits it** |
+//!
+//! Rate limiting that the source absorbs by polling less often is the plugin
+//! working, not the feed degrading: the aircraft are still on the map, a little
+//! less often, and `source.poll_effective_s` beside `source.poll_configured_s`
+//! says by how much. It becomes `degraded` only when the provider is refusing
+//! more often than it answers, which slowing down has evidently not fixed.
 //!
 //! # Nothing secret goes in `metrics`
 //!
@@ -53,11 +59,15 @@ pub fn heartbeat(
                 "since": state.since(),
                 "last_error": state.last_error(),
                 // The cadence *as it stands*, which is not always the one in
-                // the file: a provider that asked twice for more room got it,
+                // the file: a provider that rate-limits is polled less often,
                 // and an administrator looking at a feed that is behind should
                 // be able to see that from the Services page rather than from
                 // a log line five hours old.
                 "poll_effective_s": state.interval().as_secs(),
+                // And the one it was opened with — an operator's `poll` or the
+                // provider's default — which is the floor the one above eases
+                // back to. The two differing is the whole story at a glance.
+                "poll_configured_s": state.configured().as_secs(),
                 "rate_limited": state.rate_limited(),
             },
             "tracked": tracked,
@@ -77,6 +87,9 @@ pub fn service_state(state: &SourceState) -> ServiceState {
 
     match state.reconnecting_for() {
         Some(elapsed) if elapsed > grace(state) => ServiceState::Degraded,
+        // Adapting to a rate limit is healthy; being refused more often than
+        // answered, after adapting, is not.
+        _ if state.mostly_refused().is_some() => ServiceState::Degraded,
         _ => ServiceState::Healthy,
     }
 }
@@ -100,6 +113,15 @@ fn connection(state: &SourceState) -> &'static str {
 
 /// One sentence for the Services page.
 fn message(state: &SourceState, tracked: usize, connection: &str) -> String {
+    if let Some((refused, of)) = state.mostly_refused() {
+        return format!(
+            "{} is rate-limiting this feed: {refused} of its last {of} requests were refused \
+             (429). Polling every {}s; {tracked} aircraft tracked.",
+            state.name(),
+            state.interval().as_secs(),
+        );
+    }
+
     match (connection, state.last_error()) {
         ("connected", _) => format!("{} is answering; {tracked} aircraft tracked.", state.name()),
         (_, Some(error)) => format!("{} is not answering: {error}", state.name()),
@@ -161,6 +183,7 @@ mod tests {
         assert_eq!(beat.metrics["feed"]["expired"], 3);
         assert!(beat.metrics["source"]["last_error"].is_null());
         assert_eq!(beat.metrics["source"]["poll_effective_s"], 5);
+        assert_eq!(beat.metrics["source"]["poll_configured_s"], 5);
         assert_eq!(beat.metrics["source"]["rate_limited"], 0);
         assert!(
             beat.message.expect("a message").contains("137 aircraft"),
@@ -182,7 +205,68 @@ mod tests {
         let beat = heartbeat("aggregator", &state, counters(), 12);
 
         assert_eq!(beat.metrics["source"]["poll_effective_s"], 10);
+        assert_eq!(beat.metrics["source"]["poll_configured_s"], 5);
         assert_eq!(beat.metrics["source"]["rate_limited"], 2);
+    }
+
+    #[test]
+    fn a_source_that_is_slowing_down_for_a_provider_that_names_no_delay_is_healthy() {
+        // The second Dublin finding: 429 with no Retry-After. The plugin backs
+        // off, the page shows both numbers, and nothing turns amber — rate
+        // limiting that is being absorbed is not degradation.
+        let mut state = state();
+        state.succeeded();
+        state.wait_for(None);
+        state.succeeded();
+        state.wait_for(None);
+
+        let beat = heartbeat("aggregator", &state, counters(), 12);
+
+        assert_eq!(beat.state, ServiceState::Healthy);
+        assert_eq!(beat.metrics["source"]["poll_effective_s"], 8);
+        assert_eq!(beat.metrics["source"]["poll_configured_s"], 5);
+        assert_eq!(beat.metrics["source"]["rate_limited"], 2);
+        assert!(
+            beat.message.expect("a message").contains("is answering"),
+            "and the sentence is the ordinary one",
+        );
+    }
+
+    #[test]
+    fn a_source_refused_more_often_than_it_is_answered_is_degraded_and_says_why() {
+        let mut state = state();
+        state.succeeded();
+
+        for _ in 0..10 {
+            state.wait_for(None);
+        }
+
+        assert_eq!(
+            service_state(&state),
+            ServiceState::Healthy,
+            "ten refusals are not yet more than half of twenty polls",
+        );
+
+        state.wait_for(None);
+
+        let beat = heartbeat("aggregator", &state, counters(), 3);
+        let message = beat.message.expect("a message");
+
+        assert_eq!(beat.state, ServiceState::Degraded);
+        assert!(
+            message.contains("11 of its last 12 requests were refused (429)"),
+            "{message}",
+        );
+        assert!(message.contains("adsb.lol"), "{message}");
+        assert_eq!(beat.metrics["source"]["rate_limited"], 11);
+        assert_eq!(beat.metrics["source"]["connection"], "connected");
+
+        // And it clears on its own, once the window is mostly answers again.
+        for _ in 0..10 {
+            state.succeeded();
+        }
+
+        assert_eq!(service_state(&state), ServiceState::Healthy);
     }
 
     #[test]

@@ -43,6 +43,7 @@ const SCENARIOS = [
   "groups.test.ts",
   "contacts.test.ts",
   "stream.test.ts",
+  "relay.test.ts",
   "missions.test.ts",
   "files.test.ts",
   "cloudtak-onboarding.test.ts",

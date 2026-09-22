@@ -57,7 +57,6 @@
 
 use std::sync::Arc;
 
-use futures::StreamExt;
 use rustak_api::Heartbeat;
 use rustak_core::prelude::*;
 use rustak_core::service::ServiceDescriptor;
@@ -66,7 +65,7 @@ use tokio::sync::mpsc;
 use crate::control::{ControlClient, ServerEvent};
 
 use super::SidecarContext;
-use super::link_health::{Failure, LinkHealth, Report, humanised};
+use super::link_health::{LinkHealth, humanised, note, recovered};
 use super::workload::AccessTokens;
 
 /// How deep the channel between the feed task and the harness loop is.
@@ -119,7 +118,7 @@ impl ControlLink {
 
         let health = Arc::new(LinkHealth::new());
         let (sender, receiver) = mpsc::channel(FEED_QUEUE);
-        tokio::spawn(feed(
+        tokio::spawn(super::event_feed::run(
             Arc::clone(&control),
             context.workload.clone(),
             Arc::clone(&health),
@@ -289,16 +288,11 @@ impl ControlLink {
 
     /// Records a failed call and says as much about it as its state calls for.
     ///
-    /// Classified by [`http::is_transport`](crate::http::is_transport): only a
+    /// See [`link_health::note`](super::link_health::note) for the rule: only a
     /// server we could not reach is an outage, and a refusal — which is the
     /// server answering — leaves everything else free to carry on.
     fn note(&self, what: &str, err: &Error) {
-        let failure = match crate::http::is_transport(err) {
-            true => Failure::Unreachable,
-            false => Failure::Refused,
-        };
-
-        announce(self.health.failed(failure), failure, what, err);
+        note(&self.health, what, err);
     }
 
     /// Whether a call is worth making, given what the link last did.
@@ -341,138 +335,6 @@ impl std::fmt::Debug for ControlLink {
             .field("configured", &self.control.is_some())
             .field("down", &self.health.is_down())
             .finish_non_exhaustive()
-    }
-}
-
-/// Keeps the server-event feed open until the sidecar stops.
-///
-/// Resumes from the last event it delivered, so a feed that dropped for a second
-/// costs nothing; one that dropped for longer than the server's ring costs a gap
-/// in the ids, which is what a plugin that keeps state watches for.
-async fn feed(
-    control: Arc<ControlClient>,
-    workload: Option<Arc<AccessTokens>>,
-    health: Arc<LinkHealth>,
-    sender: mpsc::Sender<ServerEvent>,
-    shutdown: Shutdown,
-) {
-    let mut after: Option<u64> = None;
-
-    while !shutdown.is_cancelled() {
-        // The feed is held open for hours, so the token it opened with will
-        // have expired by the time it drops and is reopened. Exchanging here
-        // rather than once at start-up is what keeps a reopened feed working.
-        let exchanged = match &workload {
-            None => true,
-            Some(tokens) => match tokens.current().await {
-                Ok(token) => {
-                    control.set_credential(Some(token));
-
-                    true
-                }
-                Err(err) => {
-                    note(
-                        &health,
-                        "exchange this sidecar's workload identity for the event feed",
-                        &err,
-                    );
-
-                    false
-                }
-            },
-        };
-
-        // Opening the feed with a credential we know is missing would be a
-        // second failure for one cause, and a second log line for it.
-        if exchanged {
-            match control.events(after).await {
-                Ok(mut stream) => {
-                    recovered(health.succeeded());
-                    tracing::info!("The server-event feed is open.");
-
-                    loop {
-                        let event = tokio::select! {
-                            biased;
-
-                            () = shutdown.cancelled() => return,
-                            event = stream.next() => event,
-                        };
-
-                        let Some(event) = event else { break };
-
-                        after = Some(event.id);
-
-                        // A closed receiver is the harness stopping, not a
-                        // failure.
-                        if sender.send(event).await.is_err() {
-                            return;
-                        }
-                    }
-
-                    tracing::debug!("The server-event feed ended; it will be reopened.");
-                }
-                Err(err) => note(&health, "open the server-event feed", &err),
-            }
-        }
-
-        // The shared backoff: the heartbeat that failed a moment ago moved this
-        // on too, so one outage is one sequence of attempts rather than two.
-        let wait = health.backoff();
-
-        tokio::select! {
-            biased;
-
-            () = shutdown.cancelled() => return,
-            () = tokio::time::sleep(wait) => {}
-        }
-    }
-}
-
-/// [`ControlLink::note`], for the feed task, which holds the health directly.
-fn note(health: &LinkHealth, what: &str, err: &Error) {
-    let failure = match crate::http::is_transport(err) {
-        true => Failure::Unreachable,
-        false => Failure::Refused,
-    };
-
-    announce(health.failed(failure), failure, what, err);
-}
-
-/// Logs one control-API failure at the level the link's state calls for.
-///
-/// The first failure of a run carries the whole rendered error — the cause
-/// chain `http::transport` built, and the advice that names
-/// `[service] control_truststore` — because that is the line an operator reads.
-/// Everything after it is `debug` until the state changes, and a reminder is
-/// one line rather than a block.
-fn announce(report: Report, failure: Failure, what: &str, err: &Error) {
-    match (report, failure) {
-        (Report::First, Failure::Unreachable) => tracing::warn!(
-            error = %err,
-            "Could not {what}. The control link is down; further failures are logged at debug until it is back.",
-        ),
-        (Report::First, Failure::Refused) => tracing::warn!(
-            error = %err,
-            "Could not {what}. The server answered, so the link is up; repeats are logged at debug until this changes.",
-        ),
-        (Report::Reminder { failing_for }, _) => tracing::warn!(
-            error = %err.description(),
-            "The control link has been failing for {}; the last attempt was to {what}.",
-            humanised(failing_for),
-        ),
-        (Report::Quiet, _) => tracing::debug!(
-            error = %err.description(),
-            "Could not {what}; nothing has changed since this was last reported.",
-        ),
-        // A failure cannot be a recovery.
-        (Report::Recovered { .. }, _) => {}
-    }
-}
-
-/// Says so, once, when the link starts working again.
-fn recovered(report: Report) {
-    if let Report::Recovered { failing_for } = report {
-        tracing::info!("The control link is back after {}.", humanised(failing_for),);
     }
 }
 

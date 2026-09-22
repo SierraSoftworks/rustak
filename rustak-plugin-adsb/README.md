@@ -90,21 +90,63 @@ to hear the same aircraft twice — and the clamp is logged at `info` rather tha
 applied silently. A deployment that needs a faster picture than this wants a
 receiver of its own, which the `readsb` source above reads for nothing.
 
-**And it adapts.** A `429` is waited out for as long as `Retry-After` asks. A
-provider that asks **twice inside ten polls** is taken at its word: the interval
-becomes what it asked for, for the rest of the process, said once at `info` —
+**`poll` is a floor, not a pin.** Configured or defaulted, it is where the
+source starts and the fastest it will ever ask. What the provider does can raise
+the interval actually in use above it; nothing ever takes it below. The start-up
+line says so, once:
 
 ```
-adsb.lol asks for 10s between requests; polling at that rate from now on.
+Reading aircraft from a public aggregator every 10s (may be raised if the provider rate-limits, and eases back when it stops). …
 ```
 
-— and never lowered again until a restart. The heartbeat carries
-`source.poll_effective_s` and `source.rate_limited`, so the Services page shows
-the cadence actually in use rather than the one in the file.
+**How it adapts.** There are two kinds of `429`, and a rule for each.
+
+- **One that says how long to wait** — a `Retry-After` in whole seconds, in
+  decimal seconds (rounded up) or as an HTTP-date. It is waited out for as long
+  as it asks, five minutes at most. Two inside ten polls and the provider is
+  taken at its word: the interval becomes what it asked for, and is never
+  lowered below that again until a restart.
+- **One that names no delay** — which is all adsb.lol has ever been seen to
+  send. It is waited out on twice the current interval, which is this plugin's
+  own guess and is logged as one. Two inside ten polls raise the interval by
+  half as much again, rounded up to a whole second and capped at two minutes
+  (10 → 15 → 23 → 35 → 53 → 80 → 120 s). Sixty polls in a row that nobody
+  refused earn one step back down, towards and never below `poll`; any refusal
+  starts that count again.
+
+So a flaky minute costs a quarter of an hour of polling slightly slower, and a
+provider that keeps refusing settles at the rate it will actually tolerate —
+which, for adsb.lol, is the number nobody publishes. Every sixty clean polls the
+source tries one step faster; if that is refused twice it steps back, which is
+the price of noticing when a limit has gone away.
+
+What reaches the log, each of them once per change rather than once per `429`:
+
+```
+The ADS-B source refused a request (429) without naming a delay; waiting 20s before the next one.
+Polling adsb.lol every 15s after repeated rate limits (429) that named no delay; this eases back towards 10s after 60 clean polls.
+Back to polling adsb.lol every 10s after 60 clean polls.
+```
+
+and, from a provider that does say how long:
+
+```
+The ADS-B source asked us to wait 30s before the next request.
+adsb.lol asks for 30s between requests; polling at that rate from now on.
+```
+
+"Asked us to wait" is only ever written about a delay the provider stated. An
+earlier version wrote it about the plugin's own twice-the-interval fallback,
+which is how `seconds=20` at `poll = "10s"` came to be read as something
+adsb.lol had asked for.
+
+The heartbeat carries `source.poll_effective_s` beside
+`source.poll_configured_s`, and `source.rate_limited`, so the Services page
+shows the cadence actually in use next to the one in the file.
 
 | `provider` | Endpoint | Terms and attribution |
 |---|---|---|
-| `adsb_lol` | `api.adsb.lol/v2/point/{lat}/{lon}/{nm}` | Open data, no account. Rate limits are described as dynamic with API keys planned — see <https://adsb.lol>. **Observed:** a five-second poll was answered `429`, `Retry-After: 10`, on about every other request, which is where the 10 s default comes from. |
+| `adsb_lol` | `api.adsb.lol/v2/point/{lat}/{lon}/{nm}` | Open data, no account. Rate limits are described as dynamic with API keys planned — see <https://adsb.lol>. **Observed:** a five-second poll was answered `429` on about every other request and a ten-second poll on about one in five, with **no `Retry-After`** either time, so the 10 s default is a starting point that the source raises for itself (above) rather than a figure adsb.lol has ever given. |
 | `adsb_fi` | `opendata.adsb.fi/api/v2/lat/{lat}/lon/{lon}/dist/{nm}` | **Non-commercial use**; documents a ceiling of one request a second, and asks to be **cited and linked**: credit "adsb.fi" with a link to <https://adsb.fi> wherever the data is shown. |
 | `airplanes_live` | `api.airplanes.live/v2/point/{lat}/{lon}/{nm}` | Documents a ceiling of one request a second; see <https://airplanes.live/api-guide>. **Experimental** — our probe of the public endpoint was refused (`403`), so this path is implemented against the documented shape and is unverified. |
 
@@ -215,18 +257,26 @@ on-ground track with no `hae`.
 The sidecar reports its own heartbeat on the Services page: the source's kind
 and name, whether it is connected, reconnecting or has never connected, what
 went wrong last, the cadence it is actually polling at
-(`source.poll_effective_s`) and how many times it has been rate-limited
+(`source.poll_effective_s`), the one it was configured with
+(`source.poll_configured_s`) and how many times it has been rate-limited
 (`source.rate_limited`), how many aircraft are tracked, and the feed's counters
 (offered, published, suppressed, expired). A source that has been reconnecting
 for more than two poll intervals reports `degraded`; one that has never
 connected reports `unhealthy`, because that is a setting to look at rather than
 an outage to wait out. Nothing secret goes into it.
 
+**Slowing down for a provider is `healthy`.** Rate limiting that the source
+absorbs by polling less often is the plugin working: the aircraft are still on
+the map, and the two `poll_*_s` numbers say how much less often. It becomes
+`degraded` — with a message naming the count — only when **more than half of
+the last twenty polls were refused**, which is a provider that slowing down has
+not satisfied, and clears by itself once the window is mostly answers again.
+
 **What reaches the log is a state change, not an attempt.** An upstream that is
 down, or one that is refusing every other request, is announced once with the
 cause; the polls that keep failing are `debug`; one line every five minutes says
 how many there have been since the last one; and coming back is one line naming
-how long it was gone. Everything else lives on the Services page, which is where
+how long it was gone. A change to the poll interval is one line per change. Everything else lives on the Services page, which is where
 the *current* state belongs.
 
 An administrator may also set an `area` for the service through

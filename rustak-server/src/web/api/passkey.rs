@@ -618,8 +618,13 @@ mod tests {
         let options = &started.options;
 
         assert_eq!(options["rp"]["id"], TEST_HOST);
+        // The relying party *name* is free text the browser shows in its
+        // prompt, so it is the installation's display name verbatim —
+        // ampersand, parentheses, non-ASCII letter and all. Only `rp.id` has
+        // to be a domain, and it comes from the base URL rather than from here.
         assert_eq!(
-            options["rp"]["name"], "rustak",
+            options["rp"]["name"],
+            crate::config::TEST_SERVER_NAME,
             "the installation's own name is what the prompt has room for",
         );
         assert_eq!(options["attestation"], "none");

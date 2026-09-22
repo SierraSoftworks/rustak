@@ -74,6 +74,30 @@ pub use workload::{
     WorkloadAccount, WorkloadAlgorithm, WorkloadConfig, WorkloadIssuer, WorkloadRule,
 };
 
+/// What every test and interop suite calls the installation it starts.
+///
+/// `[server] name` is free text an operator types, and for three days in
+/// production this installation's was `SierraSoftworks TAK`: the flow tag
+/// rustak stamps on every relay is an attribute *named* after it, so every
+/// message this server relayed was XML a strict parser refused. Nothing caught
+/// it, because every suite, fixture and interop configuration called the server
+/// `rustak`, `rustak-1` or `rustak-interop` — names that happen to be legal
+/// wherever they were interpolated.
+///
+/// So the ordinary name a test runs under is one that is legal as a display
+/// name and illegal or special almost everywhere else: a space, an ampersand
+/// (`&amp;` in XML text and attribute values, `&` as a query separator), a full
+/// stop and parentheses (illegal at the start of an XML name; special in a
+/// `Content-Disposition` header's token production), and a non-ASCII letter
+/// (legal in an XML name, not in a header value or a DNS label). Anything that
+/// interpolates the name into something with a grammar has to escape it or
+/// derive a safe form, and a build that forgets fails here rather than in
+/// somebody's operations channel.
+///
+/// The same string is spelled in `interop/shared/src/names.ts` and
+/// `e2e/scripts/start-server.mjs`; changing one means changing all three.
+pub const TEST_SERVER_NAME: &str = "Rustak Test & Co. (näme)";
+
 /// A complete rustak server configuration.
 ///
 /// Every section defaults, so the smallest valid file is an empty one — which
@@ -205,6 +229,9 @@ impl Config {
     /// from the `users.is_admin` column that the setup wizard sets — which is
     /// the path the tests should be exercising.
     ///
+    /// The installation is called [`TEST_SERVER_NAME`], which is deliberately
+    /// nothing like an identifier — see that constant for why.
+    ///
     /// `data_dir` is a parameter rather than a temporary directory made here
     /// because the caller has to hold the [`tempfile::TempDir`] for as long as
     /// the server runs; one created here would be deleted the moment this
@@ -214,6 +241,7 @@ impl Config {
     pub fn testing(data_dir: impl Into<PathBuf>) -> Self {
         let mut config = Self {
             server: ServerConfig {
+                name: TEST_SERVER_NAME.to_string(),
                 domains: vec!["localhost".to_string()],
                 data_dir: data_dir.into(),
                 ..ServerConfig::default()
@@ -256,6 +284,46 @@ mod tests {
 
         assert_eq!(config.server.name, "rustak");
         assert_eq!(config.web.public.tls.mode, TlsMode::Internal);
+    }
+
+    /// The two files outside this crate that spell [`TEST_SERVER_NAME`], so
+    /// that a change to one of the three fails the build rather than quietly
+    /// giving one suite an easier name than the others.
+    const INTEROP_NAMES: &str = include_str!("../../../interop/shared/src/names.ts");
+    const E2E_LAUNCHER: &str = include_str!("../../../e2e/scripts/start-server.mjs");
+
+    #[test]
+    fn the_name_every_suite_runs_under_is_one_a_careless_derivation_breaks_on() {
+        // Each of these is legal in a display name and illegal or special
+        // somewhere the name is interpolated: a space and `&` and the brackets
+        // end an XML name, `&` separates query parameters and must be `&amp;`
+        // in XML text, and `ä` is legal in an XML name but not in a header
+        // value or a DNS label.
+        for character in [' ', '&', '(', ')', '.'] {
+            assert!(
+                TEST_SERVER_NAME.contains(character),
+                "the test server name should carry a '{character}'",
+            );
+        }
+
+        assert!(
+            !TEST_SERVER_NAME.is_ascii(),
+            "the test server name should carry a non-ASCII letter",
+        );
+        assert_eq!(
+            Config::testing("/tmp/rustak-test").server.name,
+            TEST_SERVER_NAME
+        );
+
+        // And the other two copies, which no compiler would otherwise check.
+        assert!(
+            INTEROP_NAMES.contains(&format!("\"{TEST_SERVER_NAME}\"")),
+            "interop/shared/src/names.ts no longer spells the same name",
+        );
+        assert!(
+            E2E_LAUNCHER.contains(r#""Rustak Test & Co. (n\u00e4me)""#),
+            "e2e/scripts/start-server.mjs no longer spells the same name",
+        );
     }
 
     /// A configuration with every optional key filled in, so that the

@@ -78,6 +78,13 @@ const RETRY_MS: u64 = 5_000;
 /// Without one, an idle feed is indistinguishable from a dead connection to
 /// every proxy between us and the plugin, and the first thing a plugin would
 /// learn about a silent hour is a reset.
+///
+/// It is also the client's only liveness signal. `rustak-client` reads the feed
+/// through a client with **no** total timeout and a read timeout of
+/// `FEED_IDLE_TIMEOUT` — three of these plus slack — so shortening this is
+/// free and lengthening it past a third of that is not. A reverse proxy in
+/// front of `[web.public]` must let these through unbuffered; `X-Accel-Buffering`
+/// below is nginx's word for it.
 const KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// How often an open feed re-resolves the credential that opened it.
@@ -135,7 +142,13 @@ pub async fn feed(context: web::Data<AppContext>, request: HttpRequest) -> ApiRe
         None => Vec::new(),
     };
 
-    info!(
+    // `debug`, not `info`: opening the feed is a routine success, and a feed
+    // that is held open for hours has nothing to announce. It used to be `info`
+    // and, against a client whose total timeout cut the stream every 31
+    // seconds, it was most of 74 log lines in two and a half minutes from two
+    // idle sidecars. What an administrator wants — which services are attached
+    // — is `GET /api/v1/services`, which is a fact rather than a log line.
+    debug!(
         caller = %caller.username(),
         resuming = backlog.len(),
         "A consumer opened the server-event feed."
