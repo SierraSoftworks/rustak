@@ -91,7 +91,7 @@ pub use identity::{
     GroupName, GroupNameError, MissionGuid, MissionId, PasskeyId, ProfileId, ResourceId, ServiceId,
     ServiceName, ServiceNameError, UserId, Username, UsernameError,
 };
-pub use map::{MapFeature, MapPoint, MapShape, MapUpdate};
+pub use map::{MapFeature, MapPoint, MapShape, MapUpdate, PublishFeature};
 pub use mission::{
     MissionChangeKind, MissionChangeSummary, MissionDetail, MissionLayerSummary, MissionRoleKind,
     MissionRoleUpdate, MissionSubscriptionSummary, MissionSummary, UidDetails,

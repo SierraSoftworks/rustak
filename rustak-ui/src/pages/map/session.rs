@@ -26,10 +26,12 @@ use crate::api::map::{Canceller, Feed};
 use crate::api::{self, ApiError};
 use crate::components::StatusTone;
 
-use super::focus::Focus;
+use super::editing::Edit;
+use super::focus::{Focus, Pick};
 use super::glue::{Basemap, Map};
 use super::history::Replay;
 use super::store::{Changes, Store};
+use super::toolbar::Tool;
 
 /// How long to wait before trying again after the network failed.
 const RETRY_MS: u32 = 5_000;
@@ -82,9 +84,13 @@ pub struct Session {
     /// Where the thing in focus has been, once the server has said. See
     /// [`history`](super::history).
     pub(super) replay: Option<Replay>,
+    /// What a click does, and how a write is going. See
+    /// [`editing`](super::editing).
+    pub(super) tool: Tool,
+    pub(super) edit: Edit,
     feed: Option<Canceller>,
     /// Whether anything has changed since the page last drew itself.
-    dirty: bool,
+    pub(super) dirty: bool,
     /// Whether the view has been moved to fit what is on the map. Once: after
     /// that the view is the reader's.
     fitted: bool,
@@ -130,6 +136,7 @@ pub struct Running {
     session: Rc<RefCell<Session>>,
     alive: Rc<Cell<bool>>,
     on_status: Callback<FeedStatus>,
+    on_pick: Callback<Pick>,
     on_focus: Callback<Focus>,
     on_redraw: Callback<()>,
     on_signed_out: Callback<()>,
@@ -138,9 +145,9 @@ pub struct Running {
 /// What the page wants to hear about.
 pub struct Listeners {
     pub on_status: Callback<FeedStatus>,
-    /// The pop-over should be on something else: a click, or what it was on
-    /// leaving the map.
-    pub on_focus: Callback<Focus>,
+    /// Somebody clicked the map, on these things, here. What that means is
+    /// the page's to decide from the tool in hand.
+    pub on_pick: Callback<Pick>,
     pub on_redraw: Callback<()>,
     /// The server refused the session. The console re-resolves it, which is
     /// what puts the sign-in prompt where this page was.
@@ -149,11 +156,28 @@ pub struct Listeners {
 
 /// Starts the map, the feed and the clock.
 pub fn start(session: Rc<RefCell<Session>>, container: NodeRef, listeners: Listeners) -> Running {
+    // What leaves the map leaves the focus, which is the one way the session
+    // itself moves it: through a pick with nothing under it.
+    let on_focus = {
+        let on_pick = listeners.on_pick.clone();
+        Callback::from(move |focus: Focus| match focus {
+            Focus::Nothing => on_pick.emit(Pick {
+                uids: Vec::new(),
+                at: [0.0, 0.0],
+            }),
+            Focus::Feature(uid) => on_pick.emit(Pick {
+                uids: vec![uid],
+                at: [0.0, 0.0],
+            }),
+            Focus::Choosing { uids, at } => on_pick.emit(Pick { uids, at }),
+        })
+    };
     let running = Running {
         session,
         alive: Rc::new(Cell::new(true)),
         on_status: listeners.on_status,
-        on_focus: listeners.on_focus,
+        on_pick: listeners.on_pick,
+        on_focus,
         on_redraw: listeners.on_redraw,
         on_signed_out: listeners.on_signed_out,
     };
@@ -181,9 +205,9 @@ impl Running {
             return;
         };
 
-        let on_focus = self.on_focus.clone();
+        let on_pick = self.on_pick.clone();
         let basemap = Basemap::default();
-        let created = Map::create(&element, &basemap, move |pick| on_focus.emit(pick.into()));
+        let created = Map::create(&element, &basemap, move |pick| on_pick.emit(pick));
 
         match created.await {
             // The page went away while the libraries were loading.

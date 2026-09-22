@@ -18,13 +18,13 @@ use actix_web::body::MessageBody;
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
 use chrono::{DateTime, Duration, Utc};
-use rustak_api::MapFeature;
+use rustak_api::{MapFeature, MapPoint, PublishFeature};
 use rustak_cot::codec::EncodedEvent;
 use rustak_cot::detail::{Chat, Contact, Element, Group};
 use rustak_cot::{CotTime, Event};
 use rustak_server::cot_store::history::HistoryWriter;
 use rustak_server::cot_store::latest::upsert_batch;
-use rustak_server::cot_store::{CotRecord, CotStoreHandle};
+use rustak_server::cot_store::{self, CotRecord, CotStoreOptions};
 use rustak_server::prelude::*;
 use rustak_server::stream::mission_hook::no_missions;
 use rustak_server::stream::{Hub, LiveState, Router, StreamMetrics};
@@ -130,14 +130,24 @@ async fn features(server: &TestServer, token: &rustak_api::TokenResponse) -> Vec
     .await
 }
 
-/// Gives the server a stream to watch, and answers the router feeding it.
+/// Gives the server a stream to watch, recording what it relays the way the
+/// real one does, and answers the router feeding it.
 async fn streaming(server: &TestServer) -> Arc<Router> {
     let hub = Arc::new(Hub::new());
     let metrics = Arc::new(StreamMetrics::default());
+    let (store, _writer) = cot_store::start(
+        server.db().clone(),
+        server.config().streams_dir(),
+        CotStoreOptions {
+            window: StdDuration::from_millis(10),
+            ..CotStoreOptions::default()
+        },
+        server.context.shutdown().clone(),
+    );
     let router = Arc::new(Router::new(
         Arc::clone(&hub),
         server.db().clone(),
-        CotStoreHandle::disabled(),
+        store.clone(),
         no_missions(),
         Arc::clone(&metrics),
         "rustak-test",
@@ -148,12 +158,28 @@ async fn streaming(server: &TestServer) -> Arc<Router> {
         .install_live(Arc::new(LiveState::new(
             hub,
             Arc::clone(&router),
-            CotStoreHandle::disabled(),
+            store,
             metrics,
         )))
         .expect("the stream is installed once");
 
     router
+}
+
+/// Waits for the store's writer to have written `uid`'s latest row.
+async fn await_stored(server: &TestServer, uid: &str) {
+    for _ in 0..200 {
+        if rustak_server::cot_store::latest_event(server.db(), uid)
+            .await
+            .expect("a readable store")
+            .is_some()
+        {
+            return;
+        }
+        tokio::time::sleep(StdDuration::from_millis(10)).await;
+    }
+
+    panic!("{uid} was never recorded");
 }
 
 /// Everything the feed wrote between being opened and the server stopping.
@@ -298,6 +324,171 @@ async fn a_track_is_gated_the_way_the_snapshot_is() {
     let listed: Vec<MapFeature> =
         test::call_and_read_body_json(&app, track("UID-SECRET", &admin)).await;
     assert_eq!(listed.len(), 1);
+}
+
+fn marker(callsign: &str, groups: &[&str]) -> PublishFeature {
+    PublishFeature {
+        kind: "a-u-G".to_string(),
+        callsign: callsign.to_string(),
+        point: MapPoint {
+            lat: 51.51,
+            lon: -0.11,
+            hae: Some(20.0),
+            ce: None,
+            le: None,
+        },
+        how: None,
+        remarks: Some("Placed from the console.".to_string()),
+        sidc: None,
+        stale: None,
+        groups: groups.iter().map(|group| (*group).to_string()).collect(),
+    }
+}
+
+#[actix_web::test]
+async fn a_marker_published_from_the_console_is_relayed_recorded_and_can_be_forgotten() {
+    let server = TestServer::start().await;
+    let (_, admin) = server.signed_in("grace", true).await;
+    let router = streaming(&server).await;
+    let app = app!(server);
+    let mut seen = router.tap().subscribe();
+
+    let published: MapFeature = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::put()
+            .uri("/api/v1/map/features/MARKER-1")
+            .insert_header(("authorization", bearer(&admin)))
+            .set_json(marker("CONTACT 1", &[]))
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(published.uid, "MARKER-1");
+    assert_eq!(published.callsign.as_deref(), Some("CONTACT 1"));
+    assert_eq!(published.how.as_deref(), Some("h-g-i-g-o"));
+    assert_eq!(published.point.hae, Some(20.0));
+    assert_eq!(
+        published.remarks.as_deref(),
+        Some("Placed from the console.")
+    );
+    assert!(published.stale > Utc::now() + Duration::hours(23));
+
+    // What every open map was told is what was answered.
+    let relayed = seen.try_recv().expect("the tap saw the marker");
+    assert_eq!(relayed.encoded.event().uid, "MARKER-1");
+    assert!(seen.try_recv().is_err(), "one message, relayed once");
+
+    // Replacing it is the same uid again.
+    let renamed: MapFeature = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::put()
+            .uri("/api/v1/map/features/MARKER-1")
+            .insert_header(("authorization", bearer(&admin)))
+            .set_json(marker("CONTACT ONE", &[]))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(renamed.callsign.as_deref(), Some("CONTACT ONE"));
+
+    // The stand-in connection did not stay.
+    assert!(router.hub().is_empty());
+
+    await_stored(&server, "MARKER-1").await;
+    let deleted = test::call_service(
+        &app,
+        test::TestRequest::delete()
+            .uri("/api/v1/map/features/MARKER-1")
+            .insert_header(("authorization", bearer(&admin)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+
+    // A delete is the `t-x-d-d` a device understands, naming the marker.
+    let _replacement = seen.try_recv().expect("the replacement was relayed");
+    let forget = seen.try_recv().expect("the delete was relayed");
+    assert_eq!(forget.encoded.event().r#type, "t-x-d-d");
+    let xml = String::from_utf8_lossy(forget.encoded.xml());
+    assert!(xml.contains("uid=\"MARKER-1\""), "{xml}");
+    assert!(xml.contains("<__forcedelete/>"), "{xml}");
+
+    let gone = test::call_service(
+        &app,
+        test::TestRequest::delete()
+            .uri("/api/v1/map/features/MARKER-1")
+            .insert_header(("authorization", bearer(&admin)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(
+        gone.status(),
+        StatusCode::NOT_FOUND,
+        "nothing is held any more"
+    );
+}
+
+#[actix_web::test]
+async fn a_marker_is_refused_where_a_device_would_be() {
+    let server = TestServer::start().await;
+    let (_, ordinary) = server.signed_in("ada", false).await;
+    streaming(&server).await;
+    let app = app!(server);
+
+    let publish = |uid: &str, draft: PublishFeature| {
+        test::TestRequest::put()
+            .uri(&format!("/api/v1/map/features/{uid}"))
+            .insert_header(("authorization", bearer(&ordinary)))
+            .set_json(draft)
+            .to_request()
+    };
+
+    let no_such_channel = test::call_service(&app, publish("M-1", marker("M", &["Nowhere"]))).await;
+    assert_eq!(no_such_channel.status(), StatusCode::NOT_FOUND);
+
+    let chat = test::call_service(
+        &app,
+        publish(
+            "M-2",
+            PublishFeature {
+                kind: "b-t-f".to_string(),
+                ..marker("M", &[])
+            },
+        ),
+    )
+    .await;
+    assert_eq!(chat.status(), StatusCode::BAD_REQUEST);
+
+    let nonsense = test::call_service(
+        &app,
+        publish(
+            "M-3",
+            PublishFeature {
+                kind: "a-u-G;drop".to_string(),
+                ..marker("M", &[])
+            },
+        ),
+    )
+    .await;
+    assert_eq!(nonsense.status(), StatusCode::BAD_REQUEST);
+}
+
+#[actix_web::test]
+async fn a_server_with_no_stream_cannot_publish() {
+    let server = TestServer::start().await;
+    let (_, admin) = server.signed_in("grace", true).await;
+    let app = app!(server);
+
+    let refused = test::call_service(
+        &app,
+        test::TestRequest::put()
+            .uri("/api/v1/map/features/MARKER-1")
+            .insert_header(("authorization", bearer(&admin)))
+            .set_json(marker("M", &[]))
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[actix_web::test]

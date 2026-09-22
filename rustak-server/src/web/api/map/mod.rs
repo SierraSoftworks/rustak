@@ -17,17 +17,18 @@
 //! that showed less than the reader's own device would be a worse diagnostic
 //! than the list beside it; one that showed more would be a leak.
 //!
-//! # Reading only, for now
+//! # Writing goes through the stream
 //!
-//! Nothing here publishes. When it does, a write will name where it goes — a
-//! channel or a mission — and become a CoT event injected through
-//! [`Router::handle_inbound`](crate::stream::Router::handle_inbound) as though
-//! a client had sent it, so that it is tagged, recorded, fanned out and fed
-//! back to every open map by the path everything else already takes.
+//! [`publish`] is the one write. It names where a marker goes — the channels
+//! it is published into — and becomes a CoT event injected through
+//! [`Router::publish`](crate::stream::Router::publish) as though a client had
+//! sent it, so that it is tagged, recorded, fanned out and fed back to every
+//! open map by the path everything else already takes.
 
 pub mod feature;
 pub mod feed;
 pub mod history;
+pub mod publish;
 pub mod shape;
 
 use actix_web::web;
@@ -66,6 +67,8 @@ pub fn routes(config: &mut web::ServiceConfig) {
             "/map/features/{uid}/history",
             web::get().to(history::history),
         )
+        .route("/map/features/{uid}", web::put().to(publish::put))
+        .route("/map/features/{uid}", web::delete().to(publish::remove))
         .route("/map/events", web::get().to(feed::feed));
 }
 

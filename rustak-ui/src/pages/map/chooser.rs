@@ -6,7 +6,7 @@
 
 use yew::prelude::*;
 
-use super::roster::RosterEntry;
+use super::roster::{RosterEntry, roster_row};
 
 #[derive(Properties, PartialEq)]
 pub struct ChooserProps {
@@ -17,33 +17,9 @@ pub struct ChooserProps {
 
 #[function_component(Chooser)]
 pub fn chooser(props: &ChooserProps) -> Html {
-    let row = |entry: &RosterEntry| {
-        let onclick = {
-            let (onselect, uid) = (props.onselect.clone(), entry.uid.clone());
-            Callback::from(move |_: MouseEvent| onselect.emit(uid.clone()))
-        };
-
-        html! {
-            <li key={entry.uid.clone()}>
-                <button
-                    type="button"
-                    class={classes!(
-                        "map-roster__row",
-                        entry.stale.then_some("map-roster__row--stale"),
-                    )}
-                    {onclick}
-                >
-                    <span
-                        class="map-roster__swatch"
-                        style={format!("background: {}", entry.swatch)}
-                        aria-hidden="true"
-                    />
-                    <span class="map-roster__name">{ entry.name.clone() }</span>
-                    <span class="map-roster__detail">{ entry.detail.clone() }</span>
-                </button>
-            </li>
-        }
-    };
+    // Nothing in the chooser is selected: whatever is chosen becomes the
+    // focus, and the chooser is gone.
+    let row = |entry: &RosterEntry| roster_row(entry, false, &props.onselect);
 
     html! {
         <section class="map-popover__card map-chooser" aria-label="Choose what to look at">

@@ -45,6 +45,9 @@ extern "C" {
     #[wasm_bindgen(method)]
     fn freeze(this: &MapHandle, upserts: Option<String>);
 
+    #[wasm_bindgen(method, js_name = setCursor)]
+    fn set_cursor(this: &MapHandle, cursor: &str);
+
     #[wasm_bindgen(method)]
     fn destroy(this: &MapHandle);
 }
@@ -167,6 +170,12 @@ impl Map {
     pub fn show_track(&self, track: Option<&serde_json::Value>) {
         self.handle
             .show_track(track.map(serde_json::Value::to_string));
+    }
+
+    /// The cursor over the map, for a tool that is not selection: a CSS
+    /// cursor name, or empty for whatever the map would show.
+    pub fn set_cursor(&self, cursor: &str) {
+        self.handle.set_cursor(cursor);
     }
 
     /// Draws only `features` — a moment in the past — instead of what is

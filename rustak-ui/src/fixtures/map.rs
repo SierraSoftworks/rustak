@@ -7,8 +7,17 @@
 //! is what makes the page reviewable as the *live* page it is. [`map_history`]
 //! is the same two, walked backwards, so that a track has something to draw.
 
+use std::cell::RefCell;
+
 use chrono::{DateTime, Duration, Utc};
-use rustak_api::{MapFeature, MapPoint, MapShape, MapUpdate};
+use rustak_api::{MapFeature, MapPoint, MapShape, MapUpdate, PublishFeature};
+
+use crate::api::ApiError;
+
+thread_local! {
+    /// What the demo has placed on the map, which lives as long as the tab does.
+    static PUBLISHED: RefCell<Vec<MapFeature>> = const { RefCell::new(Vec::new()) };
+}
 
 fn ago(seconds: i64) -> DateTime<Utc> {
     Utc::now() - Duration::seconds(seconds)
@@ -133,6 +142,61 @@ pub fn map_history(uid: &str, secago: i64) -> Vec<MapFeature> {
 }
 
 pub fn map_features() -> Vec<MapFeature> {
+    let mut listed = fixtures();
+    PUBLISHED.with(|published| listed.extend(published.borrow().iter().cloned()));
+    listed
+}
+
+/// Publishes a marker the way the server would: as the feature it becomes.
+pub fn map_publish(uid: &str, draft: &PublishFeature) -> MapFeature {
+    let published = MapFeature {
+        uid: uid.to_string(),
+        kind: draft.kind.clone(),
+        how: Some(draft.how.clone().unwrap_or_else(|| "h-g-i-g-o".to_string())),
+        callsign: Some(draft.callsign.clone()),
+        team: None,
+        role: None,
+        time: Utc::now(),
+        stale: draft.stale.unwrap_or_else(|| ago(-86_400)),
+        received_at: Utc::now(),
+        point: draft.point,
+        shape: None,
+        course: None,
+        speed: None,
+        battery: None,
+        remarks: draft.remarks.clone(),
+        software: None,
+        sidc: draft.sidc.clone(),
+        groups: draft.groups.clone(),
+    };
+
+    PUBLISHED.with(|held| {
+        let mut held = held.borrow_mut();
+        held.retain(|feature| feature.uid != uid);
+        held.push(published.clone());
+    });
+
+    published
+}
+
+/// Forgets a marker the demo published, or refuses as the server would for
+/// one it never held.
+pub fn map_remove(uid: &str) -> Result<(), ApiError> {
+    PUBLISHED.with(|held| {
+        let mut held = held.borrow_mut();
+        let before = held.len();
+        held.retain(|feature| feature.uid != uid);
+
+        match held.len() < before {
+            true => Ok(()),
+            false => Err(ApiError::Server(
+                "Nothing is stored under that uid.".to_string(),
+            )),
+        }
+    })
+}
+
+fn fixtures() -> Vec<MapFeature> {
     vec![
         quinn(0),
         person(

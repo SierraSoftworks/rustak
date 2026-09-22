@@ -64,8 +64,10 @@ pub fn admin_shell(props: &AdminShellProps) -> Html {
     let (title, subtitle) = route.heading();
 
     // Every other page is a column of cards that reads best at a fixed
-    // measure. A map is the one thing here that is better for every pixel.
-    let wide = route == Route::Map;
+    // measure, under a title. A map is the one thing here that is better for
+    // every pixel: it takes the whole main area, and what the title row would
+    // have said is laid over it.
+    let immersive = route == Route::Map;
 
     // A page's actions belong to the page. Clearing them on every route change
     // stops the previous page's refresh button outliving it — and following a
@@ -94,19 +96,23 @@ pub fn admin_shell(props: &AdminShellProps) -> Html {
             <div class="app-body">
                 <AdminNav open={*nav_open} on_close={close_nav} />
                 <main class="app-main">
-                    <div class={classes!("app-container", wide.then_some("app-container--wide"))}>
+                    <div class={classes!("app-container", immersive.then_some("app-container--immersive"))}>
                         <ContextProvider<PageActions> context={(*page_actions).clone()}>
                             <Protected>
-                                <PageTitle title={title} subtitle={subtitle}>
-                                    { (*actions).clone() }
-                                </PageTitle>
+                                if !immersive {
+                                    <PageTitle title={title} subtitle={subtitle}>
+                                        { (*actions).clone() }
+                                    </PageTitle>
+                                }
                                 { props.children.clone() }
                             </Protected>
                         </ContextProvider<PageActions>>
                     </div>
-                    <footer class="app-footer">
-                        <p>{ format!("Copyright © Sierra Softworks {}", Utc::now().year()) }</p>
-                    </footer>
+                    if !immersive {
+                        <footer class="app-footer">
+                            <p>{ format!("Copyright © Sierra Softworks {}", Utc::now().year()) }</p>
+                        </footer>
+                    }
                 </main>
             </div>
         </div>
