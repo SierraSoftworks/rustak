@@ -403,6 +403,7 @@ Set `[server] control` and the harness does three things for you:
 | Before `start` | `POST /api/v1/services/register` with the `ServiceDescriptor` built from `[service]` and `[server]` |
 | After every `tick` | Asks `Sidecar::health`, and `POST /api/v1/services/<name>/heartbeat` with what it answered — a healthy state when it answered `None` |
 | Continuously | Holds `GET /api/v1/events` open and delivers what arrives as `SidecarEvent::Server` |
+| When asked | Answers a `service.config.validate` request with `Sidecar::validate_config` — see [Per-service configuration](#per-service-configuration) |
 
 None of them can stop a plugin. A control API that refuses a registration, loses
 a heartbeat or drops the feed is logged and retried, because the CoT a plugin
@@ -533,23 +534,106 @@ in the heartbeat's `message`, which the row shows in full.
 
 `GET/PUT /api/v1/services/<name>/config` is a JSON object an administrator sets
 and the service reads. **The service may read only its own, and only an
-administrator may write one** — a plugin that could rewrite its own
-configuration would make the admin UI's copy a suggestion rather than a setting.
+administrator may write one.** On the wire it is opaque; a plugin that says what
+it holds gets a form in the admin UI instead of a JSON text box, and is asked
+before a change is stored.
+
+#### Describing it: `config_schema`
 
 ```rust
-#[derive(Deserialize)]
+use rustak_client::sidecar::{JsonSchema, schema_for};
+
+/// What an administrator may change while this plugin is running.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct Tuning {
+    /// How often to poll the upstream, in seconds.
+    #[schemars(range(min = 5, max = 3600))]
     interval_seconds: u64,
+
+    /// The upstream's API key.
+    #[schemars(extend("format" = "password"))]
+    api_key: String,
 }
 
+// in `impl Sidecar`
+fn config_schema() -> Option<serde_json::Value> {
+    Some(schema_for::<Tuning>())
+}
+```
+
+- **One source of truth.** The schema is derived from the struct the plugin
+  deserialises into, so the form cannot offer a key the plugin does not read.
+  The harness puts it in the descriptor it registers (`config_schema`).
+- **What the form draws.** Doc comments become help text, `range`/`length`
+  become limits, a `#[serde(tag = …)]` enum becomes a picker, `Option` becomes
+  "not set", `"format": "password"` becomes a masked input. A shape it cannot
+  draw is a JSON box for that one value; "Edit as JSON" is always there.
+- **What the server enforces.** Every `PUT` is held to the schema: a mismatch is
+  a `422` (`config_invalid`) naming the JSON Pointer at fault, never the value.
+  A schema over 64 KiB, with a remote `$ref`, or that is not a schema is a `400`
+  (`config_schema_invalid`) at registration. No schema means free-form, as before.
+
+#### Checking it: `validate_config`
+
+```rust
+async fn validate_config(&mut self, config: &serde_json::Value) -> ConfigValidation {
+    let tuning: Tuning = match parse_config(config) {
+        Ok(tuning) => tuning,
+        Err(refusal) => return refusal,
+    };
+
+    match self.upstream.check_key(&tuning.api_key).await {
+        Ok(false) => ConfigIssue::at("/api_key", "The upstream refused this key.").into(),
+        // Refused nothing, or could not tell: an outage is not a wrong key.
+        _ => ConfigValidation::accepted(),
+    }
+}
+```
+
+- **For what a schema cannot say.** An API key the upstream refuses, a path that
+  is not there, two fields that contradict each other. The server has already
+  applied the schema; an issue's path puts the message beside that input.
+- **It is a candidate.** It may never be saved, so do not apply it; it may hold
+  a secret, so do not log it. An administrator waits about ten seconds, on the
+  harness's own task, so bound anything that goes upstream.
+- **Nothing to implement by default.** Every sidecar on the harness advertises
+  the `config.validate` capability and accepts unless this hook says otherwise.
+
+#### The exchange, for a sidecar without the SDK
+
+A sidecar dials the server and never the other way round, so the request rides
+the event feed it already holds open.
+
+| Step | Who | What |
+|---|---|---|
+| 1 | Administrator | `POST /api/v1/services/<name>/config/validate` with the candidate |
+| 2 | Server | Applies the schema; then publishes `service.config.validate` `{service, request_id}` to that service alone. The candidate is **not** on the feed |
+| 3 | Service | `GET …/config/validations/<request_id>` → `{id, config}`, then `POST` `{"issues": [{"path": "/api_key", "message": "…"}]}` (or `{}`) to the same path. `404` means nobody is waiting any more |
+| 4 | Server | Answers step 1 with `{valid, issues, service}` |
+
+- **`service` says whether the service had a say**: `checked`, `not_supported`
+  (no `config.validate` capability), `unreachable` (no feed open, or no answer
+  in ten seconds), `skipped` (the schema had already refused it).
+- **Unreachable is not invalid.** `PUT` enforces the schema only, so a sidecar
+  that is down never stops an administrator fixing its configuration.
+- **Opting in** is two descriptor fields: `config_schema` (any JSON Schema) and
+  the `config.validate` capability.
+
+#### Reading it
+
+```rust
 let tuning: Tuning = control.config_as().await?;
 ```
 
-Reading it on a tick is what lets a setting changed in the UI reach the sidecar
-without anybody restarting it — and it is what the console's Configuration
-panel says when it saves: the change is stored, and the service picks it up on
-its next tick rather than immediately. An administrator may read the
-configuration as well as write it; a service reads only its own.
+- **On a tick, not once.** `ServiceSettings::refresh` re-reads on a cadence and
+  answers only a *changed* document, so a setting saved in the UI reaches a
+  running sidecar without a restart — which is what the panel says on save.
+- **Start-up is the read most likely to fail** (no token yet, server still
+  coming up); `ServiceSettings` retries rather than giving up for the process.
+- **The file still wins where it must.** Upstreams and credentials that need a
+  source reopened stay in `[settings]`; `rustak-plugin-example`'s `Overrides`
+  and `rustak_client::feed::FeedConfig` show the split.
 
 ### Three credentials
 
