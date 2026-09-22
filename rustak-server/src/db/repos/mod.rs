@@ -171,13 +171,13 @@ impl Database {
         StreamSegmentsRepo::new(self)
     }
 
-    /// Which channels an account — rather than one of its devices — has
-    /// switched on.
     /// What each account has chosen about how the console looks to it.
     pub fn user_preferences(&self) -> UserPreferencesRepo<'_> {
         UserPreferencesRepo::new(self)
     }
 
+    /// Which channels an account — rather than one of its devices — has
+    /// switched on.
     pub fn user_state(&self) -> UserStateRepo<'_> {
         UserStateRepo::new(self)
     }

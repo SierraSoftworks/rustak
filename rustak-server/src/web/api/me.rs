@@ -36,20 +36,6 @@ pub async fn me(context: web::Data<AppContext>, caller: Authenticated) -> ApiRes
     Ok(json_ok(&me))
 }
 
-/// `POST /me/oidc-link`: binds the caller's account to the identity the
-/// provider just vouched for, and answers with who they now are.
-///
-/// The body is the same authorization-code exchange as `POST /auth/token`; the
-/// difference is that the code decides which *identity* this is, and the
-/// session decides which *account* it is bound to. That is what makes the link
-/// safe without `link_by_username`: the person has proved they hold both.
-///
-/// # Errors
-///
-/// A `404` when no provider is configured, `429` when the caller has been
-/// failing, `403` when `user_acl` refuses the identity, `400` when the exchange
-/// is refused or the identity cannot be linked to this account, and `500` when
-/// a write fails.
 /// `PATCH /api/v1/me/preferences` — change what the caller has chosen about
 /// how the console looks to them, and answer all of it.
 ///
@@ -81,6 +67,20 @@ pub async fn preferences(
     Ok(json_ok(&preferences))
 }
 
+/// `POST /me/oidc-link`: binds the caller's account to the identity the
+/// provider just vouched for, and answers with who they now are.
+///
+/// The body is the same authorization-code exchange as `POST /auth/token`; the
+/// difference is that the code decides which *identity* this is, and the
+/// session decides which *account* it is bound to. That is what makes the link
+/// safe without `link_by_username`: the person has proved they hold both.
+///
+/// # Errors
+///
+/// A `404` when no provider is configured, `429` when the caller has been
+/// failing, `403` when `user_acl` refuses the identity, `400` when the exchange
+/// is refused or the identity cannot be linked to this account, and `500` when
+/// a write fails.
 pub async fn link_oidc(
     context: web::Data<AppContext>,
     limiter: web::Data<Arc<RateLimiter>>,

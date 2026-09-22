@@ -111,7 +111,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_choice_is_kept_is_the_accounts_own_and_can_be_changed_back() {
+    async fn a_choice_belongs_to_one_account_and_can_be_changed_back() {
         let db = Database::open_in_memory().await.unwrap();
         let (ada, grace) = (account(&db, "ada").await, account(&db, "grace").await);
         let choose = |symbology| UserPreferencesPatch {
