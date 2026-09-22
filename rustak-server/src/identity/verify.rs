@@ -218,7 +218,9 @@ pub async fn verify(
 /// # Errors
 ///
 /// As [`verify`].
-#[instrument("identity.credentials.verify", skip_all, fields(username = %username, purpose = ?purpose), err(Debug))]
+// `err(level = "debug")`: see `auth::basic::verify_basic_with_grace`. A
+// credential that does not verify is the answer to a question, not a fault.
+#[instrument("identity.credentials.verify", skip_all, fields(username = %username, purpose = ?purpose), err(level = "debug", Debug))]
 pub async fn verify_with_grace(
     db: &Database,
     username: &Username,

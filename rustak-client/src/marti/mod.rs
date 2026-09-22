@@ -123,7 +123,13 @@ pub(crate) fn refused(status: reqwest::StatusCode, body: &str, what: &str) -> Er
         _ => &["The message above is the server's own."],
     };
 
-    human_errors::user(format!("Could not {what}: {detail}."), advice)
+    human_errors::user(
+        format!(
+            "Could not {what}: {detail}{}",
+            crate::http::full_stop(&detail)
+        ),
+        advice,
+    )
 }
 
 /// The first non-blank line of a body, for a server that answered text.

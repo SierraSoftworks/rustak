@@ -48,7 +48,7 @@ use std::time::Duration;
 use chrono::Utc;
 use rustak_api::Heartbeat;
 use rustak_client::feed::{Affiliation, Area, Feed, FeedCounters, FeedPublisher, PublishPolicy};
-use rustak_client::sidecar::{Sidecar, SidecarContext, SidecarEvent, async_trait};
+use rustak_client::sidecar::{ServiceSettings, Sidecar, SidecarContext, SidecarEvent, async_trait};
 use rustak_core::config::duration;
 use rustak_core::prelude::*;
 use rustak_cot::Event;
@@ -148,7 +148,21 @@ pub struct AisSidecar {
     feed: Option<Box<dyn Feed>>,
     connection: Option<ConnectionRx>,
     under_way_stale: Duration,
+
+    /// The server's copy of this service's configuration, and when it is next
+    /// worth reading.
+    configured: ServiceSettings,
+
+    /// The area in effect right now, whichever of the two it came from.
+    area: Area,
+
+    /// Where that area came from, for the line that says which is in effect.
+    area_from: &'static str,
 }
+
+/// What [`AisSidecar::area_from`] says for each of the two.
+const FROM_FILE: &str = "the configuration file";
+const FROM_SERVER: &str = "an administrator, through the control API";
 
 impl AisSidecar {
     /// What this feed has offered, published, suppressed and expired — for a
@@ -160,30 +174,54 @@ impl AisSidecar {
             .map_or_else(FeedCounters::default, FeedPublisher::counters)
     }
 
-    /// The area an administrator set in the admin UI, when they set one.
+    /// The area an administrator set in the admin UI, when they have set a new
+    /// one.
     ///
     /// Server-side configuration wins over the file, because the file is baked
     /// into a container image and the UI is where an operator moves the box
-    /// without a redeploy. Anything unreadable is a warning and the file's own
-    /// area, never a sidecar that will not start.
-    async fn configured_area(context: &SidecarContext<Settings>) -> Option<Area> {
-        let document = match context.control()?.config().await {
-            Ok(document) => document,
-            Err(err) => {
-                warn!(error = %err, "Could not read this service's configuration.");
+    /// without a redeploy. Anything unreadable is a warning and the area
+    /// already in effect, never a sidecar that will not start.
+    ///
+    /// It is asked **again after start-up**, because the read at start-up is
+    /// the one most likely to fail — the control link may not have a credential
+    /// yet, which is how the first live deployment lost an administrator's area
+    /// for the whole life of a process. [`ServiceSettings`] owns the cadence.
+    async fn configured_area(&mut self) -> Option<Area> {
+        let context = self.context.clone()?;
 
-                return None;
-            }
-        };
+        self.configured
+            .setting::<Settings, Area>(&context, "area")
+            .await
+            .filter(|area| *area != self.area)
+    }
 
-        match serde_json::from_value::<Area>(document.get("area")?.clone()) {
-            Ok(area) => Some(area),
-            Err(err) => {
-                warn!("The 'area' this service is configured with is unusable ({err}).");
+    /// Opens the source and the publisher for `area`.
+    ///
+    /// The same lines whether this is a start or an administrator moving the
+    /// box: an AIS feed subscribes with its area, so changing one means opening
+    /// the source again.
+    fn watch(
+        &mut self,
+        settings: &Settings,
+        area: Area,
+        from: &'static str,
+        shutdown: &Shutdown,
+    ) -> Result<(), Error> {
+        let (connection, state) = status::connection();
 
-                None
-            }
-        }
+        self.feed = Some(settings.source.open(SourceContext {
+            area,
+            policy: settings.publish,
+            shutdown: shutdown.clone(),
+            connection,
+        })?);
+        self.connection = Some(state);
+        self.publisher =
+            Some(FeedPublisher::new(settings.publish, settings.affiliation).with_area(area));
+        self.area = area;
+        self.area_from = from;
+
+        Ok(())
     }
 
     /// Everything the harness should write, with each vessel's own staleness.
@@ -236,14 +274,15 @@ impl Sidecar for AisSidecar {
     type Settings = Settings;
 
     async fn start(&mut self, ctx: SidecarContext<Self::Settings>) -> Result<(), Error> {
-        let settings = ctx.settings();
-        let area = match Self::configured_area(&ctx).await {
-            Some(area) => {
-                info!(?area, "Using the area this service is configured with.");
-                area
-            }
-            None => settings.area,
+        self.area = ctx.settings().area;
+        self.area_from = FROM_FILE;
+        self.context = Some(ctx.clone());
+
+        let (area, from) = match self.configured_area().await {
+            Some(area) => (area, FROM_SERVER),
+            None => (self.area, FROM_FILE),
         };
+        let settings = ctx.settings();
 
         self.under_way_stale = settings.under_way_stale();
 
@@ -260,34 +299,42 @@ impl Sidecar for AisSidecar {
             );
         }
 
-        let (connection, state) = status::connection();
-
         // Before anything else: a source that cannot be opened is a setting the
         // operator got wrong, and the one thing `start` should refuse over.
-        self.feed = Some(settings.source.open(SourceContext {
-            area,
-            policy: settings.publish,
-            shutdown: ctx.shutdown().clone(),
-            connection,
-        })?);
-        self.connection = Some(state);
-        self.publisher =
-            Some(FeedPublisher::new(settings.publish, settings.affiliation).with_area(area));
+        self.watch(settings, area, from, ctx.shutdown())?;
 
         info!(
             uid = %ctx.identity().uid(),
             source = settings.source.kind(),
             ?area,
+            area_from = self.area_from,
             affiliation = ?settings.affiliation,
             "The AIS sidecar is watching.",
         );
-
-        self.context = Some(ctx);
 
         Ok(())
     }
 
     async fn tick(&mut self) -> Result<Vec<Event>, Error> {
+        // An administrator may have moved the box since this started — or the
+        // read that would have found it at start-up may simply not have worked
+        // yet.
+        if let Some(area) = self.configured_area().await
+            && let Some(context) = self.context.clone()
+        {
+            match self.watch(context.settings(), area, FROM_SERVER, context.shutdown()) {
+                Ok(()) => info!(
+                    ?area,
+                    area_from = self.area_from,
+                    "The area an administrator set for this service is now in effect.",
+                ),
+                Err(err) => warn!(
+                    error = %err,
+                    "Could not open the source for the area an administrator set; the one already in effect stays in effect.",
+                ),
+            }
+        }
+
         let mut stationary = HashSet::new();
 
         if let (Some(feed), Some(publisher)) = (&mut self.feed, &mut self.publisher) {

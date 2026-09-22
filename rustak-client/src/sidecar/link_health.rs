@@ -198,7 +198,7 @@ fn backoff(failures: u32) -> Duration {
 
 /// `now - before`, never negative — a clock that stepped backwards is not a
 /// negative outage.
-fn elapsed(before: DateTime<Utc>, now: DateTime<Utc>) -> Duration {
+pub(crate) fn elapsed(before: DateTime<Utc>, now: DateTime<Utc>) -> Duration {
     (now - before).to_std().unwrap_or_default()
 }
 

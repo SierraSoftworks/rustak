@@ -42,7 +42,7 @@ use crate::auth::resolve::{AuthFailure, ENROLLMENT_PREFIX, RequestFacts, Resolve
 use crate::prelude::*;
 use crate::web::api::middleware::bearer_token;
 
-use super::{Assertion, resolve_limited};
+use super::{Assertion, Presented, resolve_limited};
 
 /// The assertion this request authenticated with, when it did.
 ///
@@ -90,7 +90,18 @@ pub async fn from_request<S: Services>(
         headers: request.headers(),
     };
 
-    match resolve_limited(services, limiter, address, &token, &facts).await {
+    // `Perhaps`: this route takes enrolment tokens and client passwords too, so
+    // a credential that is not a JWT is not a workload assertion going wrong.
+    match resolve_limited(
+        services,
+        limiter,
+        address,
+        &token,
+        &facts,
+        Presented::Perhaps,
+    )
+    .await
+    {
         Ok((resolved, assertion)) => {
             // Kept so the handler can audit the run that enrolled without
             // re-reading a credential this has already spent its checks on.
@@ -99,9 +110,12 @@ pub async fn from_request<S: Services>(
             Some(Ok(resolved))
         }
         // The token was not one of ours to accept: leave the request as we
-        // found it, so an enrolment token on the same route still works.
-        Err(AuthFailure::Rejected) => None,
-        Err(failure) => Some(Err(failure)),
+        // found it, so an enrolment token on the same route still works. The
+        // refusal has already been recorded, once, by `refusals::announce`.
+        Err(denied) => match AuthFailure::from(denied) {
+            AuthFailure::Rejected => None,
+            failure => Some(Err(failure)),
+        },
     }
 }
 

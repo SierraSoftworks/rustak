@@ -601,31 +601,51 @@ buys the certificate, and it buys the access token the control API is reached
 with. The deployment holds no rustak secret at all.
 
 Nothing has to be configured on the sidecar. With `[service] workload_identity`
-unset, three places are tried in order — `NOMAD_TOKEN_rustak`,
-`${NOMAD_SECRETS_DIR}/nomad_rustak.jwt`, `/var/run/secrets/tokens/rustak` — and
-a source that is found beats a leftover enrolment token, because the credential
-that does not have to be minted and spent is the one to prefer. Name one
-outright if you would rather be specific:
+unset, three places are tried, and **every file comes before the environment**:
+
+1. `${NOMAD_SECRETS_DIR}/nomad_rustak.jwt` — Nomad, `file = true`
+2. `/var/run/secrets/tokens/rustak` — a Kubernetes projected `serviceAccountToken`
+3. `NOMAD_TOKEN_rustak` — Nomad, `env = true`, and only when there is no file
+
+A source that is found beats a leftover enrolment token, because the credential
+that does not have to be minted and spent is the one to prefer.
+
+**The order is the renewal rule.** Both orchestrators renew a workload identity
+by rewriting its file; the environment variable is a copy taken when the process
+started and is never touched again. A sidecar that preferred it would hold a
+credential with an hour to live and no way to get another, which is how one
+deployment's control link died two hours after every start. Write
+`env = false, file = true` in the Nomad `identity` block. An environment source
+is still honoured if you name one, and warned about at start-up, because it
+cannot be renewed.
+
+Name one outright if you would rather be specific:
 
 ```toml
 [service]
-workload_identity = { env = "NOMAD_TOKEN_rustak" }
-# or
 workload_identity = { file = "/var/run/secrets/tokens/rustak" }
+# or, when there is genuinely no file — this one cannot be renewed
+workload_identity = { env = "NOMAD_TOKEN_rustak" }
 ```
 
 The token is re-read from its source **every time it is used**, because both
-orchestrators rotate it; the access token bought with it is held until a minute
-before it expires and exchanged again when the server refuses it. The server has
-to be told which issuer to trust and which account a job maps to — that is
-`[auth.workload]`, and it is the whole of the setup; see "Workload identity" in
-[`docs/deployment.md`](deployment.md) for the jobspec, the pod spec and the
-rules.
+orchestrators rotate it, and this end reads its `exp` before presenting it: a
+token that is already expired, or that is half written because a renewal is in
+progress, is read again a moment later rather than presented. The access token
+bought with it is held until a minute before it expires and exchanged again when
+the server refuses it. An exchange the server *refuses* is retried on a widening
+wait — 5 s to 5 minutes — that resets as soon as the orchestrator rewrites the
+token file, instead of being repeated every tick.
+
+The server has to be told which issuer to trust and which account a job maps to
+— that is `[auth.workload]`, and it is the whole of the setup; see "Workload
+identity" in [`docs/deployment.md`](deployment.md) for the jobspec, the pod spec
+and the rules.
 
 Whichever of the credentials a start used, one line at `info` says so:
 
 ```text
-INFO Identity: this sidecar is 'ais', from the workload identity from NOMAD_TOKEN_rustak
+INFO Identity: this sidecar is 'ais', from the workload identity from /secrets/nomad_rustak.jwt
 INFO Identity: this sidecar is 'svc.adsb', from an enrolment token
 INFO Identity: this sidecar is 'svc.adsb', from the certificate at '/data/adsb.pem'
 ```
@@ -637,13 +657,16 @@ thing: the certificate is what this sidecar *is*, and the workload identity is
 what it presents at `[server] control` in order to be its own account there.
 
 ```text
-INFO Identity: authenticating to the control API as 'svc.adsb' with the workload identity from NOMAD_TOKEN_rustak
+INFO Identity: authenticating to the control API as 'svc.adsb' with the workload identity from /secrets/nomad_rustak.jwt (expires 2026-09-22T05:19:27Z, renewed by the orchestrator)
 ```
 
 The account is the `sub` of the token the server issued — the account rustak
 resolved the assertion to, not the one the file asked for — so the two lines
 disagreeing is a `[auth.workload]` binding pointing somewhere unexpected, and
-worth looking at.
+worth looking at. The brackets say when the credential runs out and whether
+anything will replace it; an environment source reads
+`which an environment variable cannot have renewed`, and that is the line to
+grep for when a control link stops working an hour or two after a start.
 
 ## Reacting to server events
 

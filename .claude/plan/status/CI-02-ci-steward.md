@@ -275,3 +275,21 @@ Nothing in flight on `main`. The prepared `test` 60 -> 90 change (rust.yml +
 docs/ci.md) is still in the working tree, ready to land now that publishing is
 done. Next owed: the 04:17 UTC nightly — `cloudtak-parse-log`'s passing reason
 must report a non-zero line count.
+
+## 2026-09-22 03:01Z — the 60 -> 90 change landed as `34ccf0f`; watching it and the nightly
+
+The orchestrator landed the prepared change (rust.yml, docs/ci.md, this note up
+to the 02:58Z entry, and the backlog edit) as `34ccf0f` after `b485e49` had
+published; the deployment session has its go-ahead on the `b485e49` digests.
+Working tree clean of my files. Run 35681446102 (`34ccf0f`, CI-only, no
+functional change) in progress since 02:58:49Z.
+
+Two background watchers (60 s): registry + run for `34ccf0f` (expect the
+forward-only step to move `:latest` from `b485e49`), and the scheduled nightly
+(waits for a `schedule` run of `nightly.yml` created after 04:00Z, then for it
+to finish; 8 h cap, because CI-01 recorded one firing 4h19m late and one not
+firing at all). On the nightly the thing to confirm is `cloudtak-parse-log`'s
+passing reason carrying a non-zero line count; nightly 35672048856 (before the
+`511dbab` fix) printed `✔ cloudtak-parse-log` with the reason "CloudTAK's parser
+refused nothing rustak sent it, as '…'" — no count, which is what `511dbab`
+changed.

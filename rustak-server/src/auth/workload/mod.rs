@@ -34,6 +34,7 @@
 pub mod claims;
 pub mod grant;
 pub mod keys;
+mod refusals;
 pub mod request;
 pub mod rules;
 mod verify;
@@ -62,9 +63,10 @@ pub const RATE_LIMIT_SUBJECT: &str = "workload-identity";
 pub use claims::Claims;
 pub use grant::{GRANT_TYPE, jwt_bearer};
 pub use keys::warn_about_insecure_issuers;
+pub use refusals::Presented;
 pub use request::{assertion_of, from_request};
 pub use rules::RuleRefusal;
-pub use verify::verify;
+pub use verify::{ClaimRefusal, verify};
 
 /// An assertion this server has verified, and the account it speaks for.
 ///
@@ -137,9 +139,15 @@ pub enum Refusal {
     Algorithm,
     /// The token names a key the issuer does not publish, and refetching did
     /// not produce one.
-    UnknownKey,
-    /// The signature, audience, issuer or time window was not acceptable.
-    Claims,
+    UnknownKey {
+        /// The `kid` the token named, tidied — it came off the wire.
+        kid: String,
+        /// The `[auth.workload]` entry that does not publish it.
+        issuer: String,
+    },
+    /// The signature, audience, issuer or time window was not acceptable, and
+    /// which of those it was.
+    Claims(ClaimRefusal),
     /// The token verified and no single account could be named.
     Rule(RuleRefusal),
     /// Something of ours failed.
@@ -154,20 +162,83 @@ impl Refusal {
             Self::Malformed => "malformed",
             Self::UnknownIssuer => "unknown-issuer",
             Self::Algorithm => "algorithm",
-            Self::UnknownKey => "unknown-key",
-            Self::Claims => "claims",
+            Self::UnknownKey { .. } => "unknown-key",
+            Self::Claims(refusal) => refusal.check(),
             Self::Rule(refusal) => refusal.reason(),
             Self::Unavailable(_) => "unavailable",
         }
     }
 
-    /// Whether this refusal is worth an operator's attention rather than being
-    /// the ordinary noise of somebody presenting the wrong thing.
+    /// The sentence an operator reads, and the one whoever presented the
+    /// credential is given back.
     ///
-    /// An ambiguous binding is a configuration mistake that `--check` could not
-    /// see, so it is a `warn` where everything else is a `debug`.
-    fn is_notable(&self) -> bool {
-        verify::is_ambiguous(self)
+    /// It names the check that failed and by how much, and **no token
+    /// material**: the caller is the token's holder, so telling them that what
+    /// they sent expired 58 minutes ago is not an oracle — it is the one fact
+    /// that turns a two-hour outage into a one-line diagnosis. What stays
+    /// secret is everything about *this server*: which account a rule would
+    /// have named, whether that account exists, whether it is switched off.
+    pub fn sentence(&self) -> String {
+        match self {
+            Self::NotConfigured => {
+                "This server is not configured to accept workload identities.".to_string()
+            }
+            Self::Malformed => {
+                "That is not a JWT whose header names the key it was signed with.".to_string()
+            }
+            Self::UnknownIssuer => {
+                "No `[auth.workload]` issuer on this server claims the `iss` that token carries."
+                    .to_string()
+            }
+            Self::Algorithm => {
+                "That token is signed with an algorithm its issuer does not use.".to_string()
+            }
+            Self::UnknownKey { kid, issuer } => {
+                format!("kid {kid} is not published by issuer {issuer}")
+            }
+            Self::Claims(refusal) => refusal.to_string(),
+            Self::Rule(refusal) => refusal.sentence(),
+            Self::Unavailable(_) => {
+                "This server could not check that assertion just now.".to_string()
+            }
+        }
+    }
+}
+
+/// Why a caller was not let in.
+///
+/// Two halves, because they are answered differently. A [`Refusal`] is
+/// something about the *credential*, and its sentence goes back to the caller
+/// in `error_description` — they are holding the token, so they are the one
+/// person it tells nothing new. Everything else is about *this installation* —
+/// which accounts exist, which are switched off, what `user_acl` says — and is
+/// answered with one word.
+#[derive(Debug)]
+pub enum Denied {
+    /// A credential this server would not take, and what was wrong with it.
+    Refused(Refusal),
+
+    /// Everything else: a rate limit, a read that failed, an account that may
+    /// not do this.
+    Failed(AuthFailure),
+}
+
+impl Denied {
+    /// The sentence to hand back to whoever presented the credential.
+    pub fn description(&self) -> Option<String> {
+        match self {
+            Self::Refused(refusal) => Some(refusal.sentence()),
+            Self::Failed(_) => None,
+        }
+    }
+}
+
+impl From<Denied> for AuthFailure {
+    fn from(denied: Denied) -> Self {
+        match denied {
+            Denied::Refused(refusal) => refusal.into(),
+            Denied::Failed(failure) => failure,
+        }
     }
 }
 
@@ -197,24 +268,35 @@ pub async fn resolve_limited<S: Services>(
     address: Option<IpAddr>,
     token: &str,
     facts: &RequestFacts<'_>,
-) -> Result<(Resolved, Assertion), AuthFailure> {
+    presented: Presented,
+) -> Result<(Resolved, Assertion), Denied> {
     limiter
         .check(address, RATE_LIMIT_SUBJECT)
-        .map_err(AuthFailure::RateLimited)?;
+        .map_err(|retry_after| {
+            refusals::throttled(token, retry_after);
 
-    let assertion = match verified(services, token).await {
+            Denied::Failed(AuthFailure::RateLimited(retry_after))
+        })?;
+
+    let assertion = match verified(services, token, presented).await {
         Ok(assertion) => assertion,
-        Err(AuthFailure::Unavailable(err)) => return Err(AuthFailure::Unavailable(err)),
-        Err(failure) => {
+        Err(Refusal::Unavailable(err)) => {
+            return Err(Denied::Failed(AuthFailure::Unavailable(err)));
+        }
+        Err(refusal) => {
             limiter.record_failure(address, RATE_LIMIT_SUBJECT);
 
-            return Err(failure);
+            return Err(Denied::Refused(refusal));
         }
     };
 
     limiter
         .check(address, assertion.account.as_str())
-        .map_err(AuthFailure::RateLimited)?;
+        .map_err(|retry_after| {
+            refusals::throttled(token, retry_after);
+
+            Denied::Failed(AuthFailure::RateLimited(retry_after))
+        })?;
 
     match account(services, &assertion, facts).await {
         Ok(resolved) => {
@@ -225,12 +307,12 @@ pub async fn resolve_limited<S: Services>(
 
             Ok((resolved, assertion))
         }
-        Err(AuthFailure::Unavailable(err)) => Err(AuthFailure::Unavailable(err)),
+        Err(AuthFailure::Unavailable(err)) => Err(Denied::Failed(AuthFailure::Unavailable(err))),
         Err(failure) => {
             limiter.record_failure(address, RATE_LIMIT_SUBJECT);
             limiter.record_failure(address, assertion.account.as_str());
 
-            Err(failure)
+            Err(Denied::Failed(failure))
         }
     }
 }
@@ -246,13 +328,15 @@ pub async fn resolve_limited<S: Services>(
 /// [`AuthFailure::Forbidden`] when the account exists and the answer will not
 /// change by presenting another token; [`AuthFailure::Unavailable`] when a read
 /// fails.
-#[instrument("auth.workload.resolve", skip_all, err(Debug))]
+#[instrument("auth.workload.resolve", skip_all, err(level = "debug", Debug))]
 pub async fn resolve<S: Services>(
     services: &S,
     token: &str,
     facts: &RequestFacts<'_>,
 ) -> Result<(Resolved, Assertion), AuthFailure> {
-    let assertion = verified(services, token).await?;
+    let assertion = verified(services, token, Presented::Deliberately)
+        .await
+        .map_err(AuthFailure::from)?;
     let resolved = account(services, &assertion, facts).await?;
 
     announce(&assertion);
@@ -261,20 +345,22 @@ pub async fn resolve<S: Services>(
 }
 
 /// [`verify`], with the refusal recorded in the words an operator reads.
-async fn verified<S: Services>(services: &S, token: &str) -> Result<Assertion, AuthFailure> {
+///
+/// The recording is [`refusals::announce`]'s: `warn` once per
+/// `(issuer, subject, reason)` per five minutes, `debug` in between, never
+/// `ERROR` and never with the request's headers attached. See that module for
+/// what this used to do instead.
+async fn verified<S: Services>(
+    services: &S,
+    token: &str,
+    presented: Presented,
+) -> Result<Assertion, Refusal> {
     match verify(services, token).await {
         Ok(assertion) => Ok(assertion),
         Err(refusal) => {
-            if refusal.is_notable() {
-                warn!(
-                    reason = refusal.reason(),
-                    "Refused a workload assertion that two binding rules disagreed about.",
-                );
-            } else {
-                debug!(reason = refusal.reason(), "Refused a workload assertion.");
-            }
+            refusals::announce(token, &refusal, presented);
 
-            Err(refusal.into())
+            Err(refusal)
         }
     }
 }
@@ -380,46 +466,75 @@ async fn account<S: Services>(
 mod tests {
     use super::*;
 
-    #[test]
-    fn every_refusal_has_a_word_the_log_can_carry() {
-        let refusals = [
+    /// One of each refusal, for the tests that hold them all to a rule.
+    fn each() -> Vec<Refusal> {
+        vec![
             Refusal::NotConfigured,
             Refusal::Malformed,
             Refusal::UnknownIssuer,
             Refusal::Algorithm,
-            Refusal::UnknownKey,
-            Refusal::Claims,
+            Refusal::UnknownKey {
+                kid: "\"rustak-workload-9\"".to_string(),
+                issuer: "nomad".to_string(),
+            },
+            Refusal::Claims(ClaimRefusal::new("exp", "expired 58m12s ago")),
+            Refusal::Claims(ClaimRefusal::new("aud", "expected \"rustak\"")),
             Refusal::Rule(RuleRefusal::NoRule),
-        ];
-
-        let words: std::collections::HashSet<&str> = refusals.iter().map(Refusal::reason).collect();
-
-        assert_eq!(words.len(), refusals.len(), "the words must be distinct");
+            Refusal::Rule(RuleRefusal::Ambiguous {
+                accounts: vec!["a".into(), "b".into()],
+            }),
+        ]
     }
 
     #[test]
-    fn only_an_ambiguous_binding_is_worth_shouting_about() {
+    fn every_refusal_has_a_word_the_log_can_carry() {
+        let words: std::collections::HashSet<&str> = each().iter().map(Refusal::reason).collect();
+
         assert!(
-            Refusal::Rule(RuleRefusal::Ambiguous {
-                accounts: vec!["a".into(), "b".into()],
-            })
-            .is_notable()
+            words.contains("exp"),
+            "a claim refusal is named by its claim"
         );
-        assert!(!Refusal::Rule(RuleRefusal::NoRule).is_notable());
-        assert!(!Refusal::Claims.is_notable());
+        assert!(words.contains("aud"));
+        assert!(words.contains("unknown-key"));
+        assert_eq!(
+            words.len(),
+            each().len(),
+            "every refusal an operator can meet has a word of its own",
+        );
+    }
+
+    #[test]
+    fn every_refusal_says_what_was_wrong_and_names_no_account() {
+        // The sentence goes into `error_description` and into the log, so it
+        // has to be worth reading — and it must not answer questions about
+        // this installation that the caller did not get to ask.
+        for refusal in each() {
+            let sentence = refusal.sentence();
+
+            assert!(sentence.len() > 20, "{sentence}");
+            assert!(
+                !sentence.contains("ais") && !sentence.contains("account is"),
+                "no account may be named: {sentence}",
+            );
+        }
+
+        assert_eq!(
+            Refusal::Claims(ClaimRefusal::new("exp", "expired 58m12s ago")).sentence(),
+            "exp: expired 58m12s ago",
+        );
+        assert_eq!(
+            Refusal::UnknownKey {
+                kid: "\"k9\"".to_string(),
+                issuer: "nomad".to_string(),
+            }
+            .sentence(),
+            "kid \"k9\" is not published by issuer nomad",
+        );
     }
 
     #[test]
     fn every_refusal_a_caller_can_provoke_looks_the_same_on_the_wire() {
-        for refusal in [
-            Refusal::NotConfigured,
-            Refusal::Malformed,
-            Refusal::UnknownIssuer,
-            Refusal::Algorithm,
-            Refusal::UnknownKey,
-            Refusal::Claims,
-            Refusal::Rule(RuleRefusal::NoRule),
-        ] {
+        for refusal in each() {
             assert!(
                 matches!(AuthFailure::from(refusal), AuthFailure::Rejected),
                 "the difference between these is an oracle",
@@ -430,6 +545,24 @@ mod tests {
             AuthFailure::from(Refusal::Unavailable(human_errors::system("x", &[]))),
             AuthFailure::Unavailable(_),
         ));
+    }
+
+    #[test]
+    fn only_a_refused_credential_is_described_back_to_its_holder() {
+        // A credential's own faults are the holder's to know. Everything
+        // else — whether an account exists, whether it is switched off — is
+        // answered with one word, because the difference is an oracle.
+        assert_eq!(
+            Denied::Refused(Refusal::Claims(ClaimRefusal::new("exp", "expired 1s ago")))
+                .description()
+                .as_deref(),
+            Some("exp: expired 1s ago"),
+        );
+        assert_eq!(Denied::Failed(AuthFailure::Rejected).description(), None);
+        assert_eq!(
+            Denied::Failed(AuthFailure::Forbidden("no")).description(),
+            None,
+        );
     }
 
     #[test]

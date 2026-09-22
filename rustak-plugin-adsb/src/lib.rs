@@ -41,7 +41,7 @@ pub mod wire;
 
 use rustak_api::{Heartbeat, ServiceState};
 use rustak_client::feed::{Area, FeedCounters, FeedPublisher};
-use rustak_client::sidecar::{Sidecar, SidecarContext, SidecarEvent, async_trait};
+use rustak_client::sidecar::{ServiceSettings, Sidecar, SidecarContext, SidecarEvent, async_trait};
 use rustak_core::prelude::*;
 use rustak_cot::Event;
 
@@ -55,7 +55,25 @@ pub struct AdsbSidecar {
     feed: Option<Box<dyn AdsbFeed>>,
     /// Which kind of source is open, for the heartbeat.
     kind: &'static str,
+
+    /// The harness's context, kept so that the area an administrator sets can
+    /// be picked up after start-up as well as during it.
+    context: Option<SidecarContext<Settings>>,
+
+    /// The server's copy of this service's configuration, and when it is next
+    /// worth reading.
+    configured: ServiceSettings,
+
+    /// The area in effect right now, whichever of the two it came from.
+    area: Area,
+
+    /// Where that area came from, for the line that says which is in effect.
+    area_from: &'static str,
 }
+
+/// What [`AdsbSidecar::area_from`] says for each of the two.
+const FROM_FILE: &str = "the configuration file";
+const FROM_SERVER: &str = "an administrator, through the control API";
 
 impl AdsbSidecar {
     /// What this feed has offered, published, suppressed and expired — for a
@@ -97,50 +115,45 @@ impl AdsbSidecar {
             publisher.tracked(),
         ))
     }
-}
 
-/// The area an administrator set for this service, when there is one.
-///
-/// `GET /api/v1/services/<name>/config` is a JSON object an administrator
-/// writes and the service reads, so a deployment can move an area of interest
-/// from the admin UI without anybody editing a file on the sidecar's host. Only
-/// `area` is honoured, and only at start-up; anything else in the document is
-/// somebody else's setting and is left alone.
-///
-/// Every failure here is a [`None`]: no control API, nothing configured, a
-/// document that is not the shape we expect. A sidecar must start with the
-/// file's area rather than refuse to start because a server could not be
-/// reached.
-async fn configured_area(context: &SidecarContext<Settings>) -> Option<Area> {
-    let control = context.control()?;
-    let document = match control.config().await {
-        Ok(document) => document,
-        Err(err) => {
-            debug!("No server-side configuration for this service: {err}");
+    /// The area an administrator set for this service, when they have set a new
+    /// one.
+    ///
+    /// `GET /api/v1/services/<name>/config` is a JSON object an administrator
+    /// writes and the service reads, so a deployment can move an area of
+    /// interest from the admin UI without anybody editing a file on the
+    /// sidecar's host. Only `area` is honoured; anything else in the document
+    /// is somebody else's setting and is left alone.
+    ///
+    /// It is asked **again after start-up**, because the read at start-up is
+    /// the one most likely to fail: the control link may not have a credential
+    /// yet. The first live deployment lost an administrator's area that way,
+    /// silently, for the whole life of the process.
+    /// [`ServiceSettings`] owns the cadence.
+    async fn configured_area(&mut self) -> Option<Area> {
+        let context = self.context.clone()?;
 
-            return None;
-        }
-    };
+        self.configured
+            .setting::<Settings, Area>(&context, "area")
+            .await
+            .filter(|area| *area != self.area)
+    }
 
-    let area = document.get("area")?.clone();
+    /// Opens the source and the publisher for `area`, and remembers where it
+    /// came from.
+    ///
+    /// The same two lines whether this is a start or an administrator moving
+    /// the box: a feed subscribes with its area, so changing one means opening
+    /// the source again.
+    fn watch(&mut self, settings: &Settings, area: Area, from: &'static str) -> Result<(), Error> {
+        self.kind = settings.source.kind();
+        self.feed = Some(settings.source.open(area)?);
+        self.publisher =
+            Some(FeedPublisher::new(settings.publish, settings.affiliation).with_area(area));
+        self.area = area;
+        self.area_from = from;
 
-    match serde_json::from_value::<Area>(area) {
-        Ok(area) => {
-            info!(
-                ?area,
-                "Using the area an administrator set for this service; it wins over the file.",
-            );
-
-            Some(area)
-        }
-        Err(err) => {
-            warn!(
-                "The `area` an administrator set for this service is not one we can read ({err}); \
-                 using the one in the configuration file.",
-            );
-
-            None
-        }
+        Ok(())
     }
 }
 
@@ -152,21 +165,26 @@ impl Sidecar for AdsbSidecar {
     type Settings = Settings;
 
     async fn start(&mut self, ctx: SidecarContext<Self::Settings>) -> Result<(), Error> {
+        self.area = ctx.settings().area;
+        self.area_from = FROM_FILE;
+        self.context = Some(ctx.clone());
+
+        let (area, from) = match self.configured_area().await {
+            Some(area) => (area, FROM_SERVER),
+            None => (self.area, FROM_FILE),
+        };
         let settings = ctx.settings();
-        let area = configured_area(&ctx).await.unwrap_or(settings.area);
 
         // Before anything else: a source that cannot be opened is a setting the
         // operator got wrong, and the one thing `start` should refuse over.
-        self.kind = settings.source.kind();
-        self.feed = Some(settings.source.open(area)?);
-        self.publisher =
-            Some(FeedPublisher::new(settings.publish, settings.affiliation).with_area(area));
+        self.watch(settings, area, from)?;
 
         info!(
             uid = %ctx.identity().uid(),
             source = self.kind,
             upstream = self.feed.as_ref().map(|feed| feed.name()),
             ?area,
+            area_from = self.area_from,
             affiliation = ?settings.affiliation,
             "The ADS-B sidecar is watching.",
         );
@@ -175,6 +193,25 @@ impl Sidecar for AdsbSidecar {
     }
 
     async fn tick(&mut self) -> Result<Vec<Event>, Error> {
+        // An administrator may have moved the box since this started — or the
+        // read that would have found it at start-up may simply not have worked
+        // yet.
+        if let Some(area) = self.configured_area().await
+            && let Some(context) = self.context.clone()
+        {
+            match self.watch(context.settings(), area, FROM_SERVER) {
+                Ok(()) => info!(
+                    ?area,
+                    area_from = self.area_from,
+                    "The area an administrator set for this service is now in effect.",
+                ),
+                Err(err) => warn!(
+                    error = %err,
+                    "Could not open the source for the area an administrator set; the one already in effect stays in effect.",
+                ),
+            }
+        }
+
         if let (Some(feed), Some(publisher)) = (&mut self.feed, &mut self.publisher) {
             match feed.poll().await {
                 Ok(tracks) => {

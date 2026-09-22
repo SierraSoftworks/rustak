@@ -684,8 +684,8 @@ task "ais" {
     name        = "rustak"
     aud         = ["rustak"]
     ttl         = "1h"
-    env         = true
     file        = true
+    env         = false
     change_mode = "noop"
   }
 
@@ -695,12 +695,33 @@ task "ais" {
 }
 ```
 
-Nomad exposes that as `NOMAD_TOKEN_rustak` in the environment and
-`${NOMAD_SECRETS_DIR}/nomad_rustak.jwt` on disk, and its client renews it at
-about half the TTL. The sidecar finds either without being told
-(`workload_identity` in the plugin's `config.example.toml` names one explicitly
-if you would rather be specific) and **re-reads it every time it is used**,
-which is what makes the renewal invisible.
+`env = false` is the important line. Nomad renews an identity by **rewriting
+the file** — `${NOMAD_SECRETS_DIR}/nomad_rustak.jwt`, re-signed at about half
+the TTL — while `NOMAD_TOKEN_rustak` in the environment is a copy taken when the
+process started and is never touched again, whatever `change_mode` says. A
+sidecar holding the environment copy therefore has a credential with one hour to
+live and no way to get another: the first live deployment's control link died,
+for good, two hours after every start, and nothing but a restart brought it
+back.
+
+So the sidecar prefers **any file over the environment**, and `env = false`
+keeps the frozen copy out of the task altogether. Leaving `env = true` is not
+fatal — the file still wins, and the sidecar says at start-up if it has had to
+fall back to the environment — but there is nothing in the task that wants it.
+
+The sidecar finds the file without being told (`workload_identity` in the
+plugin's `config.example.toml` names one explicitly if you would rather be
+specific), **re-reads it every time it is used**, and reads its `exp` before
+presenting it, so a renewal that is half written is waited for rather than
+presented. That is what makes the renewal invisible.
+
+The start-up line says which credential is in use and when it runs out:
+
+```text
+INFO Identity: authenticating to the control API as 'ais' with the workload
+     identity from /secrets/nomad_rustak.jwt (expires 2026-09-22T05:19:27Z,
+     renewed by the orchestrator).
+```
 
 On the rustak side, one issuer and one rule:
 
@@ -784,7 +805,9 @@ spec:
 ```
 
 The kubelet rewrites that file as it rotates the token, which is why the sidecar
-re-reads it rather than holding a copy.
+re-reads it rather than holding a copy — the same rule as Nomad's `file = true`,
+and the reason a file is preferred to an environment variable wherever both
+exist. A projected volume *is* a file, so there is nothing else to do here.
 
 rustak has to be able to fetch the API server's keys, and it does so
 **anonymously** — it is not itself a pod and holds no service-account token. A
@@ -877,15 +900,55 @@ The start-up line says which of the four credentials was used, who signed it,
 and who rustak decided that made the process:
 
 ```text
-INFO Identity: this sidecar is 'ais', from the workload identity from NOMAD_TOKEN_rustak
-INFO Identity: authenticating to the control API as 'svc.ais' with the workload identity from NOMAD_TOKEN_rustak
+INFO Identity: this sidecar is 'ais', from the workload identity from /secrets/nomad_rustak.jwt
+INFO Identity: authenticating to the control API as 'svc.ais' with the workload identity from /secrets/nomad_rustak.jwt (expires 2026-09-22T05:19:27Z, renewed by the orchestrator)
 ```
 
 The first says what the sidecar *is*; the second, written once when the first
 access token comes back, says what it authenticates to `[server] control` **as**
 — the `sub` of the token rustak issued, which is the account the
-`[auth.workload]` binding resolved to. Both are at `info`, on every start. Grep
-for `Identity:`.
+`[auth.workload]` binding resolved to — and, in the brackets, when that
+credential runs out and whether anything will replace it. A credential read from
+an environment variable says so instead:
+
+```text
+INFO Identity: … with the workload identity from NOMAD_TOKEN_rustak (expires 2026-09-22T05:19:27Z, which an environment variable cannot have renewed)
+WARN This sidecar's workload identity comes from 'NOMAD_TOKEN_rustak', an environment variable, which is frozen when the process starts. …
+```
+
+Both are at `info`, on every start. Grep for `Identity:`.
+
+### When the server will not take it
+
+A refused credential is not an outage — the server answered — so the control
+link stays up and only the exchange is retried, on a widening wait of 5 s to
+5 minutes that resets the moment the orchestrator rewrites the token file:
+
+```text
+WARN Could not exchange this sidecar's workload identity for an access token. The server answered,
+     so the control link is up; it is the credential that was refused. The next attempt is in 5s,
+     widening to 5m00s; repeats are logged at debug until this changes.
+     error=The workload identity this sidecar presented expired 58m00s ago; its source
+     NOMAD_TOKEN_rustak is an environment variable, which the orchestrator cannot renew.
+     The server refused it (400 Bad Request): exp: expired 58m12s ago.
+WARN This sidecar's workload identity has been refused for 5m00s over 7 attempts. …
+INFO The server accepted this sidecar's workload identity again after 29s.
+```
+
+On the server, the same refusal is one `warn` per issuer, subject and reason
+every five minutes — never `ERROR`, and never with the request's headers:
+
+```text
+WARN Refused a workload identity: exp: expired 58m12s ago. Repeats of this one are logged at
+     debug, with a count every five minutes.
+     issuer=https://nomad.example.com subject=global:default:rustak-plugin-ais:sidecar:ais:rustak reason=exp
+WARN Refused a workload identity 58 more times in the last five minutes: exp: expired 58m12s ago.
+```
+
+The same sentence goes back to the caller as the `error_description` of the
+`400 {"error":"invalid_grant"}`, because the caller is the one holding the token
+it is about. Nothing about this installation — whether the account exists,
+whether it is switched off — is ever in it.
 
 ## Logging and telemetry
 
@@ -914,7 +977,17 @@ configured and is otherwise not printed.
 `4xx` is `debug`, `5xx` is `warn`; the audit log (`GET /api/v1/audit`) is a
 separate, unaffected record, and the refusals whose *reason* an operator needs
 — a workload identity that named no account, an access-control expression that
-said no — are still logged where that decision is made. The practical shape of
+said no — are still logged where that decision is made.
+
+**A refused credential is not an `ERROR`.** A caller presenting something this
+server will not take is the server working, so those refusals are `warn`, once
+per issuer, subject and reason per five minutes, with a count on the reminder
+and `debug` in between — and they are written *outside* the request's span, so
+they carry the reason rather than a block of the request's headers. One sidecar
+holding a credential it could not renew used to produce 137 `ERROR` lines an
+hour, each one a full request span, none of which said what was wrong.
+
+The practical shape of
 this: **an idle server with a couple of sidecars attached prints nothing at
 all.** Each sidecar holds one server-event feed open and posts one heartbeat a
 tick, all of them successful, so a quiet log can be read as a quiet server.

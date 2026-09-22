@@ -65,6 +65,28 @@ impl RuleRefusal {
             Self::UnusableAccount { .. } => "unusable-account",
         }
     }
+
+    /// The sentence an operator reads, and the one the token's holder is given
+    /// back.
+    ///
+    /// It says what the *rules* did, and never what they produced: which
+    /// account a rule would have named, and whether that account exists, is
+    /// this installation's business and not the caller's.
+    pub fn sentence(&self) -> String {
+        match self {
+            Self::NoRule => {
+                "No `[auth.workload]` binding rule matches that token's claims.".to_string()
+            }
+            Self::Ambiguous { .. } => {
+                "Two `[auth.workload]` binding rules name different accounts for that token."
+                    .to_string()
+            }
+            Self::UnusableAccount { .. } => {
+                "The `[auth.workload]` binding rule that matches that token does not produce a usable account name."
+                    .to_string()
+            }
+        }
+    }
 }
 
 /// The account `claims` resolves to under `issuer`'s rules.

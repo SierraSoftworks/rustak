@@ -128,11 +128,14 @@ pub async fn verify_basic<S: Services>(
 /// # Errors
 ///
 /// As [`verify_basic`].
+// `err(level = "debug")`: a wrong enrolment token is a caller being refused,
+// not this server failing, and an ERROR carrying the request's headers on every
+// attempt is the noise `auth::workload::refusals` documents.
 #[instrument(
     "auth.resolve.basic",
     skip_all,
     fields(username = %credential.username, purpose = ?purpose),
-    err(Debug)
+    err(level = "debug", Debug)
 )]
 pub async fn verify_basic_with_grace<S: Services>(
     services: &S,

@@ -140,28 +140,29 @@ impl ControlLink {
     ///
     /// A no-op — and a `true` — for a sidecar whose credential is a
     /// `[service] token`: there is nothing to exchange and nothing to expire.
-    /// A failed exchange is a failure *of the link*, and the call it was for is
-    /// abandoned rather than sent with a credential we know is missing: two
-    /// failures for one cause is exactly the noise this is here to stop.
+    /// A failed exchange is a failure of the link or of the credential — see
+    /// [`AccessTokens::for_call`], which says so once and backs off — and the
+    /// call it was for is abandoned rather than sent with a credential we know
+    /// is missing: two failures for one cause is exactly the noise this is here
+    /// to stop.
     async fn ensure_credential(&self) -> bool {
         let (Some(control), Some(tokens)) = (&self.control, &self.workload) else {
             return true;
         };
 
-        match tokens.current().await {
-            Ok(token) => {
+        match tokens
+            .for_call(
+                &self.health,
+                "exchange this sidecar's workload identity for an access token",
+            )
+            .await
+        {
+            Some(token) => {
                 control.set_credential(Some(token));
 
                 true
             }
-            Err(err) => {
-                self.note(
-                    "exchange this sidecar's workload identity for an access token",
-                    &err,
-                );
-
-                false
-            }
+            None => false,
         }
     }
 

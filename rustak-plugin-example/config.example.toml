@@ -56,22 +56,35 @@ name = "example"
 # Kubernetes holds **no rustak secret at all**: no enrolment token to mint and
 # hand over, no service token to copy into a file.
 #
-# Unset — the default — looks in three places, in this order:
+# Unset — the default — looks in three places, and **every file comes before
+# the environment**:
 #
-#   1. the NOMAD_TOKEN_rustak environment variable   (Nomad, `env = true`)
-#   2. ${NOMAD_SECRETS_DIR}/nomad_rustak.jwt          (Nomad, `file = true`)
-#   3. /var/run/secrets/tokens/rustak                 (a Kubernetes projected
+#   1. ${NOMAD_SECRETS_DIR}/nomad_rustak.jwt          (Nomad, `file = true`)
+#   2. /var/run/secrets/tokens/rustak                 (a Kubernetes projected
 #                                                      serviceAccountToken)
+#   3. the NOMAD_TOKEN_rustak environment variable   (Nomad, `env = true`),
+#                                                      and only when there is
+#                                                      no file
 #
-# Set it to name exactly one source outright — exactly one, and naming both is
+# That order is the renewal rule. Both orchestrators renew a workload identity
+# by **rewriting its file**: Nomad's client re-signs at about half the ttl, the
+# kubelet rewrites the projected volume. The environment variable is a copy
+# taken when the process started and is never touched again, so a sidecar that
+# preferred it would hold a credential with an hour to live and no way to get
+# another — which is exactly how a control link died two hours after every
+# start. Write `env = false, file = true` in the Nomad `identity` block.
+#
+# Set this to name exactly one source outright — exactly one, and naming both is
 # refused. A source named here that holds nothing is a start-up failure rather
-# than a quiet fall-back to the enrolment token: naming one is deliberate.
+# than a quiet fall-back to the enrolment token: naming one is deliberate. An
+# `env` source is honoured and warned about, because it cannot be renewed.
 #
-# The token is re-read from its source every time it is used, because both
-# orchestrators rotate it. The server side is `[auth.workload]`; see
+# The token is re-read from its source every time it is used, and this end
+# reads its `exp` before presenting it, so a renewal in progress is waited for
+# rather than presented half-written. The server side is `[auth.workload]`; see
 # "Workload identity" in docs/deployment.md for the jobspec and the rules.
-# workload_identity = { env = "NOMAD_TOKEN_rustak" }
 # workload_identity = { file = "/var/run/secrets/tokens/rustak" }
+# workload_identity = { env = "NOMAD_TOKEN_rustak" }   # cannot be renewed
 
 # The client certificate and private key this service opens the CoT stream with,
 # in PEM. Default: none — and neither half is usable without the other, so

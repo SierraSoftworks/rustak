@@ -58,13 +58,17 @@
 //!
 //! See `docs/plugins.md` for the operator-facing version of all of this.
 
+mod assertion;
 pub mod config;
 mod control_link;
+mod credential;
 pub(crate) mod enrolment;
 mod event_feed;
+mod exchange;
 mod link;
 mod link_health;
 pub mod run;
+mod settings;
 pub mod workload;
 
 use std::sync::Arc;
@@ -85,8 +89,9 @@ pub use config::{
     ENROLLMENT_TOKEN_ENV, HarnessConfig, NoSettings, ServerConfig, ServiceConfig, SidecarConfig,
 };
 pub use run::{Args, drive, run, run_with, serve};
+pub use settings::ServiceSettings;
 pub use workload::{
-    AccessTokens, KUBERNETES_TOKEN_PATH, NOMAD_TOKEN_ENV, Source, WorkloadIdentity,
+    AccessTokens, Assertion, KUBERNETES_TOKEN_PATH, NOMAD_TOKEN_ENV, Source, WorkloadIdentity,
 };
 
 pub(crate) use control_link::ControlLink;

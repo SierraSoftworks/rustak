@@ -37,10 +37,15 @@ use crate::web::helpers::request::client_address;
 /// The grant type, spelled as RFC 7523 §2.1 spells it.
 pub const GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 
-/// What every refusal a caller can provoke says.
+/// What a refusal says when there is nothing more specific to say.
 ///
-/// One wording for all of them: which check a forged assertion failed is not
-/// something the presenter needed told.
+/// Everything about the *credential* — which check it failed, and by how much —
+/// goes back in `error_description`, because the caller is the token's holder
+/// and telling them their own token expired an hour ago is the difference
+/// between a two-hour outage and a one-line diagnosis. Everything about this
+/// *installation* — whether the account exists, whether it is switched off,
+/// what `user_acl` says — falls back to this one sentence, because that
+/// difference is an oracle.
 const REFUSED: &str = "That assertion was not accepted.";
 
 /// Exchanges a workload assertion for a rustak access token.
@@ -86,16 +91,39 @@ pub async fn jwt_bearer(
         headers: request.headers(),
     };
 
-    let resolved = match super::resolve_limited(context, limiter, address, token, &facts).await {
+    // `Deliberately`: the caller asked for the `jwt-bearer` grant by name, so
+    // anything wrong with what came with it is worth an operator's attention.
+    let resolved = match super::resolve_limited(
+        context,
+        limiter,
+        address,
+        token,
+        &facts,
+        super::Presented::Deliberately,
+    )
+    .await
+    {
         Ok((resolved, _)) => resolved,
-        Err(AuthFailure::RateLimited(retry_after)) => return rate_limited(retry_after),
-        Err(AuthFailure::Unavailable(err)) => {
-            error!(error = %err, "Could not check a jwt-bearer grant.");
-            context.session().record_human_error(&err);
+        Err(denied) => {
+            // The sentence goes back to the caller, because the caller is the
+            // one holding the token it is about; see `Denied::description`.
+            let description = denied.description();
 
-            return unavailable();
+            return match AuthFailure::from(denied) {
+                AuthFailure::RateLimited(retry_after) => rate_limited(retry_after),
+                AuthFailure::Unavailable(err) => {
+                    error!(error = %err, "Could not check a jwt-bearer grant.");
+                    context.session().record_human_error(&err);
+
+                    unavailable()
+                }
+                _ => oauth_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_grant",
+                    &description.unwrap_or_else(|| REFUSED.to_string()),
+                ),
+            };
         }
-        Err(_) => return oauth_error(StatusCode::BAD_REQUEST, "invalid_grant", REFUSED),
     };
 
     let Ok(jwt) = context.jwt() else {

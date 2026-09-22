@@ -69,21 +69,19 @@ pub(crate) async fn run(
         // `AccessTokens` is what keeps it from being a request every time.
         let exchanged = match &workload {
             None => true,
-            Some(tokens) => match tokens.current().await {
-                Ok(token) => {
+            Some(tokens) => match tokens
+                .for_call(
+                    &health,
+                    "exchange this sidecar's workload identity for the event feed",
+                )
+                .await
+            {
+                Some(token) => {
                     control.set_credential(Some(token));
 
                     true
                 }
-                Err(err) => {
-                    note(
-                        &health,
-                        "exchange this sidecar's workload identity for the event feed",
-                        &err,
-                    );
-
-                    false
-                }
+                None => false,
             },
         };
 
@@ -129,7 +127,9 @@ pub(crate) async fn run(
 
         // The shared backoff: the heartbeat that failed a moment ago moved this
         // on too, so one outage is one sequence of attempts rather than two.
-        let wait = health.backoff();
+        // A credential the server is refusing has a longer wait of its own, and
+        // reopening the feed cannot help until that has run out either.
+        let wait = wait_for(&health, workload.as_deref());
 
         tokio::select! {
             biased;
@@ -137,6 +137,21 @@ pub(crate) async fn run(
             () = shutdown.cancelled() => return,
             () = tokio::time::sleep(wait) => {}
         }
+    }
+}
+
+/// How long to wait before trying again.
+///
+/// The longer of the two waits: the link's, for a server that cannot be
+/// reached, and the credential's, for one that will not take what we have.
+/// Waiting the shorter of them would be a request we already know the answer
+/// to.
+fn wait_for(health: &LinkHealth, workload: Option<&AccessTokens>) -> std::time::Duration {
+    let link = health.backoff();
+
+    match workload {
+        Some(tokens) => link.max(tokens.retry_in()),
+        None => link,
     }
 }
 

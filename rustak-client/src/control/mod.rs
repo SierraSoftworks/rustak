@@ -338,7 +338,13 @@ fn refused(status: reqwest::StatusCode, body: &str, what: &str) -> Error {
         _ => &["The message above is the server's own."],
     };
 
-    human_errors::user(format!("Could not {what}: {detail}."), advice)
+    human_errors::user(
+        format!(
+            "Could not {what}: {detail}{}",
+            crate::http::full_stop(&detail)
+        ),
+        advice,
+    )
 }
 
 #[cfg(test)]
@@ -346,6 +352,48 @@ mod tests {
     use rustak_core::identity::ServiceName;
 
     use super::*;
+
+    #[test]
+    fn a_refusal_carries_the_servers_own_sentence_without_doubling_its_full_stop() {
+        // The production finding, verbatim: "Could not read this service's
+        // configuration: That credential is not one this server accepts for
+        // the control API.." — the server's sentence already ended.
+        let rendered = refused(
+            reqwest::StatusCode::UNAUTHORIZED,
+            r#"{"error":"That credential is not one this server accepts for the control API."}"#,
+            "read this service's configuration",
+        );
+
+        assert_eq!(
+            rendered.description(),
+            "Could not read this service's configuration: That credential is not one this server accepts for the control API.",
+        );
+    }
+
+    #[test]
+    fn a_refusal_whose_detail_is_not_a_sentence_still_ends_in_one() {
+        let rendered = refused(
+            reqwest::StatusCode::NOT_FOUND,
+            r#"{"error":"No service named 'weather' is registered"}"#,
+            "report a heartbeat",
+        );
+
+        assert!(
+            rendered.description().ends_with("is registered."),
+            "{}",
+            rendered.description(),
+        );
+
+        // And a body that is not an error object at all falls back to the
+        // status, which never ends in a full stop.
+        let bare = refused(reqwest::StatusCode::BAD_GATEWAY, "<html>", "register");
+
+        assert!(
+            bare.description().ends_with("Bad Gateway."),
+            "{}",
+            bare.description()
+        );
+    }
 
     #[test]
     fn a_client_presents_the_token_when_one_is_configured() {

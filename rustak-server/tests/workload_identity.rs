@@ -170,6 +170,20 @@ impl Deployment {
             .issue(self.issuer.nomad_claims(NAMESPACE, JOB, "ais"))
     }
 
+    /// The same assertion, which stopped being valid `ago` seconds ago.
+    ///
+    /// Issued an hour before it expired, as a one-hour identity is.
+    fn expired(&self, ago: i64) -> String {
+        let mut claims = self.issuer.nomad_claims(NAMESPACE, JOB, "ais");
+        let expired = chrono::Utc::now().timestamp() - ago;
+
+        claims["exp"] = serde_json::json!(expired);
+        claims["iat"] = serde_json::json!(expired - 3_600);
+        claims["nbf"] = serde_json::json!(expired - 3_600);
+
+        self.issuer.issue(claims)
+    }
+
     /// `GET /Marti/api/tls/config` with an assertion in the given header.
     async fn tls_config(&self, header: (&str, String)) -> reqwest::Response {
         self.http
@@ -382,25 +396,159 @@ async fn an_assertion_that_leaves_its_audience_out_altogether_is_refused_too() {
 }
 
 #[actix_web::test]
-async fn an_expired_assertion_is_refused() {
+async fn an_expired_assertion_is_refused_wherever_it_is_presented() {
     // The whole point of a workload identity is that it is short lived and
     // rotated; a server that ignored `exp` would turn every assertion it ever
-    // saw into a permanent credential.
+    // saw into a permanent credential. Both routes that take one are asserted,
+    // because "refused at enrolment, accepted at the token endpoint" is the
+    // shape this would fail in.
     let deployment = Deployment::start().await;
     deployment.account(ACCOUNT, UserKind::Service, false).await;
 
-    let mut claims = deployment.issuer.nomad_claims(NAMESPACE, JOB, "ais");
-    let expired = chrono::Utc::now().timestamp() - 3600;
-    claims["exp"] = serde_json::json!(expired);
-    claims["iat"] = serde_json::json!(expired - 60);
-    claims["nbf"] = serde_json::json!(expired - 60);
+    let assertion = deployment.expired(3_600);
 
     assert!(
-        deployment
-            .enrol(ACCOUNT, &deployment.issuer.issue(claims))
-            .await
-            .is_err()
+        deployment.enrol(ACCOUNT, &assertion).await.is_err(),
+        "the enrolment routes",
     );
+
+    let response = deployment
+        .token(&[
+            ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
+            ("assertion", &assertion),
+        ])
+        .await;
+
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    let body: serde_json::Value = response.json().await.expect("an OAuth error object");
+
+    assert_eq!(body["error"], "invalid_grant");
+
+    let description = body["error_description"]
+        .as_str()
+        .expect("a description of what was wrong");
+
+    // `1h` rather than `1h00m`: the minutes tick over while the test runs, and
+    // what is being asserted is that the holder is told which check failed and
+    // roughly how far out it was — not how fast this host is.
+    assert!(
+        description.starts_with("exp: expired 1h") && description.ends_with(" ago"),
+        "the holder of a token is told what is wrong with it: {description}",
+    );
+    assert!(
+        !description.contains(&assertion) && !description.contains("eyJ"),
+        "and never any of the token itself: {description}",
+    );
+
+    deployment.stop().await;
+}
+
+#[actix_web::test]
+async fn the_clock_skew_allowance_is_a_boundary_and_not_a_door() {
+    // `clock_skew` exists for two machines whose clocks differ, and it is the
+    // one setting that could turn "expired" into "accepted". It is a window
+    // measured from `exp`, and nothing outside it is admitted.
+    //
+    // Ten minutes rather than the default thirty seconds, so that what is being
+    // asserted is the boundary rather than how long this test took to run: a
+    // host ten times slower still puts both assertions on the same side of it.
+    let deployment = Deployment::start_with(true, |config| {
+        for issuer in &mut config.auth.workload.issuers {
+            issuer.clock_skew = chrono::Duration::seconds(600);
+        }
+    })
+    .await;
+    deployment.account(ACCOUNT, UserKind::Service, false).await;
+
+    let inside = deployment.expired(300);
+    let outside = deployment.expired(900);
+
+    assert!(
+        deployment.enrol(ACCOUNT, &inside).await.is_ok(),
+        "five minutes past `exp` with a ten-minute allowance is inside it",
+    );
+    assert!(
+        deployment.enrol(ACCOUNT, &outside).await.is_err(),
+        "fifteen minutes past it is not, and no allowance admits it",
+    );
+
+    deployment.stop().await;
+}
+
+#[actix_web::test]
+async fn a_sidecar_whose_token_file_is_renewed_keeps_its_control_link() {
+    // The production defect, end to end. A sidecar's access token is spent
+    // (`access_token_ttl` is shorter than the client's renewal margin, so every
+    // call exchanges again) and the assertion it would present has expired —
+    // which is what a credential read once from the environment looks like an
+    // hour later. The orchestrator then rewrites the file, and the *file* is
+    // what a sidecar reads, every time.
+    //
+    // Nothing here waits: what moves is the content of a file and a lifetime in
+    // the configuration.
+    let deployment = Deployment::start_with(true, |config| {
+        config.auth.access_token_ttl = chrono::Duration::seconds(30);
+    })
+    .await;
+    deployment.account(ACCOUNT, UserKind::Service, false).await;
+
+    let directory = tempfile::tempdir().expect("a directory for the task's secrets");
+    let path = directory.path().join("nomad_rustak.jwt");
+    std::fs::write(&path, deployment.nomad()).expect("Nomad writes the identity");
+
+    let tokens = rustak_client::sidecar::AccessTokens::new(
+        rustak_client::sidecar::Source::File(path.clone()),
+        deployment.base.clone(),
+        reqwest::Client::new(),
+    );
+
+    let first = tokens.current().await.expect("the first exchange");
+
+    // An hour later, as a frozen copy of the identity would be.
+    std::fs::write(&path, deployment.expired(3_600)).expect("the stale identity");
+
+    let refused = tokens
+        .current()
+        .await
+        .expect_err("an expired assertion buys nothing");
+
+    assert!(
+        refused.to_string().contains("expired 1h00m ago"),
+        "and this end says so without being told twice: {refused}",
+    );
+    assert!(
+        refused.to_string().contains("nomad_rustak.jwt"),
+        "naming the source it read: {refused}",
+    );
+
+    // Nomad renews by rewriting the file. Nothing restarts, nothing is
+    // reconfigured, and the next call is simply a call.
+    std::fs::write(&path, deployment.nomad()).expect("Nomad renews the identity");
+
+    let renewed = tokens.current().await.expect("the renewed exchange");
+
+    assert_ne!(
+        first.expose(),
+        renewed.expose(),
+        "a second access token, bought with the renewed assertion",
+    );
+
+    let control = deployment
+        .http
+        .post(format!("{}/api/v1/services/register", deployment.base))
+        .bearer_auth(renewed.expose())
+        .json(&serde_json::json!({ "name": ACCOUNT, "version": "0.0.0-test" }))
+        .send()
+        .await
+        .expect("the control API answers");
+
+    assert!(
+        control.status().is_success(),
+        "and the control link is up on the far side of the renewal: {}",
+        control.status(),
+    );
+
     deployment.stop().await;
 }
 

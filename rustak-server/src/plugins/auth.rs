@@ -125,7 +125,12 @@ impl Caller {
 /// every cause, so the endpoint cannot be asked whether a token exists;
 /// [`AuthFailure::Forbidden`] when a certificate resolved to an account it does
 /// not match; [`AuthFailure::Unavailable`] when a read fails.
-#[instrument("plugins.auth", skip_all, err(Debug))]
+// `err(level = "debug")`: a caller presenting a credential this server will not
+// take is not this server failing, and logging it at ERROR — inside the request
+// span, with every header the request carried — is what made one sidecar's
+// expired token look like an outage. `auth::workload::refusals` says what was
+// actually wrong, once, at `warn`.
+#[instrument("plugins.auth", skip_all, err(level = "debug", Debug))]
 pub async fn caller(context: &AppContext, request: &HttpRequest) -> Result<Caller, AuthFailure> {
     let config = context.config();
     let facts = RequestFacts {

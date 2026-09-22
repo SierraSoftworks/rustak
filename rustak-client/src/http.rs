@@ -376,10 +376,29 @@ pub fn is_transport(err: &Error) -> bool {
 /// url (…)", which is the shape a production outage was mistaken for a network
 /// problem in. The *cause* is the answer, so the whole chain is rendered.
 pub fn transport(err: reqwest::Error, what: &str) -> Error {
+    let detail = rendered(err);
+
     human_errors::user(
-        format!("Could not {what}: {}.", rendered(err)),
+        format!("Could not {what}: {detail}{}", full_stop(&detail)),
         ADVICE_TRANSPORT,
     )
+}
+
+/// A full stop, unless the sentence already ends in one.
+///
+/// Every refusal this client renders is "what we were doing" followed by the
+/// server's own words, and the server's own words are a sentence. Adding a full
+/// stop unconditionally produced
+/// `…not one this server accepts for the control API..`, on every refused
+/// control-API call, in the first live deployment's log.
+pub(crate) fn full_stop(detail: &str) -> &'static str {
+    match detail
+        .trim_end()
+        .ends_with(['.', '!', '?', ':', '\u{2026}'])
+    {
+        true => "",
+        false => ".",
+    }
 }
 
 /// A transport failure and every cause under it, on one line.
