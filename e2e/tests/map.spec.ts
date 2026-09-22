@@ -65,6 +65,37 @@ test("picking something from the roster opens its pop-over on the map", async ({
   await expect(other).toHaveCount(0);
 });
 
+test("selecting something shows where it has been, and its past can be scrubbed", async ({ page }) => {
+  await gotoApp(page, MAP);
+
+  const application = page.getByRole("application");
+  await expect(application).toHaveAttribute("data-features", /^[1-9]\d*$/);
+  const live = (await application.getAttribute("data-features"))!;
+
+  // Quinn has been walking for half an hour, in the fixtures.
+  await page.getByRole("button", { name: /^QUINN/ }).click();
+  const playback = page.getByRole("region", { name: "Track playback" });
+  await expect(playback).toBeVisible();
+  await expect(playback).toContainText(/\d+ fixes over/);
+  await expect(playback.getByRole("button", { name: "Live" })).toBeDisabled();
+
+  // Scrubbing back to the start shows Quinn where they were then, and
+  // nothing else: nothing else's past has been read.
+  await playback.getByRole("slider").fill("0");
+  await expect(application).toHaveAttribute("data-features", "1");
+  await expect(page.getByText(/^Showing where QUINN was at/)).toBeVisible();
+  await expect(page.getByRole("article", { name: "Details for QUINN" })).toBeVisible();
+
+  // Back to live: everything returns.
+  await playback.getByRole("button", { name: "Live" }).click();
+  await expect(application).toHaveAttribute("data-features", live);
+  await expect(page.getByText(/^Showing where QUINN was at/)).toHaveCount(0);
+
+  // Closing the pop-over takes the track away.
+  await page.getByRole("button", { name: "Close popup" }).click();
+  await expect(playback).toHaveCount(0);
+});
+
 test("the roster is searched by callsign and by type", async ({ page }) => {
   await gotoApp(page, MAP);
 

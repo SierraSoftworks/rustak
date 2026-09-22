@@ -39,6 +39,12 @@ extern "C" {
     #[wasm_bindgen(method, js_name = fitAll)]
     fn fit_all(this: &MapHandle);
 
+    #[wasm_bindgen(method, js_name = showTrack)]
+    fn show_track(this: &MapHandle, geojson: Option<String>);
+
+    #[wasm_bindgen(method)]
+    fn freeze(this: &MapHandle, upserts: Option<String>);
+
     #[wasm_bindgen(method)]
     fn destroy(this: &MapHandle);
 }
@@ -154,6 +160,20 @@ impl Map {
 
     pub fn fit_all(&self) {
         self.handle.fit_all();
+    }
+
+    /// Draws a track under the markers — what
+    /// [`Track::draw`](super::track::Track::draw) produced — or takes it away.
+    pub fn show_track(&self, track: Option<&serde_json::Value>) {
+        self.handle
+            .show_track(track.map(serde_json::Value::to_string));
+    }
+
+    /// Draws only `features` — a moment in the past — instead of what is
+    /// live, or, with [`None`], the live map again.
+    pub fn freeze(&self, features: Option<&[serde_json::Value]>) {
+        self.handle
+            .freeze(features.map(|features| serde_json::Value::from(features).to_string()));
     }
 }
 

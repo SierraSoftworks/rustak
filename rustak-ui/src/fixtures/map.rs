@@ -4,7 +4,8 @@
 //!
 //! The feed is here too. Demo mode has no stream behind it, so [`map_tick`]
 //! stands in for one — an aircraft flies a circuit and a person walks — which
-//! is what makes the page reviewable as the *live* page it is.
+//! is what makes the page reviewable as the *live* page it is. [`map_history`]
+//! is the same two, walked backwards, so that a track has something to draw.
 
 use chrono::{DateTime, Duration, Utc};
 use rustak_api::{MapFeature, MapPoint, MapShape, MapUpdate};
@@ -55,11 +56,17 @@ fn person(uid: &str, callsign: &str, team: &str, role: &str, lat: f64, lon: f64)
 
 /// The aircraft, `tick` steps around its circuit.
 fn rescue(tick: u32) -> MapFeature {
-    let around = f64::from(tick) * 0.12;
+    rescue_at(f64::from(tick), Utc::now())
+}
+
+/// The aircraft where it is `tick` steps in — negative for steps before the
+/// page opened — reported at `time`.
+fn rescue_at(tick: f64, time: DateTime<Utc>) -> MapFeature {
+    let around = tick * 0.12;
 
     MapFeature {
-        time: Utc::now(),
-        received_at: Utc::now(),
+        time,
+        received_at: time,
         course: Some((around.to_degrees() + 90.0).rem_euclid(360.0)),
         speed: Some(62.0),
         point: MapPoint {
@@ -79,9 +86,13 @@ fn rescue(tick: u32) -> MapFeature {
 
 /// Somebody walking east along the river.
 fn quinn(tick: u32) -> MapFeature {
+    quinn_at(f64::from(tick), Utc::now())
+}
+
+fn quinn_at(tick: f64, time: DateTime<Utc>) -> MapFeature {
     MapFeature {
-        time: Utc::now(),
-        received_at: Utc::now(),
+        time,
+        received_at: time,
         course: Some(84.0),
         speed: Some(1.4),
         ..person(
@@ -90,8 +101,34 @@ fn quinn(tick: u32) -> MapFeature {
             "Cyan",
             "Team Lead",
             51.50735,
-            -0.12776 + f64::from(tick) * 0.00012,
+            -0.12776 + tick * 0.00012,
         )
+    }
+}
+
+/// The feed ticks this often, so a fix this many seconds old is half as many
+/// ticks back.
+const TICK_SECONDS: i64 = 2;
+
+/// Where a demo feature has been over the last `secago` seconds, oldest first.
+///
+/// The two things that move have ten minutes of past, a fix every tick, on the
+/// same circuit and the same walk the feed continues; the rest have only where
+/// they are.
+pub fn map_history(uid: &str, secago: i64) -> Vec<MapFeature> {
+    let span = secago.clamp(0, 10 * 60);
+    let fixes = (0..=span / TICK_SECONDS)
+        .rev()
+        .map(|step| step * TICK_SECONDS);
+    let tick = |ago: i64| -(ago as f64) / TICK_SECONDS as f64;
+
+    match uid {
+        "ICAO-406b2f" => fixes.map(|secs| rescue_at(tick(secs), ago(secs))).collect(),
+        "ANDROID-2f1c9a7b4e0d" => fixes.map(|secs| quinn_at(tick(secs), ago(secs))).collect(),
+        _ => map_features()
+            .into_iter()
+            .filter(|feature| feature.uid == uid)
+            .collect(),
     }
 }
 

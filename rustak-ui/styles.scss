@@ -3111,6 +3111,10 @@ footer {
     margin: 0;
     font-size: 0.85rem;
     color: $text-regular;
+
+    &--shown {
+      color: darken($warning, 15%);
+    }
   }
 
   // As tall as the window allows under the bar and the title, and never so
@@ -3121,14 +3125,38 @@ footer {
     height: max(26rem, calc(100vh - 17.5rem));
   }
 
-  &__canvas {
+  // The map and, laid over its foot, the playback bar.
+  &__stage {
+    position: relative;
     flex: 1;
     min-width: 0;
+  }
+
+  &__canvas {
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
     border: 1px solid $border-light;
     border-radius: $radius-lg;
     overflow: hidden;
     background: $fill-light;
     font-family: $font-sans;
+  }
+
+  // Over the map, clear of the scale control in one corner and the
+  // attribution in the other. Always there; empty and hidden when no track
+  // is shown, for the reason `__portal` is.
+  &__playback {
+    position: absolute;
+    left: 50%;
+    bottom: 2.25rem;
+    z-index: 2;
+    width: min(46rem, calc(100% - 2rem));
+    transform: translateX(-50%);
+
+    &:empty {
+      display: none;
+    }
   }
 
   // MapLibre's pop-over, brought into line with a card.
@@ -3159,9 +3187,98 @@ footer {
       height: auto;
     }
 
-    &__canvas {
+    &__stage {
       flex: none;
       height: 60vh;
+    }
+  }
+}
+
+// The scrub bar over the foot of the map, like a recording's.
+.map-playback {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid $border-light;
+  border-radius: $radius-lg;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: $shadow-md;
+  font-family: $font-sans;
+  font-size: 0.8rem;
+  color: $text-regular;
+
+  &__button {
+    flex: none;
+    min-width: 2rem;
+    height: 2rem;
+    padding: 0 0.6rem;
+    border: 1px solid $border-base;
+    border-radius: $radius;
+    background: $bg-white;
+    font: inherit;
+    font-weight: 600;
+    color: $text-primary;
+    cursor: pointer;
+    transition: background $transition, color $transition;
+
+    &:hover:not(:disabled) {
+      background: $fill-light;
+    }
+
+    &:focus-visible {
+      outline: 2px solid $brand;
+      outline-offset: 1px;
+    }
+
+    &:disabled {
+      cursor: default;
+      color: $text-placeholder;
+    }
+
+    &--live:not(:disabled) {
+      border-color: $brand;
+      color: $brand;
+    }
+  }
+
+  &__scrub {
+    flex: 1;
+    min-width: 6rem;
+    margin: 0;
+    accent-color: $brand;
+  }
+
+  &__time {
+    flex: none;
+    min-width: 9.5rem;
+    font-family: $font-mono;
+    font-size: 0.75rem;
+    white-space: nowrap;
+  }
+
+  &__speed {
+    flex: none;
+    height: 2rem;
+    padding: 0 0.35rem;
+    border: 1px solid $border-base;
+    border-radius: $radius;
+    background: $bg-white;
+    font: inherit;
+    color: $text-primary;
+  }
+
+  &__summary {
+    flex: none;
+    color: $text-secondary;
+    white-space: nowrap;
+  }
+
+  @media (max-width: 900px) {
+    flex-wrap: wrap;
+
+    &__summary {
+      display: none;
     }
   }
 }

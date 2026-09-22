@@ -4,7 +4,10 @@
 //! [`feed`](feed::feed) is a Server-Sent Events response of what the router
 //! relays from then on. They are separate so that the snapshot stays an
 //! ordinary cacheable-by-nobody `GET` a script can use, and so that a page can
-//! open the feed *first* and lose nothing to the gap between them.
+//! open the feed *first* and lose nothing to the gap between them. A third,
+//! [`history`](history::history), is one uid's past — the same features, read
+//! back out of the history segments — for a page that wants to draw where
+//! something has been.
 //!
 //! # Who sees what
 //!
@@ -24,6 +27,7 @@
 
 pub mod feature;
 pub mod feed;
+pub mod history;
 pub mod shape;
 
 use actix_web::web;
@@ -58,6 +62,10 @@ const PAGE: u32 = 2_000;
 pub fn routes(config: &mut web::ServiceConfig) {
     config
         .route("/map/features", web::get().to(features))
+        .route(
+            "/map/features/{uid}/history",
+            web::get().to(history::history),
+        )
         .route("/map/events", web::get().to(feed::feed));
 }
 

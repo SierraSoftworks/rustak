@@ -133,6 +133,38 @@ function addLayers(map) {
     source: "shapes",
     paint: { "line-color": ["get", "color"], "line-width": 2.5, "line-opacity": fade },
   });
+  // Where the selected thing has been: the part travelled by the moment
+  // shown, the part still to come, and the fixes along both. Under the
+  // markers, so that the thing itself is drawn on top of its own past.
+  map.addSource("track", { type: "geojson", data: empty });
+  const part = (name) => ["==", ["get", "part"], name];
+  map.addLayer({
+    id: "track-future",
+    type: "line",
+    source: "track",
+    filter: part("future"),
+    paint: { "line-color": ["get", "color"], "line-width": 2, "line-opacity": 0.35, "line-dasharray": [2, 2] },
+  });
+  map.addLayer({
+    id: "track-past",
+    type: "line",
+    source: "track",
+    filter: part("past"),
+    layout: { "line-join": "round", "line-cap": "round" },
+    paint: { "line-color": ["get", "color"], "line-width": 3, "line-opacity": 0.85 },
+  });
+  map.addLayer({
+    id: "track-fixes",
+    type: "circle",
+    source: "track",
+    filter: part("fix"),
+    paint: {
+      "circle-radius": 2.5,
+      "circle-color": ["get", "color"],
+      "circle-stroke-color": "#ffffff",
+      "circle-stroke-width": 1,
+    },
+  });
   map.addLayer({
     id: "selected",
     type: "circle",
@@ -186,6 +218,9 @@ class MapHandle {
   constructor(maplibre, ms, map, onPick) {
     Object.assign(this, { maplibre, ms, map, onPick });
     this.features = new Map();
+    // What is drawn instead of `features` while a moment in the past is
+    // shown, or null for the live map. See `freeze`.
+    this.frozen = null;
     this.selected = null;
     // Set while this file is itself moving or closing the pop-over. See `quietly`.
     this.quiet = false;
@@ -229,6 +264,18 @@ class MapHandle {
     this.onPick(JSON.stringify({ uids, at }));
   }
 
+  // What is on the map right now: the live features, or the moment frozen
+  // over them.
+  shown() {
+    return this.frozen ?? this.features;
+  }
+
+  // A feature by uid, from what is shown, or from what is live when what is
+  // shown is a moment that it is not part of — the roster names live things.
+  lookup(uid) {
+    return this.shown().get(uid) ?? this.features.get(uid);
+  }
+
   // `upserts` is a JSON array of `{ uid, anchor, shape }`, the last two being
   // GeoJSON features; `removes` is a JSON array of uids.
   apply(upserts, removes) {
@@ -243,9 +290,26 @@ class MapHandle {
     this.frame ??= requestAnimationFrame(() => this.draw());
   }
 
+  // Draws `upserts` — a JSON array as `apply` takes, a moment in the past —
+  // *instead of* the live features, or the live features again for null.
+  // The live ones keep arriving underneath either way, so returning to live
+  // is a redraw and not a reload.
+  freeze(upserts) {
+    this.frozen = upserts == null ? null : new Map(JSON.parse(upserts).map((feature) => [feature.uid, feature]));
+    this.frame ??= requestAnimationFrame(() => this.draw());
+  }
+
+  // `geojson` is a FeatureCollection of the track's parts — lines with a
+  // `part` of "past" or "future", and a MultiPoint of "fix" — or null for
+  // no track.
+  showTrack(geojson) {
+    const collection = geojson ? JSON.parse(geojson) : { type: "FeatureCollection", features: [] };
+    this.map.getSource("track")?.setData(collection);
+  }
+
   draw() {
     this.frame = null;
-    const all = [...this.features.values()];
+    const all = [...this.shown().values()];
     const collection = (features) => ({ type: "FeatureCollection", features });
 
     this.map.getSource("anchors")?.setData(collection(all.map((feature) => feature.anchor)));
@@ -254,7 +318,7 @@ class MapHandle {
     // What a test, or somebody with the inspector open, can read without WebGL.
     this.map.getContainer().dataset.features = String(all.length);
 
-    const selected = this.features.get(this.selected);
+    const selected = this.shown().get(this.selected);
     if (selected) {
       this.popup.setLngLat(selected.anchor.geometry.coordinates);
     }
@@ -281,7 +345,7 @@ class MapHandle {
   }
 
   select(uid) {
-    const feature = this.features.get(uid);
+    const feature = this.lookup(uid);
     this.selected = feature ? uid : null;
     this.map.setFilter("selected", ["==", ["get", "uid"], this.selected ?? ""]);
 
@@ -333,19 +397,19 @@ class MapHandle {
   }
 
   flyTo(uid) {
-    const feature = this.features.get(uid);
+    const feature = this.lookup(uid);
     if (feature) {
       this.map.easeTo({ center: feature.anchor.geometry.coordinates, zoom: Math.max(this.map.getZoom(), 12) });
     }
   }
 
   fitAll() {
-    if (this.features.size === 0) {
+    if (this.shown().size === 0) {
       return;
     }
 
     const bounds = new this.maplibre.LngLatBounds();
-    for (const { anchor } of this.features.values()) {
+    for (const { anchor } of this.shown().values()) {
       bounds.extend(anchor.geometry.coordinates);
     }
     this.map.fitBounds(bounds, { padding: 64, maxZoom: 14, animate: false });

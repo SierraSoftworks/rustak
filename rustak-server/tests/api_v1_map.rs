@@ -1,10 +1,11 @@
 //! `/api/v1/map`: the snapshot a map draws from, and the feed that keeps it
 //! current.
 //!
-//! Both are exercised in-process. The snapshot is read back from rows written
-//! the way the store's writer writes them; the feed is driven through the
-//! router's own tap, which is the only thing it listens to, so nothing here
-//! needs a TLS listener or a connected device.
+//! All three are exercised in-process. The snapshot is read back from rows
+//! written the way the store's writer writes them, and a track from segments
+//! written the way the history writer writes them; the feed is driven through
+//! the router's own tap, which is the only thing it listens to, so nothing
+//! here needs a TLS listener or a connected device.
 
 #![cfg(feature = "testing")]
 
@@ -21,6 +22,7 @@ use rustak_api::MapFeature;
 use rustak_cot::codec::EncodedEvent;
 use rustak_cot::detail::{Chat, Contact, Element, Group};
 use rustak_cot::{CotTime, Event};
+use rustak_server::cot_store::history::HistoryWriter;
 use rustak_server::cot_store::latest::upsert_batch;
 use rustak_server::cot_store::{CotRecord, CotStoreHandle};
 use rustak_server::prelude::*;
@@ -78,6 +80,41 @@ async fn store(server: &TestServer, encoded: Arc<EncodedEvent>, bits: &[u32]) {
     upsert_batch(server.db(), vec![record])
         .await
         .expect("a stored message");
+}
+
+/// One fix of a track: where `uid` was at `time`, heading `course`.
+fn fix(uid: &str, time: DateTime<Utc>, lon: f64, course: u32) -> Arc<EncodedEvent> {
+    Arc::new(EncodedEvent::new(
+        Event::builder("a-f-G-U-C", uid)
+            .how("m-g")
+            .point(51.5, lon)
+            .time(CotTime::from_datetime(time))
+            .start(CotTime::from_datetime(time))
+            .stale(CotTime::from_datetime(time + Duration::minutes(2)))
+            .typed(&Contact::new("ALPHA"))
+            .push(
+                Element::new("track")
+                    .attr("course", course.to_string())
+                    .attr("speed", "2"),
+            )
+            .build(),
+    ))
+}
+
+/// Writes `fixes` into `uid`'s history segments, the way the store's writer
+/// does, and leaves the index describing them.
+async fn record(server: &TestServer, uid: &str, fixes: &[Arc<EncodedEvent>]) {
+    let mut writer = HistoryWriter::new(server.db().clone(), server.config().streams_dir());
+
+    for encoded in fixes {
+        let time = encoded.event().time.to_datetime().unwrap();
+        writer
+            .append(uid, time, encoded.proto())
+            .await
+            .expect("a stored fix");
+    }
+
+    writer.close().await.expect("the index catches up");
 }
 
 async fn features(server: &TestServer, token: &rustak_api::TokenResponse) -> Vec<MapFeature> {
@@ -178,6 +215,89 @@ async fn the_snapshot_is_what_is_current_and_worth_drawing() {
     assert_eq!(listed[0].team.as_deref(), Some("Cyan"));
     assert_eq!(listed[0].course, Some(90.0));
     assert_eq!((listed[0].point.lat, listed[0].point.lon), (51.5, -0.12));
+}
+
+#[actix_web::test]
+async fn a_track_is_the_history_read_back_oldest_first_and_narrowed_to_a_window() {
+    let server = TestServer::start().await;
+    let (_, admin) = server.signed_in("grace", true).await;
+    let now = Utc::now();
+
+    store(
+        &server,
+        message("ANDROID-1", "a-f-G-U-C", now + Duration::minutes(2)),
+        &[2],
+    )
+    .await;
+    record(
+        &server,
+        "ANDROID-1",
+        &[
+            fix("ANDROID-1", now - Duration::seconds(120), -0.12, 90),
+            fix("ANDROID-1", now - Duration::seconds(60), -0.11, 95),
+            fix("ANDROID-1", now, -0.10, 100),
+        ],
+    )
+    .await;
+
+    let app = app!(server);
+    let track = |query: &'static str| {
+        test::TestRequest::get()
+            .uri(&format!("/api/v1/map/features/ANDROID-1/history{query}"))
+            .insert_header(("authorization", bearer(&admin)))
+            .to_request()
+    };
+
+    let listed: Vec<MapFeature> = test::call_and_read_body_json(&app, track("?secago=3600")).await;
+
+    let lons: Vec<f64> = listed.iter().map(|fix| fix.point.lon).collect();
+    assert_eq!(lons, [-0.12, -0.11, -0.10], "{listed:?}");
+    assert!(listed.windows(2).all(|pair| pair[0].time < pair[1].time));
+    assert_eq!(listed[0].course, Some(90.0));
+    assert_eq!(listed[0].callsign.as_deref(), Some("ALPHA"));
+
+    let recent: Vec<MapFeature> = test::call_and_read_body_json(&app, track("?secago=90")).await;
+    assert_eq!(recent.len(), 2, "{recent:?}");
+
+    let newest: Vec<MapFeature> =
+        test::call_and_read_body_json(&app, track("?secago=3600&limit=1")).await;
+    assert_eq!(newest.len(), 1);
+    assert_eq!(newest[0].point.lon, -0.10, "the newest fix is the one kept");
+}
+
+#[actix_web::test]
+async fn a_track_is_gated_the_way_the_snapshot_is() {
+    let server = TestServer::start().await;
+    let (_, admin) = server.signed_in("grace", true).await;
+    let (_, ordinary) = server.signed_in("ada", false).await;
+    let now = Utc::now();
+
+    // Bit 9 is a channel nobody in this test holds in the `OUT` direction.
+    store(
+        &server,
+        message("UID-SECRET", "a-f-G-U-C", now + Duration::minutes(2)),
+        &[9],
+    )
+    .await;
+    record(&server, "UID-SECRET", &[fix("UID-SECRET", now, -0.12, 90)]).await;
+
+    let app = app!(server);
+    let track = |uid: &str, token: &rustak_api::TokenResponse| {
+        test::TestRequest::get()
+            .uri(&format!("/api/v1/map/features/{uid}/history?secago=3600"))
+            .insert_header(("authorization", bearer(token)))
+            .to_request()
+    };
+
+    let refused = test::call_service(&app, track("UID-SECRET", &ordinary)).await;
+    assert_eq!(refused.status(), StatusCode::NOT_FOUND);
+
+    let unknown = test::call_service(&app, track("NOBODY", &admin)).await;
+    assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+
+    let listed: Vec<MapFeature> =
+        test::call_and_read_body_json(&app, track("UID-SECRET", &admin)).await;
+    assert_eq!(listed.len(), 1);
 }
 
 #[actix_web::test]

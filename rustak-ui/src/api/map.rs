@@ -1,6 +1,7 @@
-//! The map's two reads: everything current, and what changes afterwards.
+//! The map's reads: everything current, what changes afterwards, and where
+//! one thing has been.
 //!
-//! [`features`] is an ordinary request. [`open`] is not: it is a Server-Sent
+//! [`features`] and [`history`] are ordinary requests. [`open`] is not: it is a Server-Sent
 //! Events response read off a `fetch` body (see [`sse`](super::sse) for why it
 //! is not an `EventSource`), and it stays open for as long as the page does.
 //! A page opens the feed *first* and reads the snapshot second, so anything
@@ -22,6 +23,7 @@ use crate::api::{ApiError, Verb, error_from_response, get_json, send};
 #[cfg(debug_assertions)]
 use crate::fixtures;
 use crate::fixtures::demo;
+use crate::util::urlencode;
 
 /// How long the feed may be silent before it is taken for dead.
 ///
@@ -35,6 +37,18 @@ pub async fn features() -> Result<Vec<MapFeature>, ApiError> {
     demo!(Ok(fixtures::map_features()));
 
     get_json("/map/features").await
+}
+
+/// Where one uid has been over the last `secago` seconds, oldest first. The
+/// server keeps the newest fixes when there are more than it will answer with.
+pub async fn history(uid: &str, secago: i64) -> Result<Vec<MapFeature>, ApiError> {
+    demo!(Ok(fixtures::map_history(uid, secago)));
+
+    get_json(&format!(
+        "/map/features/{}/history?secago={secago}",
+        urlencode(uid)
+    ))
+    .await
 }
 
 /// Opens the live feed.

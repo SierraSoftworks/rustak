@@ -6,6 +6,9 @@
 //! [`roster`], and the pop-over, which is ordinary Yew portalled into an
 //! element the map positions. What the pop-over shows is its [`focus`]: one
 //! feature's [`popover`], or the [`chooser`] when a click landed on several.
+//! Under one feature's pop-over is its [`track`] — where it has been — and
+//! over the bottom of the map the [`playback`] bar that scrubs along it; the
+//! [`history`] module is the part of the session that owns both.
 //!
 //! # Yew is not in the hot path
 //!
@@ -35,11 +38,14 @@
 mod chooser;
 mod focus;
 mod glue;
+mod history;
+mod playback;
 mod popover;
 mod render;
 mod roster;
 mod session;
 mod store;
+mod track;
 
 use yew::prelude::*;
 
@@ -48,6 +54,7 @@ use crate::components::{Alert, AlertKind, Button, StatusPill, StatusTone};
 
 use chooser::Chooser;
 use focus::Focus;
+use playback::PlaybackBar;
 use popover::Popover;
 use roster::{ROSTER_ROWS, Roster, RosterEntry};
 use session::{FeedStatus, Listeners, Session};
@@ -67,12 +74,20 @@ pub fn live_map() -> Html {
     // prompt: `Protected`, above this page, draws whatever the answer is.
     let on_signed_out = auth.map(|auth| auth.refresh).unwrap_or_default();
 
+    // Redraws this component, for the parts of the session that change on
+    // their own time: the feed, a track arriving, a track playing.
+    let on_redraw = {
+        let redraw = redraw.clone();
+        Callback::from(move |()| redraw.force_update())
+    };
+
     {
-        let (container, session, status, focus) = (
+        let (container, session, status, focus, on_redraw) = (
             container.clone(),
             session.clone(),
             status.clone(),
             focus.clone(),
+            on_redraw.clone(),
         );
 
         use_effect_with((), move |_| {
@@ -82,7 +97,7 @@ pub fn live_map() -> Html {
                 Listeners {
                     on_status: Callback::from(move |next| status.set(next)),
                     on_focus: Callback::from(move |next| focus.set(next)),
-                    on_redraw: Callback::from(move |()| redraw.force_update()),
+                    on_redraw,
                     on_signed_out,
                 },
             );
@@ -91,12 +106,13 @@ pub fn live_map() -> Html {
         });
     }
 
-    // The pop-over follows the focus. The status is a dependency because the
-    // first thing it reports is that there is now a map to open one on.
+    // The pop-over follows the focus, and the track follows the pop-over. The
+    // status is a dependency because the first thing it reports is that there
+    // is now a map to open one on.
     {
-        let session = session.clone();
+        let (session, on_redraw) = (session.clone(), on_redraw.clone());
         use_effect_with(((*focus).clone(), (*status).clone()), move |(focus, _)| {
-            session.borrow_mut().focus(focus.clone());
+            history::follow(session, focus.clone(), on_redraw);
             || ()
         });
     }
@@ -123,6 +139,37 @@ pub fn live_map() -> Html {
         Callback::from(move |_: MouseEvent| session.borrow().fit_all())
     };
 
+    // The playback bar. Each of these changes the session and then this
+    // component, which draws the bar from what the session now says.
+    let onseek = {
+        let (session, redraw) = (session.clone(), redraw.clone());
+        Callback::from(move |offset: i64| {
+            session.borrow_mut().seek(offset);
+            redraw.force_update();
+        })
+    };
+    let onspeed = {
+        let (session, redraw) = (session.clone(), redraw.clone());
+        Callback::from(move |speed: u32| {
+            session.borrow_mut().set_speed(speed);
+            redraw.force_update();
+        })
+    };
+    let onlive = {
+        let (session, redraw) = (session.clone(), redraw.clone());
+        Callback::from(move |()| {
+            session.borrow_mut().go_live();
+            redraw.force_update();
+        })
+    };
+    let ontoggle = {
+        let (session, on_redraw) = (session.clone(), on_redraw.clone());
+        Callback::from(move |()| {
+            history::toggle_playing(session.clone(), on_redraw.clone());
+            on_redraw.emit(());
+        })
+    };
+
     let held = session.borrow();
     let matching = held.store().roster(&search);
     let entries: Vec<RosterEntry> = matching
@@ -132,12 +179,12 @@ pub fn live_map() -> Html {
         .collect();
 
     // Rendered into the element the map positions, so the pop-over is the
-    // map's to place and Yew's to fill.
+    // map's to place and Yew's to fill. On a feature, it describes the fix at
+    // the moment being shown — which is the live one until somebody scrubs.
     let content = match &*focus {
         Focus::Nothing => None,
         Focus::Feature(uid) => held
-            .store()
-            .get(uid)
+            .displayed(uid)
             .map(|feature| html! { <Popover feature={feature.clone()} /> }),
         Focus::Choosing { uids, .. } => {
             let entries: Vec<RosterEntry> = uids
@@ -152,6 +199,21 @@ pub fn live_map() -> Html {
     let popover = content
         .zip(held.popover_element())
         .map(|(content, host)| create_portal(content, host));
+
+    let playback = held.replay().map(|replay| {
+        html! {
+            <PlaybackBar
+                name={replay.track.name()}
+                fixes={replay.track.len()}
+                position={replay.position.clone()}
+                {onseek}
+                {ontoggle}
+                {onspeed}
+                {onlive}
+            />
+        }
+    });
+    let shown = history::shown_note(&held);
 
     let (tone, label, explanation) = status.describe();
 
@@ -180,15 +242,24 @@ pub fn live_map() -> Html {
                         <p class="map-page__note">{ explanation }</p>
                     }
                 }
+                if let Some(shown) = shown {
+                    <p class="map-page__note map-page__note--shown">{ shown }</p>
+                }
             </div>
 
             <div class="map-page__body">
-                <div
-                    ref={container}
-                    class="map-page__canvas"
-                    role="application"
-                    aria-label="Map. Everything on it is also listed beside it."
-                />
+                // The playback bar is laid over the map, so the two share a
+                // wrapper; its own wrapper is always there, for the reason
+                // above.
+                <div class="map-page__stage">
+                    <div
+                        ref={container}
+                        class="map-page__canvas"
+                        role="application"
+                        aria-label="Map. Everything on it is also listed beside it."
+                    />
+                    <div class="map-page__playback">{ for playback }</div>
+                </div>
                 <Roster
                     {entries}
                     matched={matching.len()}

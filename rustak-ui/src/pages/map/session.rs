@@ -28,6 +28,7 @@ use crate::components::StatusTone;
 
 use super::focus::Focus;
 use super::glue::{Basemap, Map};
+use super::history::Replay;
 use super::store::{Changes, Store};
 
 /// How long to wait before trying again after the network failed.
@@ -75,9 +76,12 @@ impl FeedStatus {
 /// What the page holds between renders.
 #[derive(Default)]
 pub struct Session {
-    store: Store,
-    map: Option<Map>,
-    focus: Focus,
+    pub(super) store: Store,
+    pub(super) map: Option<Map>,
+    pub(super) focus: Focus,
+    /// Where the thing in focus has been, once the server has said. See
+    /// [`history`](super::history).
+    pub(super) replay: Option<Replay>,
     feed: Option<Canceller>,
     /// Whether anything has changed since the page last drew itself.
     dirty: bool,
@@ -235,7 +239,9 @@ impl Running {
         while let Some(update) = feed.next().await {
             let changes = match update {
                 MapUpdate::Upsert(feature) => {
-                    self.session.borrow_mut().store.upsert(*feature, Utc::now())
+                    let mut session = self.session.borrow_mut();
+                    session.extend_track(&feature);
+                    session.store.upsert(*feature, Utc::now())
                 }
                 MapUpdate::Remove { uid } => self.session.borrow_mut().store.remove(&uid),
                 // `Reset`, and anything a newer server says that this build
