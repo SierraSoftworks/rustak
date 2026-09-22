@@ -308,7 +308,8 @@ impl PowerCheckFeed {
                         asked.map_or(DETAIL_COOLDOWN, |stated| stated.min(super::MAX_RETRY_AFTER));
                     debug!(
                         seconds = wait.as_secs(),
-                        "PowerCheck asked us to wait for details."
+                        stated = asked.is_some(),
+                        "PowerCheck rate-limited a detail request; holding details back."
                     );
                     self.hold_details(now, wait);
                 }

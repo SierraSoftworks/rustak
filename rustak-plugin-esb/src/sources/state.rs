@@ -129,7 +129,13 @@ impl SourceState {
             })
             .max(self.interval);
 
-        info!(source = %self.name, seconds = delay.as_secs(), "{} asked us to wait.", self.name);
+        // Said as what happened: a wait ESB named is ESB's, and one it did not
+        // name is our own guess and must not be attributed to it.
+        if asked.is_some() {
+            info!(source = %self.name, seconds = delay.as_secs(), "{} asked us to wait {}s.", self.name, delay.as_secs());
+        } else {
+            info!(source = %self.name, seconds = delay.as_secs(), "{} refused a request (429) without naming a delay; waiting {}s.", self.name, delay.as_secs());
+        }
 
         self.next_attempt = Utc::now() + delay;
 
