@@ -181,9 +181,15 @@ export const PARSE_FAILURES: readonly string[] = [
   "Invalid character in tag name",
 ];
 
-/** One service's log, without compose's `service | ` prefix. */
-export function serviceLog(service: string, timeoutMs = 120_000): string {
-  return compose(["logs", "--no-color", "--no-log-prefix", service], timeoutMs).output;
+/**
+ * One service's log, without compose's `service | ` prefix.
+ *
+ * Returns the whole `Ran`, not just its output, because a caller looking for
+ * the *absence* of a line cannot tell "the log said nothing bad" from "the log
+ * could not be read" unless it is told which happened.
+ */
+export function serviceLog(service: string, timeoutMs = 120_000): Ran {
+  return compose(["logs", "--no-color", "--no-log-prefix", service], timeoutMs);
 }
 
 /**
@@ -192,6 +198,61 @@ export function serviceLog(service: string, timeoutMs = 120_000): string {
  * Case-insensitive: the wording is somebody else's and its capitalisation is
  * not something this suite should depend on.
  */
+/** What reading CloudTAK's log for parse failures proved, and how it reads. */
+export interface LogVerdict {
+  readonly status: "pass" | "fail";
+  readonly reasons: readonly string[];
+}
+
+/**
+ * Whether `log` shows CloudTAK's parser accepting everything rustak sent it.
+ *
+ * A step that looks for the absence of a line passes when it finds nothing —
+ * including when it had nothing to look at. An unreadable or empty log is the
+ * one way this check can lie, and it would lie *green*, so both are failures
+ * here rather than a pass nobody earned. The passing reason counts the lines it
+ * read and names the server the stack ran, so the green is checkable against
+ * the log that produced it.
+ */
+export function parseLogVerdict(log: Ran, serverName: string): LogVerdict {
+  if (!log.ok) {
+    return {
+      status: "fail",
+      reasons: [
+        `could not read CloudTAK's log, so nothing here proves its parser accepted anything: ${log.output || "no output"}`,
+      ],
+    };
+  }
+
+  const lines = log.output.split("\n").filter((line) => line.trim() !== "");
+
+  if (lines.length === 0) {
+    return {
+      status: "fail",
+      reasons: ["CloudTAK's log came back empty, so nothing here proves its parser accepted anything."],
+    };
+  }
+
+  const refused = parseFailures(log.output);
+
+  if (refused.length > 0) {
+    return {
+      status: "fail",
+      reasons: [
+        `CloudTAK refused ${String(refused.length)} message(s) rustak sent it; the first few:`,
+        ...refused.slice(0, 5),
+      ],
+    };
+  }
+
+  return {
+    status: "pass",
+    reasons: [
+      `CloudTAK's parser refused nothing rustak sent it across ${String(lines.length)} log line(s), as '${serverName}'.`,
+    ],
+  };
+}
+
 export function parseFailures(log: string): string[] {
   const needles = PARSE_FAILURES.map((needle) => needle.toLowerCase());
 

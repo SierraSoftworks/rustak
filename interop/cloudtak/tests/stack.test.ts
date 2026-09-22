@@ -17,7 +17,7 @@ import { test } from "node:test";
 
 import { renderConfig } from "../../shared/src/config.js";
 import { HOSTILE_SERVER_NAME } from "../../shared/src/names.js";
-import { CLOUDTAK_SERVICE, parseFailures } from "../src/compose.js";
+import { CLOUDTAK_SERVICE, parseFailures, parseLogVerdict } from "../src/compose.js";
 import { serverAltNames } from "../src/pki.js";
 import { SERVER_NAME, WIZARD, configuration } from "../src/rustak.js";
 import { CLOUDTAK_TAG, CONTAINER_TLS, PORTS, SUITE_ROOT } from "../src/settings.js";
@@ -171,4 +171,51 @@ test("the parse-failure guard matches what production actually logged", () => {
   assert.equal(parseFailures("nothing whatsoever went wrong").length, 0);
   // Case is somebody else's to change, so the guard must not depend on it.
   assert.equal(parseFailures("failed to parse cot xml").length, 1);
+});
+
+test("a log that could not be read is a failure, not a quiet pass", () => {
+  const verdict = parseLogVerdict({ ok: false, output: "no such service: cloudtak" }, SERVER_NAME);
+
+  assert.equal(verdict.status, "fail");
+  assert.match(verdict.reasons[0] ?? "", /could not read CloudTAK's log/);
+  assert.match(verdict.reasons[0] ?? "", /no such service/);
+});
+
+test("an empty log is a failure, because absence proves nothing about a log nobody wrote", () => {
+  for (const output of ["", "   ", "\n\n"]) {
+    const verdict = parseLogVerdict({ ok: true, output }, SERVER_NAME);
+
+    assert.equal(verdict.status, "fail", `an empty log (${JSON.stringify(output)}) passed`);
+    assert.match(verdict.reasons[0] ?? "", /came back empty/);
+  }
+});
+
+test("a log with refusals in it fails and quotes them", () => {
+  const verdict = parseLogVerdict(
+    { ok: true, output: ["ok: mission sync", "Error: Attribute without value"].join("\n") },
+    SERVER_NAME,
+  );
+
+  assert.equal(verdict.status, "fail");
+  assert.match(verdict.reasons[0] ?? "", /refused 1 message/);
+  assert.ok(
+    verdict.reasons.some((reason) => reason.includes("Attribute without value")),
+    `the offending line was not quoted back:\n${verdict.reasons.join("\n")}`,
+  );
+});
+
+test("a clean log passes, and says what it read so the green is checkable", () => {
+  const verdict = parseLogVerdict(
+    { ok: true, output: ["ok: mission sync", "ok: 42 markers"].join("\n") },
+    SERVER_NAME,
+  );
+
+  assert.equal(verdict.status, "pass");
+  // The count is what separates this green from one earned against no log at
+  // all, and the name is what separates it from a run of some other server.
+  assert.match(verdict.reasons[0] ?? "", /across 2 log line\(s\)/);
+  assert.ok(
+    verdict.reasons[0]?.includes(SERVER_NAME),
+    `the passing reason did not name the server:\n${verdict.reasons[0] ?? ""}`,
+  );
 });

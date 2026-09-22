@@ -25,7 +25,7 @@ import {
   down,
   imageExists,
   keepLogs,
-  parseFailures,
+  parseLogVerdict,
   requireDocker,
   serviceLog,
   up,
@@ -233,21 +233,11 @@ try {
   // place the truth was written down was CloudTAK's own log, so this run reads
   // it. The server this stack runs is deliberately called something a careless
   // derivation breaks on — see `src/rustak.ts`.
-  const refused = parseFailures(serviceLog(CLOUDTAK_SERVICE));
+  const verdict = parseLogVerdict(serviceLog(CLOUDTAK_SERVICE), SERVER_NAME);
 
-  if (refused.length > 0) failed = true;
+  if (verdict.status === "fail") failed = true;
 
-  report({
-    name: "cloudtak-parse-log",
-    status: refused.length === 0 ? "pass" : "fail",
-    reasons:
-      refused.length === 0
-        ? [`CloudTAK's parser refused nothing rustak sent it, as '${SERVER_NAME}'.`]
-        : [
-            `CloudTAK refused ${String(refused.length)} message(s) rustak sent it; the first few:`,
-            ...refused.slice(0, 5),
-          ],
-  });
+  report({ name: "cloudtak-parse-log", status: verdict.status, reasons: verdict.reasons });
 } catch (error) {
   failed = true;
   report({
