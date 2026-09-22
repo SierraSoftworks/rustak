@@ -98,9 +98,7 @@ bitvec = "1.1.1"
 
 # ---- telemetry / errors / cli ----
 tracing = "0.1.44"
-# Pinned to the opentelemetry 0.33 bump (SierraSoftworks/tracing-batteries-rs#128) until it is on
-# `main`; drop `rev` once it has merged. Both crates must agree on the `opentelemetry` version.
-tracing-batteries = { git = "https://github.com/sierrasoftworks/tracing-batteries-rs.git", rev = "b1e40bc2c186546c9960b7656feeb0f2b7b924cf", features = ["opentelemetry", "sentry", "analytics", "testing", "human_errors"] }
+tracing-batteries = { git = "https://github.com/sierrasoftworks/tracing-batteries-rs.git", features = ["opentelemetry", "sentry", "analytics", "testing", "human_errors"] }
 human-errors = { version = "0.2.4", features = ["pretty", "force_backtraces"] }
 opentelemetry = "0.33.0"
 clap = { version = "4.6.7", features = ["derive", "cargo", "string", "env"] }
