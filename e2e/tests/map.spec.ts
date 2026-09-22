@@ -113,30 +113,18 @@ test("a click that lands on several things asks which one was meant", async ({ p
   await expect(chooser).toHaveCount(0);
 });
 
-test("somebody who has chosen 2525D gets the code table from this server, and every symbol still draws", async ({
-  page,
-}) => {
-  // Demo mode forgets a choice at every page load, so the choice rides in on
-  // the URL; `preferences.spec.ts` covers the real one being kept.
+test("a symbol code the sender wrote is drawn, whichever edition it is in", async ({ page }) => {
+  // The demo helicopter says which symbol it means in a 2525D number code, the
+  // way a device set to 2525D does; everything else leaves it to its CoT type.
+  // MapLibre says so when an image it asked for never arrived.
   const warnings: string[] = [];
   page.on("console", (message) => {
     if (message.text().includes("could not be loaded")) warnings.push(message.text());
   });
-  const table = page.waitForResponse((response) =>
-    response.url().endsWith("/vendor/convert-symbology/convert-symbology.js"),
-  );
 
-  await gotoApp(page, `${MAP}&symbology=2525d`);
+  await gotoApp(page, MAP);
 
-  const map = page.getByRole("application");
-  await expect(map).toHaveAttribute("data-symbology", "2525d");
-  await expect(map).toHaveAttribute("data-features", /^[1-9]\d*$/);
-
-  // Only fetched because 2525D was chosen, and from /vendor like the rest.
-  expect((await table).status()).toBe(200);
-
-  // MapLibre says so when an image it asked for never arrived. The fixtures
-  // include a type with no 2525D equivalent, which keeps its 2525C symbol.
+  await expect(page.getByRole("application")).toHaveAttribute("data-features", /^[1-9]\d*$/);
   await page.waitForTimeout(1500);
   expect(warnings).toEqual([]);
 });

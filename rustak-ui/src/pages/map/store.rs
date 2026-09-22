@@ -12,7 +12,7 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Duration, Utc};
-use rustak_api::{MapFeature, Symbology};
+use rustak_api::MapFeature;
 use serde_json::Value;
 
 use super::render;
@@ -48,8 +48,6 @@ struct Held {
 #[derive(Default)]
 pub struct Store {
     held: HashMap<String, Held>,
-    /// The edition of MIL-STD-2525 everything here was last drawn in.
-    symbology: Symbology,
 }
 
 impl Store {
@@ -103,9 +101,7 @@ impl Store {
             return changes;
         }
 
-        changes
-            .upserts
-            .push(render::draw(&feature, self.symbology, now));
+        changes.upserts.push(render::draw(&feature, now));
         self.held.insert(
             feature.uid.clone(),
             Held {
@@ -126,24 +122,6 @@ impl Store {
                 .map(|_| uid.to_string())
                 .into_iter()
                 .collect(),
-        }
-    }
-
-    /// Draws everything again in another edition of MIL-STD-2525. Nothing to
-    /// do, and nothing answered, when it is the edition already in use.
-    pub fn restyle(&mut self, symbology: Symbology, now: DateTime<Utc>) -> Changes {
-        if symbology == self.symbology {
-            return Changes::default();
-        }
-        self.symbology = symbology;
-
-        Changes {
-            upserts: self
-                .held
-                .values()
-                .map(|held| render::draw(&held.feature, symbology, now))
-                .collect(),
-            removes: Vec::new(),
         }
     }
 
@@ -203,9 +181,7 @@ impl Store {
             let stale = held.feature.stale < now;
             if stale != held.drawn_stale {
                 held.drawn_stale = stale;
-                changes
-                    .upserts
-                    .push(render::draw(&held.feature, self.symbology, now));
+                changes.upserts.push(render::draw(&held.feature, now));
             }
         }
 
@@ -248,6 +224,7 @@ mod tests {
             battery: None,
             remarks: None,
             software: None,
+            sidc: None,
             groups: Vec::new(),
         }
     }
@@ -297,30 +274,6 @@ mod tests {
 
         assert_eq!(store.sweep(at("12:07:30")).removes, ["A"]);
         assert_eq!(store.len(), 0);
-    }
-
-    #[test]
-    fn choosing_another_edition_redraws_what_is_held_and_what_arrives_after() {
-        let mut store = Store::default();
-        store.upsert(feature("A", "12:00:00"), at("12:00:00"));
-
-        assert!(
-            store
-                .restyle(Symbology::Milstd2525C, at("12:00:01"))
-                .is_empty()
-        );
-
-        let redrawn = store.restyle(Symbology::Milstd2525D, at("12:00:01"));
-        assert_eq!(
-            redrawn.upserts[0]["anchor"]["properties"]["icon"],
-            "sidc:2525d:SFGPUC---------"
-        );
-
-        let later = store.upsert(feature("B", "12:00:02"), at("12:00:02"));
-        assert_eq!(
-            later.upserts[0]["anchor"]["properties"]["icon"],
-            "sidc:2525d:SFGPUC---------"
-        );
     }
 
     #[test]

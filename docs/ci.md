@@ -106,7 +106,7 @@ deduplicate ──┬─ version ───────────────�
   embed).
 
   Both builds run `rustak-ui/scripts/vendor.mjs` as a Trunk hook, which copies
-  the map page's JavaScript (MapLibre GL, milsymbol, the 2525C-to-2525D converter) into
+  the map page's JavaScript (MapLibre GL and milsymbol) into
   `dist/vendor` from
   the versions locked in `rustak-ui/package-lock.json` — `npm ci` on a cold
   runner, a file copy after that. It uses the Node the runner image ships;

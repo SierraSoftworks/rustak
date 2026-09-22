@@ -17,7 +17,7 @@ use std::rc::Rc;
 
 use chrono::Utc;
 use gloo_timers::future::TimeoutFuture;
-use rustak_api::{MapUpdate, Symbology};
+use rustak_api::MapUpdate;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Element, HtmlElement};
 use yew::{AttrValue, Callback, NodeRef};
@@ -105,14 +105,6 @@ impl Session {
             }
         }
         self.focus = focus;
-    }
-
-    /// Draws everything in the edition of MIL-STD-2525 the reader has chosen.
-    pub fn restyle(&mut self, symbology: Symbology) {
-        let changes = self.store.restyle(symbology, Utc::now());
-        if let Some(map) = &self.map {
-            map.apply(&changes.upserts, &changes.removes);
-        }
     }
 
     pub fn fly_to(&self, uid: &str) {

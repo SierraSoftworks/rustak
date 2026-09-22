@@ -22,17 +22,6 @@ const HIT_LAYERS = ["symbols", "dots", "shape-lines", "shape-fills"];
 const LABEL_FONT = '600 12px system-ui, -apple-system, "Segoe UI", sans-serif';
 
 let libraries;
-let converter;
-
-// MIL-STD-2525C letter codes to 2525D number codes. Fetched the first time a
-// 2525D symbol is asked for, so somebody who never chooses 2525D never pays
-// for the table.
-function loadConverter() {
-  converter ??= import(`${VENDOR}/convert-symbology/convert-symbology.js`);
-  converter.catch(() => (converter = undefined));
-  return converter;
-}
-
 function stylesheet(href) {
   return new Promise((resolve, reject) => {
     const link = Object.assign(document.createElement("link"), { rel: "stylesheet", href });
@@ -59,38 +48,28 @@ function load() {
 
 const ratio = () => Math.min(globalThis.devicePixelRatio || 1, 2);
 
-// The code milsymbol is given for a symbol. CoT types are laid out on 2525C,
-// so a letter code is what Rust sends whatever the reader has chosen; milsymbol
-// draws 2525D only from a number code, so for 2525D the letters are converted.
-// A code the table has nothing for — a bare frame, a type nobody standardised —
-// keeps its letters: the frame says the same thing in both editions, and a
-// symbol drawn in the other edition is better than no symbol.
-async function codeFor(edition, letters) {
-  if (edition !== "2525d") {
-    return letters;
-  }
-
-  try {
-    const { convertLetterSidc2NumberSidc } = await loadConverter();
-    return convertLetterSidc2NumberSidc(letters).sidc || letters;
-  } catch {
-    return letters;
-  }
-}
-
-// A MIL-STD-2525 symbol for `sidc:<edition>:<letters>[:<direction>]`, with the
+// A MIL-STD-2525 symbol for `sidc:<code>[:<direction>[:<fallback>]]`, with the
 // point it marks moved to the middle of the image — which is where MapLibre
 // anchors an icon, and not where milsymbol leaves it once a direction arrow is
-// attached. `code` is what `codeFor` made of the letters.
-function symbolImage(ms, id, code) {
-  const [, , sidc, direction] = id.split(":");
-  const options = { size: 22, ...(direction ? { direction: Number(direction) } : {}) };
+// attached.
+//
+// `code` is whatever the sender asked for, in whichever edition it wrote it:
+// milsymbol reads 2525C letters and 2525D/E numbers alike. `fallback` is the
+// letter code the CoT type implies, for a code milsymbol has no drawing for. A
+// direction of 0 is none, which is how a fallback can follow it.
+function symbolImage(ms, id) {
+  const [, code, direction, fallback] = id.split(":");
+  const options = { size: 22, ...(Number(direction) > 0 ? { direction: Number(direction) } : {}) };
 
   let symbol = new ms.Symbol(code, options);
+  if (!symbol.isValid() && fallback) {
+    symbol = new ms.Symbol(fallback, options);
+  }
   if (!symbol.isValid()) {
     // A function nobody has drawn an icon for still has an affiliation and a
     // battle dimension, and the frame alone says both.
-    symbol = new ms.Symbol(sidc.slice(0, 4).padEnd(15, "-"), options);
+    const letters = /^\d/.test(code) ? fallback : code;
+    symbol = letters ? new ms.Symbol(letters.slice(0, 4).padEnd(15, "-"), options) : symbol;
   }
 
   const scale = ratio();
@@ -225,16 +204,7 @@ class MapHandle {
       if (id.startsWith("label:")) {
         return add(id, labelImage(id));
       }
-      if (!id.startsWith("sidc:")) {
-        return undefined;
-      }
-
-      // MapLibre waits for the promise, which is what lets 2525D fetch its
-      // table the first time; 2525C never leaves this turn of the event loop.
-      const [, edition, letters] = id.split(":");
-      return edition === "2525d"
-        ? codeFor(edition, letters).then((code) => add(id, symbolImage(ms, id, code)))
-        : add(id, symbolImage(ms, id, letters));
+      return id.startsWith("sidc:") ? add(id, symbolImage(ms, id)) : undefined;
     });
 
     map.on("click", (event) => this.pick(this.hits(event.point), event.lngLat.toArray()));

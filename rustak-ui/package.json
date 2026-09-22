@@ -1,10 +1,9 @@
 {
   "name": "rustak-ui-vendor",
   "private": true,
-  "description": "The JavaScript the map page loads at run time (MapLibre GL, milsymbol, and a 2525C-to-2525D code converter). Copied into dist/vendor by scripts/vendor.mjs, which Trunk runs as a build hook; nothing here is bundled or transpiled.",
+  "description": "The JavaScript the map page loads at run time. Copied into dist/vendor by scripts/vendor.mjs, which Trunk runs as a build hook; nothing here is bundled or transpiled.",
   "license": "MIT",
   "dependencies": {
-    "@orbat-mapper/convert-symbology": "1.0.2",
     "maplibre-gl": "6.10.0",
     "milsymbol": "3.0.4"
   }

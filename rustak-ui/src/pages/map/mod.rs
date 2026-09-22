@@ -63,27 +63,9 @@ pub fn live_map() -> Html {
 
     let auth = use_context::<AuthHandle>();
 
-    // Which edition of MIL-STD-2525 this reader has chosen, under Account.
-    let symbology = auth
-        .as_ref()
-        .and_then(|auth| auth.user.as_ref())
-        .map(|user| user.preferences.symbology)
-        .unwrap_or_default();
-
     // Re-resolving the session is what turns a refusal into the sign-in
     // prompt: `Protected`, above this page, draws whatever the answer is.
     let on_signed_out = auth.map(|auth| auth.refresh).unwrap_or_default();
-
-    // Before anything is on the map, this only records the choice; afterwards
-    // it redraws what is there, for a preference changed in another tab and
-    // picked up when the session was next re-resolved.
-    {
-        let session = session.clone();
-        use_effect_with(symbology, move |symbology| {
-            session.borrow_mut().restyle(*symbology);
-            || ()
-        });
-    }
 
     {
         let (container, session, status, focus) = (
@@ -204,7 +186,6 @@ pub fn live_map() -> Html {
                 <div
                     ref={container}
                     class="map-page__canvas"
-                    data-symbology={symbology.as_str()}
                     role="application"
                     aria-label="Map. Everything on it is also listed beside it."
                 />

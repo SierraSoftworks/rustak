@@ -86,9 +86,37 @@ pub struct MapFeature {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub software: Option<String>,
 
+    /// The symbol identification code the sender asked to be drawn with, from
+    /// `<__milicon id>` or `<__milsym id>`, in whichever edition of
+    /// MIL-STD-2525 it was written: see [`sidc`]. [`None`] leaves the symbol to
+    /// the type, which is what most events do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidc: Option<String>,
+
     /// The channels the sender was publishing into, resolved to names.
     #[serde(default)]
     pub groups: Vec<String>,
+}
+
+/// A symbol identification code as a map is handed one, or [`None`] for text
+/// that is not one.
+///
+/// Fifteen characters of letters, `-` and `*` is MIL-STD-2525C (and B, and
+/// APP-6); twenty digits is 2525D and thirty is 2525E. ATAK's schema for the
+/// detail says only that "it is up to the processing system to process the
+/// identifier correctly", so anything else is left out here rather than handed
+/// to a page to guess at.
+#[must_use]
+pub fn sidc(text: &str) -> Option<String> {
+    let text = text.trim();
+
+    let letters = text.len() == 15
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphabetic() || c == '-' || c == '*');
+    let digits = matches!(text.len(), 20 | 30) && text.chars().all(|c| c.is_ascii_digit());
+
+    (letters || digits).then(|| text.to_ascii_uppercase())
 }
 
 /// Where an event says it is.
@@ -187,6 +215,7 @@ mod tests {
             battery: None,
             remarks: None,
             software: None,
+            sidc: None,
             groups: vec!["Blue".to_string()],
         }
     }
@@ -239,5 +268,24 @@ mod tests {
 
         assert_eq!(json["type"], "Polygon");
         assert_eq!(json["coordinates"][0][1], serde_json::json!([-0.11, 51.5]));
+    }
+
+    #[test]
+    fn only_text_shaped_like_a_symbol_code_is_one() {
+        for (text, expected) in [
+            ("SFGPUCI--------", Some("SFGPUCI--------")),
+            (" sfgpuci----*---\n", Some("SFGPUCI----*---")),
+            ("10031000001211000000", Some("10031000001211000000")),
+            (
+                "130310000012110000000000000000",
+                Some("130310000012110000000000000000"),
+            ),
+            ("", None),
+            ("a-f-G-U-C", None),
+            ("1003100000121100000", None),
+            ("sidc:SFGPUCI-----", None),
+        ] {
+            assert_eq!(sidc(text).as_deref(), expected, "{text:?}");
+        }
     }
 }

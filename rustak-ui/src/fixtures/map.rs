@@ -37,6 +37,7 @@ fn feature(uid: &str, kind: &str, callsign: &str, lat: f64, lon: f64) -> MapFeat
         battery: None,
         remarks: None,
         software: None,
+        sidc: None,
         groups: vec!["Blue Team".to_string()],
     }
 }
@@ -69,6 +70,8 @@ fn rescue(tick: u32) -> MapFeature {
             le: Some(20.0),
         },
         remarks: Some("HEMS, inbound to the Royal London.".to_string()),
+        // Published by a device set to 2525D, so it says which symbol it means.
+        sidc: Some("10030100001202000000".to_string()),
         groups: vec!["Air".to_string()],
         ..feature("ICAO-406b2f", "a-f-A-C-H", "RESCUE 21", 0.0, 0.0)
     }
