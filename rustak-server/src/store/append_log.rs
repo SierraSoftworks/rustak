@@ -54,9 +54,6 @@ use crate::db::{Database, repos::StreamSegmentRow};
 /// space in useful increments; large enough that rolling is rare.
 pub const DEFAULT_SEGMENT_BYTES: u64 = 8 * 1024 * 1024;
 
-/// How many segments [`AppendLog::remove_indexed`] forgets per transaction.
-const REMOVE_BATCH: usize = 500;
-
 /// How a log rolls its segments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppendLogOptions {
@@ -327,94 +324,6 @@ impl AppendLog {
         }
 
         Ok(records)
-    }
-
-    /// Deletes every sealed segment whose newest record predates `before`.
-    ///
-    /// Sweeps every stream rather than just one, because that is what the
-    /// retention job wants: one pass over the index, unlinking files and
-    /// forgetting rows. The file goes first — a row without its file is
-    /// recoverable, a file without its row is invisible and leaks.
-    ///
-    /// # Errors
-    ///
-    /// A [`human_errors::Kind::System`] error when the index cannot be read or
-    /// written. A file that cannot be unlinked is logged and left indexed, so
-    /// the next sweep tries again.
-    #[instrument("store.log.prune", skip_all, err(Display))]
-    pub async fn prune_before(
-        db: &Database,
-        root: &Path,
-        before: DateTime<Utc>,
-    ) -> Result<usize, Error> {
-        let expired = db.stream_segments().expired_before(before).await?;
-        let removed = Self::remove_indexed(db, root, expired).await?;
-
-        if removed > 0 {
-            info!(segments = removed, "Pruned expired stream segments.");
-        }
-
-        Ok(removed)
-    }
-
-    /// Unlinks each segment's file and forgets its row, reporting how many went.
-    ///
-    /// The file goes first — a row without its file is recoverable, a file
-    /// without its row is invisible and leaks.
-    ///
-    /// Public because retention has a second list to sweep — the segments a
-    /// stream keeps past `[retention] cot_history_max_rows`, which the index
-    /// picks out ([`over_row_cap`]) and `cot_store::retention` hands back here.
-    ///
-    /// [`over_row_cap`]: crate::db::repos::StreamSegmentsRepo::over_row_cap
-    ///
-    /// # Errors
-    ///
-    /// A [`human_errors::Kind::System`] error when a row cannot be deleted. A
-    /// file that cannot be unlinked is logged and left indexed, so the next
-    /// sweep tries again.
-    pub async fn remove_indexed(
-        db: &Database,
-        root: &Path,
-        rows: Vec<StreamSegmentRow>,
-    ) -> Result<usize, Error> {
-        let mut removed = 0;
-
-        // A transaction per batch rather than per segment: a sweep over a busy
-        // feed retires thousands, and the writer has other callers.
-        for batch in rows.chunks(REMOVE_BATCH) {
-            let mut gone = Vec::with_capacity(batch.len());
-
-            for row in batch {
-                let path = root.join(&row.segment_path);
-
-                match tokio::fs::remove_file(&path).await {
-                    Ok(()) => {}
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(err) => {
-                        warn!(
-                            segment = %row.segment_path,
-                            error = %err,
-                            "Could not remove a stream segment; it will be retried."
-                        );
-                        continue;
-                    }
-                }
-
-                // Best effort, and it fails harmlessly while the stream still
-                // has segments: an empty directory per retired device would
-                // otherwise accumulate forever.
-                if let Some(parent) = path.parent() {
-                    let _ = tokio::fs::remove_dir(parent).await;
-                }
-
-                gone.push(row.id);
-            }
-
-            removed += db.stream_segments().delete_many(gone).await?;
-        }
-
-        Ok(removed)
     }
 
     /// Reconciles an index row left open by the previous run with its file.

@@ -46,7 +46,7 @@ use chrono::{DateTime, Utc};
 use crate::config::RetentionConfig;
 use crate::db::Database;
 use crate::prelude::*;
-use crate::store::append_log::AppendLog;
+use crate::store::{AppendLog, PRUNE_PAGE, Surplus};
 
 use super::{STREAM_KIND, latest};
 
@@ -188,12 +188,9 @@ async fn prune_over_bytes(
         return Ok(0);
     }
 
-    let surplus = db
-        .stream_segments()
-        .over_byte_cap(STREAM_KIND, max_bytes)
-        .await?;
+    let surplus = Surplus::OverByteCap(STREAM_KIND, max_bytes);
 
-    AppendLog::remove_indexed(db, streams_dir, surplus).await
+    AppendLog::remove_paged(db, streams_dir, surplus, PRUNE_PAGE).await
 }
 
 /// Deletes the segments each stream keeps past `max_rows` records.
@@ -206,16 +203,9 @@ async fn prune_over_cap(
         return Ok(0);
     }
 
-    let surplus = db
-        .stream_segments()
-        .over_row_cap(STREAM_KIND, max_rows)
-        .await?;
+    let surplus = Surplus::OverRowCap(STREAM_KIND, max_rows);
 
-    if surplus.is_empty() {
-        return Ok(0);
-    }
-
-    AppendLog::remove_indexed(db, streams_dir, surplus).await
+    AppendLog::remove_paged(db, streams_dir, surplus, PRUNE_PAGE).await
 }
 
 #[cfg(test)]
@@ -482,7 +472,7 @@ mod tests {
 
         let one_segment = db
             .stream_segments()
-            .over_byte_cap(STREAM_KIND, 1)
+            .over_byte_cap(STREAM_KIND, 1, 1)
             .await
             .unwrap()[0]
             .byte_length;

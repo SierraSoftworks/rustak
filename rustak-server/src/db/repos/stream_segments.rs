@@ -25,6 +25,17 @@ use crate::db::{
 const COLUMNS: &str = "id, stream_kind, stream_key, segment_path, first_time, last_time, \
                        record_count, byte_length, sealed, created_at";
 
+/// A page size as SQLite binds it.
+///
+/// The three retention queries below all take one: what they find is about to
+/// be deleted, a first sweep can find millions, and the caller asks again
+/// until a page comes back short ([`AppendLog::remove_paged`]).
+///
+/// [`AppendLog::remove_paged`]: crate::store::AppendLog::remove_paged
+fn page_limit(limit: usize) -> i64 {
+    i64::try_from(limit).unwrap_or(i64::MAX)
+}
+
 /// One row of `stream_segments`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamSegmentRow {
@@ -243,18 +254,20 @@ impl<'a> StreamSegmentsRepo<'a> {
     pub async fn expired_before(
         &self,
         before: DateTime<Utc>,
+        limit: usize,
     ) -> Result<Vec<StreamSegmentRow>, Error> {
         let before = Timestamp::from(before);
+        let limit = page_limit(limit);
 
         self.db
             .read(move |c| {
                 let mut statement = c.prepare(&format!(
                     "SELECT {COLUMNS} FROM stream_segments \
-                     WHERE sealed = 1 AND last_time < ?1 ORDER BY last_time ASC"
+                     WHERE sealed = 1 AND last_time < ?1 ORDER BY last_time ASC LIMIT ?2"
                 ))?;
 
                 statement
-                    .query_map([before], StreamSegmentRow::from_row)?
+                    .query_map(rusqlite::params![before, limit], StreamSegmentRow::from_row)?
                     .collect()
             })
             .await
@@ -284,18 +297,20 @@ impl<'a> StreamSegmentsRepo<'a> {
         &self,
         stream_kind: &str,
         max_rows: u64,
+        limit: usize,
     ) -> Result<Vec<StreamSegmentRow>, Error> {
         let stream_kind = stream_kind.to_owned();
+        let limit = page_limit(limit);
         let cap = i64::try_from(max_rows).unwrap_or(i64::MAX);
 
         self.db
             .read(move |c| {
                 let mut statement = c.prepare(&format!(
-                    "SELECT {COLUMNS} FROM (                        SELECT s.*, SUM(s.record_count) OVER (                          PARTITION BY s.stream_key                          ORDER BY s.last_time DESC, s.id DESC                          ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING                        ) AS newer                        FROM stream_segments s WHERE s.stream_kind = ?1                      ) WHERE sealed = 1 AND COALESCE(newer, 0) >= ?2                      ORDER BY stream_key ASC, last_time ASC"
+                    "SELECT {COLUMNS} FROM (                        SELECT s.*, SUM(s.record_count) OVER (                          PARTITION BY s.stream_key                          ORDER BY s.last_time DESC, s.id DESC                          ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING                        ) AS newer                        FROM stream_segments s WHERE s.stream_kind = ?1                      ) WHERE sealed = 1 AND COALESCE(newer, 0) >= ?2                      ORDER BY stream_key ASC, last_time ASC LIMIT ?3"
                 ))?;
 
                 statement
-                    .query_map(rusqlite::params![stream_kind, cap], StreamSegmentRow::from_row)?
+                    .query_map(rusqlite::params![stream_kind, cap, limit], StreamSegmentRow::from_row)?
                     .collect()
             })
             .await
@@ -318,8 +333,10 @@ impl<'a> StreamSegmentsRepo<'a> {
         &self,
         stream_kind: &str,
         max_bytes: u64,
+        limit: usize,
     ) -> Result<Vec<StreamSegmentRow>, Error> {
         let stream_kind = stream_kind.to_owned();
+        let limit = page_limit(limit);
         let cap = i64::try_from(max_bytes).unwrap_or(i64::MAX);
 
         self.db
@@ -332,12 +349,12 @@ impl<'a> StreamSegmentsRepo<'a> {
                        ) AS newer \
                        FROM stream_segments s WHERE s.stream_kind = ?1 \
                      ) WHERE sealed = 1 AND COALESCE(newer, 0) >= ?2 \
-                     ORDER BY last_time ASC"
+                     ORDER BY last_time ASC LIMIT ?3"
                 ))?;
 
                 statement
                     .query_map(
-                        rusqlite::params![stream_kind, cap],
+                        rusqlite::params![stream_kind, cap, limit],
                         StreamSegmentRow::from_row,
                     )?
                     .collect()
@@ -599,7 +616,11 @@ mod tests {
             .await
             .unwrap();
 
-        let expired = db.stream_segments().expired_before(at(30)).await.unwrap();
+        let expired = db
+            .stream_segments()
+            .expired_before(at(30), 100)
+            .await
+            .unwrap();
 
         assert_eq!(expired.len(), 1);
         assert_eq!(expired[0].id, old.id);

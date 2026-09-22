@@ -5,8 +5,10 @@
 //! work itself is [`sweep`](crate::cot_store::retention::sweep): whole segment
 //! files are unlinked and their index rows deleted, and `cot_latest` loses the
 //! rows whose messages went stale long ago. Every limit, and the interval, is
-//! `[retention]`'s, read at each run — so an edited file takes effect at the
-//! next sweep rather than at the next restart but one.
+//! `[retention]`'s. The configuration is read once, at start-up, so an edited
+//! file takes effect at the next restart — and *at* it, rather than one sweep
+//! later: nothing is carried in the queued message, and a shortened interval
+//! pulls the armed sweep in (below).
 //!
 //! # Why the horizon is approximate, and documented as such
 //!
@@ -226,7 +228,7 @@ mod tests {
         let kept = context
             .db()
             .stream_segments()
-            .expired_before(Utc::now())
+            .expired_before(Utc::now(), 10)
             .await
             .unwrap();
         assert!(kept.is_empty(), "the month-old segment should be gone");
