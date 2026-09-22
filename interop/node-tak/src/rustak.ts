@@ -10,8 +10,11 @@
  * - **`client_passwords_enabled`.** CloudTAK has no other way to authenticate,
  *   so the password grant is the credential the whole suite hangs off. The EUD
  *   harness deliberately does not set it: ATAK enrols with a one-time token.
- * - **The names.** The scratch-directory prefix the sweeper recognises, and the
- *   `[server] name` that turns up on `/Marti/api/version`.
+ * - **The names.** The scratch-directory prefix the sweeper recognises. The
+ *   `[server] name` itself is the shared hostile one (`shared/src/names.ts`):
+ *   a display name with a space, an ampersand, parentheses and a non-ASCII
+ *   letter, so that every message this suite relays goes out with a flow-tag
+ *   attribute derived from it and node-tak has to read it back.
  *
  * The rest — the three listeners, `mode = "internal"`, `localhost` rather than
  * `127.0.0.1` for WebAuthn's sake, the stale-workspace sweep — is shared, and
@@ -24,6 +27,10 @@ import {
   type RunningServer,
   type ServerInfo,
 } from "../../shared/src/launch.js";
+import { hostileServerName } from "../../shared/src/names.js";
+
+/** `[server] name`, and what the wizard records — the two must agree. */
+export const SERVER_NAME = hostileServerName("node-tak");
 
 export { REPO_ROOT, resolveBinary, reservePort, waitForServer } from "../../shared/src/launch.js";
 export type { RunningServer, ServerInfo } from "../../shared/src/launch.js";
@@ -34,7 +41,7 @@ const SCRATCH_PREFIX = "rustak-interop-node-tak-";
 /** What this suite asks the shared launcher for. */
 const OPTIONS: LaunchOptions = {
   prefix: SCRATCH_PREFIX,
-  name: "rustak-interop-node-tak",
+  name: SERVER_NAME,
   host: "localhost",
   config: {
     auth: {

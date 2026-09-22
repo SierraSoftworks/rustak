@@ -24,10 +24,22 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { mergeConfig, renderConfig, type ConfigTables } from "../../shared/src/config.js";
+import { hostileServerName } from "../../shared/src/names.js";
 import type { ServerInfo } from "../../shared/src/launch.js";
 
 import { PKI } from "./pki.js";
 import { CONTAINER_TLS, DATA_DIR, HOST_URLS, NAMES, PORTS } from "./settings.js";
+
+/**
+ * `[server] name`, and what the wizard records — the two must agree.
+ *
+ * Hostile on purpose. CloudTAK parses everything rustak sends it with sax,
+ * which is the strict parser the 2026-09-22 outage was found by: the flow tag
+ * on every relayed message is an XML attribute *named* after this string, so a
+ * name that a careless derivation leaves a space in makes every message
+ * CloudTAK drops off its socket. See `../../shared/src/names.ts`.
+ */
+export const SERVER_NAME = hostileServerName("cloudtak");
 
 /** The ports rustak binds *inside* the container, which never move. */
 const BOUND = { web: 8446, marti: 8443, stream: 8089 } as const;
@@ -37,7 +49,7 @@ export function configuration(overrides: ConfigTables = {}): ConfigTables {
   return mergeConfig(
     {
       server: {
-        name: "rustak-interop-cloudtak",
+        name: SERVER_NAME,
         // `localhost` first: it is the canonical name, the relying party the
         // bootstrap's passkey is registered against, and the subject of the
         // internal server certificate. `rustak` is how CloudTAK reaches the
@@ -114,7 +126,7 @@ export function serverInfo(): ServerInfo {
 export const WIZARD = {
   adminUsername: NAMES.admin,
   displayName: "CloudTAK interop suite",
-  serverName: "rustak-interop-cloudtak",
+  serverName: SERVER_NAME,
   domains: ["localhost", "rustak"],
   baseUrl: `https://localhost:${BOUND.web}`,
 } as const;

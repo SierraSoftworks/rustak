@@ -42,7 +42,7 @@ deduplicate ──┬─ version ───────────────�
   `-Cinstrument-coverage`; see [Keeping the test job inside its
   timeout](#keeping-the-test-job-inside-its-timeout) for what that costs and
   what pays for it.
-- **Every job carries a `timeout-minutes`** — 60 for `test`, 45 for `build`,
+- **Every job carries a `timeout-minutes`** — 90 for `test`, 45 for `build`,
   30 for the four that compile or image something big (`ui`, `e2e`,
   `interop-node-tak`, `docker-build`), 20 for `lint`, `docker-publish` and
   `tap`, 10 for the bookkeeping jobs (`deduplicate`, `version`, `ci`).
@@ -61,18 +61,35 @@ deduplicate ──┬─ version ───────────────�
   `stream_routing` 81 s against 309 s. Nothing in the repository changes
   between those; GitHub's two-vCPU hosts simply vary.
 
-  The number has moved twice, and the history is the argument. **Thirty** was
-  set against a normal band of 11–16 minutes — the good case dressed up as a
+  The number has moved three times, and the history is the argument. **Thirty**
+  was set against a normal band of 11–16 minutes — the good case dressed up as a
   bound — and on 2026-09-19 the multiplier met a suite that had also grown, so
   the job was cancelled at exactly 30 with four binaries still to run.
   **Forty-five** was set against 15–17. On 2026-09-20 the M9 wave added 184
-  tests across four landings and the band became **16–20 minutes**, which puts
-  the bad case at 20 × 2.8 ≈ 56 — past 45 again. So `test` now carries **60**,
-  raised deliberately rather than discovered from a cancelled release: `build`
-  needs `ui` and `test`, and v0.0.2 published nothing at all after a single job
-  died. Revisit once the M9 tests settle into a band.
+  tests across four landings and the band became 16–20 minutes, which puts the
+  bad case at 20 × 2.8 ≈ 56 — past 45 again. So `test` went to **60**, raised
+  deliberately rather than discovered from a cancelled release: `build` needs
+  `ui` and `test`, and v0.0.2 published nothing at all after a single job died.
 
-  **A `test` job that hits 60 is a bug report again** — and the first thing to
+  **Then the band moved again, and the number moved with it.** Fifteen `main`
+  runs between 2026-09-20 23:34Z and 2026-09-22 01:34Z: thirteen took
+  22m05s–28m35s, one 17m22s, and one slow host 41m30s. So the normal band is
+  **22–28 minutes**, not 16–20. The per-binary shape says it is the suite and
+  not the hosts: the binaries' own times summed to 660–870 s on 2026-09-20 and
+  sum to 1110–1250 s now, and the difference is in what landed —
+  `workload_identity` (new; 22 tests, 170–215 s, the most expensive binary in
+  the job), `sidecar_enrolment` (2 tests → 5, 12 s → 40–60 s),
+  `hostile_server_name` and `sidecar_trust` (new, 10–25 s each). By the same
+  arithmetic the bad case is 28 × 2.8 ≈ 78 — past 60 — so `test` now carries
+  **90**: 78, with margin. The worst whole job actually seen against this band
+  is that 41m30s, so the margin is generous, and deliberately: with images gated
+  on the test suite a cancelled `test` blocks every image, while a timeout is
+  cheap and reversible. The other lever is the suite's own cost —
+  `workload_identity`'s 22 tests each boot a server and enrol, and sharing one
+  server per suite or grouping the cases is on the backlog. If that lands, the
+  band and this number should both come back down.
+
+  **A `test` job that hits 90 is a bug report again** — and the first thing to
   check is the per-binary shape, not the total. Cost landing in the binaries a
   change touched is growth; cost spread evenly across binaries nothing touched
   is the host. Reading a single slow run as a trend has produced two wrong
@@ -165,9 +182,9 @@ deduplicate ──┬─ version ───────────────�
   `e2e` and `interop-node-tak` all need it already.
 
   **The trade-off is delay.** Images now publish after `test` rather than
-  alongside it — 16–20 minutes on a normal runner, and up to an hour on a slow
-  one under `test`'s 60-minute bound. A push whose images are wanted sooner has
-  to wait; that is the price of the tag meaning something.
+  alongside it — 22–28 minutes on a normal runner, and as long as `test`'s
+  90-minute bound allows on a slow one. A push whose images are wanted sooner
+  has to wait; that is the price of the tag meaning something.
   **Floating tags move forward only.** On a push to `main`, `docker-publish`
   reads `org.opencontainers.image.revision` off the current `:latest` and moves
   `:latest` and `:main` **only if that revision is an ancestor of the commit

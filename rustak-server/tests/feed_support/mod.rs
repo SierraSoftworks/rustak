@@ -24,10 +24,11 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use rustak_api::{CredentialKind, UserKind};
 use rustak_client::feed::Track;
-use rustak_client::sidecar::{Sidecar, SidecarConfig, SidecarContext, drive};
+use rustak_client::sidecar::{Sidecar, SidecarConfig, SidecarContext, StreamStats, drive};
 use rustak_client::stream::testing::Eud;
 use rustak_core::prelude::*;
 use rustak_server::auth::RateLimiter;
@@ -36,6 +37,17 @@ use rustak_server::identity::credentials::{MintRequest, mint};
 use rustak_server::prelude::*;
 
 use crate::stream_support::Harness;
+
+/// How long the sidecar under test holds its first tick for the CoT stream's
+/// first connection, in place of production's ten seconds.
+///
+/// A suite that asserts "nothing was discarded on a clean start" must only be
+/// able to fail because the hold did not work. On a CI runner that is booting
+/// seven servers at once under coverage instrumentation, ten seconds for a
+/// handshake is a bet on the host; two minutes is not. The production bound is
+/// unchanged and has its own test, on a paused clock, in
+/// `rustak-client/src/sidecar/run.rs`.
+pub const FIRST_CONNECT_HOLD: Duration = Duration::from_secs(120);
 
 /// The account a feed sidecar runs as, named after its service.
 fn account(service: &str) -> String {
@@ -51,6 +63,19 @@ pub struct RunningFeed {
     pub harness: Harness,
     /// The base URL of the Marti and control APIs.
     pub base: String,
+    /// What the running sidecar's harness has done with the events the plugin
+    /// returned: how many it published, and how many it discarded for want of
+    /// a connection — and how many of *those* before the stream had ever been
+    /// up.
+    ///
+    /// This is what a suite asserts on when the question is "was anything
+    /// thrown away?". The alternative is a stopwatch, and a stopwatch started
+    /// around [`start`](Self::start) times a server booting, two enrolments
+    /// and three handshakes on whatever machine the suite happens to be
+    /// running on; it has failed on a slow CI runner for exactly that reason.
+    /// The counters are the sidecar's own, shared rather than sampled, so they
+    /// are current the moment an event reaches [`eud`](Self::eud).
+    pub stream: Arc<StreamStats>,
     api: actix_web::dev::ServerHandle,
     shutdown: Shutdown,
     sidecar: tokio::task::JoinHandle<Result<(), Error>>,
@@ -134,8 +159,10 @@ impl RunningFeed {
 
         let context =
             SidecarContext::from_config(config, S::VERSION, harness.context.shutdown().child())
-                .expect("the configuration describes a usable sidecar");
+                .expect("the configuration describes a usable sidecar")
+                .with_first_connect_hold(FIRST_CONNECT_HOLD);
         let shutdown = context.shutdown().clone();
+        let stream = Arc::clone(context.stream_stats());
 
         let sidecar = tokio::spawn(async move {
             let mut plugin = S::default();
@@ -147,6 +174,7 @@ impl RunningFeed {
             eud,
             harness,
             base,
+            stream,
             api,
             shutdown,
             sidecar,

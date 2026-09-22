@@ -38,6 +38,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { renderConfig, mergeConfig, type ConfigTables } from "./config.js";
+import { hostileServerName } from "./names.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -97,7 +98,14 @@ export interface LaunchOptions {
   /** The scratch-directory prefix, which is also how stale ones are swept. */
   readonly prefix: string;
 
-  /** `[server] name`. */
+  /**
+   * `[server] name`.
+   *
+   * Defaults to [`hostileServerName`], which is what a suite should want: the
+   * name is free text that ends up inside an XML attribute name, a JWT `iss`
+   * and a log field, and a one-word name proves none of them. Pass a plain one
+   * only for a scenario that is *about* an ordinary name.
+   */
   readonly name?: string;
 
   /** The host name the suite reaches the server at. Never an address. */
@@ -284,7 +292,12 @@ export async function startServer(options: LaunchOptions): Promise<RunningServer
   };
 
   const tables = mergeConfig(
-    defaults(directory, host, options.name ?? options.prefix.replace(/-$/, ""), ports),
+    defaults(
+      directory,
+      host,
+      options.name ?? hostileServerName(options.prefix.replace(/-$/, "")),
+      ports,
+    ),
     options.config ?? {},
   );
 

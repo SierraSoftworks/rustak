@@ -24,6 +24,21 @@
 //! saw. Putting the retry here would mean a stream that can never be exhausted,
 //! and a plugin that wanted to stop waiting would have nothing to wait on.
 //!
+//! # It is held open for hours, not for thirty seconds
+//!
+//! The feed is a body read until something ends it, so it is opened through
+//! [`http::feed_client`](crate::http::feed_client) rather than the client the
+//! ordinary control-API calls use: no *total* timeout, a connect timeout, and a
+//! read timeout that the server's own keep-alive comments reset. The first live
+//! deployment ran it through the ordinary client and every feed was cut at
+//! `reqwest`'s thirty-second deadline — a reopening every 31 seconds, which
+//! reads as a fault and is not one.
+//!
+//! What ends a feed for real is silence: no byte, not even a keep-alive
+//! comment, for [`FEED_IDLE_TIMEOUT`](crate::http::FEED_IDLE_TIMEOUT). That
+//! arrives here as an error on the body, which ends the stream exactly as a
+//! clean close does, and the caller reopens.
+//!
 //! # Forward compatibility is a skipped frame
 //!
 //! An event whose `type` this build has never heard of will not deserialise, and
@@ -69,7 +84,9 @@ impl ControlClient {
     /// (`401`), the account is neither an administrator nor a service (`403`),
     /// or the server cannot be reached.
     pub async fn events(&self, after: Option<u64>) -> Result<EventStream, Error> {
-        let mut request = self.request(reqwest::Method::GET, "/events");
+        // The feed's own client: no total timeout, an idle timeout instead.
+        // See `http::feed_client`.
+        let mut request = self.request_on(self.feed_http(), reqwest::Method::GET, "/events");
 
         if let Some(after) = after {
             request = request.header("Last-Event-ID", after.to_string());
@@ -334,6 +351,209 @@ mod tests {
             .await;
 
         assert!(opened.is_ok());
+    }
+
+    /// How long a test is prepared to wait for something that should be
+    /// immediate, before calling it a failure.
+    const SOON: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// An SSE server that writes what it is told, when it is told to.
+    ///
+    /// `wiremock` answers a body in one go, and what is under test here is a
+    /// response that is written over time and then not written to at all — so
+    /// this is HTTP by hand, on a plain socket. The body has no length and no
+    /// chunking: an HTTP/1.1 response with neither runs until the connection
+    /// closes, which is exactly what a feed is.
+    ///
+    /// The connection is **never closed** by this server, so the only thing
+    /// that can end a stream reading from it is the client's own timeout.
+    async fn sse_server(
+        script: Vec<(std::time::Duration, &'static str)>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("an ephemeral port");
+        let address = listener.local_addr().expect("the bound address");
+
+        let handle = tokio::spawn(async move {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+
+            // Enough of the request to know it arrived; the path is the only
+            // one this server serves.
+            let mut request = [0u8; 1024];
+            let _ = socket.read(&mut request).await;
+
+            if socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n\r\n",
+                )
+                .await
+                .is_err()
+            {
+                return;
+            }
+
+            for (after, body) in script {
+                tokio::time::sleep(after).await;
+
+                if socket.write_all(body.as_bytes()).await.is_err() {
+                    return;
+                }
+                let _ = socket.flush().await;
+            }
+
+            // Held open, and silent: the client decides when this is over.
+            std::future::pending::<()>().await;
+        });
+
+        (format!("http://{address}"), handle)
+    }
+
+    /// A feed against `base`, read through `http`.
+    async fn feed_over(base: &str, http: reqwest::Client) -> EventStream {
+        let identity = ServiceIdentity::new(ServiceName::parse("weather").unwrap());
+
+        ControlClient::with_http(base, reqwest::Client::new(), &identity)
+            .unwrap()
+            .with_feed_http(http)
+            .events(None)
+            .await
+            .unwrap()
+    }
+
+    /// One event, `id` seconds into the SSE wire format.
+    fn frame(id: u64) -> String {
+        format!(
+            "id: {id}\nevent: channel.changed\ndata: {{\"id\":{id},\"at\":\"2026-09-22T00:00:00.000Z\",\"type\":\"channel.changed\",\"username\":\"ada\"}}\n\n",
+        )
+    }
+
+    #[tokio::test]
+    async fn a_feed_outlives_the_total_timeout_an_ordinary_call_carries() {
+        // The production finding. `reqwest`'s `timeout` is a deadline on the
+        // whole exchange, body included, so the client the heartbeat uses cut
+        // every feed at thirty seconds — a reopening every 31s, two sidecars,
+        // 74 server log lines in two and a half minutes, nothing wrong.
+        //
+        // Asserted in milliseconds rather than in thirty seconds: the numbers
+        // are injected, the behaviour is the same one.
+        let late = std::time::Duration::from_millis(400);
+        let total = std::time::Duration::from_millis(150);
+
+        let (base, server) = sse_server(vec![(late, Box::leak(frame(7).into_boxed_str()))]).await;
+
+        let feed = reqwest::Client::builder()
+            .read_timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let mut stream = feed_over(&base, feed).await;
+
+        let arrived = tokio::time::timeout(SOON, stream.next())
+            .await
+            .expect("the feed should still be open");
+
+        assert_eq!(
+            arrived.map(|event| event.id),
+            Some(7),
+            "an event 400ms in has to survive a client an ordinary call would have cut",
+        );
+
+        server.abort();
+
+        // And the other half: the same feed read through a client carrying a
+        // total timeout is cut before the event arrives, which is what this
+        // stopped doing.
+        let (base, server) = sse_server(vec![(late, Box::leak(frame(7).into_boxed_str()))]).await;
+        let ordinary = reqwest::Client::builder().timeout(total).build().unwrap();
+        let mut stream = feed_over(&base, ordinary).await;
+
+        let cut = tokio::time::timeout(SOON, stream.next())
+            .await
+            .expect("the timeout should end the stream rather than hang it");
+
+        assert!(cut.is_none(), "a total timeout cuts the body");
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_feed_that_stops_sending_keepalives_is_ended_rather_than_held_open() {
+        // The other half of having no total deadline: something has to notice a
+        // connection that is up and dead. That is the read timeout, which every
+        // keep-alive comment resets — so a feed that has genuinely stopped
+        // speaking is reopened, and an idle one that is still being kept alive
+        // is left alone.
+        let idle = std::time::Duration::from_millis(250);
+        let (base, server) = sse_server(vec![(
+            std::time::Duration::ZERO,
+            Box::leak(frame(3).into_boxed_str()),
+        )])
+        .await;
+
+        let http = reqwest::Client::builder()
+            .read_timeout(idle)
+            .build()
+            .unwrap();
+        let mut stream = feed_over(&base, http).await;
+
+        assert_eq!(
+            tokio::time::timeout(SOON, stream.next())
+                .await
+                .expect("the first event arrives")
+                .map(|event| event.id),
+            Some(3),
+        );
+
+        let ended = tokio::time::timeout(SOON, stream.next())
+            .await
+            .expect("silence has to end the stream, not hang it");
+
+        assert!(
+            ended.is_none(),
+            "no byte for the idle timeout is a dead feed"
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_keepalive_comment_keeps_a_silent_feed_open() {
+        // The reason the idle timeout is three keep-alives and not one: an
+        // installation where nothing at all happens for an hour still has a
+        // feed, and a client that reopened it every twenty seconds would be
+        // the bug this milestone fixed wearing a different number.
+        let idle = std::time::Duration::from_millis(400);
+        let tick = std::time::Duration::from_millis(100);
+        let (base, server) = sse_server(vec![
+            (tick, ": keep-alive\n\n"),
+            (tick, ": keep-alive\n\n"),
+            (tick, ": keep-alive\n\n"),
+            (tick, ": keep-alive\n\n"),
+            (tick, ": keep-alive\n\n"),
+            (tick, Box::leak(frame(9).into_boxed_str())),
+        ])
+        .await;
+
+        let http = reqwest::Client::builder()
+            .read_timeout(idle)
+            .build()
+            .unwrap();
+        let mut stream = feed_over(&base, http).await;
+
+        // 600ms of silence but for the comments, against a 400ms idle timeout.
+        assert_eq!(
+            tokio::time::timeout(SOON, stream.next())
+                .await
+                .expect("the feed stays open across the comments")
+                .map(|event| event.id),
+            Some(9),
+        );
+
+        server.abort();
     }
 
     #[tokio::test]

@@ -66,6 +66,15 @@ pub const CONTROL_ROOT: &str = "/api/v1";
 #[derive(Clone, Debug)]
 pub struct ControlClient {
     http: reqwest::Client,
+
+    /// The client the server-event feed is read through, when one was supplied.
+    ///
+    /// A separate client because the feed is a body held open for hours and
+    /// `http` carries [`http::DEFAULT_TIMEOUT`] — a *total* deadline, which cut
+    /// every feed at thirty seconds. [`None`] falls back to `http`, which is
+    /// what a test pointing this at a mock server wants.
+    feed: Option<reqwest::Client>,
+
     base: Url,
     name: ServiceName,
 
@@ -107,11 +116,16 @@ impl ControlClient {
         // [`http::Trust::Public`]: the control API is served by the public
         // listener, which may hold an ACME or operator-supplied certificate as
         // easily as one from the deployment's own CA.
-        Self::with_http(
+        Ok(Self::with_http(
             base,
             http::client(identity, http::Trust::Public, http::DEFAULT_TIMEOUT)?,
             identity,
-        )
+        )?
+        .with_feed_http(http::feed_client(
+            identity,
+            http::Trust::Public,
+            http::FEED_IDLE_TIMEOUT,
+        )?))
     }
 
     /// Builds a client over an HTTP client somebody else made.
@@ -130,12 +144,32 @@ impl ControlClient {
     ) -> Result<Self, Error> {
         Ok(Self {
             http,
+            feed: None,
             base: http::base_url(base, "control")?,
             name: identity.name().clone(),
             token: Arc::new(RwLock::new(identity.credential().cloned())),
             reported: Arc::new(AtomicBool::new(false)),
             unauthorized: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    /// Reads the server-event feed through `http` rather than through the
+    /// client the ordinary calls use.
+    ///
+    /// The feed's client carries no total timeout — see
+    /// [`http::feed_client`] — and a sidecar that shared one client for both
+    /// would have to choose between a heartbeat that can hang forever and a
+    /// feed that is cut every thirty seconds.
+    #[must_use]
+    pub fn with_feed_http(mut self, http: reqwest::Client) -> Self {
+        self.feed = Some(http);
+        self
+    }
+
+    /// The client the feed is opened with: the long-lived one when there is
+    /// one, and otherwise the ordinary one.
+    fn feed_http(&self) -> &reqwest::Client {
+        self.feed.as_ref().unwrap_or(&self.http)
     }
 
     /// The service this client speaks for.
@@ -194,10 +228,22 @@ impl ControlClient {
     /// A request against a control-API path, carrying the service token when one
     /// is configured.
     pub(crate) fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+        self.request_on(&self.http, method, path)
+    }
+
+    /// [`request`](Self::request), over a client the caller names.
+    ///
+    /// The feed is the one caller that does not go through `self.http`.
+    pub(crate) fn request_on(
+        &self,
+        http: &reqwest::Client,
+        method: reqwest::Method,
+        path: &str,
+    ) -> reqwest::RequestBuilder {
         let url = http::endpoint(&self.base, &format!("{CONTROL_ROOT}{path}"))
             .map(String::from)
             .unwrap_or_else(|_| path.to_string());
-        let request = self.http.request(method, url);
+        let request = http.request(method, url);
 
         match self.credential() {
             Some(token) => request.bearer_auth(token.expose()),

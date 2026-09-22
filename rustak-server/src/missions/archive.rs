@@ -143,13 +143,7 @@ impl MissionService {
     /// that cannot be archived — no blob store, no disk — still has to be
     /// deletable, and the failure is logged rather than blocking the operator.
     pub async fn store_archive(&self, mission: &Mission) {
-        let host = self
-            .context
-            .config()
-            .marti
-            .public_host
-            .clone()
-            .unwrap_or_else(|| self.context.config().server.name.clone());
+        let host = self.archive_host();
 
         match self.write_archive_resource(mission, &host).await {
             Ok(hash) => debug!(
@@ -209,9 +203,19 @@ impl MissionService {
     /// The public host name an archive's connection parameters are written
     /// from.
     ///
-    /// `[marti] public_host` when an operator set one, and the server's own
-    /// name otherwise — a package taken off this server has to say which
-    /// server it meant, and a container's hostname is not that.
+    /// `[marti] public_host` when an operator set one, then the canonical
+    /// `[server] domains` entry, and `localhost` when this installation has
+    /// been told neither — the same ladder a configuration package's host is
+    /// built from, and for the same reason: a package taken off this server has
+    /// to say which server it meant, and a container's hostname is not that.
+    ///
+    /// **Not `[server] name`**, which is what this used to fall back to.
+    /// That field is a free-text display name — `SierraSoftworks TAK`, or
+    /// worse — and these two parameters are a connection string: ATAK reads
+    /// `<host>:8443:ssl` and dials the host in it. A display name there is not
+    /// a host that resolves, and because the manifest writer escapes attribute
+    /// values properly the package stays perfectly well-formed while being
+    /// perfectly unusable, which is the kind of failure nobody reports.
     pub fn archive_host(&self) -> String {
         let config = self.context.config();
 
@@ -219,7 +223,8 @@ impl MissionService {
             .marti
             .public_host
             .clone()
-            .unwrap_or_else(|| config.server.name.clone())
+            .or_else(|| config.server.canonical_domain().map(str::to_string))
+            .unwrap_or_else(|| "localhost".to_string())
     }
 
     /// The filename an archive is downloaded as.
@@ -420,6 +425,50 @@ mod tests {
         );
         assert!(rendered.contains(r#"<Parameter name="onReceiveImport" value="true"/>"#));
         assert!(rendered.contains(r#"<Parameter name="onReceiveDelete" value="false"/>"#));
+    }
+
+    #[tokio::test]
+    async fn the_connection_string_is_built_from_a_host_and_never_from_the_display_name() {
+        // `[server] name` is free text — this test's installation is called
+        // `Rustak Test & Co. (näme)` — and `mission_server` is a connection
+        // string ATAK dials. The ladder is the configured public host, then the
+        // canonical domain, then `localhost`; the display name is on none of
+        // its rungs, at any height.
+        let (context, service, _mission) = fixture().await;
+
+        assert_eq!(
+            context.config().server.name,
+            crate::config::TEST_SERVER_NAME
+        );
+        assert_eq!(
+            service.archive_host(),
+            "localhost",
+            "an installation that has been told no host says the one name that always works",
+        );
+
+        let context = AppContext::new_mock(|config| {
+            config.server.domains =
+                vec!["tak.example.com".to_string(), "alias.example".to_string()];
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            MissionService::new(context).archive_host(),
+            "tak.example.com",
+            "the canonical domain, which is a name a device can resolve",
+        );
+
+        let context = AppContext::new_mock(|config| {
+            config.server.domains = vec!["tak.example.com".to_string()];
+            config.marti.public_host = Some("public.example.com".to_string());
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            MissionService::new(context).archive_host(),
+            "public.example.com",
+            "an operator who said what to publish outranks everything inferred",
+        );
     }
 
     #[tokio::test]
