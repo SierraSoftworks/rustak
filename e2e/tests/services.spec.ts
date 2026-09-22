@@ -56,7 +56,9 @@ test("the list puts what needs attention above what does not", async ({ page }) 
   await expect(adsb.locator(".service-row__id")).toHaveText("rustak-plugin-adsb");
   await expect(adsb.getByText("Heartbeat", { exact: false })).toBeVisible();
   await expect(adsb.getByText("The upstream feed has not answered", { exact: false })).toBeVisible();
-  await expect(adsb.locator(".tag")).toHaveText(["cot.publish", "feed.adsb"]);
+  // `config.validate` is what every sidecar on the harness advertises: it can
+  // be asked about a candidate configuration before one is stored.
+  await expect(adsb.locator(".tag")).toHaveText(["cot.publish", "feed.adsb", "config.validate"]);
 });
 
 test("a service's detail shows its endpoints and its metrics as a table", async ({ page }) => {
@@ -111,6 +113,41 @@ test("an administrator edits a service's configuration and is told it was saved"
   await expect(page.getByText("Saved. The service picks it up on its next tick.")).toBeVisible();
   await expect(save).toBeDisabled();
   await expect(editor).toHaveValue(/45/);
+});
+
+test("a service that registered a schema is configured through a form and asked before a save", async ({
+  page,
+}) => {
+  await gotoApp(page, SERVICES);
+  await page.locator(".service-row__select", { hasText: "ADS-B feed" }).click();
+
+  // The schema names the keys and the stored document fills them: no JSON box.
+  const radius = page.locator("#service-config-area-radius_km");
+  await expect(radius).toHaveValue("120");
+  await expect(page.locator("#service-config")).toHaveCount(0);
+  // A plugin's doc comment is the field's help text.
+  await expect(page.getByText("Radius in kilometres.")).toBeVisible();
+
+  const save = page.getByRole("button", { name: "Save configuration" });
+  await expect(save).toBeDisabled();
+
+  // What a schema cannot say is the running service's to refuse, and nothing
+  // is stored when it does.
+  await radius.fill("0");
+  await save.click();
+  await expect(page.getByText("A circle needs a radius greater than zero.").first()).toBeVisible();
+  await expect(page.getByText("Saved. The service picks it up on its next tick.")).toHaveCount(0);
+
+  await radius.fill("80");
+  await save.click();
+  await expect(page.getByText("Saved. The service picks it up on its next tick.")).toBeVisible();
+  await expect(page.getByText("The running service checked it", { exact: false })).toBeVisible();
+
+  // A tagged union is a picker, and the JSON is one click away.
+  await page.locator("#service-config-area-variant").selectOption({ label: "Bbox" });
+  await expect(page.locator("#service-config-area-south")).toBeVisible();
+  await page.getByRole("button", { name: "Edit as JSON" }).click();
+  await expect(page.locator("#service-config")).toHaveValue(/"kind": "bbox"/);
 });
 
 test("removing a registration takes its row off the list", async ({ page }) => {

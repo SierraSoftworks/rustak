@@ -144,7 +144,7 @@ pub fn service_detail(props: &ServiceDetailProps) -> Html {
                 </div>
             </Card>
 
-            <ServiceConfigPanel name={name} />
+            <ServiceConfigPanel name={name} schema={descriptor.config_schema.clone()} />
         </>
     }
 }

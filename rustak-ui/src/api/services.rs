@@ -11,9 +11,9 @@
 //! that is what the control API is keyed on — a sidecar that restarts keeps
 //! its name and gets a new row.
 
-use rustak_api::ServiceSummary;
+use rustak_api::{ConfigValidationReport, ServiceSummary};
 
-use crate::api::{ApiError, delete_empty, get_json, put_json};
+use crate::api::{ApiError, delete_empty, get_json, post_json, put_json};
 #[cfg(debug_assertions)]
 use crate::fixtures;
 use crate::fixtures::demo;
@@ -48,6 +48,26 @@ pub async fn set_config(
     demo!(fixtures::set_service_config(name, config));
 
     put_json(&format!("/services/{}/config", urlencode(name)), config).await
+}
+
+/// Everything that can be said about a configuration without storing it.
+///
+/// The server holds it to the schema the service registered, and — when that
+/// service is running and can be reached over its event feed — asks the service
+/// itself, which is the only thing that knows whether an API key works. The
+/// answer says which of those happened; it is not an error for the service to
+/// be away.
+pub async fn validate_config(
+    name: &str,
+    config: &serde_json::Value,
+) -> Result<ConfigValidationReport, ApiError> {
+    demo!(fixtures::validate_service_config(name, config));
+
+    post_json(
+        &format!("/services/{}/config/validate", urlencode(name)),
+        config,
+    )
+    .await
 }
 
 /// Removes a registration.
