@@ -736,6 +736,15 @@ its own attribution, and a couple need budgeting rather than just configuring:
 [`rustak-plugin-adsb/README.md`](../rustak-plugin-adsb/README.md) is where they
 are written down, and is worth reading before a deployment points at one.
 
+**FIRMS.** [`rustak-plugin-firms`](../rustak-plugin-firms) is a feed of things
+that do not move: NASA FIRMS' satellite active-fire detections, read over the
+area with a free MAP_KEY. A detection is one observation rather than a track, so
+it takes `Area` from this module and leaves `Track` and `FeedPublisher` alone:
+its own small publisher keys each detection by a deterministic uid, ages it from
+the overpass, says it again for devices that joined since, and caps what leaves
+on one tick. A detection is drawn as a spot marker, as the polygon of ground the
+satellite pixel covered, or both. Its README has FIRMS' terms.
+
 ### The `Track` contract
 
 A source's whole job is to produce these:
@@ -857,6 +866,6 @@ is what makes a replay a fair test of the policy.
 ## See also
 
 - `rustak-plugin-example/` — the template this document describes.
-- `rustak-plugin-ais/`, `rustak-plugin-adsb/` — the two feed sidecars.
+- `rustak-plugin-ais/`, `rustak-plugin-adsb/`, `rustak-plugin-firms/` — the feed sidecars.
 - `docs/ci.md` — how a plugin crate is built, published and released.
 - `.claude/plan/plan.md` → Architecture → "Plugin (sidecar) contract".
