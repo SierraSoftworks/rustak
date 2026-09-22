@@ -1,4 +1,4 @@
-//! The two feed sidecars, end to end, against a real server.
+//! The feed sidecars, end to end, against a real server.
 //!
 //! Enrol → connect → register → publish, with a fake EUD on the other side of
 //! the channel asserting on the CoT it receives. Every step goes through the
@@ -8,7 +8,7 @@
 //! `rustak_client::feed` publisher deciding what goes out.
 //!
 //! The plugins are driven **as libraries**, which is why
-//! `rustak-plugin-{ais,adsb}` have a `[lib]` target: a plugin exercised through
+//! `rustak-plugin-{ais,adsb,esb}` have a `[lib]` target: a plugin exercised through
 //! its own `Sidecar` implementation is the one that ships, whereas a plugin
 //! re-implemented in a test file is a test of the test.
 //!
@@ -29,6 +29,7 @@ use rustak_client::feed::{AircraftClass, Track, TrackKind, VesselClass};
 use rustak_client::sidecar::Sidecar;
 use rustak_plugin_adsb::AdsbSidecar;
 use rustak_plugin_ais::AisSidecar;
+use rustak_plugin_esb::EsbSidecar;
 use rustak_server::prelude::*;
 
 use feed_support::{FIRST_CONNECT_HOLD, RunningFeed, replay_settings};
@@ -638,6 +639,51 @@ async fn the_adsb_sidecar_publishes_what_a_readsb_receiver_serves() {
     assert_eq!(reported.metrics["source"]["kind"], "readsb");
     assert_eq!(reported.metrics["source"]["connection"], "connected");
     assert_eq!(reported.metrics["tracked"], 5);
+
+    feed.stop().await;
+}
+
+/// The demonstration fixture the ESB plugin ships with, shared rather than
+/// copied for the same reason as [`READSB`].
+const OUTAGES: &str = include_str!("../../rustak-plugin-esb/outages.example.ndjson");
+
+#[actix_web::test]
+async fn the_esb_sidecar_publishes_its_replayed_outages_as_coloured_markers() {
+    // Not a track feed: the plugin builds its own markers rather than going
+    // through `FeedPublisher`, so this is the only place that proves a device
+    // receives them with the detail a map needs to colour them.
+    let directory = tempfile::tempdir().expect("a directory for the fixture");
+    let path = directory.path().join("outages.ndjson");
+    std::fs::write(&path, OUTAGES).expect("the fixture lands");
+
+    let settings = format!(
+        "[settings.source]\nkind = \"replay\"\npath = \"{}\"\n",
+        path.display(),
+    );
+    let mut feed = RunningFeed::start::<EsbSidecar>("esb", &settings).await;
+
+    let fault = feed
+        .eud
+        .expect_uid("ESB-9000001", EXPECT)
+        .await
+        .expect("the first outage arrives");
+
+    assert_eq!(fault.r#type, "b-m-p-s-m");
+    assert!(
+        fault
+            .callsign()
+            .is_some_and(|label| label.contains("Carrigaline")),
+        "{:?}",
+        fault.callsign(),
+    );
+    assert_eq!(
+        fault
+            .detail
+            .find("color")
+            .and_then(|color| color.get("argb")),
+        Some("-65536"),
+        "a fault is red",
+    );
 
     feed.stop().await;
 }

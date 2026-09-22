@@ -1,9 +1,10 @@
 # CI/CD
 
 rustak's pipeline is a direct port of [`automate`](https://github.com/SierraSoftworks/automate)'s
-GitHub Actions setup, adapted for a multi-crate workspace with four release
+GitHub Actions setup, adapted for a multi-crate workspace with five release
 binaries (`rustak-server` → `rustak`, and the `rustak-plugin-example`,
-`rustak-plugin-ais` and `rustak-plugin-adsb` sidecars) instead of one.
+`rustak-plugin-ais`, `rustak-plugin-adsb` and `rustak-plugin-esb` sidecars)
+instead of one.
 See `.claude/plan/design/01-foundations-storage-ci.md` §7 for the design this
 implements and `.claude/plan/research/01-automate-architecture.md` §1 for what
 was ported from where.
@@ -19,7 +20,7 @@ deduplicate ──┬─ version ───────────────�
               ├─ ui      (lints + tests rustak-ui; trunk build → ui-dist-e2e; trunk build --release → ui-dist)
               ├─ e2e     (needs ui; cargo build -p rustak-server; Playwright)
               ├─ interop-node-tak  (needs ui; @tak-ps/node-tak contract suite)
-              └─ build   (needs version, ui; crate × target matrix, 20 jobs) ─┬─ ci (aggregator, always())
+              └─ build   (needs version, ui; crate × target matrix, 25 jobs) ─┬─ ci (aggregator, always())
                                                                                 ├─ docker-build  (per crate × platform)
                                                                                 │     └─ docker-publish (per crate, manifest list)
                                                                                 └─ tap (release only)
@@ -132,9 +133,10 @@ deduplicate ──┬─ version ───────────────�
   report as skips naming the brief that will serve them, and begin running on
   their own when it lands. See `interop/node-tak/README.md`.
 - **`build`** is a `crate × target` matrix: `{rustak-server → rustak,
-  rustak-plugin-example, rustak-plugin-ais, rustak-plugin-adsb}` ×
+  rustak-plugin-example, rustak-plugin-ais, rustak-plugin-adsb,
+  rustak-plugin-esb}` ×
   `{x86_64-unknown-linux-musl, aarch64-unknown-linux-musl (cross),
-  x86_64-apple-darwin, aarch64-apple-darwin, x86_64-pc-windows-msvc}` — 20
+  x86_64-apple-darwin, aarch64-apple-darwin, x86_64-pc-windows-msvc}` — 25
   jobs. A new plugin crate is three lines: one in each of this matrix and the
   two Docker ones below. **No `protoc` is installed anywhere in this
   workflow**: `rustak-cot` builds its protobuf definitions with `protox`, a
@@ -148,8 +150,8 @@ deduplicate ──┬─ version ───────────────�
   let a new upstream release change how that target is built with no commit
   saying so. The binary is **cached** on that version, which is the other half
   of why it is pinned: an unpinned cache would be worse than none, restoring
-  whatever was current the day it was first stored, forever. Four of the twenty
-  jobs use `cross` and share one cache key, so on a cold key three of them log
+  whatever was current the day it was first stored, forever. Five of the twenty-five
+  jobs use `cross` and share one cache key, so on a cold key four of them log
   `Cache already exists` — a warning, not a failure.
 - **`ci`** is the required check: `always()`-gated, it fails the run if any
   dependency did not succeed, then saves the merge-tree success marker for
@@ -164,7 +166,8 @@ deduplicate ──┬─ version ───────────────�
 - **`docker-build`**/**`docker-publish`** build and publish one multi-arch
   (`linux/amd64` + `linux/arm64`) image per crate to
   `ghcr.io/sierrasoftworks/<bin>` — `ghcr.io/sierrasoftworks/rustak`,
-  `…/rustak-plugin-example`, `…/rustak-plugin-ais` and `…/rustak-plugin-adsb`.
+  `…/rustak-plugin-example`, `…/rustak-plugin-ais`, `…/rustak-plugin-adsb` and
+  `…/rustak-plugin-esb`.
   Unlike automate (which only publishes on a GitHub release), this also runs on
   every push to `main`,
   because rustak's M0 exit criterion is a multi-arch
@@ -457,7 +460,7 @@ code scanning), not as pull-request comments.
    `rust.yml`.
 2. `version` rewrites `Cargo.toml`'s workspace version to `0.1.0` (the tag
    name with its leading `v` stripped) and uploads it.
-3. `build` downloads that manifest, compiles all 20 crate×target
+3. `build` downloads that manifest, compiles all 25 crate×target
    combinations, and uploads each binary both as a GitHub Actions artifact and
    (via `SierraSoftworks/gh-releases@v1.0.10`) as a release asset named
    `<bin>-<os>-<arch>[.exe]`.
@@ -465,7 +468,7 @@ code scanning), not as pull-request comments.
    crate; `docker-publish` combines them into multi-arch manifest lists
    tagged `latest`, `<major>.<minor>.<patch>`, `<major>.<minor>` and `<major>`
    at `ghcr.io/sierrasoftworks/rustak`, `…/rustak-plugin-example`,
-   `…/rustak-plugin-ais` and `…/rustak-plugin-adsb`.
+   `…/rustak-plugin-ais`, `…/rustak-plugin-adsb` and `…/rustak-plugin-esb`.
 5. `tap` pushes an updated `rustak` formula (aliased `major`/`minor`) to the
    `SierraSoftworks` Homebrew tap.
 
@@ -527,7 +530,7 @@ cd ..
 # a single build-matrix leg, e.g. the native target
 cargo build --release -p rustak-server
 cargo build --release -p rustak-plugin-example
-cargo build --release -p rustak-plugin-ais -p rustak-plugin-adsb
+cargo build --release -p rustak-plugin-ais -p rustak-plugin-adsb -p rustak-plugin-esb
 
 # a cross-compiled leg (needs `cross`: cargo binstall cross@0.2.5 — the same
 # pin the build matrix uses)

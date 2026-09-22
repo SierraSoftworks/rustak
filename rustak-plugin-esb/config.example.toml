@@ -1,0 +1,199 @@
+# rustak-plugin-esb configuration.
+#
+# Every key is shown with its default. A key that is commented out has its
+# default written beside it; a key that is shown uncommented is set to its
+# default, so this file describes a working sidecar as it stands.
+#
+# Any value may be written as "${{ env.NAME }}", which is substituted from the
+# environment (or from the file passed to --env) before the file is parsed. That
+# is how the PowerCheck key stays out of a file you commit or bind-mount.
+#
+# Unknown and misplaced keys are refused rather than ignored, so
+# `rustak-plugin-esb --config config.example.toml --check` is a real check of
+# this file. This crate's test suite loads it, so it cannot drift from the code
+# either.
+#
+# Durations are written as "45s", "15m", "12h" or "30d".
+
+
+[service]
+# The service's name. Required: the stream uid (SERVICE-<name>), the control-API
+# path and the certificate subject are all derived from it. One sidecar per
+# area is one name each: "esb-munster", "esb-connacht".
+name = "esb"
+
+# What to call this service in the admin UI. Default: its name.
+# display_name = "ESB outages (Munster)"
+
+# What this service advertises that it does. Default: [].
+capabilities = ["cot.publish"]
+
+# The token this service authenticates to /api/v1/services/* with. Default:
+# none. It is a credential, so it belongs in the environment rather than here.
+# token = "${{ env.RUSTAK_SERVICE_TOKEN }}"
+
+# The one-time enrolment token this service gets its first certificate with,
+# for the start where it has none. Default: none — and RUSTAK_ENROLLMENT_TOKEN
+# in the environment does the same thing without editing this file. The private
+# key is generated inside this process and never leaves it; the token is spent
+# by the enrolment it pays for, so it is needed once rather than on every start,
+# and one that is still set when the certificate exists is ignored.
+# enrollment_token = "${{ env.RUSTAK_ENROLLMENT_TOKEN }}"
+
+# The identity this sidecar's orchestrator already gave it, which buys both the
+# certificate and the control-API token — so a deployment under Nomad or
+# Kubernetes holds **no rustak secret at all**: no enrolment token to mint and
+# hand over, no service token to copy into a file.
+#
+# Unset — the default — looks in three places, in this order:
+#
+#   1. the NOMAD_TOKEN_rustak environment variable   (Nomad, `env = true`)
+#   2. ${NOMAD_SECRETS_DIR}/nomad_rustak.jwt          (Nomad, `file = true`)
+#   3. /var/run/secrets/tokens/rustak                 (a Kubernetes projected
+#                                                      serviceAccountToken)
+#
+# Set it to name exactly one source outright — exactly one, and naming both is
+# refused. A source named here that holds nothing is a start-up failure rather
+# than a quiet fall-back to the enrolment token: naming one is deliberate.
+#
+# The token is re-read from its source every time it is used, because both
+# orchestrators rotate it. The server side is `[auth.workload]`; see
+# "Workload identity" in docs/deployment.md for the jobspec and the rules.
+# workload_identity = { env = "NOMAD_TOKEN_rustak" }
+# workload_identity = { file = "/var/run/secrets/tokens/rustak" }
+
+# The client certificate and private key this service opens the CoT stream with,
+# in PEM. Default: none; both are required as soon as [server] stream names an
+# "ssl://" endpoint, which every real deployment does. Files that are not there
+# yet are what self-enrolment writes on the first start.
+# certificate = "/etc/rustak/esb.pem"
+# key = "/etc/rustak/esb.key"
+
+# Where self-enrolment writes the certificate, key and truststore that the three
+# settings around this one do not name. Default: the directory this file is in.
+# pki_dir = "/etc/rustak"
+
+# The account this service enrols and signs in as, which is the common name of
+# the certificate it is issued. Default: the service's name above.
+# account = "svc.esb"
+
+# The truststore used to verify the server's certificate, in PEM. Default: the
+# platform's own roots — or, once this sidecar has enrolled, the CA chain the
+# server answered the enrolment with, which is what an internal CA needs.
+#
+# It *replaces* the platform's roots for the CoT stream and [server] marti,
+# which always present rustak's own CA, and *joins* them for [server] control,
+# which may present an ACME or otherwise publicly trusted certificate instead.
+# truststore = "/etc/rustak/truststore.pem"
+
+# The truststore that verifies [server] control alone, in PEM. Default: unset —
+# the platform's roots joined with `truststore` above, which covers both a
+# publicly trusted public listener and one behind rustak's own CA.
+#
+# Set it only to *pin* the public listener to a PKI of your own: it replaces
+# both the platform's roots and `truststore` for that endpoint, and says nothing
+# about the stream or Marti. Nothing writes it, and a deployment whose public
+# listener holds an ACME certificate needs it not at all.
+# control_truststore = "/etc/rustak/public-ca.pem"
+
+
+[server]
+# The CoT stream, as a TAK connect string. Default: none — and a sidecar without
+# one runs its ticks and opens no connection at all, which is what makes this
+# file usable offline.
+# stream = "ssl://tak.example.com:8089"
+
+# The service control API, which is what registers this sidecar and reports its
+# health to the admin UI. Default: none.
+# control = "https://tak.example.com:8446"
+
+
+[sidecar]
+# How often the source is polled and the publisher drained. The first tick happens
+# as soon as the sidecar has started. Default: "30s" — this file sets it lower
+# because outage details are fetched a few per tick (`details_per_tick` below),
+# so the tick is what paces them. The list itself is asked for every `poll`,
+# however short this is.
+tick = "10s"
+
+# How long `stop` is given before the harness stops waiting.
+shutdown_grace = "10s"
+
+
+[settings]
+# Which kinds of outage get a marker: "fault" (red), "planned" (orange),
+# "restored" (green) and "other" (white; anything ESB adds that this plugin has
+# not seen before). Default: all four. After a storm, ["fault", "restored"] is
+# the picture of the response and nothing else.
+include = ["fault", "planned", "restored", "other"]
+
+# How long a marker stays on a map without being republished. Default: "15m".
+# No delete message is ever sent — an outage ESB stops listing is simply no
+# longer republished, and every client drops it when this runs out. It is also
+# how long a stopped sidecar's markers outlive it.
+stale = "15m"
+
+# How often an unchanged marker is republished so that it outlives `stale`.
+# Default: "5m". Held to half of `stale`, and spread per outage so that a
+# storm's worth of markers is not republished in one burst.
+refresh = "5m"
+
+
+# Where this sidecar is looking. Outages outside it are never published, and
+# ESB is never asked for their details. Default: the whole world, which for
+# this source is the Republic of Ireland. An administrator can override it from
+# the admin UI: an `area` in the service's configuration document wins.
+#
+# Either a box:
+[settings.area]
+kind = "bbox"
+south = 51.3
+west = -10.8
+north = 55.5
+east = -5.9
+
+# …or a circle:
+# [settings.area]
+# kind = "circle"
+# lat = 51.8985
+# lon = -8.4756
+# radius_km = 60.0
+
+
+# Where the outages come from. Required. Exactly one of the two blocks below.
+#
+# This file ships with "replay" so that it runs with no key and no internet; a
+# deployment replaces this block with the live one.
+
+
+# 1. ESB Networks' PowerCheck, the API behind https://powercheck.esbnetworks.ie.
+#    It is unofficial and undocumented: read rustak-plugin-esb/README.md first.
+#
+# [settings.source]
+# kind = "powercheck"
+#
+# The `API-Subscription-Key` header the PowerCheck site sends to api.esb.ie,
+# which your browser's network inspector shows. Required. ESB can rotate it;
+# three refusals in a row stop the source with a log line saying so.
+# api_key = "${{ env.ESB_API_KEY }}"
+#
+# How often the list of outages is asked for. Default: "5m", and never faster
+# than "1m" whatever this says — an outage lasts hours, and this API is at its
+# busiest exactly when it matters most.
+# poll = "5m"
+#
+# How many outages have their details (place, customers, times, status) fetched
+# per tick, one request each. Default: 10. A marker appears from the list at
+# once and is filled in when its turn comes; details are refreshed every 30
+# minutes, and never for an outage outside the area. 0 fetches none.
+# details_per_tick = 10
+#
+# Where the API lives. Default: ESB's own.
+# base_url = "https://api.esb.ie/esbn/powercheck/v1.0"
+
+
+# 2. A file of outages, offered on every tick: what this file ships with and
+#    what the demonstration runs on. One JSON outage per line.
+[settings.source]
+kind = "replay"
+path = "outages.example.ndjson"

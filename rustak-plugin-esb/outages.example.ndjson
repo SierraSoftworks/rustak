@@ -1,0 +1,7 @@
+# One outage per line, in the shape `rustak_plugin_esb::Outage` serialises to.
+# Hand-written for the demonstration; none of these is a real ESB record.
+{"id":"9000001","kind":"fault","position":[51.8139,-8.3986],"location":"Carrigaline","depot":"Cork South","customers":412,"started_at":"2026-09-22T13:30:00Z","estimated_restore_at":"2026-09-22T18:00:00Z","status":"Crew assigned"}
+{"id":"9000002","kind":"fault","position":[53.2719,-9.0489],"location":"Salthill","depot":"Galway","customers":57,"started_at":"2026-09-22T12:10:00Z","status":"We are aware of a fault in this area"}
+{"id":"9000003","kind":"planned","position":[53.3498,-6.2603],"location":"Dublin 1","depot":"Dublin North","customers":120,"started_at":"2026-09-24T08:00:00Z","estimated_restore_at":"2026-09-24T15:30:00Z","planned_reason":"Line maintenance"}
+{"id":"9000004","kind":"restored","position":[52.6680,-8.6305],"location":"Limerick","depot":"Limerick","customers":0,"started_at":"2026-09-22T06:45:00Z","restored_at":"2026-09-22T10:20:00Z"}
+{"id":"9000005","kind":"fault","position":[54.2766,-8.4761]}

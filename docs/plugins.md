@@ -781,6 +781,15 @@ its own attribution, and a couple need budgeting rather than just configuring:
 [`rustak-plugin-adsb/README.md`](../rustak-plugin-adsb/README.md) is where they
 are written down, and is worth reading before a deployment points at one.
 
+**Not every feed is a track.** [`rustak-plugin-esb`](../rustak-plugin-esb) puts
+Irish power outages on the map from ESB Networks' PowerCheck. An outage does not
+move and has no allegiance, so it uses `Area` and `FeedCounters` from
+`rustak_client::feed` but not `Track` or `FeedPublisher`: it builds spot-map
+markers (`b-m-p-s-m`) coloured by status, republishes each one when it changes
+and once per `refresh`, and keeps the last known outages on the map while its
+upstream is down. It is the one to copy for anything that sits still — road
+closures, weather warnings, river gauges.
+
 ### The `Track` contract
 
 A source's whole job is to produce these:
@@ -902,6 +911,7 @@ is what makes a replay a fair test of the policy.
 ## See also
 
 - `rustak-plugin-example/` — the template this document describes.
-- `rustak-plugin-ais/`, `rustak-plugin-adsb/` — the two feed sidecars.
+- `rustak-plugin-ais/`, `rustak-plugin-adsb/` — the two track feed sidecars.
+- `rustak-plugin-esb/` — a feed of things that sit still: power outages as markers.
 - `docs/ci.md` — how a plugin crate is built, published and released.
 - `.claude/plan/plan.md` → Architecture → "Plugin (sidecar) contract".

@@ -81,7 +81,8 @@ database is embedded.
   the Marti client and a `Sidecar` trait; `rustak-plugin-example` is the template.
   `rustak-plugin-ais` (vessels, from an `!AIVDM` receiver of your own or the AISStream.io feed)
   and `rustak-plugin-adsb` (aircraft, from a local `readsb` receiver, a public aggregator or the
-  OpenSky Network) put open data feeds on the map through the same contract.
+  OpenSky Network) put open data feeds on the map through the same contract, and
+  `rustak-plugin-esb` does the same for Irish power outages from ESB Networks' PowerCheck.
 - **Compatibility proven in CI, not by hand.** Every push runs a TypeScript suite against the
   real `@tak-ps/node-tak` client CloudTAK uses; nightly, ATAK's own networking core
   (`commoncommo`, built from source in a container) enrols, negotiates TAK Protocol v1, routes
@@ -168,7 +169,7 @@ behaviour are out of scope for now.
 The workspace holds the server (`rustak-server`, the `rustak` binary), the protocol crate
 (`rustak-cot`), shared DTOs (`rustak-api`), the foundations crate (`rustak-core`), the sidecar
 SDK (`rustak-client`), the plugins (`rustak-plugin-example`, `rustak-plugin-ais`,
-`rustak-plugin-adsb`) and the Yew admin UI (`rustak-ui`, built with Trunk and embedded into
+`rustak-plugin-adsb`, `rustak-plugin-esb`) and the Yew admin UI (`rustak-ui`, built with Trunk and embedded into
 the binary).
 
 ```sh
