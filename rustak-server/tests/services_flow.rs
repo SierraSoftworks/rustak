@@ -1,6 +1,7 @@
 //! The whole sidecar contract, in one process and over real sockets.
 //!
-//! Enrol → connect → register → heartbeat → react to a server event. Every step
+//! Enrol → connect → register → heartbeat → react to a server event → answer a
+//! configuration validation. Every step
 //! goes through the thing it is testing: a real certificate authority, the real
 //! `POST /Marti/api/tls/signClient/v2`, a real mutually authenticated `:8089`
 //! handshake, and `rustak_client::sidecar::drive` — the loop every
@@ -80,6 +81,20 @@ impl Sidecar for Watcher {
         self.context = Some(ctx);
 
         Ok(())
+    }
+
+    /// What a schema cannot say: this plugin's upstream refuses one key.
+    async fn validate_config(
+        &mut self,
+        config: &serde_json::Value,
+    ) -> rustak_client::sidecar::ConfigValidation {
+        match config["api_key"].as_str() {
+            Some("refused") => {
+                rustak_client::sidecar::ConfigIssue::at("/api_key", "The upstream refused it.")
+                    .into()
+            }
+            _ => rustak_client::sidecar::ConfigValidation::accepted(),
+        }
     }
 
     async fn on_event(&mut self, event: SidecarEvent) -> Result<Vec<Event>, Error> {
@@ -352,7 +367,29 @@ async fn a_sidecar_enrols_connects_registers_reports_and_hears_what_the_server_s
 
     assert_eq!(heard, "ada");
 
-    // 6. Stopping is clean: the loop ends, `stop` runs, and `drive` returns.
+    // 6. An administrator's candidate configuration is put to the running
+    //    sidecar. The server cannot dial it, so the question goes out on the
+    //    feed it holds open and the answer comes back over the control API —
+    //    both of which are the harness's doing rather than the plugin's.
+    let registered = db.services().get_by_name(&name).await.unwrap().unwrap();
+
+    for (api_key, valid) in [("accepted", true), ("refused", false)] {
+        let report = rustak_server::plugins::validation::validate(
+            &harness.context,
+            &registered,
+            &serde_json::json!({ "api_key": api_key }),
+        )
+        .await;
+
+        assert_eq!(
+            report.service,
+            rustak_api::ServiceCheck::Checked,
+            "{api_key}"
+        );
+        assert_eq!(report.valid, valid, "{api_key}");
+    }
+
+    // 7. Stopping is clean: the loop ends, `stop` runs, and `drive` returns.
     shutdown.cancel();
     sidecar
         .await

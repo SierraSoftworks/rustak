@@ -68,6 +68,9 @@ tokio-rusqlite = { workspace = true }
 include_dir = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Holds a service's configuration to the JSON Schema it registered; see
+# `plugins::config_schema`.
+jsonschema = { workspace = true }
 toml = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }

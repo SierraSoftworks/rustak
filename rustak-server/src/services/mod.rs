@@ -70,7 +70,7 @@ use crate::{
     config::Config,
     crypto::SecretStore,
     db::{AuditStore, Cache, Database, KeyValueStore, Queue},
-    plugins::ServerEvents,
+    plugins::{ServerEvents, Validations},
 };
 
 pub use late::{Late, Pending};
@@ -176,6 +176,7 @@ pub struct AppContext {
     live: Late<LiveConnections>,
     acme: Arc<AcmeState>,
     events: ServerEvents,
+    validations: Validations,
     session: Arc<Session>,
     http_client: reqwest::Client,
     shutdown: Shutdown,
@@ -213,6 +214,7 @@ impl AppContext {
             live: Late::new("the live stream connections"),
             acme: Arc::new(AcmeState::new()),
             events: ServerEvents::new(),
+            validations: Validations::default(),
             session,
             http_client,
             shutdown,
@@ -425,6 +427,11 @@ pub trait Services {
     /// ordinary case.
     fn events(&self) -> &ServerEvents;
 
+    /// The candidate configurations a service has been asked about and not yet
+    /// answered. Beside [`events`](Self::events) because the two are halves of
+    /// one exchange: see [`crate::plugins::validation`].
+    fn validations(&self) -> &Validations;
+
     /// The ACME certificate resolver and the `http-01` answers armed right
     /// now.
     ///
@@ -489,6 +496,10 @@ impl Services for AppContext {
         &self.events
     }
 
+    fn validations(&self) -> &Validations {
+        &self.validations
+    }
+
     fn acme(&self) -> Arc<AcmeState> {
         Arc::clone(&self.acme)
     }
@@ -550,6 +561,10 @@ impl<S: Services + ?Sized> Services for &S {
 
     fn events(&self) -> &ServerEvents {
         (*self).events()
+    }
+
+    fn validations(&self) -> &Validations {
+        (*self).validations()
     }
 
     fn acme(&self) -> Arc<AcmeState> {

@@ -81,6 +81,7 @@
 //! reach it.
 
 mod area;
+mod config;
 mod kind;
 mod policy;
 mod publish;
@@ -90,6 +91,7 @@ mod symbol;
 mod track;
 
 pub use area::{Area, distance_m};
+pub use config::FeedConfig;
 pub use kind::{Affiliation, AircraftClass, TrackKind, VesselClass};
 pub use policy::PublishPolicy;
 pub use publish::{FeedCounters, FeedPublisher};

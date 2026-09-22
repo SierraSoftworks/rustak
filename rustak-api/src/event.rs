@@ -101,6 +101,13 @@ pub enum ServerEventPayload {
     /// A registered service reported its health, or stopped reporting it.
     #[serde(rename = "service.status")]
     ServiceStatus(ServiceEvent),
+
+    /// A service is being asked to check a candidate configuration.
+    ///
+    /// Published to that service alone. It carries an id and not the candidate,
+    /// which may hold a secret: see [`crate::service_config`] for the exchange.
+    #[serde(rename = "service.config.validate")]
+    ConfigValidationRequested(ConfigValidationEvent),
 }
 
 impl ServerEventPayload {
@@ -113,6 +120,7 @@ impl ServerEventPayload {
             Self::ChannelChanged(_) => "channel.changed",
             Self::PackageUploaded(_) => "package.uploaded",
             Self::ServiceStatus(_) => "service.status",
+            Self::ConfigValidationRequested(_) => "service.config.validate",
         }
     }
 }
@@ -183,6 +191,18 @@ pub struct PackageEvent {
     pub submitter: Option<String>,
 }
 
+/// A service is being asked to check a candidate configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigValidationEvent {
+    /// Which service is being asked.
+    pub service: ServiceName,
+
+    /// What to read the candidate back with, and to answer under.
+    ///
+    /// Not `id`: the payload is flattened into [`ServerEvent`], which has one.
+    pub request_id: uuid::Uuid,
+}
+
 /// A service said how it is doing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServiceEvent {
@@ -200,6 +220,26 @@ pub struct ServiceEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_validation_request_survives_being_flattened_into_its_envelope() {
+        // The payload shares one JSON object with the envelope's `id` and `at`,
+        // so a payload field of either name would be a frame no client can read.
+        let event = ServerEvent {
+            id: 41,
+            at: "2026-09-18T12:00:00.250Z".parse().unwrap(),
+            payload: ServerEventPayload::ConfigValidationRequested(ConfigValidationEvent {
+                service: ServiceName::parse("weather").unwrap(),
+                request_id: "8a6e0804-2bd0-4672-b79d-d97027f9071a".parse().unwrap(),
+            }),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+
+        assert_eq!(event.name(), "service.config.validate");
+        assert_eq!(json.matches("\"id\"").count(), 1, "{json}");
+        assert_eq!(serde_json::from_str::<ServerEvent>(&json).unwrap(), event);
+    }
 
     fn event(payload: ServerEventPayload) -> ServerEvent {
         ServerEvent {

@@ -44,6 +44,7 @@
 
 mod events;
 mod register;
+mod validate;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};

@@ -570,6 +570,60 @@ pre {
   }
 }
 
+// A service's configuration, drawn from the JSON Schema it registered. Nested
+// objects and tagged unions are fieldsets, so the nesting is visible and the
+// markup says what it is to a screen reader.
+.config-form {
+  &__group {
+    margin: 0 0 1.1rem;
+    padding: 0.85rem 1rem 0.1rem;
+    border: 1px solid $border-light;
+    border-radius: $radius;
+    background: $fill-lighter;
+
+    > .field__help,
+    > .field__error,
+    > .switch {
+      margin-bottom: 0.85rem;
+    }
+  }
+
+  &__legend {
+    padding: 0 0.35rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: $text-regular;
+  }
+
+  &__item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+
+    > :first-child {
+      flex: 1;
+    }
+  }
+
+  &__toolbar {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 0.6rem;
+  }
+
+  &__issues {
+    margin: 0 0 1rem;
+    padding-left: 1.2rem;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    color: $danger;
+
+    code {
+      font-family: $font-mono;
+    }
+  }
+}
+
 .switch {
   display: inline-flex;
   align-items: center;

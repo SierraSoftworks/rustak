@@ -19,7 +19,7 @@ use crate::db::{
 /// The columns [`ServiceRow::from_row`] expects, in order.
 const COLUMNS: &str = "id, name, user_id, display_name, description, version, capabilities, \
                        endpoints, config, status, status_message, last_heartbeat_at, enabled, \
-                       created_at, updated_at, metrics";
+                       created_at, updated_at, metrics, config_schema";
 
 /// One row of `services`.
 #[derive(Debug, Clone, PartialEq)]
@@ -45,6 +45,8 @@ pub struct ServiceRow {
     /// decided those were. Replaced rather than accumulated; `{}` until the
     /// first heartbeat carries any.
     pub metrics: serde_json::Value,
+    /// The JSON Schema the service registered for `config`, if it said.
+    pub config_schema: Option<serde_json::Value>,
 }
 
 impl ServiceRow {
@@ -66,6 +68,7 @@ impl ServiceRow {
             created_at: ts(row, 13)?,
             updated_at: ts(row, 14)?,
             metrics: json_col(row, 15)?,
+            config_schema: opt_json_col(row, 16)?,
         })
     }
 }
@@ -80,6 +83,7 @@ pub struct NewService {
     pub version: Option<String>,
     pub capabilities: Vec<Capability>,
     pub endpoints: Option<ServiceEndpoints>,
+    pub config_schema: Option<serde_json::Value>,
 }
 
 impl NewService {
@@ -93,6 +97,7 @@ impl NewService {
             version: None,
             capabilities: Vec::new(),
             endpoints: None,
+            config_schema: None,
         }
     }
 }
@@ -128,8 +133,8 @@ impl<'a> ServicesRepo<'a> {
                     &format!(
                         "INSERT INTO services \
                            (name, user_id, display_name, description, version, capabilities, \
-                            endpoints, created_at, updated_at) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8) \
+                            endpoints, created_at, updated_at, config_schema) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9) \
                          ON CONFLICT (name) DO UPDATE SET \
                            user_id = excluded.user_id, \
                            display_name = excluded.display_name, \
@@ -137,6 +142,7 @@ impl<'a> ServicesRepo<'a> {
                            version = excluded.version, \
                            capabilities = excluded.capabilities, \
                            endpoints = excluded.endpoints, \
+                           config_schema = excluded.config_schema, \
                            updated_at = excluded.updated_at \
                          RETURNING {COLUMNS}"
                     ),
@@ -149,6 +155,7 @@ impl<'a> ServicesRepo<'a> {
                         to_json(&new.capabilities)?,
                         new.endpoints.map(|e| to_json(&e)).transpose()?,
                         now,
+                        new.config_schema.map(|s| to_json(&s)).transpose()?,
                     ],
                     ServiceRow::from_row,
                 )

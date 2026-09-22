@@ -12,10 +12,12 @@
 //! | [`auth`] | Who a control-API request is from: a service token, a client certificate, or an administrator's session |
 //! | [`registry`] | What is registered, under whose account, and with what configuration |
 //! | [`health`] | Heartbeats, and deciding that one is overdue |
+//! | [`config_schema`] | Holding a configuration to the JSON Schema its service registered |
+//! | [`validation`] | Asking a running service whether a candidate configuration is one it can use |
 //! | [`events`] | The `broadcast` bus behind `GET /api/v1/events` |
 //! | [`visibility`] | Who each published event may be shown to |
 //!
-//! The HTTP layer over all four is `web::api::services` and `web::api::events`.
+//! The HTTP layer over them is `web::api::services` and `web::api::events`.
 //!
 //! # Named `plugins`, not `services`
 //!
@@ -36,12 +38,15 @@
 //! visible, and as easy to remove, as a device that does.
 
 pub mod auth;
+pub mod config_schema;
 pub mod events;
 pub mod health;
 pub mod registry;
+pub mod validation;
 pub mod visibility;
 
 pub use auth::Caller;
 pub use events::{PublishedEvent, ServerEvents};
 pub use registry::RegistryError;
+pub use validation::Validations;
 pub use visibility::{Audience, Subscriber};

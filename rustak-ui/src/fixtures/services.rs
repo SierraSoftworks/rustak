@@ -13,8 +13,8 @@
 use std::cell::RefCell;
 
 use rustak_api::{
-    Capability, ServiceDescriptor, ServiceEndpoints, ServiceId, ServiceName, ServiceState,
-    ServiceStatus, ServiceSummary,
+    Capability, ConfigIssue, ConfigValidationReport, ServiceCheck, ServiceDescriptor,
+    ServiceEndpoints, ServiceId, ServiceName, ServiceState, ServiceStatus, ServiceSummary,
 };
 
 use super::data::ago;
@@ -53,7 +53,64 @@ fn descriptor(
             marti: Some("https://rustak:8443".to_string()),
             control: Some("https://rustak:8446".to_string()),
         },
+        config_schema: None,
     }
+}
+
+/// The schema `rustak-plugin-adsb` registers, as `schemars` derives it from
+/// `rustak_client::feed::FeedConfig` — so the demo draws the form a real
+/// deployment draws, `$ref`, tagged union and all.
+fn feed_schema() -> serde_json::Value {
+    let degrees = |what: &str, limit: f64| {
+        serde_json::json!({
+            "description": format!("{what}, decimal degrees."),
+            "type": "number", "format": "double", "minimum": -limit, "maximum": limit,
+        })
+    };
+
+    serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "FeedConfig",
+        "description": "A feed sidecar's server-side configuration.",
+        "type": "object",
+        "properties": {
+            "area": {
+                "description": "Where the feed is looking. Leave unset to use the area in the \
+                                sidecar's own configuration file.",
+                "anyOf": [{ "$ref": "#/$defs/Area" }, { "type": "null" }],
+            },
+        },
+        "$defs": { "Area": { "description": "Where a feed is looking.", "oneOf": [
+            {
+                "description": "A latitude/longitude box, which may cross the anti-meridian.",
+                "type": "object",
+                "properties": {
+                    "kind": { "type": "string", "const": "bbox" },
+                    "south": degrees("Southern edge", 90.0),
+                    "west": degrees("Western edge", 180.0),
+                    "north": degrees("Northern edge", 90.0),
+                    "east": degrees("Eastern edge", 180.0),
+                },
+                "additionalProperties": false,
+                "required": ["kind", "south", "west", "north", "east"],
+            },
+            {
+                "description": "A circle around a point, which is what most HTTP feeds take.",
+                "type": "object",
+                "properties": {
+                    "kind": { "type": "string", "const": "circle" },
+                    "lat": degrees("Centre latitude", 90.0),
+                    "lon": degrees("Centre longitude", 180.0),
+                    "radius_km": {
+                        "description": "Radius in kilometres.",
+                        "type": "number", "format": "double", "minimum": 0.0,
+                    },
+                },
+                "additionalProperties": false,
+                "required": ["kind", "lat", "lon", "radius_km"],
+            },
+        ] } },
+    })
 }
 
 impl State {
@@ -90,12 +147,15 @@ impl State {
                 // but its upstream dropped and it is backing off.
                 ServiceSummary {
                     id: ServiceId::new(42),
-                    descriptor: descriptor(
-                        "rustak-plugin-adsb",
-                        "ADS-B feed",
-                        "0.1.0",
-                        &["cot.publish", "feed.adsb"],
-                    ),
+                    descriptor: ServiceDescriptor {
+                        config_schema: Some(feed_schema()),
+                        ..descriptor(
+                            "rustak-plugin-adsb",
+                            "ADS-B feed",
+                            "0.1.0",
+                            &["cot.publish", "feed.adsb", "config.validate"],
+                        )
+                    },
                     status: ServiceStatus {
                         state: ServiceState::Degraded,
                         message: Some(
@@ -138,14 +198,22 @@ impl State {
                     metrics: serde_json::json!({ "offered": 0, "published": 0 }),
                 },
             ],
-            configs: vec![(
-                "rustak-plugin-ais".to_string(),
-                serde_json::json!({
-                    "interval_seconds": 30,
-                    "bounding_box": [-11.0, 49.5, 2.5, 61.0],
-                    "min_speed_knots": 0.5,
-                }),
-            )],
+            configs: vec![
+                (
+                    "rustak-plugin-ais".to_string(),
+                    serde_json::json!({
+                        "interval_seconds": 30,
+                        "bounding_box": [-11.0, 49.5, 2.5, 61.0],
+                        "min_speed_knots": 0.5,
+                    }),
+                ),
+                (
+                    "rustak-plugin-adsb".to_string(),
+                    serde_json::json!({
+                        "area": { "kind": "circle", "lat": 51.4775, "lon": -0.4614, "radius_km": 120.0 },
+                    }),
+                ),
+            ],
         }
     }
 }
@@ -182,6 +250,13 @@ pub fn set_service_config(
     name: &str,
     config: &serde_json::Value,
 ) -> Result<serde_json::Value, ApiError> {
+    // As the server's `422`: a save is held to the schema whoever asked first.
+    if !schema_issues(name, config).is_empty() {
+        return Err(ApiError::Server(
+            "That configuration does not match what this service accepts.".to_string(),
+        ));
+    }
+
     with(|state| {
         if !state
             .services
@@ -198,6 +273,63 @@ pub fn set_service_config(
 
         Ok(config.clone())
     })
+}
+
+/// What the schema `name` registered has against `config`; nothing, for a
+/// service that registered none.
+fn schema_issues(name: &str, config: &serde_json::Value) -> Vec<ConfigIssue> {
+    with(|state| {
+        state
+            .services
+            .iter()
+            .find(|service| service.descriptor.name.as_str() == name)
+            .and_then(|service| service.descriptor.config_schema.clone())
+    })
+    .map(|schema| super::schema_check::issues(&schema, config))
+    .unwrap_or_default()
+}
+
+/// What the server would say about a candidate: the ADS-B feed is the one demo
+/// service that can be asked, and it objects to what `FeedConfig::check` objects
+/// to — which a schema's per-field ranges cannot express.
+pub fn validate_service_config(
+    name: &str,
+    config: &serde_json::Value,
+) -> Result<ConfigValidationReport, ApiError> {
+    service_config(name)?;
+
+    // The schema first, as on the server: a candidate it refuses is never put
+    // to the service at all.
+    let refused = schema_issues(name, config);
+    if !refused.is_empty() {
+        return Ok(ConfigValidationReport::new(refused, ServiceCheck::Skipped));
+    }
+
+    if name != "rustak-plugin-adsb" {
+        return Ok(ConfigValidationReport::new(
+            Vec::new(),
+            ServiceCheck::NotSupported,
+        ));
+    }
+
+    let area = &config["area"];
+    let issues = match (
+        area["radius_km"].as_f64(),
+        area["south"].as_f64(),
+        area["north"].as_f64(),
+    ) {
+        (Some(radius), _, _) if radius <= 0.0 => vec![ConfigIssue::at(
+            "/area/radius_km",
+            "A circle needs a radius greater than zero.",
+        )],
+        (_, Some(south), Some(north)) if south > north => vec![ConfigIssue::at(
+            "/area/south",
+            "The southern edge is north of the northern edge.",
+        )],
+        _ => Vec::new(),
+    };
+
+    Ok(ConfigValidationReport::new(issues, ServiceCheck::Checked))
 }
 
 /// Removes a registration, and the configuration that went with it.
@@ -269,7 +401,7 @@ mod tests {
         let mut state = State::new();
         let name = "rustak-plugin-ais";
 
-        assert_eq!(state.configs.len(), 1);
+        assert_eq!(state.configs.len(), 2);
         state
             .configs
             .iter_mut()
@@ -286,6 +418,90 @@ mod tests {
             .retain(|service| service.descriptor.name.as_str() != name);
         state.configs.retain(|(key, _)| key != name);
         assert_eq!(state.services.len(), 2);
-        assert!(state.configs.is_empty());
+        // Its own configuration goes with it, and nobody else's does.
+        assert_eq!(state.configs.len(), 1);
+        assert!(state.configs.iter().all(|(key, _)| key != name));
+    }
+
+    #[test]
+    fn only_the_service_that_can_be_asked_has_a_say_about_a_candidate() {
+        let circle = |radius_km: f64| {
+            serde_json::json!({
+                "area": { "kind": "circle", "lat": 51.5, "lon": -0.5, "radius_km": radius_km },
+            })
+        };
+
+        for (name, config, service, valid) in [
+            (
+                "rustak-plugin-adsb",
+                circle(80.0),
+                ServiceCheck::Checked,
+                true,
+            ),
+            (
+                "rustak-plugin-adsb",
+                circle(0.0),
+                ServiceCheck::Checked,
+                false,
+            ),
+            (
+                "rustak-plugin-ais",
+                circle(0.0),
+                ServiceCheck::NotSupported,
+                true,
+            ),
+        ] {
+            let report = validate_service_config(name, &config).expect("it is registered");
+
+            assert_eq!((report.service, report.valid), (service, valid), "{name}");
+        }
+
+        assert!(validate_service_config("nothing-here", &circle(1.0)).is_err());
+    }
+
+    #[test]
+    fn a_candidate_the_schema_refuses_is_refused_in_the_demo_as_the_server_would() {
+        let name = "rustak-plugin-adsb";
+        let circle = |extra: serde_json::Value| {
+            let mut area = serde_json::json!({ "kind": "circle", "lon": -0.5 });
+            area.as_object_mut()
+                .expect("an object")
+                .extend(extra.as_object().expect("an object").clone());
+
+            serde_json::json!({ "area": area })
+        };
+
+        for (config, path) in [
+            (
+                circle(serde_json::json!({ "lat": 91.0, "radius_km": 5.0 })),
+                "/area/lat",
+            ),
+            (
+                circle(serde_json::json!({ "lat": "north", "radius_km": 5.0 })),
+                "/area/lat",
+            ),
+            (
+                circle(serde_json::json!({ "lat": 51.5 })),
+                "/area/radius_km",
+            ),
+            (
+                circle(serde_json::json!({ "lat": 51.5, "radius_km": 5.0, "colour": "red" })),
+                "/area/colour",
+            ),
+        ] {
+            let report = validate_service_config(name, &config).expect("it is registered");
+
+            assert_eq!(
+                (report.valid, report.service),
+                (false, ServiceCheck::Skipped),
+                "{config}"
+            );
+            assert_eq!(report.issues[0].path.as_deref(), Some(path), "{config}");
+            assert!(set_service_config(name, &config).is_err(), "{config}");
+        }
+
+        let fine = circle(serde_json::json!({ "lat": 51.5, "radius_km": 5.0 }));
+        assert!(schema_issues(name, &fine).is_empty());
+        assert!(schema_issues("rustak-plugin-ais", &circle(serde_json::json!({}))).is_empty());
     }
 }

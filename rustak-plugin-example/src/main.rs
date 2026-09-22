@@ -10,14 +10,20 @@
 //!
 //! Registration and heartbeats are the harness's, not this file's: set
 //! `[server] control` and they happen. What is here is the *reacting* half —
-//! `SidecarEvent::Server`, which is the server-event feed.
+//! `SidecarEvent::Server`, which is the server-event feed — and the two hooks
+//! that make this plugin configurable from the admin UI: [`Overrides`] is the
+//! type that configuration is read into, its derived schema is what the form
+//! there is drawn from, and `validate_config` is the last word on a candidate.
 //!
 //! Copy this crate to start a new plugin; `docs/plugins.md` has the recipe.
 
 use std::time::Duration;
 
 use rustak_client::control::ServerEventPayload;
-use rustak_client::sidecar::{Sidecar, SidecarContext, SidecarEvent, async_trait, run};
+use rustak_client::sidecar::{
+    ConfigIssue, ConfigValidation, JsonSchema, ServiceSettings, Sidecar, SidecarContext,
+    SidecarEvent, async_trait, parse_config, run, schema_for,
+};
 use rustak_core::prelude::*;
 use rustak_cot::Event;
 use rustak_cot::detail::contact::STREAMING_ENDPOINT;
@@ -90,6 +96,22 @@ impl Default for Settings {
     }
 }
 
+/// What an administrator may change from the admin UI while this is running.
+///
+/// Not `[settings]`: that table is the file this process was started with.
+/// This is the document the *server* holds for the service, and deriving
+/// `JsonSchema` on it is all it takes for the admin UI to draw a form instead
+/// of a JSON text box — the doc comments below are that form's help text.
+#[derive(Debug, Default, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct Overrides {
+    /// What each heartbeat says. Leave unset to use the message in the
+    /// sidecar's own configuration file.
+    #[serde(default)]
+    #[schemars(length(max = 200))]
+    message: Option<String>,
+}
+
 /// The plugin itself: whatever it needs to remember between calls.
 #[derive(Default)]
 struct ExampleSidecar {
@@ -98,6 +120,11 @@ struct ExampleSidecar {
 
     /// How many heartbeats this process has logged.
     heartbeats: u64,
+
+    /// The server's copy of this service's configuration, re-read on a cadence
+    /// of its own, and what it last said.
+    configured: ServiceSettings,
+    overrides: Overrides,
 
     /// How many devices have joined the stream since this sidecar started,
     /// counted off the server-event feed rather than by watching for CoT.
@@ -160,12 +187,41 @@ impl Sidecar for ExampleSidecar {
         Ok(())
     }
 
+    fn config_schema() -> Option<serde_json::Value> {
+        Some(schema_for::<Overrides>())
+    }
+
+    async fn validate_config(&mut self, config: &serde_json::Value) -> ConfigValidation {
+        // The schema has already been applied by the server; this is for what it
+        // cannot say. A real plugin tries the API key against its upstream here.
+        match parse_config::<Overrides>(config) {
+            Ok(Overrides {
+                message: Some(message),
+            }) if message.trim().is_empty() => {
+                ConfigIssue::at("/message", "A message has to say something.").into()
+            }
+            Ok(_) => ConfigValidation::accepted(),
+            Err(refusal) => refusal,
+        }
+    }
+
     async fn tick(&mut self) -> Result<Vec<Event>, Error> {
         self.heartbeats += 1;
 
-        let message = match &self.context {
-            Some(context) => context.settings().message.as_str(),
-            None => "The example sidecar is alive.",
+        // `Some` only when the server holds a document this has not applied yet.
+        if let Some(context) = self.context.clone()
+            && let Some(document) = self.configured.refresh(&context).await
+        {
+            match parse_config(&document) {
+                Ok(overrides) => self.overrides = overrides,
+                Err(refusal) => warn!(?refusal, "Ignoring a configuration this build cannot read."),
+            }
+        }
+
+        let message = match (&self.overrides.message, &self.context) {
+            (Some(message), _) => message.as_str(),
+            (None, Some(context)) => context.settings().message.as_str(),
+            (None, None) => "The example sidecar is alive.",
         };
 
         info!(heartbeats = self.heartbeats, "{message}");
@@ -321,6 +377,27 @@ mod tests {
         );
         assert!(event.is_sa());
         assert!(!event.is_stale_at(event.time));
+    }
+
+    #[tokio::test]
+    async fn a_candidate_configuration_is_held_to_more_than_its_schema() {
+        let mut sidecar = started();
+
+        for (config, valid) in [
+            (serde_json::json!({}), true),
+            (serde_json::json!({ "message": "Still here." }), true),
+            (serde_json::json!({ "message": "   " }), false),
+            (serde_json::json!({ "mesage": "Still here." }), false),
+        ] {
+            assert_eq!(
+                sidecar.validate_config(&config).await.is_valid(),
+                valid,
+                "{config}"
+            );
+        }
+
+        let schema = ExampleSidecar::config_schema().expect("this plugin has one");
+        assert_eq!(schema["properties"]["message"]["maxLength"], 200);
     }
 
     #[tokio::test]

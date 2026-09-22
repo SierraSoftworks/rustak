@@ -300,7 +300,26 @@ enum Woken {
     /// The CoT stream produced something.
     Stream(SidecarEvent),
     /// The server-event feed produced something.
-    Server(SidecarEvent),
+    Server(Box<crate::control::ServerEvent>),
+}
+
+/// The validation this event asks this sidecar for, when it is one.
+///
+/// These are the harness's to answer rather than the plugin's to notice: the
+/// exchange is two control-API calls around one hook, and every plugin would
+/// otherwise write the same two.
+fn asked_to_validate(
+    event: &crate::control::ServerEvent,
+    name: &ServiceName,
+) -> Option<uuid::Uuid> {
+    match &event.payload {
+        crate::control::ServerEventPayload::ConfigValidationRequested(asked)
+            if &asked.service == name =>
+        {
+            Some(asked.request_id)
+        }
+        _ => None,
+    }
 }
 
 /// [`drive`], inside the context's span.
@@ -316,7 +335,8 @@ async fn tick_until_shutdown<S: Sidecar>(
     // Before `start`, so that a connect string or a certificate the operator
     // got wrong is reported instead of the plugin's own start-up work.
     let mut link = Link::open(&context)?;
-    let mut control = ControlLink::open(&context);
+    let mut control = ControlLink::open(&context).with_config_schema(S::config_schema());
+    let name = context.identity().name().clone();
 
     // Registration is best-effort and happens before `start`, so that a plugin
     // whose own start-up reads its per-service configuration finds a
@@ -356,7 +376,7 @@ async fn tick_until_shutdown<S: Sidecar>(
             () = shutdown.cancelled() => break,
             _ = ticker.tick() => Woken::Tick,
             Some(event) = link.next() => Woken::Stream(event),
-            Some(event) = control.next() => Woken::Server(SidecarEvent::Server(Box::new(event))),
+            Some(event) = control.next() => Woken::Server(Box::new(event)),
         };
 
         let published: Vec<Event> = match woken {
@@ -371,7 +391,30 @@ async fn tick_until_shutdown<S: Sidecar>(
 
                 published
             }
-            Woken::Stream(event) | Woken::Server(event) => sidecar.on_event(event).await?,
+            Woken::Stream(event) => sidecar.on_event(event).await?,
+            Woken::Server(event) => match asked_to_validate(&event, &name) {
+                Some(id) => {
+                    // A candidate nobody is waiting on any more — one replayed
+                    // from the feed's ring, say — is not worth the plugin's time.
+                    if let Some(candidate) = control.candidate(id).await {
+                        let hook = sidecar.validate_config(&candidate.config);
+
+                        match ask_within(VALIDATE_WITHIN, shutdown.cancelled(), hook).await {
+                            Asked::Answered(verdict) => control.answer(id, &verdict).await,
+                            // No answer, which the server reports as a service
+                            // that could not be asked: never as a refusal.
+                            Asked::OutOfTime => tracing::warn!(
+                                within = ?VALIDATE_WITHIN,
+                                "The plugin took too long over a configuration it was asked about; not answering.",
+                            ),
+                            Asked::Stopping => break,
+                        }
+                    }
+
+                    Vec::new()
+                }
+                None => sidecar.on_event(SidecarEvent::Server(event)).await?,
+            },
         };
 
         // Raced against the shutdown because a write into a connection that is
@@ -386,6 +429,37 @@ async fn tick_until_shutdown<S: Sidecar>(
 
     tracing::info!("The sidecar is stopping.");
     with_grace("the sidecar", sidecar.stop(), grace).await?
+}
+
+/// How long a plugin's `validate_config` may take.
+///
+/// The hook holds `&mut` to the plugin, so nothing else of the plugin's runs
+/// beside it: no tick, no heartbeat, no other event. Inside the ten seconds the
+/// server waits, so that a slow hook costs an administrator an "it could not be
+/// asked" and the sidecar nothing more than this.
+const VALIDATE_WITHIN: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// What became of asking the plugin about a candidate configuration.
+enum Asked {
+    Answered(rustak_api::ConfigValidation),
+    OutOfTime,
+    Stopping,
+}
+
+/// Runs a validation hook for at most `within`, and never past a shutdown.
+async fn ask_within(
+    within: std::time::Duration,
+    stopping: impl Future<Output = ()>,
+    hook: impl Future<Output = rustak_api::ConfigValidation>,
+) -> Asked {
+    tokio::select! {
+        biased;
+
+        () = stopping => Asked::Stopping,
+        answer = tokio::time::timeout(within, hook) => {
+            answer.map_or(Asked::OutOfTime, Asked::Answered)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1107,5 +1181,27 @@ mod tests {
 
         assert_eq!(command.get_name(), "rustak-client-test");
         assert_eq!(command.get_version(), Some("0.0.0-test"));
+    }
+
+    #[tokio::test]
+    async fn a_validation_hook_is_bounded_and_never_delays_a_stop() {
+        use rustak_api::ConfigValidation;
+
+        let soon = std::time::Duration::from_millis(20);
+        let minute = std::time::Duration::from_secs(60);
+        let never = std::future::pending::<ConfigValidation>;
+        let running = std::future::pending::<()>;
+
+        let answered = ask_within(soon, running(), async { ConfigValidation::accepted() }).await;
+        assert!(matches!(answered, Asked::Answered(verdict) if verdict.is_valid()));
+
+        assert!(matches!(
+            ask_within(soon, running(), never()).await,
+            Asked::OutOfTime
+        ));
+        assert!(matches!(
+            ask_within(minute, std::future::ready(()), never()).await,
+            Asked::Stopping
+        ));
     }
 }

@@ -67,6 +67,7 @@ mod event_feed;
 mod exchange;
 mod link;
 mod link_health;
+mod remote_config;
 pub mod run;
 mod settings;
 pub mod workload;
@@ -76,6 +77,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use rustak_api::Heartbeat;
+pub use rustak_api::{ConfigIssue, ConfigValidation};
 use rustak_core::prelude::*;
 use rustak_core::service::{ServiceDescriptor, ServiceIdentity};
 use rustak_cot::Event;
@@ -88,6 +90,7 @@ pub use async_trait::async_trait;
 pub use config::{
     ENROLLMENT_TOKEN_ENV, HarnessConfig, NoSettings, ServerConfig, ServiceConfig, SidecarConfig,
 };
+pub use remote_config::{JsonSchema, parse_config, schema_for, schemars};
 pub use run::{Args, drive, run, run_with, serve};
 pub use settings::ServiceSettings;
 pub use workload::{
@@ -588,6 +591,38 @@ pub trait Sidecar: Send + 'static {
     /// the floor.
     async fn health(&mut self) -> Option<Heartbeat> {
         None
+    }
+
+    /// A JSON Schema for the configuration an administrator sets for this
+    /// service in the admin UI. [`None`] — the default — leaves it free-form.
+    ///
+    /// Derive it from the type the plugin reads that configuration into, with
+    /// [`schema_for`], so the two cannot drift apart. The harness registers it
+    /// with the server, which draws a form from it and holds every write to it.
+    fn config_schema() -> Option<serde_json::Value> {
+        None
+    }
+
+    /// Whether `config` is a configuration this plugin could run with, asked
+    /// when an administrator is about to save one and this sidecar is reachable.
+    ///
+    /// This is for what a schema cannot say: an API key the upstream refuses, a
+    /// path that is not there. The server has already held `config` to
+    /// [`config_schema`](Sidecar::config_schema); start from [`parse_config`].
+    ///
+    /// `config` is a candidate — it may never be saved, so **do not apply it** —
+    /// and it may hold a secret, so **do not log it**. Nothing else of
+    /// this plugin's runs while it does — no tick, no heartbeat — so the harness
+    /// stops waiting after eight seconds, which an administrator sees as a
+    /// service that could not be asked: bound anything that goes to an upstream
+    /// well inside that. When the
+    /// plugin cannot tell — the upstream is down — accept: a refusal is a claim
+    /// that the configuration is wrong, and an outage must not make a working
+    /// one unsaveable.
+    async fn validate_config(&mut self, config: &serde_json::Value) -> ConfigValidation {
+        let _ = config;
+
+        ConfigValidation::accepted()
     }
 
     /// Called for every [`SidecarEvent`] the harness observes, with whatever

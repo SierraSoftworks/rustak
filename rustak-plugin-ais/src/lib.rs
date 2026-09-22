@@ -48,9 +48,12 @@ use std::time::Duration;
 use chrono::Utc;
 use rustak_api::Heartbeat;
 use rustak_client::feed::{
-    Affiliation, Area, Feed, FeedCounters, FeedPublisher, PublishPolicy, Symbology,
+    Affiliation, Area, Feed, FeedConfig, FeedCounters, FeedPublisher, PublishPolicy, Symbology,
 };
-use rustak_client::sidecar::{ServiceSettings, Sidecar, SidecarContext, SidecarEvent, async_trait};
+use rustak_client::sidecar::{
+    ConfigValidation, ServiceSettings, Sidecar, SidecarContext, SidecarEvent, async_trait,
+    schema_for,
+};
 use rustak_core::config::duration;
 use rustak_core::prelude::*;
 use rustak_cot::Event;
@@ -287,6 +290,16 @@ impl Sidecar for AisSidecar {
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
     type Settings = Settings;
+
+    /// What an administrator may change from the admin UI: the area, and
+    /// nothing else. The form there is drawn from this.
+    fn config_schema() -> Option<serde_json::Value> {
+        Some(schema_for::<FeedConfig>())
+    }
+
+    async fn validate_config(&mut self, config: &serde_json::Value) -> ConfigValidation {
+        FeedConfig::check(config)
+    }
 
     async fn start(&mut self, ctx: SidecarContext<Self::Settings>) -> Result<(), Error> {
         self.area = ctx.settings().area;
