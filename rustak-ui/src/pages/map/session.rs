@@ -148,6 +148,9 @@ pub struct Listeners {
     /// Somebody clicked the map, on these things, here. What that means is
     /// the page's to decide from the tool in hand.
     pub on_pick: Callback<Pick>,
+    /// The focus should be on something else: what it was on left the map.
+    /// Never a click, so never something a tool acts on.
+    pub on_focus: Callback<Focus>,
     pub on_redraw: Callback<()>,
     /// The server refused the session. The console re-resolves it, which is
     /// what puts the sign-in prompt where this page was.
@@ -156,28 +159,12 @@ pub struct Listeners {
 
 /// Starts the map, the feed and the clock.
 pub fn start(session: Rc<RefCell<Session>>, container: NodeRef, listeners: Listeners) -> Running {
-    // What leaves the map leaves the focus, which is the one way the session
-    // itself moves it: through a pick with nothing under it.
-    let on_focus = {
-        let on_pick = listeners.on_pick.clone();
-        Callback::from(move |focus: Focus| match focus {
-            Focus::Nothing => on_pick.emit(Pick {
-                uids: Vec::new(),
-                at: [0.0, 0.0],
-            }),
-            Focus::Feature(uid) => on_pick.emit(Pick {
-                uids: vec![uid],
-                at: [0.0, 0.0],
-            }),
-            Focus::Choosing { uids, at } => on_pick.emit(Pick { uids, at }),
-        })
-    };
     let running = Running {
         session,
         alive: Rc::new(Cell::new(true)),
         on_status: listeners.on_status,
         on_pick: listeners.on_pick,
-        on_focus,
+        on_focus: listeners.on_focus,
         on_redraw: listeners.on_redraw,
         on_signed_out: listeners.on_signed_out,
     };

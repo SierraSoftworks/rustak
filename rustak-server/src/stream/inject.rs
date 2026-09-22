@@ -46,10 +46,28 @@ impl Router {
         self.hub().register(
             Subscription::new(id, sender, Vec::new(), fingerprint, NOWHERE, handle).ephemeral(),
         );
-        let disposition = self.handle_inbound(id, event).await;
-        self.hub().unregister(id);
+        // Unregistered when this scope ends, however it ends: routing awaits
+        // a channel lookup, and a request cancelled during it must not leave
+        // a connection nobody will ever remove.
+        let _standing_in = StandIn {
+            hub: self.hub(),
+            id,
+        };
 
-        disposition
+        self.handle_inbound(id, event).await
+    }
+}
+
+/// An ephemeral subscription's presence in the hub, for as long as this is
+/// held.
+struct StandIn<'a> {
+    hub: &'a super::Hub,
+    id: super::subscription::ConnId,
+}
+
+impl Drop for StandIn<'_> {
+    fn drop(&mut self) {
+        self.hub.unregister(self.id);
     }
 }
 
@@ -58,6 +76,8 @@ mod tests {
     use rustak_cot::detail::flow_tags;
     use rustak_cot::detail::marti::{Dest, marti_element};
     use rustak_cot::detail::{Contact, contact::STREAMING_ENDPOINT};
+
+    use std::future::Future as _;
 
     use super::super::mission_hook;
     use super::super::subscription::Outbound;
@@ -147,6 +167,22 @@ mod tests {
         ));
 
         assert_eq!(router.hub().len(), 1, "the stand-in connection is gone");
+    }
+
+    #[tokio::test]
+    async fn a_publish_dropped_mid_way_leaves_nothing_behind_in_the_hub() {
+        let (router, _rx) = router_with_a_device().await;
+
+        // Polled once — far enough to register — and then dropped, as a
+        // cancelled request would be.
+        let mut publishing =
+            Box::pin(router.publish(principal("grace", &[(2, Direction::In)]), marker()));
+        let waker = std::task::Waker::noop();
+        let mut context = std::task::Context::from_waker(waker);
+        let _ = publishing.as_mut().poll(&mut context);
+        drop(publishing);
+
+        assert_eq!(router.hub().len(), 1, "only the device is left");
     }
 
     #[tokio::test]

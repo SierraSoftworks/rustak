@@ -6,7 +6,8 @@
 //! with this server's flow tag, recorded in `cot_latest` and the history
 //! segments, fanned out to every device that may see it, and announced to
 //! every open map. So a `PUT` becomes an event and goes through
-//! [`Router::publish`], and what the map draws afterwards is what the router
+//! [`Router::publish`](crate::stream::Router::publish), and what the map draws
+//! afterwards is what the router
 //! recorded — the same bytes a device would have been sent.
 //!
 //! A `DELETE` is the same again with the message every TAK client understands
@@ -60,11 +61,15 @@ pub async fn put(
     caller: Authenticated,
 ) -> ApiResult {
     let uid = uid.into_inner();
-    let draft = request.into_inner();
+    let mut draft = request.into_inner();
 
     if uid.trim().is_empty() || uid.len() > 256 {
         return Err(ApiError::bad_request("That is not a usable uid."));
     }
+    // Normalised once, before either check and before the event is built:
+    // a type that passes one check trimmed and the other untrimmed is not
+    // one that reaches the stream.
+    draft.kind = draft.kind.trim().to_string();
     if !well_formed_type(&draft.kind) || !feature::drawable(&draft.kind) {
         return Err(ApiError::bad_request(
             "That is not a CoT type a map draws: it should look like a-u-G or b-m-p-s-m.",
@@ -177,7 +182,7 @@ fn event_from(uid: &str, draft: &PublishFeature) -> Event {
         .map(CotTime::from_datetime)
         .unwrap_or_else(|| CotTime::from_datetime(Utc::now() + DEFAULT_LIFETIME));
 
-    let mut builder = Event::builder(draft.kind.trim(), uid)
+    let mut builder = Event::builder(draft.kind.as_str(), uid)
         .how(draft.how.as_deref().unwrap_or("h-g-i-g-o"))
         .time(now)
         .start(now)
@@ -216,9 +221,8 @@ fn event_from(uid: &str, draft: &PublishFeature) -> Event {
 }
 
 /// Whether text is shaped like a CoT type: dash-separated alphanumeric
-/// segments, the first one letter.
+/// segments, the first one letter, and nothing around them.
 fn well_formed_type(kind: &str) -> bool {
-    let kind = kind.trim();
     let mut segments = kind.split('-');
 
     matches!(segments.next(), Some(first) if first.len() == 1 && first.chars().all(|c| c.is_ascii_lowercase()))
@@ -305,6 +309,7 @@ mod tests {
             ("aa-u-G", false),
             ("a-u-G;drop", false),
             ("A-u-G", false),
+            (" t-x-c-t", false),
         ] {
             assert_eq!(well_formed_type(kind), ok, "{kind:?}");
         }

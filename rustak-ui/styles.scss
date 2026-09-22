@@ -3077,6 +3077,20 @@ footer {
 // 5.12 Map
 // -----------------------------------------------------------------------------
 
+// Read but not seen: a heading a page keeps for assistive technology when
+// its layout has nowhere to draw one.
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 // The one page that wants every pixel: see `AdminShell`. No title, no
 // footer, no measure — the map is the main area, and everything the page has
 // to say is laid over it.
@@ -3209,9 +3223,10 @@ footer {
       max-height: 45%;
     }
 
+    // The panel sits above the playback bar, which keeps the foot of the map.
     &__properties {
       top: auto;
-      bottom: 0.75rem;
+      bottom: 4.75rem;
     }
 
     &__playback {
@@ -3530,6 +3545,12 @@ footer {
     &--stale {
       color: darken($warning, 15%);
     }
+  }
+
+  &__hint {
+    margin: 0 0 0.75rem;
+    font-size: 0.8rem;
+    color: darken($warning, 15%);
   }
 }
 

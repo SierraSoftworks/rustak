@@ -20,6 +20,9 @@ use super::facts::facts;
 #[derive(Properties, PartialEq)]
 pub struct PropertiesProps {
     pub feature: MapFeature,
+    /// Whether `feature` is the live one rather than a moment from its past.
+    /// Only the live one is edited.
+    pub live: bool,
     /// The channels the signed-in account may publish into.
     pub channels: Vec<String>,
     /// Why the last save or delete did not happen.
@@ -70,7 +73,10 @@ pub fn properties(props: &PropertiesProps) -> Html {
             </header>
 
             <div class="map-properties__body">
-                if editable(feature) {
+                if editable(feature) && !props.live {
+                    <p class="map-properties__hint">{ "Return to live to edit this marker." }</p>
+                }
+                if editable(feature) && props.live {
                     <Editor
                         feature={feature.clone()}
                         channels={props.channels.clone()}
@@ -90,7 +96,7 @@ pub fn properties(props: &PropertiesProps) -> Html {
                     }) }
                 </dl>
 
-                if !editable(feature) {
+                if !(editable(feature) && props.live) {
                     if let Some(remarks) = &feature.remarks {
                         <p class="map-properties__remarks">{ remarks.clone() }</p>
                     }

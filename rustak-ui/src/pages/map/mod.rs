@@ -109,10 +109,11 @@ pub fn live_map() -> Html {
     };
 
     {
-        let (container, session, status, on_redraw) = (
+        let (container, session, status, on_focus, on_redraw) = (
             container.clone(),
             session.clone(),
             status.clone(),
+            on_focus.clone(),
             on_redraw.clone(),
         );
 
@@ -123,6 +124,7 @@ pub fn live_map() -> Html {
                 Listeners {
                     on_status: Callback::from(move |next| status.set(next)),
                     on_pick,
+                    on_focus,
                     on_redraw,
                     on_signed_out,
                 },
@@ -227,6 +229,9 @@ pub fn live_map() -> Html {
     let matching = held.store().roster(&search);
     let groups = objects::group(&matching);
 
+    // Editing is of the live marker, so a moment being shown from its past
+    // is looked at and not written over.
+    let live = held.replay().is_none_or(|replay| replay.position.is_live());
     let panel = focus
         .feature()
         .and_then(|uid| held.displayed(uid))
@@ -234,6 +239,7 @@ pub fn live_map() -> Html {
             html! {
                 <Properties
                     feature={feature.clone()}
+                    {live}
                     channels={held.edit().channels.clone()}
                     problem={held.edit().problem.clone()}
                     busy={held.edit().busy}
@@ -314,6 +320,12 @@ pub fn live_map() -> Html {
                 }
                 if held.tool() == Tool::Pin {
                     <p class="map-page__note">{ "Click the map to place a marker." }</p>
+                }
+                // A placement that failed has no panel to say so in.
+                if focus.feature().is_none() {
+                    if let Some(problem) = &held.edit().problem {
+                        <Alert kind={AlertKind::Error} title="The marker was not placed." message={problem.clone()} />
+                    }
                 }
                 if let Some(shown) = shown {
                     <p class="map-page__note map-page__note--shown">{ shown }</p>

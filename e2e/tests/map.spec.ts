@@ -35,8 +35,9 @@ test("the map draws what the server reports, with no base layer to draw it on", 
 
   await expect(page.getByRole("heading", { name: "On the map" })).toBeVisible();
   await expect(page.getByText("Live", { exact: true })).toBeVisible();
-  // The map is the page: nothing above or below it.
-  await expect(page.getByRole("heading", { name: "Map", exact: true })).toHaveCount(0);
+  // The map is the page: it is still headed, but nothing is drawn above it.
+  await expect(page.getByRole("heading", { name: "Map", exact: true })).toBeAttached();
+  await expect(page.locator(".page-title")).toHaveCount(0);
 
   // Set by the map itself once the features have reached it, so this is the
   // libraries having loaded from /vendor and the data having crossed into them.
@@ -138,6 +139,9 @@ test("selecting something shows where it has been, and its past can be scrubbed"
   await expect(application).toHaveAttribute("data-features", "1");
   await expect(page.getByText(/^Showing where QUINN was at/)).toBeVisible();
   await expect(page.getByRole("article", { name: "Details for QUINN" })).toBeVisible();
+
+  // Nothing is edited while a moment from the past is shown.
+  await expect(page.getByLabel("Name")).toHaveCount(0);
 
   // Back to live: everything returns.
   await playback.getByRole("button", { name: "Live" }).click();

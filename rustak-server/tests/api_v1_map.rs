@@ -506,6 +506,23 @@ async fn a_marker_is_refused_where_a_device_would_be() {
     .await;
     assert_eq!(chat.status(), StatusCode::BAD_REQUEST);
 
+    let padded = test::call_service(
+        &app,
+        publish(
+            "M-4",
+            PublishFeature {
+                kind: " t-x-c-t".to_string(),
+                ..marker("M", &[])
+            },
+        ),
+    )
+    .await;
+    assert_eq!(
+        padded.status(),
+        StatusCode::BAD_REQUEST,
+        "a control type is not let through by a space in front of it"
+    );
+
     let nonsense = test::call_service(
         &app,
         publish(

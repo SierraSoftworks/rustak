@@ -99,7 +99,11 @@ pub fn admin_shell(props: &AdminShellProps) -> Html {
                     <div class={classes!("app-container", immersive.then_some("app-container--immersive"))}>
                         <ContextProvider<PageActions> context={(*page_actions).clone()}>
                             <Protected>
-                                if !immersive {
+                                if immersive {
+                                    // The page is still headed, for whoever is
+                                    // reading it rather than looking at it.
+                                    <h1 class="visually-hidden">{ title }</h1>
+                                } else {
                                     <PageTitle title={title} subtitle={subtitle}>
                                         { (*actions).clone() }
                                     </PageTitle>
