@@ -17,7 +17,15 @@ target = "index.html"
 dist = "dist"
 
 [watch]
-watch = ["src", "styles.scss", "index.html"]
+watch = ["src", "js", "styles.scss", "index.html"]
+
+# The map page's JavaScript — MapLibre GL and milsymbol — is copied into
+# dist/vendor from the versions pinned in package.json. This is the one step of
+# the build that needs Node; see scripts/vendor.mjs for why it is not a CDN.
+[[hooks]]
+stage = "post_build"
+command = "node"
+command_arguments = ["scripts/vendor.mjs"]
 
 [serve]
 port = 8081

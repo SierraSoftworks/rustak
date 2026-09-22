@@ -233,6 +233,35 @@ pub async fn latest_events(
     .await
 }
 
+/// Every row that was not yet stale at `since`, newest relayed first.
+///
+/// What a map draws. Narrowed by `stale` rather than by `received_at`, because
+/// the two disagree in both directions: a marker dropped a week ago with a
+/// year to live belongs on the map, and a position report relayed a minute ago
+/// that went stale ten seconds later does not.
+///
+/// # Errors
+///
+/// A [`human_errors::Kind::System`] error carrying whatever SQLite reported.
+pub async fn current(
+    db: &Database,
+    since: DateTime<Utc>,
+    limit: u32,
+) -> Result<Vec<LatestRow>, Error> {
+    let sql = format!(
+        "SELECT {} FROM cot_latest WHERE stale >= ?1 ORDER BY received_at DESC LIMIT ?2",
+        LatestRow::COLUMNS
+    );
+
+    db.read(move |connection| {
+        connection
+            .prepare_cached(&sql)?
+            .query_map(params![Timestamp::from(since), limit], LatestRow::from_row)?
+            .collect()
+    })
+    .await
+}
+
 /// Forgets the rows whose messages went stale before `before`.
 ///
 /// # Errors

@@ -64,6 +64,7 @@ pub mod replay;
 pub mod resolver;
 pub mod router;
 pub mod subscription;
+pub mod tap;
 pub mod writer;
 
 use std::sync::Arc;
@@ -88,6 +89,7 @@ pub use notify::Notifier;
 pub use resolver::{CertPrincipalResolver, DbPrincipalResolver, StreamPrincipal};
 pub use router::{Disposition, Router};
 pub use subscription::{ClientEndpoint, ConnHandle, ConnId, Subscription};
+pub use tap::{CotTap, RelayedCot};
 
 /// A bound stream listener, before it has started accepting.
 ///

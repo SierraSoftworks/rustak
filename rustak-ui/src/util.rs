@@ -1,6 +1,7 @@
 //! Small formatting and navigation helpers shared across pages.
 
 pub mod mgrs;
+pub mod sidc;
 
 use chrono::{DateTime, Utc};
 

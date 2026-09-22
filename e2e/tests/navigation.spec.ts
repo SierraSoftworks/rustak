@@ -32,6 +32,7 @@ import { bootstrapAdmin, expect, gotoApp, signIn, test, waitForApp } from "./hel
  * Asserting both is what proves the link opened the page it claimed to.
  */
 const DESTINATIONS: ReadonlyArray<readonly [string, string]> = [
+  ["Map", "Map"],
   ["Situation", "Situation"],
   ["Activity", "Activity"],
   ["Users", "Users"],

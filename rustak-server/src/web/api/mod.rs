@@ -66,6 +66,7 @@ pub mod events;
 pub mod extract;
 pub mod groups;
 pub mod health;
+pub mod map;
 pub mod me;
 pub mod middleware;
 pub mod missions;
@@ -199,6 +200,7 @@ pub fn configure() -> actix_web::Scope<
             .configure(packages::routes)
             .configure(clients::routes)
             .configure(cot::routes)
+            .configure(map::routes)
             // Last, and reached by every path the routes above did not claim:
             // `web::scope("")` matches any prefix, so this is where `/api/v1`
             // stops rather than falling on to the admin UI's catch-all.

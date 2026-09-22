@@ -1,0 +1,172 @@
+//! The map: everything that is reporting, where it says it is, as it changes.
+//!
+//! The page is three things side by side. [`session`] is the part that talks
+//! to the server and owns what is on the map; [`glue`] is the map itself, in
+//! JavaScript; and this file is the Yew around them — the status line, the
+//! [`roster`], and the [`popover`], which is ordinary Yew portalled into an
+//! element the map positions.
+//!
+//! # Yew is not in the hot path
+//!
+//! A feed can carry hundreds of updates a second. Each goes from the session
+//! straight to the map, which redraws once per frame; this component hears
+//! about it at most once a second, which is as fast as a list or a relative
+//! time is worth redrawing.
+//!
+//! # The element the map lives in must never be recreated
+//!
+//! MapLibre builds its canvas inside a `<div>` Yew made, and Yew knows nothing
+//! about what is in there. Yew reconciles un-keyed siblings by position, so a
+//! sibling that comes and goes — a note, the pop-over's portal — shifts every
+//! position beside it, and a shifted `<div>` is a *new* `<div>`: empty, with
+//! the map still drawing into the one that was thrown away. So everything
+//! optional on this page sits inside a wrapper that is always there, and the
+//! children of `.map-page` and `.map-page__body` never change in number.
+//!
+//! # Read-only, and built to stop being
+//!
+//! Nothing here publishes yet. The seams are where that will go: the session
+//! already owns the store a local edit would be applied to first, the glue
+//! already hands geometry across as GeoJSON, and a publish will need exactly
+//! one more piece of page state — the channel or mission it is going to —
+//! which belongs in the bar below beside the status.
+
+mod glue;
+mod popover;
+mod render;
+mod roster;
+mod session;
+mod store;
+
+use yew::prelude::*;
+
+use crate::components::{Alert, AlertKind, Button, StatusPill, StatusTone};
+
+use popover::Popover;
+use roster::{ROSTER_ROWS, Roster, RosterEntry};
+use session::{FeedStatus, Session};
+
+#[function_component(LiveMap)]
+pub fn live_map() -> Html {
+    let container = use_node_ref();
+    let redraw = use_force_update();
+    let status = use_state(|| FeedStatus::Connecting);
+    let selected = use_state(|| None::<String>);
+    let search = use_state(String::new);
+    let session = use_mut_ref(Session::default);
+
+    {
+        let (container, session, status, selected) = (
+            container.clone(),
+            session.clone(),
+            status.clone(),
+            selected.clone(),
+        );
+
+        use_effect_with((), move |_| {
+            let running = session::start(
+                session,
+                container,
+                Callback::from(move |next| status.set(next)),
+                Callback::from(move |uid| selected.set(uid)),
+                Callback::from(move |()| redraw.force_update()),
+            );
+
+            move || running.stop()
+        });
+    }
+
+    // The pop-over follows the selection. The status is a dependency because
+    // the first thing it reports is that there is now a map to open one on.
+    {
+        let session = session.clone();
+        use_effect_with(((*selected).clone(), (*status).clone()), move |(uid, _)| {
+            session.borrow_mut().select(uid.clone());
+            || ()
+        });
+    }
+
+    let onselect = {
+        let (session, selected) = (session.clone(), selected.clone());
+        Callback::from(move |uid: String| {
+            session.borrow().fly_to(&uid);
+            selected.set(Some(uid));
+        })
+    };
+    let onsearch = {
+        let search = search.clone();
+        Callback::from(move |value: String| search.set(value))
+    };
+    let fit = {
+        let session = session.clone();
+        Callback::from(move |_: MouseEvent| session.borrow().fit_all())
+    };
+
+    let held = session.borrow();
+    let matching = held.store().roster(&search);
+    let entries: Vec<RosterEntry> = matching
+        .iter()
+        .take(ROSTER_ROWS)
+        .map(|feature| RosterEntry::of(feature))
+        .collect();
+
+    // Rendered into the element the map positions, so the pop-over is the
+    // map's to place and Yew's to fill.
+    let popover = selected
+        .as_deref()
+        .and_then(|uid| held.store().get(uid))
+        .zip(held.popover_element())
+        .map(|(feature, host)| {
+            create_portal(html! { <Popover feature={feature.clone()} /> }, host)
+        });
+
+    let (tone, label, explanation) = status.describe();
+
+    html! {
+        <div class="map-page">
+            <div class="map-page__bar">
+                <StatusPill {tone} {label} title={explanation.clone()} />
+                <span class="map-page__count">
+                    { match held.store().len() {
+                        1 => "1 thing on the map".to_string(),
+                        count => format!("{count} things on the map"),
+                    } }
+                </span>
+                <Button small=true onclick={fit}>{ "Fit everything" }</Button>
+            </div>
+
+            <div class="map-page__notes">
+                if let FeedStatus::Failed(message) = &*status {
+                    <Alert
+                        kind={AlertKind::Error}
+                        title="The map could not be started."
+                        message={message.clone()}
+                    />
+                } else if tone != StatusTone::Ok {
+                    if let Some(explanation) = explanation {
+                        <p class="map-page__note">{ explanation }</p>
+                    }
+                }
+            </div>
+
+            <div class="map-page__body">
+                <div
+                    ref={container}
+                    class="map-page__canvas"
+                    role="application"
+                    aria-label="Map. Everything on it is also listed beside it."
+                />
+                <Roster
+                    {entries}
+                    matched={matching.len()}
+                    search={(*search).clone()}
+                    {onsearch}
+                    selected={(*selected).clone()}
+                    {onselect}
+                />
+            </div>
+
+            <div class="map-page__portal">{ for popover }</div>
+        </div>
+    }
+}
