@@ -45,15 +45,21 @@ impl SourceState {
     /// A source that has not been asked anything yet, and may be asked now.
     #[must_use]
     pub fn new(name: impl Into<String>, interval: Duration) -> Self {
+        Self::new_at(name, interval, Utc::now())
+    }
+
+    /// [`new`](Self::new), at an instant of the caller's choosing.
+    #[must_use]
+    pub fn new_at(name: impl Into<String>, interval: Duration, now: DateTime<Utc>) -> Self {
         Self {
             name: name.into(),
             interval,
             connected: false,
             ever_connected: false,
             failures: 0,
-            since: Utc::now(),
+            since: now,
             last_error: None,
-            next_attempt: Utc::now(),
+            next_attempt: now,
             rate_limited: 0,
         }
     }
@@ -235,7 +241,7 @@ mod tests {
 
     #[test]
     fn a_source_is_asked_once_an_interval_whatever_the_tick_is() {
-        let mut state = SourceState::new("FIRMS", TEN_MINUTES);
+        let mut state = SourceState::new_at("FIRMS", TEN_MINUTES, now());
 
         assert!(state.ready_at(now()), "a new source may be asked at once");
 
@@ -248,7 +254,7 @@ mod tests {
 
     #[test]
     fn failures_back_off_to_a_ceiling_and_a_success_resets_them() {
-        let mut state = SourceState::new("FIRMS", TEN_MINUTES);
+        let mut state = SourceState::new_at("FIRMS", TEN_MINUTES, now());
         let mut waits = Vec::new();
 
         for _ in 0..5 {
@@ -268,7 +274,7 @@ mod tests {
 
     #[test]
     fn a_rate_limit_is_an_answer_even_when_it_is_the_first_one() {
-        let mut state = SourceState::new("FIRMS", TEN_MINUTES);
+        let mut state = SourceState::new_at("FIRMS", TEN_MINUTES, now());
         state.failed_at("timed out", now());
 
         state.wait_for_at(None, now());
@@ -279,7 +285,7 @@ mod tests {
 
     #[test]
     fn being_asked_to_wait_is_not_an_outage() {
-        let mut state = SourceState::new("FIRMS", TEN_MINUTES);
+        let mut state = SourceState::new_at("FIRMS", TEN_MINUTES, now());
         state.succeeded_at(now());
 
         state.wait_for_at(Some(Duration::from_secs(1_800)), now());
