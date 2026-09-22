@@ -115,6 +115,12 @@ impl FeedPublisher {
         self
     }
 
+    /// Changes the edition for everything published from here on, which is
+    /// how an administrator's choice takes effect without reopening a source.
+    pub fn set_symbology(&mut self, symbology: Symbology) {
+        self.symbology = symbology;
+    }
+
     /// The same publisher, filtering on an area of interest.
     ///
     /// The source subscribes with the area too; this is the second check, for

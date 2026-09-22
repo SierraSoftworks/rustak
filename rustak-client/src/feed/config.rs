@@ -14,7 +14,7 @@ use rustak_api::{ConfigIssue, ConfigValidation};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::Area;
+use super::{Area, Symbology};
 use crate::sidecar::parse_config;
 
 /// A feed sidecar's server-side configuration.
@@ -27,6 +27,14 @@ pub struct FeedConfig {
     /// own configuration file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub area: Option<Area>,
+
+    /// Which MIL-STD-2525 symbol code each track carries beside its CoT type.
+    /// Leave unset to use the one in the sidecar's own configuration file.
+    ///
+    /// A device draws a bare type from its 2525C tables whatever edition it is
+    /// set to, so a fleet on 2525D chooses that here to see these tracks in it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbology: Option<Symbology>,
 }
 
 impl FeedConfig {
@@ -70,6 +78,21 @@ mod tests {
         for expected in ["\"bbox\"", "\"circle\"", "radius_km", "\"maximum\":90"] {
             assert!(schema.contains(expected), "{expected}: {schema}");
         }
+    }
+
+    #[test]
+    fn the_schema_offers_every_edition_and_the_document_reads_back() {
+        let schema = schema_for::<FeedConfig>().to_string();
+
+        for expected in ["\"none\"", "\"2525c\"", "\"2525d\"", "MIL-STD-2525D"] {
+            assert!(schema.contains(expected), "{expected}: {schema}");
+        }
+
+        let read: FeedConfig = serde_json::from_value(serde_json::json!({ "symbology": "2525d" }))
+            .expect("a document");
+        assert_eq!(read.symbology, Some(Symbology::Milstd2525D));
+        assert!(FeedConfig::check(&serde_json::json!({ "symbology": "2525d" })).is_valid());
+        assert!(!FeedConfig::check(&serde_json::json!({ "symbology": "2525e" })).is_valid());
     }
 
     #[test]

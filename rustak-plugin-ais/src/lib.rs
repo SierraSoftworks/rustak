@@ -173,6 +173,9 @@ pub struct AisSidecar {
 
     /// Where that area came from, for the line that says which is in effect.
     area_from: &'static str,
+
+    /// The edition of MIL-STD-2525 in effect right now, from either of the two.
+    symbology: Symbology,
 }
 
 /// What [`AisSidecar::area_from`] says for each of the two.
@@ -189,25 +192,54 @@ impl AisSidecar {
             .map_or_else(FeedCounters::default, FeedPublisher::counters)
     }
 
-    /// The area an administrator set in the admin UI, when they have set a new
-    /// one.
+    /// What an administrator set for this service, when the server holds a
+    /// document this has not applied yet.
     ///
-    /// Server-side configuration wins over the file, because the file is baked
-    /// into a container image and the UI is where an operator moves the box
-    /// without a redeploy. Anything unreadable is a warning and the area
-    /// already in effect, never a sidecar that will not start.
+    /// `GET /api/v1/services/<name>/config` is a [`FeedConfig`]: the area, and
+    /// the edition of MIL-STD-2525 these tracks carry. Server-side
+    /// configuration wins over the file, because the file is baked into a
+    /// container image and the admin UI is where an operator changes either
+    /// without a redeploy. Anything unreadable is a warning and what is already
+    /// in effect, never a sidecar that will not start.
     ///
     /// It is asked **again after start-up**, because the read at start-up is
-    /// the one most likely to fail — the control link may not have a credential
+    /// the one most likely to fail: the control link may not have a credential
     /// yet, which is how the first live deployment lost an administrator's area
-    /// for the whole life of a process. [`ServiceSettings`] owns the cadence.
-    async fn configured_area(&mut self) -> Option<Area> {
+    /// for the whole life of a process. [`ServiceSettings`] owns the cadence,
+    /// and answers one document once — which is why both settings are read
+    /// from the same answer rather than asked for one at a time.
+    async fn configured(&mut self) -> Option<FeedConfig> {
         let context = self.context.clone()?;
+        let document = self.configured.refresh(&context).await?;
 
-        self.configured
-            .setting::<Settings, Area>(&context, "area")
-            .await
-            .filter(|area| *area != self.area)
+        match serde_json::from_value(document) {
+            Ok(config) => Some(config),
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    "The configuration an administrator set is not one this build can read; what is already in effect stays in effect.",
+                );
+
+                None
+            }
+        }
+    }
+
+    /// Puts an edition into effect for everything published from here on.
+    fn apply_symbology(&mut self, symbology: Symbology) {
+        if symbology == self.symbology {
+            return;
+        }
+
+        self.symbology = symbology;
+        if let Some(publisher) = &mut self.publisher {
+            publisher.set_symbology(symbology);
+        }
+
+        info!(
+            ?symbology,
+            "The symbol code these tracks carry has changed."
+        );
     }
 
     /// Opens the source and the publisher for `area`.
@@ -233,7 +265,7 @@ impl AisSidecar {
         self.connection = Some(state);
         self.publisher = Some(
             FeedPublisher::new(settings.publish, settings.affiliation)
-                .with_symbology(settings.symbology)
+                .with_symbology(self.symbology)
                 .with_area(area),
         );
         self.area = area;
@@ -306,7 +338,13 @@ impl Sidecar for AisSidecar {
         self.area_from = FROM_FILE;
         self.context = Some(ctx.clone());
 
-        let (area, from) = match self.configured_area().await {
+        self.symbology = ctx.settings().symbology;
+
+        let configured = self.configured().await.unwrap_or_default();
+        if let Some(symbology) = configured.symbology {
+            self.symbology = symbology;
+        }
+        let (area, from) = match configured.area.filter(|area| *area != self.area) {
             Some(area) => (area, FROM_SERVER),
             None => (self.area, FROM_FILE),
         };
@@ -337,7 +375,7 @@ impl Sidecar for AisSidecar {
             ?area,
             area_from = self.area_from,
             affiliation = ?settings.affiliation,
-            symbology = ?settings.symbology,
+            symbology = ?self.symbology,
             "The AIS sidecar is watching.",
         );
 
@@ -348,7 +386,19 @@ impl Sidecar for AisSidecar {
         // An administrator may have moved the box since this started — or the
         // read that would have found it at start-up may simply not have worked
         // yet.
-        if let Some(area) = self.configured_area().await
+        let configured = self.configured().await;
+
+        if let Some(configured) = configured
+            && let Some(context) = self.context.clone()
+        {
+            // A document that no longer names an edition gives the choice back
+            // to the file this sidecar was started with.
+            self.apply_symbology(configured.symbology.unwrap_or(context.settings().symbology));
+        }
+
+        if let Some(area) = configured
+            .and_then(|configured| configured.area)
+            .filter(|area| *area != self.area)
             && let Some(context) = self.context.clone()
         {
             match self.watch(context.settings(), area, FROM_SERVER, context.shutdown()) {
@@ -515,6 +565,37 @@ mod tests {
                 .iter()
                 .any(|track| track.kind == TrackKind::Vessel(VesselClass::Fishing)),
         );
+    }
+
+    #[tokio::test]
+    async fn an_edition_put_into_effect_later_is_carried_by_what_is_published_next() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("tracks.ndjson");
+        std::fs::write(&path, FIXTURE).expect("the fixture lands");
+
+        // Started from a file that names no edition, which is the type alone.
+        let mut sidecar = started(&format!(
+            "[settings.source]\nkind = \"replay\"\npath = \"{}\"\n",
+            path.display(),
+        ))
+        .await;
+
+        // What a tick does with the edition an administrator set on the server.
+        sidecar.apply_symbology(Symbology::Milstd2525D);
+
+        let published = sidecar.tick().await.expect("the first tick publishes");
+
+        assert!(!published.is_empty());
+        for event in &published {
+            let code = event
+                .detail
+                .find("__milicon")
+                .and_then(|symbol| symbol.get("id"))
+                .expect("a symbol code");
+
+            assert_eq!(code.len(), 20, "{code} is a 2525D code");
+            assert!(event.detail.find("__milsym").is_none());
+        }
     }
 
     #[tokio::test]

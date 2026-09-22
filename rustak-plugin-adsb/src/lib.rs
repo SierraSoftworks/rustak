@@ -41,7 +41,7 @@ pub mod wire;
 
 use rustak_api::{Heartbeat, ServiceState};
 use rustak_client::feed::FeedConfig;
-use rustak_client::feed::{Area, FeedCounters, FeedPublisher};
+use rustak_client::feed::{Area, FeedCounters, FeedPublisher, Symbology};
 use rustak_client::sidecar::{
     ConfigValidation, ServiceSettings, Sidecar, SidecarContext, SidecarEvent, async_trait,
     schema_for,
@@ -73,6 +73,9 @@ pub struct AdsbSidecar {
 
     /// Where that area came from, for the line that says which is in effect.
     area_from: &'static str,
+
+    /// The edition of MIL-STD-2525 in effect right now, from either of the two.
+    symbology: Symbology,
 }
 
 /// What [`AdsbSidecar::area_from`] says for each of the two.
@@ -120,27 +123,54 @@ impl AdsbSidecar {
         ))
     }
 
-    /// The area an administrator set for this service, when they have set a new
-    /// one.
+    /// What an administrator set for this service, when the server holds a
+    /// document this has not applied yet.
     ///
-    /// `GET /api/v1/services/<name>/config` is a JSON object an administrator
-    /// writes and the service reads, so a deployment can move an area of
-    /// interest from the admin UI without anybody editing a file on the
-    /// sidecar's host. Only `area` is honoured; anything else in the document
-    /// is somebody else's setting and is left alone.
+    /// `GET /api/v1/services/<name>/config` is a [`FeedConfig`]: the area, and
+    /// the edition of MIL-STD-2525 these tracks carry. Server-side
+    /// configuration wins over the file, because the file is baked into a
+    /// container image and the admin UI is where an operator changes either
+    /// without a redeploy. Anything unreadable is a warning and what is already
+    /// in effect, never a sidecar that will not start.
     ///
     /// It is asked **again after start-up**, because the read at start-up is
     /// the one most likely to fail: the control link may not have a credential
-    /// yet. The first live deployment lost an administrator's area that way,
-    /// silently, for the whole life of the process.
-    /// [`ServiceSettings`] owns the cadence.
-    async fn configured_area(&mut self) -> Option<Area> {
+    /// yet, which is how the first live deployment lost an administrator's area
+    /// for the whole life of a process. [`ServiceSettings`] owns the cadence,
+    /// and answers one document once — which is why both settings are read
+    /// from the same answer rather than asked for one at a time.
+    async fn configured(&mut self) -> Option<FeedConfig> {
         let context = self.context.clone()?;
+        let document = self.configured.refresh(&context).await?;
 
-        self.configured
-            .setting::<Settings, Area>(&context, "area")
-            .await
-            .filter(|area| *area != self.area)
+        match serde_json::from_value(document) {
+            Ok(config) => Some(config),
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    "The configuration an administrator set is not one this build can read; what is already in effect stays in effect.",
+                );
+
+                None
+            }
+        }
+    }
+
+    /// Puts an edition into effect for everything published from here on.
+    fn apply_symbology(&mut self, symbology: Symbology) {
+        if symbology == self.symbology {
+            return;
+        }
+
+        self.symbology = symbology;
+        if let Some(publisher) = &mut self.publisher {
+            publisher.set_symbology(symbology);
+        }
+
+        info!(
+            ?symbology,
+            "The symbol code these tracks carry has changed."
+        );
     }
 
     /// Opens the source and the publisher for `area`, and remembers where it
@@ -154,7 +184,7 @@ impl AdsbSidecar {
         self.feed = Some(settings.source.open(area)?);
         self.publisher = Some(
             FeedPublisher::new(settings.publish, settings.affiliation)
-                .with_symbology(settings.symbology)
+                .with_symbology(self.symbology)
                 .with_area(area),
         );
         self.area = area;
@@ -186,7 +216,13 @@ impl Sidecar for AdsbSidecar {
         self.area_from = FROM_FILE;
         self.context = Some(ctx.clone());
 
-        let (area, from) = match self.configured_area().await {
+        self.symbology = ctx.settings().symbology;
+
+        let configured = self.configured().await.unwrap_or_default();
+        if let Some(symbology) = configured.symbology {
+            self.symbology = symbology;
+        }
+        let (area, from) = match configured.area.filter(|area| *area != self.area) {
             Some(area) => (area, FROM_SERVER),
             None => (self.area, FROM_FILE),
         };
@@ -203,7 +239,7 @@ impl Sidecar for AdsbSidecar {
             ?area,
             area_from = self.area_from,
             affiliation = ?settings.affiliation,
-            symbology = ?settings.symbology,
+            symbology = ?self.symbology,
             "The ADS-B sidecar is watching.",
         );
 
@@ -214,7 +250,19 @@ impl Sidecar for AdsbSidecar {
         // An administrator may have moved the box since this started — or the
         // read that would have found it at start-up may simply not have worked
         // yet.
-        if let Some(area) = self.configured_area().await
+        let configured = self.configured().await;
+
+        if let Some(configured) = configured
+            && let Some(context) = self.context.clone()
+        {
+            // A document that no longer names an edition gives the choice back
+            // to the file this sidecar was started with.
+            self.apply_symbology(configured.symbology.unwrap_or(context.settings().symbology));
+        }
+
+        if let Some(area) = configured
+            .and_then(|configured| configured.area)
+            .filter(|area| *area != self.area)
             && let Some(context) = self.context.clone()
         {
             match self.watch(context.settings(), area, FROM_SERVER) {

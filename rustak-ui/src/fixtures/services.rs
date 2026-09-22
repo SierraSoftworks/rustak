@@ -79,8 +79,19 @@ fn feed_schema() -> serde_json::Value {
                                 sidecar's own configuration file.",
                 "anyOf": [{ "$ref": "#/$defs/Area" }, { "type": "null" }],
             },
+            "symbology": {
+                "description": "Which MIL-STD-2525 symbol code each track carries beside its CoT \
+                                type. Leave unset to use the one in the sidecar's own \
+                                configuration file.",
+                "anyOf": [{ "$ref": "#/$defs/Symbology" }, { "type": "null" }],
+            },
         },
-        "$defs": { "Area": { "description": "Where a feed is looking.", "oneOf": [
+        "$defs": {
+            "Symbology": { "oneOf": [
+                { "description": "The CoT type and nothing else.", "type": "string", "const": "none", "title": "CoT type only" },
+                { "description": "The fifteen-letter MIL-STD-2525C code.", "type": "string", "const": "2525c", "title": "MIL-STD-2525C" },
+                { "description": "The twenty-digit MIL-STD-2525D code.", "type": "string", "const": "2525d", "title": "MIL-STD-2525D" },
+            ] }, "Area": { "description": "Where a feed is looking.", "oneOf": [
             {
                 "description": "A latitude/longitude box, which may cross the anti-meridian.",
                 "type": "object",
@@ -503,5 +514,23 @@ mod tests {
         let fine = circle(serde_json::json!({ "lat": 51.5, "radius_km": 5.0 }));
         assert!(schema_issues(name, &fine).is_empty());
         assert!(schema_issues("rustak-plugin-ais", &circle(serde_json::json!({}))).is_empty());
+    }
+
+    #[test]
+    fn the_demo_feed_offers_an_edition_and_refuses_one_it_does_not_know() {
+        let issues = |edition: &str| {
+            super::super::schema_check::issues(
+                &feed_schema(),
+                &serde_json::json!({ "symbology": edition }),
+            )
+        };
+
+        assert!(issues("2525d").is_empty());
+        assert_eq!(
+            issues("2525e")
+                .first()
+                .and_then(|issue| issue.path.as_deref()),
+            Some("/symbology")
+        );
     }
 }
