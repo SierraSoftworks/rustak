@@ -54,6 +54,9 @@ use crate::db::{Database, repos::StreamSegmentRow};
 /// space in useful increments; large enough that rolling is rare.
 pub const DEFAULT_SEGMENT_BYTES: u64 = 8 * 1024 * 1024;
 
+/// How many segments [`AppendLog::remove_indexed`] forgets per transaction.
+const REMOVE_BATCH: usize = 500;
+
 /// How a log rolls its segments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppendLogOptions {
@@ -377,31 +380,38 @@ impl AppendLog {
     ) -> Result<usize, Error> {
         let mut removed = 0;
 
-        for row in rows {
-            let path = root.join(&row.segment_path);
+        // A transaction per batch rather than per segment: a sweep over a busy
+        // feed retires thousands, and the writer has other callers.
+        for batch in rows.chunks(REMOVE_BATCH) {
+            let mut gone = Vec::with_capacity(batch.len());
 
-            match tokio::fs::remove_file(&path).await {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => {
-                    warn!(
-                        segment = %row.segment_path,
-                        error = %err,
-                        "Could not remove a stream segment; it will be retried."
-                    );
-                    continue;
+            for row in batch {
+                let path = root.join(&row.segment_path);
+
+                match tokio::fs::remove_file(&path).await {
+                    Ok(()) => {}
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => {
+                        warn!(
+                            segment = %row.segment_path,
+                            error = %err,
+                            "Could not remove a stream segment; it will be retried."
+                        );
+                        continue;
+                    }
                 }
+
+                // Best effort, and it fails harmlessly while the stream still
+                // has segments: an empty directory per retired device would
+                // otherwise accumulate forever.
+                if let Some(parent) = path.parent() {
+                    let _ = tokio::fs::remove_dir(parent).await;
+                }
+
+                gone.push(row.id);
             }
 
-            // Best effort, and it fails harmlessly while the stream still has
-            // segments: an empty directory per retired device would otherwise
-            // accumulate forever.
-            if let Some(parent) = path.parent() {
-                let _ = tokio::fs::remove_dir(parent).await;
-            }
-
-            db.stream_segments().delete(row.id).await?;
-            removed += 1;
+            removed += db.stream_segments().delete_many(gone).await?;
         }
 
         Ok(removed)

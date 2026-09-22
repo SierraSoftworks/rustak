@@ -18,6 +18,30 @@ fn default_cot_history_max_rows() -> u64 {
     2_000_000
 }
 
+/// How long past its own stale time a `cot_latest` row is kept.
+///
+/// Much shorter than the history: the row is what a map draws and what a
+/// client fetches a message it missed from, and neither has a use for a track
+/// that went stale yesterday. A feed of short-lived tracks (ADS-B, AIS) adds a
+/// row per aircraft or vessel, so holding them for the history horizon is what
+/// lets the table — and every query over it — grow by a week of traffic.
+fn default_cot_latest() -> chrono::Duration {
+    chrono::Duration::days(1)
+}
+
+/// Megabytes of CoT history kept on disk across every device.
+fn default_cot_history_max_mb() -> u64 {
+    10_240
+}
+
+/// How often the CoT garbage collector runs.
+fn default_cot_sweep_interval() -> chrono::Duration {
+    chrono::Duration::hours(1)
+}
+
+/// The shortest `cot_sweep_interval` accepted.
+const MIN_COT_SWEEP_INTERVAL: chrono::Duration = chrono::Duration::minutes(1);
+
 fn default_audit() -> chrono::Duration {
     chrono::Duration::days(90)
 }
@@ -67,6 +91,26 @@ pub struct RetentionConfig {
     #[serde(default = "default_cot_history_max_rows")]
     pub cot_history_max_rows: u64,
 
+    /// The most CoT history kept on disk across every device, in megabytes.
+    /// The oldest sealed segments go first, whoever wrote them. `0` is no cap.
+    #[serde(default = "default_cot_history_max_mb")]
+    pub cot_history_max_mb: u64,
+
+    /// How long past its stale time a contact's last message is kept in
+    /// `cot_latest`.
+    #[serde(
+        default = "default_cot_latest",
+        with = "rustak_core::config::duration::humane"
+    )]
+    pub cot_latest: chrono::Duration,
+
+    /// How often the CoT garbage collector enforces the four limits above.
+    #[serde(
+        default = "default_cot_sweep_interval",
+        with = "rustak_core::config::duration::humane"
+    )]
+    pub cot_sweep_interval: chrono::Duration,
+
     /// How long audit entries are kept.
     #[serde(
         default = "default_audit",
@@ -109,12 +153,41 @@ impl Default for RetentionConfig {
         Self {
             cot_history: default_cot_history(),
             cot_history_max_rows: default_cot_history_max_rows(),
+            cot_history_max_mb: default_cot_history_max_mb(),
+            cot_latest: default_cot_latest(),
+            cot_sweep_interval: default_cot_sweep_interval(),
             audit: default_audit(),
             audit_max_entries: default_audit_max_entries(),
             archived_missions: default_archived_missions(),
             missions_purge_after: default_missions_purge_after(),
             content_orphans: default_content_orphans(),
         }
+    }
+}
+
+impl RetentionConfig {
+    /// `cot_history_max_mb` in bytes; `0` is still no cap.
+    pub fn cot_history_max_bytes(&self) -> u64 {
+        self.cot_history_max_mb.saturating_mul(1024 * 1024)
+    }
+
+    /// Refuses a sweep interval the job host would spend its whole time on.
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::User`] error naming the key.
+    pub fn validate(&self) -> Result<(), human_errors::Error> {
+        if self.cot_sweep_interval < MIN_COT_SWEEP_INTERVAL {
+            return Err(human_errors::user(
+                "`[retention] cot_sweep_interval` is shorter than a minute, so the garbage collector would scan the segment index continuously.",
+                &[
+                    "Use an interval of \"1m\" or longer; the default is \"1h\".",
+                    "To reclaim space sooner, shorten `cot_history` or lower `cot_history_max_mb` instead.",
+                ],
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -129,6 +202,9 @@ mod tests {
         assert_eq!(parsed, RetentionConfig::default());
         assert_eq!(parsed.cot_history, chrono::Duration::days(7));
         assert_eq!(parsed.cot_history_max_rows, 2_000_000);
+        assert_eq!(parsed.cot_history_max_mb, 10_240);
+        assert_eq!(parsed.cot_latest, chrono::Duration::days(1));
+        assert_eq!(parsed.cot_sweep_interval, chrono::Duration::hours(1));
         assert_eq!(parsed.audit, chrono::Duration::days(90));
         assert_eq!(parsed.audit_max_entries, 100_000);
         assert_eq!(parsed.archived_missions, chrono::Duration::days(30));
@@ -154,5 +230,17 @@ mod tests {
         };
 
         assert!(err.to_string().contains("audit_days"), "{err}");
+    }
+
+    #[test]
+    fn a_sweep_interval_under_a_minute_is_refused() {
+        let parsed: RetentionConfig = toml::from_str(r#"cot_sweep_interval = "5s""#).unwrap();
+
+        let err = parsed
+            .validate()
+            .expect_err("five seconds should be refused");
+
+        assert!(err.to_string().contains("cot_sweep_interval"), "{err}");
+        assert!(RetentionConfig::default().validate().is_ok());
     }
 }

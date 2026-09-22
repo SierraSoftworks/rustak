@@ -301,6 +301,50 @@ impl<'a> StreamSegmentsRepo<'a> {
             .await
     }
 
+    /// Every sealed segment that is surplus once the newer segments of
+    /// `stream_kind`, across **every** stream key, already hold `max_bytes`.
+    ///
+    /// The per-key row cap says nothing about a feed of many short-lived
+    /// streams — an aircraft is a uid that reports for twenty minutes and never
+    /// again — so this is the bound on the disk as a whole. Oldest first,
+    /// whoever wrote it, and approximate in the keeping direction exactly as
+    /// [`over_row_cap`](Self::over_row_cap) is. Open segments count towards the
+    /// total and are never returned.
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::System`] error if the read fails.
+    pub async fn over_byte_cap(
+        &self,
+        stream_kind: &str,
+        max_bytes: u64,
+    ) -> Result<Vec<StreamSegmentRow>, Error> {
+        let stream_kind = stream_kind.to_owned();
+        let cap = i64::try_from(max_bytes).unwrap_or(i64::MAX);
+
+        self.db
+            .read(move |c| {
+                let mut statement = c.prepare(&format!(
+                    "SELECT {COLUMNS} FROM ( \
+                       SELECT s.*, SUM(s.byte_length) OVER ( \
+                         ORDER BY s.last_time DESC, s.id DESC \
+                         ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING \
+                       ) AS newer \
+                       FROM stream_segments s WHERE s.stream_kind = ?1 \
+                     ) WHERE sealed = 1 AND COALESCE(newer, 0) >= ?2 \
+                     ORDER BY last_time ASC"
+                ))?;
+
+                statement
+                    .query_map(
+                        rusqlite::params![stream_kind, cap],
+                        StreamSegmentRow::from_row,
+                    )?
+                    .collect()
+            })
+            .await
+    }
+
     /// Seals every segment of `stream_kind` nothing has appended to since
     /// `before`, reporting how many were closed.
     ///
@@ -351,6 +395,34 @@ impl<'a> StreamSegmentsRepo<'a> {
             .await?;
 
         Ok(deleted > 0)
+    }
+
+    /// Forgets a batch of segments in one transaction, reporting how many went.
+    ///
+    /// A sweep over a busy feed retires thousands of segments at once, and a
+    /// commit each would queue every other writer behind it.
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::System`] error if the write fails.
+    pub async fn delete_many(&self, ids: Vec<i64>) -> Result<usize, Error> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        self.db
+            .write(move |tx| {
+                let mut statement =
+                    tx.prepare_cached("DELETE FROM stream_segments WHERE id = ?1")?;
+                let mut deleted = 0;
+
+                for id in &ids {
+                    deleted += statement.execute([id])?;
+                }
+
+                Ok(deleted)
+            })
+            .await
     }
 }
 
