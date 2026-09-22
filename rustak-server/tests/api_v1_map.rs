@@ -10,6 +10,10 @@
 
 use std::sync::Arc;
 
+use std::pin::Pin;
+use std::time::Duration as StdDuration;
+
+use actix_web::body::MessageBody;
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
 use chrono::{DateTime, Duration, Utc};
@@ -251,4 +255,128 @@ async fn the_feed_is_narrowed_the_way_the_snapshot_is() {
     .await;
 
     assert_eq!(body, "retry: 5000\n\n", "{body}");
+}
+
+/// The next thing the feed writes, for a test that has to look at an open feed
+/// rather than at everything a closed one said.
+async fn chunk<B: MessageBody>(body: &mut Pin<Box<B>>) -> Option<String> {
+    std::future::poll_fn(|cx| body.as_mut().poll_next(cx))
+        .await
+        .and_then(Result::ok)
+        .map(|bytes| String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+#[actix_web::test]
+async fn an_open_map_ends_when_its_account_is_switched_off() {
+    // The response outlives the request that opened it, so a revocation has to
+    // reach a map somebody left open. Nothing cancels the shutdown token here:
+    // the response ends because the credential was checked again and refused.
+    let server = TestServer::start().await;
+    let (user, admin) = server.signed_in("grace", true).await;
+    streaming(&server).await;
+    let app = app!(server);
+
+    let response = test::TestRequest::get()
+        .uri("/api/v1/map/events")
+        .insert_header(("authorization", bearer(&admin)))
+        .send_request(&app)
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    server
+        .db()
+        .users()
+        .set_disabled(user.id, true)
+        .await
+        .unwrap();
+    server.context.events().invalidate(&user.username);
+
+    let body = String::from_utf8(test::read_body(response).await.to_vec()).unwrap();
+
+    assert_eq!(body, "retry: 5000\n\n", "{body}");
+}
+
+#[actix_web::test]
+async fn a_map_whose_account_is_still_good_carries_on_after_being_checked() {
+    let server = TestServer::start().await;
+    let (user, admin) = server.signed_in("grace", true).await;
+    let router = streaming(&server).await;
+    let app = app!(server);
+    let soon = Utc::now() + Duration::minutes(2);
+
+    let response = test::TestRequest::get()
+        .uri("/api/v1/map/events")
+        .insert_header(("authorization", bearer(&admin)))
+        .send_request(&app)
+        .await;
+    let mut body = Box::pin(response.into_body());
+
+    assert_eq!(chunk(&mut body).await.as_deref(), Some("retry: 5000\n\n"));
+
+    // Asked to check, with nothing wrong. The feed has nothing to write while
+    // it does, so it is driven until it goes quiet rather than until it speaks.
+    server.context.events().invalidate(&user.username);
+    let quiet = tokio::time::timeout(StdDuration::from_millis(500), chunk(&mut body)).await;
+    assert!(
+        quiet.is_err(),
+        "a check that passes writes nothing: {quiet:?}"
+    );
+
+    router
+        .tap()
+        .publish(&message("ANDROID-1", "a-f-G-U-C", soon), &sender(&[2]));
+
+    let next = chunk(&mut body).await.expect("the feed is still open");
+    assert!(next.starts_with("event: upsert\n"), "{next}");
+    assert!(next.contains("\"uid\":\"ANDROID-1\""), "{next}");
+}
+
+#[actix_web::test]
+async fn a_map_that_falls_behind_is_told_to_start_again() {
+    let server = TestServer::start().await;
+    let (_, admin) = server.signed_in("grace", true).await;
+    let router = streaming(&server).await;
+    let soon = Utc::now() + Duration::minutes(2);
+
+    // More than the tap's ring holds, before the page reads any of it.
+    let body = watched(&server, &admin, || {
+        let relayed = message("ANDROID-1", "a-f-G-U-C", soon);
+        for _ in 0..1_100 {
+            router.tap().publish(&relayed, &sender(&[2]));
+        }
+    })
+    .await;
+
+    assert!(
+        body.contains("event: reset\ndata: {\"op\":\"reset\"}\n\n"),
+        "{body}"
+    );
+}
+
+#[actix_web::test]
+async fn only_so_many_maps_may_be_open_at_once() {
+    let server = TestServer::start().await;
+    let (_, admin) = server.signed_in("grace", true).await;
+    streaming(&server).await;
+    let app = app!(server);
+
+    let open = || {
+        test::TestRequest::get()
+            .uri("/api/v1/map/events")
+            .insert_header(("authorization", bearer(&admin)))
+            .send_request(&app)
+    };
+
+    // Held, because a feed gives its place back when its response is dropped.
+    let mut held = Vec::new();
+    for _ in 0..64 {
+        let response = open().await;
+        assert_eq!(response.status(), StatusCode::OK);
+        held.push(response);
+    }
+
+    assert_eq!(open().await.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    drop(held);
+    assert_eq!(open().await.status(), StatusCode::OK);
 }

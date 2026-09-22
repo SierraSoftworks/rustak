@@ -125,6 +125,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_tap_knows_how_many_are_watching_and_says_nothing_to_nobody() {
+        let tap = CotTap::default();
+        assert_eq!(tap.watchers(), 0);
+
+        // Nobody is watching, so this is the early return rather than a send.
+        tap.publish(&message("UNSEEN"), &sender());
+
+        let watching = tap.subscribe();
+        assert_eq!(tap.watchers(), 1);
+
+        drop(watching);
+        assert_eq!(tap.watchers(), 0);
+    }
+
+    #[tokio::test]
     async fn a_watcher_that_stops_reading_lags_rather_than_holding_anything_up() {
         let tap = CotTap::new();
         let mut watching = tap.subscribe();

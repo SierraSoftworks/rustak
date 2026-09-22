@@ -170,8 +170,28 @@ mod tests {
     }
 
     #[test]
+    fn an_ellipse_with_no_size_draws_nothing() {
+        for (major, minor) in [("0", "100"), ("100", "-1"), ("NaN", "100"), ("wide", "100")] {
+            let event = Event::builder("u-d-c-c", "CIRCLE-1")
+                .point(51.5, -0.12)
+                .push(
+                    Element::new("shape").with(
+                        Element::new("ellipse")
+                            .attr("major", major)
+                            .attr("minor", minor),
+                    ),
+                )
+                .build();
+
+            assert_eq!(of(&event), None, "major={major} minor={minor}");
+        }
+    }
+
+    #[test]
     fn a_marker_with_nothing_to_outline_has_no_shape() {
         assert_eq!(of(&drawing("a-f-G-U-C", &[])), None);
         assert_eq!(of(&drawing("u-d-f", &["not,a point", "51.5,-0.12"])), None);
+        // Off the planet, and half a position.
+        assert_eq!(of(&drawing("u-d-f", &["91.0,-0.12", "51.5"])), None);
     }
 }

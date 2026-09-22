@@ -201,6 +201,95 @@ mod tests {
     }
 
     #[test]
+    fn a_number_json_cannot_spell_is_left_out_rather_than_sent() {
+        let event = Event::builder("a-f-A-C-F", "ICAO-1")
+            .point(51.5, -0.12)
+            .push(
+                Element::new("track")
+                    .attr("course", "NaN")
+                    .attr("speed", "inf"),
+            )
+            .build();
+
+        let feature = from_event(&event, received(), Vec::new());
+
+        assert_eq!(feature.course, None);
+        assert_eq!(feature.speed, None);
+    }
+
+    #[test]
+    fn the_device_is_described_from_whichever_parts_of_takv_were_filled_in() {
+        let takv = |platform: &str, version: &str, device: &str| Takv {
+            platform: platform.to_string(),
+            version: version.to_string(),
+            device: device.to_string(),
+            ..Takv::default()
+        };
+
+        for (given, described) in [
+            (
+                takv("ATAK-CIV", "5.2.0", "Pixel 8"),
+                Some("ATAK-CIV 5.2.0 · Pixel 8"),
+            ),
+            (takv("ATAK-CIV", "", ""), Some("ATAK-CIV")),
+            (takv("", "", "Pixel 8"), Some("Pixel 8")),
+            (takv(" ", "", ""), None),
+        ] {
+            assert_eq!(software(&given).as_deref(), described, "{given:?}");
+        }
+    }
+
+    /// A stored row whose sender was publishing into the channel at bit 2.
+    fn row(xml: &str) -> LatestRow {
+        let mut groups = GroupSet::new();
+        groups.set(2, Direction::In);
+
+        LatestRow {
+            uid: "UID-A".to_string(),
+            kind: "a-f-G-U-C".to_string(),
+            callsign: Some("ALPHA".to_string()),
+            user_id: None,
+            device_id: None,
+            group_bits: groups.to_bytes(),
+            time: received(),
+            stale: received(),
+            xml: xml.to_string(),
+            received_at: received(),
+        }
+    }
+
+    #[test]
+    fn a_stored_row_is_drawn_from_its_xml_with_its_channels_named() {
+        let mut index = GroupIndex::new();
+        index.insert(2, GroupName::parse("Blue").unwrap());
+
+        let stored = row("<event version=\"2.0\" uid=\"UID-A\" type=\"a-f-G-U-C\" \
+             time=\"2026-09-18T12:00:00.000Z\" start=\"2026-09-18T12:00:00.000Z\" \
+             stale=\"2026-09-18T12:02:00.000Z\" how=\"m-g\">\
+             <point lat=\"51.5\" lon=\"-0.12\" hae=\"35.0\" ce=\"9999999.0\" le=\"9999999.0\"/>\
+             <detail><takv platform=\"ATAK-CIV\" version=\"5.2.0\" device=\"Pixel 8\" os=\"34\"/>\
+             <remarks>  </remarks></detail></event>");
+
+        let feature = from_row(&stored, &index).expect("a row that parses is drawn");
+
+        assert_eq!(feature.groups, ["Blue"]);
+        assert_eq!(feature.point.hae, Some(35.0));
+        assert_eq!(
+            feature.software.as_deref(),
+            Some("ATAK-CIV 5.2.0 · Pixel 8")
+        );
+        assert_eq!(
+            feature.remarks, None,
+            "a remark that says nothing is not one"
+        );
+    }
+
+    #[test]
+    fn a_stored_row_that_no_longer_parses_is_not_drawn() {
+        assert_eq!(from_row(&row("<event"), &GroupIndex::new()), None);
+    }
+
+    #[test]
     fn a_delete_names_what_is_gone_in_its_link() {
         let event = Event::builder(cot_type::DISCONNECT, "throwaway")
             .push(
