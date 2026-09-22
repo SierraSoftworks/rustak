@@ -161,3 +161,117 @@ about whether the first batch was discarded. Relevant to the replacement
 assertion: the first-tick hold is bounded at `FIRST_CONNECT` = 10 s (`link.rs:60`);
 if a CI stream connect ever takes longer, a "zero discards" assertion would fail
 for a host reason too. Not observed — flagged only.
+
+## 2026-09-22 02:42Z — M9-13 landed (`b485e49`); watching its run; `Test` band text prepared
+
+`b485e49` (run 35679592144) replaces the wall-clock assertion with counts read
+from the running sidecar and makes the first-connect hold injectable. At 02:40Z:
+Lint, Build UI, e2e, node-tak green; `Test` in progress since 02:28:57Z. Two
+background watchers (60 s): one on the `Test` job, one on the registry (exits at
+all three `:latest` >= `b485e49`, or the run ending in anything but success).
+
+**`Test` band — samples.** Fifteen `main` push runs from 2026-09-20 23:34Z to
+2026-09-22 01:34Z: thirteen in 22m05s-28m35s, one 17m22s (`173b5d8`), one slow
+host 41m30s (`65ed9fe`). The eight before that on 2026-09-20 were 16m18s-19m58s
+with three slow-host samples (33m08s, 34m59s, 36m56s). So the 16-20 band in
+`docs/ci.md` and `rust.yml`'s comments is stale; 22-28 is what the samples say.
+
+**Per-binary shape says it is the suite, not the hosts.** Binaries' own times
+sum: `7fe6714` 662 s, `7093274` 869 s (2026-09-20) against `0728135` 1113 s,
+`511dbab` 1253 s, `2cf6abc` 1154 s. The difference sits in what landed:
+`workload_identity` (new, 22 tests, 168-215 s — the most expensive binary in
+the job), `sidecar_enrolment` (2 -> 5 tests, 12 s -> 39-60 s),
+`hostile_server_name` (new, 9-26 s), `sidecar_trust` (new, 11-26 s),
+`rustak_server` lib (+66 tests). Untouched binaries moved little.
+
+**Consequence the orchestrator must decide.** `docs/ci.md` sizes the bound as
+band-top x 2.8: 28 x 2.8 = 78 min, past the 60-minute bound. Worst whole job
+actually seen against this band: 41m30s (x1.5-1.9). I have NOT changed
+`timeout-minutes`. Options: raise `test` to 90, or make `workload_identity`
+cheaper (not my file), or accept the risk knowingly.
+
+**Prepared in the working tree (not landed; to ride along with the next
+workflow change):** `docs/ci.md` (+16/-2: new paragraph after the history of the
+bound; "16-20" -> "22-28" in the image-delay trade-off) and
+`.github/workflows/rust.yml` (+6/-2, **comments only** — the same two places).
+`actionlint`: 8 shellcheck notes, the identical set at `HEAD`; none from this
+edit. YAML parses, same twelve jobs, `test` still `timeout-minutes: 60`.
+
+Tooling note for whoever follows: `gh run view --job --log` labels every line
+`UNKNOWN STEP` for older runs, so filter on cargo's own lines, not the step name.
+
+02:44Z addendum — on "a cheaper `workload_identity`": there is no single hot
+spot to remove. Its issuer keys are already one-per-process (`PRIMARY`,
+`ROTATED`, `UNADVERTISED` behind `LazyLock` in `src/testing/workload.rs`, forced
+by `warm()`); in three runs the first test finished 20-35 s after the binary
+started (that warm-up) and the other 21 then completed steadily, about one every
+6-8 s on two threads, to 168-216 s. The cost is 22 tests that each boot a server
+and enrol, not key generation. So of the three options, "make it cheaper" is
+real work for an implementation agent, not a tweak.
+
+## 2026-09-22 02:48Z — decision taken: `test` goes to 90; change prepared, not landed
+
+Orchestrator's decision: raise the bound now, make `workload_identity` cheaper as
+backlog (share one server per suite or group cases — an implementation agent's
+job). Reasoning on record: a cancelled `Test` now blocks every image, a timeout
+is cheap and reversible, and the suite genuinely grew.
+
+Prepared in the working tree, to land AFTER `b485e49` has finished publishing so
+it does not put a competing run in front of the deployment's images:
+
+- `.github/workflows/rust.yml`: `test` `timeout-minutes: 60` -> `90` — the only
+  non-comment line changed. The comment above it now carries the third move
+  (band 22-28, 28 x 2.8 = 78, so 90 with margin; worst whole job seen 41m30s; a
+  `Test` that hits 90 is a bug report); the `docker-publish` comment says
+  "22-28 minutes normally and up to its 90-minute bound".
+- `docs/ci.md`: "90 for `test`" in the timeouts list; the history now says the
+  number moved three times and ends at 90 with the sizing rule kept honest and
+  the backlog lever named; "hits 90 is a bug report"; the image-delay trade-off
+  reads 22-28 minutes and the 90-minute bound.
+
+Checks: `actionlint` — 8 shellcheck notes, the identical set at `HEAD`, nothing
+new. YAML parses; same twelve jobs; every other `timeout-minutes` unchanged
+(10/10/20/30/30/30/45/10/30/20/20); `test` keeps its seven steps and keys.
+
+Left alone, noted: `docs/ci.md`'s "Keeping the test job inside its timeout"
+still opens "Three things keep it inside 30 minutes" — written when 30 was the
+bound. Still literally true of a 22-28 band, so not touched in this change.
+
+## 2026-09-22 02:58Z — `b485e49` is GREEN and published; all three `:latest` at `b485e49`
+
+Run 35679592144 (`b485e49`): **success**, every job (`Update Homebrew Tap`
+skipped, as on every push). Registry, read over HTTPS at 02:57Z — all three
+multi-arch (linux/amd64 + linux/arm64), revision label
+`b485e49256a8f06553bf49c8838e42cce26ff790`, and `sha-b485e49…` resolves to the
+same index digest as `:latest` for each:
+
+| image | `:latest` index digest | amd64 manifest |
+|---|---|---|
+| rustak | `sha256:b8e96ffa67223c67a480899aecd0c6392921dd7fe09a0fd6e5b6b1f25e6f1645` | `sha256:f8ff608a77f904d952bc84f4eb16a54be7ebe101c39f21ffc27e3d1be443fba1` |
+| rustak-plugin-ais | `sha256:a851ce6daabb1aaba54c2684fb6e32b3cd469935af1df298ed6e6747bad65e9e` | `sha256:ddf7c3c9de053dce3c2811ecd5aaa4233a7b48484c3abe0b467344d411538cad` |
+| rustak-plugin-adsb | `sha256:1016411d91b81315f6097a1e6d1aa4831e7ec106466176fa51185a20b4c5fb37` | `sha256:00d3668e8bda0b13e586dc1c817da5052fd8baeea6662c6de2e1544b312a9a22` |
+
+`b485e49` descends from `2cf6abc` and `65ed9fe`, so the deployment's >= `65ed9fe`
+gate (all three) and >= `2cf6abc` gate (adsb) are both met by ancestry.
+
+Forward-only, all four publish jobs, same shape: `…:latest is at
+511dbaba5481fa36fd0eb27f8521eb14f618f1b8, an ancestor of
+b485e49256a8f06553bf49c8838e42cce26ff790: moving the floating tags.`
+Upload retries: 62 retry/wait steps, all skipped; no first attempt failed. The
+retry has still never fired.
+
+`Test`: success, **25m44s** (02:28:57 -> 02:54:41) — inside the 22-28 band; one
+sample. Binaries sum 1241 s, 8 over-60s warnings, 3165 tests, no failures.
+`feed_sidecars`: 7 passed, 0 failed, 60.1 s — including
+`the_first_batch_a_feed_produces_reaches_the_stream_on_a_clean_start`.
+rustak-client `control::events`: 7 of 7 ok (the real-timer ones included). One
+green sample does not retire the flake risk on those 150-300 ms margins.
+
+Tooling note: while a run is still in progress `gh run view --job --log` refuses
+even a finished job's log; `gh api --allow-escape-sequences
+repos/…/actions/jobs/<id>/logs` returns it.
+
+Nothing in flight on `main`. The prepared `test` 60 -> 90 change (rust.yml +
+docs/ci.md) is still in the working tree, ready to land now that publishing is
+done. Next owed: the 04:17 UTC nightly — `cloudtak-parse-log`'s passing reason
+must report a non-zero line count.
