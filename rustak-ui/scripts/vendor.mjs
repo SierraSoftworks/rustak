@@ -18,8 +18,10 @@ import { fileURLToPath } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const out = join(process.env.TRUNK_STAGING_DIR ?? join(root, "dist"), "vendor");
 
-// [package, [file in the package, ...]]. Only what the browser fetches, plus
-// the licences: no source maps, no development builds, no type definitions.
+// [package, [file in the package, ...], directory under vendor/]. Only what
+// the browser fetches, plus the licences: no source maps, no development
+// builds, no type definitions. The directory defaults to the package's name,
+// and is given for a scoped package so that no URL has an `@` in it.
 const FILES = [
   [
     "maplibre-gl",
@@ -32,6 +34,9 @@ const FILES = [
     ],
   ],
   ["milsymbol", ["dist/milsymbol.js", "LICENSE"]],
+  // MIL-STD-2525C letter codes to 2525D number codes, from Esri's open JMSML
+  // mapping table. Only fetched by somebody who has chosen 2525D.
+  ["@orbat-mapper/convert-symbology", ["dist/convert-symbology.js", "LICENSE"], "convert-symbology"],
 ];
 
 const json = (path) => JSON.parse(readFileSync(path, "utf8"));
@@ -50,9 +55,9 @@ if (!current) {
   execFileSync(npm, ["ci", "--no-audit", "--no-fund"], { cwd: root, stdio: "inherit" });
 }
 
-for (const [name, files] of FILES) {
+for (const [name, files, directory = name] of FILES) {
   for (const file of files) {
-    const to = join(out, name, file.replace(/^dist\//, ""));
+    const to = join(out, directory, file.replace(/^dist\//, ""));
     mkdirSync(dirname(to), { recursive: true });
     cpSync(join(root, "node_modules", name, file), to);
   }

@@ -50,8 +50,8 @@ cargo build
 
 `trunk` is pinned to a specific version in CI (see `docs/ci.md`); install it
 with `cargo binstall trunk` or `cargo install trunk --locked`. `trunk build`
-also needs **Node** on the path: the map page's two JavaScript libraries
-(MapLibre GL and milsymbol) are pinned in `rustak-ui/package.json` and copied
+also needs **Node** on the path: the map page's JavaScript libraries
+(MapLibre GL, milsymbol, and a 2525C-to-2525D code converter) are pinned in `rustak-ui/package.json` and copied
 into `dist/vendor` by a Trunk hook (`rustak-ui/scripts/vendor.mjs`), which runs
 `npm ci` the first time and whenever a pin changes. `cargo build`
 with no arguments builds only `rustak-server` (the binary you actually run —

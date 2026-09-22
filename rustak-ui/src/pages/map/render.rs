@@ -10,7 +10,7 @@
 //! Nothing here touches the browser, so all of it is tested natively.
 
 use chrono::{DateTime, Utc};
-use rustak_api::MapFeature;
+use rustak_api::{MapFeature, Symbology};
 use serde_json::{Value, json};
 
 use crate::util::sidc;
@@ -30,13 +30,14 @@ const ALERT: &str = "#d92d20";
 const DRAWING: &str = "#c2410c";
 const MARKER: &str = "#344054";
 
-/// One feature as `js/map.js` takes it: `{ uid, anchor, shape }`.
-pub fn draw(feature: &MapFeature, now: DateTime<Utc>) -> Value {
+/// One feature as `js/map.js` takes it: `{ uid, anchor, shape }`, with its
+/// symbol drawn from the edition of MIL-STD-2525 the reader has chosen.
+pub fn draw(feature: &MapFeature, symbology: Symbology, now: DateTime<Utc>) -> Value {
     let stale = feature.stale < now;
     let color = color(feature);
 
     let mut properties = json!({ "uid": feature.uid, "stale": stale, "color": color });
-    match icon(feature) {
+    match icon(feature, symbology) {
         Some(icon) => {
             properties["render"] = json!("symbol");
             properties["icon"] = json!(icon);
@@ -62,9 +63,16 @@ pub fn draw(feature: &MapFeature, now: DateTime<Utc>) -> Value {
     })
 }
 
-/// The image a symbol is drawn with: `sidc:<code>`, and `:<direction>` when it
-/// is going somewhere. [`None`] for anything drawn as a dot.
-fn icon(feature: &MapFeature) -> Option<String> {
+/// The image a symbol is drawn with: `sidc:<edition>:<code>`, and
+/// `:<direction>` when it is going somewhere. [`None`] for anything drawn as a
+/// dot.
+///
+/// The code is always the 2525C letter code, because that is what a CoT type
+/// *is*; the edition beside it tells `js/map.js` whether to draw it as it
+/// stands or to look up its 2525D equivalent first. It is part of the name so
+/// that the two editions of one symbol are two images, and changing the
+/// preference cannot leave the old edition's picture under the new one's name.
+fn icon(feature: &MapFeature, symbology: Symbology) -> Option<String> {
     if feature.team.is_some() {
         return None;
     }
@@ -72,9 +80,11 @@ fn icon(feature: &MapFeature) -> Option<String> {
     let code = sidc::from_cot_type(&feature.kind)?;
     let moving = feature.speed.is_some_and(|speed| speed > MOVING);
 
+    let edition = symbology.as_str();
+
     Some(match feature.course.filter(|_| moving) {
-        Some(course) => format!("sidc:{code}:{}", direction(course)),
-        None => format!("sidc:{code}"),
+        Some(course) => format!("sidc:{edition}:{code}:{}", direction(course)),
+        None => format!("sidc:{edition}:{code}"),
     })
 }
 
@@ -166,11 +176,11 @@ mod tests {
 
     #[test]
     fn an_atom_is_its_symbol_and_somebody_on_a_team_is_a_dot_in_its_colour() {
-        let hostile = draw(&feature("a-h-G-U-C"), now());
+        let hostile = draw(&feature("a-h-G-U-C"), Symbology::Milstd2525C, now());
         assert_eq!(hostile["anchor"]["properties"]["render"], "symbol");
         assert_eq!(
             hostile["anchor"]["properties"]["icon"],
-            "sidc:SHGPUC---------"
+            "sidc:2525c:SHGPUC---------"
         );
 
         let teammate = draw(
@@ -178,6 +188,7 @@ mod tests {
                 team: Some("Cyan".to_string()),
                 ..feature("a-f-G-U-C")
             },
+            Symbology::Milstd2525C,
             now(),
         );
         assert_eq!(teammate["anchor"]["properties"]["render"], "dot");
@@ -188,8 +199,22 @@ mod tests {
     }
 
     #[test]
+    fn the_edition_is_part_of_the_images_name_and_the_code_is_always_the_cot_types_own() {
+        let hostile = feature("a-h-G-U-C");
+
+        assert_eq!(
+            icon(&hostile, Symbology::Milstd2525C).as_deref(),
+            Some("sidc:2525c:SHGPUC---------")
+        );
+        assert_eq!(
+            icon(&hostile, Symbology::Milstd2525D).as_deref(),
+            Some("sidc:2525d:SHGPUC---------")
+        );
+    }
+
+    #[test]
     fn the_anchor_is_geojson_so_longitude_comes_first() {
-        let drawn = draw(&feature("b-m-p-s-m"), now());
+        let drawn = draw(&feature("b-m-p-s-m"), Symbology::Milstd2525C, now());
 
         assert_eq!(
             drawn["anchor"]["geometry"]["coordinates"],
@@ -202,17 +227,20 @@ mod tests {
     #[test]
     fn only_something_moving_gets_an_arrow_and_north_is_not_nothing() {
         let moving = |course, speed| {
-            icon(&MapFeature {
-                course: Some(course),
-                speed: Some(speed),
-                ..feature("a-f-A-C-F")
-            })
+            icon(
+                &MapFeature {
+                    course: Some(course),
+                    speed: Some(speed),
+                    ..feature("a-f-A-C-F")
+                },
+                Symbology::Milstd2525C,
+            )
             .unwrap()
         };
 
-        assert_eq!(moving(92.0, 120.0), "sidc:SFAPCF---------:90");
-        assert_eq!(moving(359.0, 120.0), "sidc:SFAPCF---------:360");
-        assert_eq!(moving(92.0, 0.1), "sidc:SFAPCF---------");
+        assert_eq!(moving(92.0, 120.0), "sidc:2525c:SFAPCF---------:90");
+        assert_eq!(moving(359.0, 120.0), "sidc:2525c:SFAPCF---------:360");
+        assert_eq!(moving(92.0, 0.1), "sidc:2525c:SFAPCF---------");
     }
 
     #[test]
@@ -220,11 +248,11 @@ mod tests {
         let late = "2026-09-18T12:03:00Z".parse().unwrap();
 
         assert_eq!(
-            draw(&feature("a-f-G"), now())["anchor"]["properties"]["stale"],
+            draw(&feature("a-f-G"), Symbology::Milstd2525C, now())["anchor"]["properties"]["stale"],
             false
         );
         assert_eq!(
-            draw(&feature("a-f-G"), late)["anchor"]["properties"]["stale"],
+            draw(&feature("a-f-G"), Symbology::Milstd2525C, late)["anchor"]["properties"]["stale"],
             true
         );
     }
@@ -236,6 +264,7 @@ mod tests {
                 shape: Some(MapShape::LineString(vec![[-0.12, 51.5], [-0.13, 51.6]])),
                 ..feature("u-d-f")
             },
+            Symbology::Milstd2525C,
             now(),
         );
 

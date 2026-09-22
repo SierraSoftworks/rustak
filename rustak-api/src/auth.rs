@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::group::GroupMembership;
 use crate::identity::Username;
+use crate::preferences::UserPreferences;
 use crate::user::{UserKind, UserSource};
 
 /// How this installation expects people to sign in.
@@ -242,6 +243,12 @@ pub struct Me {
     /// token expires.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<GroupMembership>,
+
+    /// What this account has chosen about how the console looks to it. Carried
+    /// here because every page already has this: a preference that needed its
+    /// own request would be one a page could forget to make.
+    #[serde(default)]
+    pub preferences: UserPreferences,
 }
 
 impl Me {
@@ -370,6 +377,7 @@ mod tests {
             source: UserSource::Oidc,
             identity_provider: Some("https://id.example.com".into()),
             groups: vec![GroupMembership::new(GroupName::anon(), Direction::Both)],
+            preferences: UserPreferences::default(),
         };
 
         let json = serde_json::to_string(&me).unwrap();

@@ -134,6 +134,7 @@ pub fn configure() -> actix_web::Scope<
         web::scope("")
             .wrap(from_fn(middleware::api_auth))
             .route("/me", web::get().to(me::me))
+            .route("/me/preferences", web::patch().to(me::preferences))
             .route("/me/oidc-link", web::post().to(me::link_oidc))
             .route("/auth/logout", web::post().to(auth::logout))
             .route("/auth/passkeys", web::get().to(passkey::list))

@@ -19,8 +19,8 @@ use rustak_api::{
     CredentialCreated, CredentialId, Device, DeviceUid, ENROLL_URL, EnrollTemplate, Group, GroupId,
     GroupMembership, GroupName, GroupPatch, GroupSource, Health, InitCaRequest, Me,
     MembershipSource, PasskeyChallenge, PasskeyId, PasskeySummary, ServerSettings,
-    ServerSettingsRequest, SetupStatus, TokenResponse, User, UserId, UserKind, UserPatch,
-    UserSource, Username,
+    ServerSettingsRequest, SetupStatus, Symbology, TokenResponse, User, UserId, UserKind,
+    UserPatch, UserPreferences, UserPreferencesPatch, UserSource, Username,
 };
 
 use super::data;
@@ -34,6 +34,10 @@ struct State {
     signed_in: bool,
     /// Whether the demo account has been linked to the demo identity provider.
     linked: bool,
+    /// What the demo account has chosen. `?demo&symbology=2525d` starts it off
+    /// on the other edition, because demo mode forgets everything at each page
+    /// load and the map is a page load away from where the choice is made.
+    preferences: UserPreferences,
     setup: SetupStatus,
     settings: ServerSettings,
     ca: Option<CaSummary>,
@@ -56,6 +60,12 @@ impl State {
         Self {
             signed_in: true,
             linked: false,
+            preferences: UserPreferences {
+                symbology: super::demo_flag("symbology")
+                    .as_deref()
+                    .and_then(Symbology::parse)
+                    .unwrap_or_default(),
+            },
             setup: data::setup_status(),
             settings: data::server_settings(),
             ca: Some(data::ca_summary()),
@@ -105,12 +115,24 @@ pub fn me() -> Option<Me> {
     with(|state| {
         state.signed_in.then(|| {
             let mut me = data::me();
+            me.preferences = state.preferences;
             if state.linked {
                 me.source = UserSource::Oidc;
                 me.identity_provider = Some("https://id.example.com".to_string());
             }
             me
         })
+    })
+}
+
+/// Changes what the demo account has chosen, and answers all of it.
+pub fn set_preferences(patch: &UserPreferencesPatch) -> UserPreferences {
+    with(|state| {
+        if let Some(symbology) = patch.symbology {
+            state.preferences.symbology = symbology;
+        }
+
+        state.preferences
     })
 }
 

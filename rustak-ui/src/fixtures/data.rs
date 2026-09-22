@@ -97,6 +97,7 @@ pub fn me() -> Me {
         source: UserSource::Local,
         identity_provider: None,
         groups: memberships(),
+        preferences: rustak_api::UserPreferences::default(),
     }
 }
 

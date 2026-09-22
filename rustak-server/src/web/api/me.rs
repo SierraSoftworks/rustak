@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use actix_web::{HttpRequest, web};
-use rustak_api::{AuditOutcome, TokenExchangeRequest};
+use rustak_api::{AuditOutcome, TokenExchangeRequest, UserPreferencesPatch};
 
 use crate::auth::RateLimiter;
 use crate::identity::users;
@@ -50,6 +50,37 @@ pub async fn me(context: web::Data<AppContext>, caller: Authenticated) -> ApiRes
 /// failing, `403` when `user_acl` refuses the identity, `400` when the exchange
 /// is refused or the identity cannot be linked to this account, and `500` when
 /// a write fails.
+/// `PATCH /api/v1/me/preferences` — change what the caller has chosen about
+/// how the console looks to them, and answer all of it.
+///
+/// Anybody signed in may: these are the account's own, and there is no route
+/// by which one account reaches another's.
+///
+/// # Errors
+///
+/// A `400` when the patch names nothing, and a `500` when the write fails.
+pub async fn preferences(
+    context: web::Data<AppContext>,
+    caller: Authenticated,
+    patch: web::Json<UserPreferencesPatch>,
+) -> ApiResult {
+    if patch.is_empty() {
+        return Err(ApiError::bad_request("That change would do nothing."));
+    }
+
+    let preferences = context
+        .db()
+        .user_preferences()
+        .apply(caller.user.id, patch.into_inner())
+        .await
+        .map_err(|err| {
+            context.session().record_human_error(&err);
+            ApiError::from_human(&err)
+        })?;
+
+    Ok(json_ok(&preferences))
+}
+
 pub async fn link_oidc(
     context: web::Data<AppContext>,
     limiter: web::Data<Arc<RateLimiter>>,

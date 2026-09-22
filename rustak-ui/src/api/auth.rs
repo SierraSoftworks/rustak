@@ -10,7 +10,9 @@ use rustak_api::{
     PasskeyRegistrationFinish, PasskeyRegistrationStart, PasskeySummary, TokenResponse, Username,
 };
 
-use crate::api::{ApiError, Verb, error_from_response, get_json, json_response, post_json, send};
+use crate::api::{
+    ApiError, Verb, error_from_response, get_json, json_response, patch_json, post_json, send,
+};
 // The fixtures themselves exist only in debug builds; the macro is always in
 // scope so that a release build still compiles the call sites away.
 #[cfg(debug_assertions)]
@@ -30,6 +32,16 @@ pub async fn me() -> Result<Me, ApiError> {
     demo!(fixtures::me().ok_or(ApiError::Unauthorized));
 
     get_json("/me").await
+}
+
+/// Changes what the caller has chosen about how the console looks to them.
+/// Answers all of their preferences, as they now are.
+pub async fn set_preferences(
+    patch: &rustak_api::UserPreferencesPatch,
+) -> Result<rustak_api::UserPreferences, ApiError> {
+    demo!(Ok(fixtures::set_preferences(patch)));
+
+    patch_json("/me/preferences", patch).await
 }
 
 /// Drops the session on the server as well as in this tab.
