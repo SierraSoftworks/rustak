@@ -1,5 +1,10 @@
-//! How the console looks to the person signed in: today, which edition of
-//! MIL-STD-2525 the map draws its symbols from.
+//! What the person signed in has chosen for themselves: today, which edition
+//! of MIL-STD-2525 their devices author symbols in.
+//!
+//! The map here needs no such choice. It draws the code each sender wrote, in
+//! whichever edition that was, and the 2525C symbol a CoT type implies when
+//! the sender wrote none. The choice matters on a *device*, which is where it
+//! is delivered: as `symbologyProvider`, with the account's device profile.
 //!
 //! These are the account's own preferences rather than the installation's
 //! settings, so they sit on the account page, anybody may change theirs, and
@@ -70,8 +75,8 @@ pub fn display_panel(props: &DisplayPanelProps) -> Html {
 
     html! {
         <Card
-            title="Display"
-            subtitle="How the console looks to you. These follow your account, not this browser."
+            title="Preferences"
+            subtitle="What you have chosen for yourself. These follow your account, to this console and to your devices."
         >
             if let Some(message) = &*error {
                 <Alert
@@ -83,10 +88,10 @@ pub fn display_panel(props: &DisplayPanelProps) -> Html {
 
             <Field
                 id="pref-symbology"
-                label="Map symbols"
-                help="Which edition of MIL-STD-2525 the map draws. TAK's types are laid out on \
-                    2525C, so every track has a 2525C symbol; 2525D redrew many of them, and a \
-                    type with no 2525D equivalent keeps its 2525C symbol."
+                label="Symbol edition"
+                help="Which edition of MIL-STD-2525 your devices author symbols in. It reaches \
+                    each device with its profile, the next time it connects. The map here draws \
+                    every symbol in the edition its sender wrote it in."
             >
                 <Select
                     id="pref-symbology"

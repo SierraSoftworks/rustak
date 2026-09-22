@@ -21,6 +21,7 @@ use rustak_core::identity::{Direction, GroupSet};
 use rustak_core::prelude::*;
 use tokio::io::AsyncReadExt as _;
 
+use super::account::account_file;
 use super::builder::ProfileFileData;
 use super::model::{Delivery, ProfileFileRow, ProfileRow};
 use super::prefs::{APP_PREFS, PrefGroup, UserSettings, enrollment_defaults, render};
@@ -156,6 +157,7 @@ impl<'a> ProfileService<'a> {
         held: &[GroupName],
         user: &UserSettings,
         defaults: bool,
+        account: Option<UserId>,
     ) -> Result<Assembled, Error> {
         let mut assembled = Assembled::default();
 
@@ -168,6 +170,7 @@ impl<'a> ProfileService<'a> {
             ));
         }
 
+        self.account(account, None, &mut assembled).await?;
         self.collect(Delivery::Enrollment, None, held, &mut assembled)
             .await?;
         self.enrollment_packages(&mut assembled).await?;
@@ -184,8 +187,11 @@ impl<'a> ProfileService<'a> {
         &self,
         held: &[GroupName],
         sync_secago: i64,
+        account: Option<UserId>,
     ) -> Result<Assembled, Error> {
         let mut assembled = Assembled::default();
+        self.account(account, window(sync_secago), &mut assembled)
+            .await?;
         self.collect(Delivery::Connect, window(sync_secago), held, &mut assembled)
             .await?;
 
@@ -313,6 +319,22 @@ impl<'a> ProfileService<'a> {
                 )
             })
             .await
+    }
+
+    /// Adds what the calling account chose for itself: see [`super::account`].
+    async fn account(
+        &self,
+        account: Option<UserId>,
+        since: Option<DateTime<Utc>>,
+        into: &mut Assembled,
+    ) -> Result<(), Error> {
+        if let Some(user) = account
+            && let Some(file) = account_file(self.db, user, since).await?
+        {
+            into.push(file);
+        }
+
+        Ok(())
     }
 
     /// Adds every profile a delivery offers this caller.

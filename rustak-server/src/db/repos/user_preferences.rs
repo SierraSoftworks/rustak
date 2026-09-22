@@ -6,6 +6,7 @@
 //! recognise reads the same way — a row written by a newer server must never be
 //! the reason an older one cannot answer `/me`.
 
+use chrono::{DateTime, Utc};
 use rustak_api::{Symbology, UserPreferences, UserPreferencesPatch};
 use rustak_core::prelude::*;
 
@@ -47,6 +48,43 @@ impl<'a> UserPreferencesRepo<'a> {
         }
 
         Ok(preferences)
+    }
+
+    /// Only what the account has actually chosen, and when it last chose, or
+    /// [`None`] for an account that has chosen nothing.
+    ///
+    /// A default is what *this console* assumes; it is not something the person
+    /// decided, so it is not something to go and configure their devices with.
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::System`] error if the read fails.
+    pub async fn chosen(
+        &self,
+        user_id: UserId,
+    ) -> Result<Option<(UserPreferencesPatch, DateTime<Utc>)>, Error> {
+        let rows: Vec<(String, String, Timestamp)> = self
+            .db
+            .read(move |c| {
+                c.prepare("SELECT key, value, updated_at FROM user_preferences WHERE user_id = ?1")?
+                    .query_map([user_id.get()], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                    })?
+                    .collect()
+            })
+            .await?;
+
+        let mut chosen = UserPreferencesPatch::default();
+        let mut newest = None::<DateTime<Utc>>;
+
+        for (key, value, at) in rows {
+            if key == SYMBOLOGY {
+                chosen.symbology = Symbology::parse(&value);
+            }
+            newest = newest.max(Some(at.into()));
+        }
+
+        Ok(newest.filter(|_| !chosen.is_empty()).map(|at| (chosen, at)))
     }
 
     /// Sets what `patch` names and leaves the rest alone. Answers the whole.
@@ -190,5 +228,26 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(left, 0);
+    }
+
+    #[tokio::test]
+    async fn only_what_was_actually_chosen_is_reported_as_chosen() {
+        let db = Database::open_in_memory().await.expect("a database");
+        let user = account(&db, "alice").await;
+        let repo = db.user_preferences();
+
+        assert_eq!(repo.chosen(user).await.expect("a read"), None);
+
+        repo.apply(
+            user,
+            UserPreferencesPatch {
+                symbology: Some(Symbology::Milstd2525D),
+            },
+        )
+        .await
+        .expect("a write");
+
+        let (chosen, _) = repo.chosen(user).await.expect("a read").expect("a choice");
+        assert_eq!(chosen.symbology, Some(Symbology::Milstd2525D));
     }
 }

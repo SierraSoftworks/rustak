@@ -148,12 +148,11 @@ impl AdsbSidecar {
     fn watch(&mut self, settings: &Settings, area: Area, from: &'static str) -> Result<(), Error> {
         self.kind = settings.source.kind();
         self.feed = Some(settings.source.open(area)?);
-        self.publisher =
-            Some(
-                FeedPublisher::new(settings.publish, settings.affiliation)
-                    .with_symbology(settings.symbology)
-                    .with_area(area),
-            );
+        self.publisher = Some(
+            FeedPublisher::new(settings.publish, settings.affiliation)
+                .with_symbology(settings.symbology)
+                .with_area(area),
+        );
         self.area = area;
         self.area_from = from;
 

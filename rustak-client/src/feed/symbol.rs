@@ -88,7 +88,9 @@ impl Symbology {
             .push(Element::new(SINGLE_POINT).attr("id", code.clone()));
 
         if self == Self::Milstd2525C {
-            event.detail.push(Element::new(MULTI_POINT).attr("id", code));
+            event
+                .detail
+                .push(Element::new(MULTI_POINT).attr("id", code));
         }
     }
 }
@@ -171,11 +173,15 @@ mod tests {
 
         for (kind, letters, digits) in cases {
             assert_eq!(
-                Symbology::Milstd2525C.code(kind, Affiliation::Hostile).as_deref(),
+                Symbology::Milstd2525C
+                    .code(kind, Affiliation::Hostile)
+                    .as_deref(),
                 Some(letters)
             );
             assert_eq!(
-                Symbology::Milstd2525D.code(kind, Affiliation::Hostile).as_deref(),
+                Symbology::Milstd2525D
+                    .code(kind, Affiliation::Hostile)
+                    .as_deref(),
                 Some(digits)
             );
         }
