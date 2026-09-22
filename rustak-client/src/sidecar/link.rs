@@ -29,6 +29,7 @@
 
 use std::collections::VecDeque;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -38,7 +39,7 @@ use rustak_core::prelude::*;
 use rustak_cot::Event;
 
 use super::link_health::{REMIND_EVERY, humanised};
-use super::{SidecarContext, SidecarEvent};
+use super::{SidecarContext, SidecarEvent, StreamStats};
 use crate::stream::{Endpoint, Mode, Reconnecting, StreamConfig, TlsIdentity};
 
 /// What is reported when a connection ends without the wrapper saying why.
@@ -56,6 +57,10 @@ const UNEXPLAINED: &str = "the connection ended";
 /// Bounded, because a server that is not there must not stop a sidecar
 /// starting: past this the ordinary path takes over, and the next tick
 /// republishes.
+///
+/// This is the default a [`SidecarContext`] is built with, and what production
+/// runs with. [`SidecarContext::with_first_connect_hold`] exists for a test
+/// that must not be able to fail because its host was slow.
 pub(crate) const FIRST_CONNECT: Duration = Duration::from_secs(10);
 
 /// The sidecar's connection to the CoT stream, and the bookkeeping that turns
@@ -85,6 +90,11 @@ pub(crate) struct Link {
     /// Whether a publish into a connection that is not up is worth saying
     /// anything about, and at what level.
     discards: Discards,
+
+    /// What became of every event [`publish`](Self::publish) was handed,
+    /// counted where the plugin and a test can read it:
+    /// [`SidecarContext::stream_stats`].
+    stats: Arc<StreamStats>,
 }
 
 /// Whether the stream has ever been up, and what a discarded batch is worth
@@ -185,12 +195,14 @@ impl Link {
     /// `[service]` does not carry the certificate, key and truststore to open
     /// one with.
     pub(crate) fn open<S>(context: &SidecarContext<S>) -> Result<Self, Error> {
+        let stats = Arc::clone(context.stream_stats());
+
         let Some(configured) = context.config().server.stream.as_deref() else {
             tracing::info!(
                 "This sidecar has no [server] stream, so it will not open a CoT connection.",
             );
 
-            return Ok(Self::idle());
+            return Ok(Self::idle(stats));
         };
 
         let config = stream_config(context, configured)?;
@@ -199,12 +211,12 @@ impl Link {
         Ok(Self {
             connection: Some(Reconnecting::new(config)),
             endpoint,
-            ..Self::idle()
+            ..Self::idle(stats)
         })
     }
 
-    /// A link with nothing on the other end of it.
-    fn idle() -> Self {
+    /// A link with nothing on the other end of it, counting into `stats`.
+    fn idle(stats: Arc<StreamStats>) -> Self {
         Self {
             connection: None,
             endpoint: String::new(),
@@ -213,6 +225,7 @@ impl Link {
             held: None,
             queued: VecDeque::new(),
             discards: Discards::default(),
+            stats,
         }
     }
 
@@ -291,6 +304,7 @@ impl Link {
                 count,
                 "Discarding events: no [server] stream is configured."
             );
+            self.stats.record_discarded(count, false);
 
             return Ok(());
         };
@@ -304,6 +318,10 @@ impl Link {
         for event in events {
             tracing::debug!(uid = %event.uid, r#type = %event.r#type, "Publishing.");
             connection.feed(event).await?;
+            // Counted here rather than after the flush, so that whatever a
+            // peer has received has already been counted: a test reading this
+            // the moment an event arrives must not find it still at zero.
+            self.stats.record_published();
         }
 
         connection.flush().await?;
@@ -319,6 +337,9 @@ impl Link {
     /// stream that *was* up and dropped is worth one `warn`, and then one every
     /// five minutes carrying the count, rather than one per tick.
     fn discard(&mut self, count: usize) {
+        self.stats
+            .record_discarded(count, self.discards.ever_connected);
+
         match self.discards.discarded(count, Utc::now()) {
             Discarded::Starting => tracing::debug!(
                 count,
@@ -627,6 +648,41 @@ mod tests {
         let mut link = Link::open(&context).unwrap();
 
         assert!(!link.settle(std::time::Duration::from_millis(200)).await);
+    }
+
+    #[tokio::test]
+    async fn a_batch_dropped_before_the_first_connection_is_counted_as_exactly_that() {
+        // M9-13. What a test asserts on instead of a stopwatch: the batch was
+        // not published, it was discarded, and the stream had never been up.
+        // Read through the *context*, because that is the handle a test (or a
+        // plugin's health hook) actually holds.
+        let context =
+            context("[service]\nname = \"adsb\"\n\n[server]\nstream = \"tcp://127.0.0.1:1\"\n");
+        let mut link = Link::open(&context).unwrap();
+        let batch = || {
+            vec![
+                Event::builder("a-f-G", "SERVICE-adsb").build(),
+                Event::builder("a-f-G", "SERVICE-adsb").build(),
+            ]
+        };
+
+        link.publish(batch()).await.unwrap();
+
+        let stats = context.stream_stats();
+        assert_eq!(stats.published(), 0);
+        assert_eq!(stats.discarded(), 2);
+        assert_eq!(stats.discarded_before_first_connection(), 2);
+
+        // A stream that *was* up and dropped still discards, and still counts
+        // it — but not as a start-up discard, which is the distinction the
+        // harness suite's clean-start assertion rests on.
+        link.discards.connected(true, at(0));
+        link.discards.connected(false, at(1));
+        link.publish(batch()).await.unwrap();
+
+        assert_eq!(stats.published(), 0);
+        assert_eq!(stats.discarded(), 4);
+        assert_eq!(stats.discarded_before_first_connection(), 2);
     }
 
     #[tokio::test]

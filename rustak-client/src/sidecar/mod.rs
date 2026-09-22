@@ -68,6 +68,8 @@ pub mod run;
 pub mod workload;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use rustak_api::Heartbeat;
 use rustak_core::prelude::*;
@@ -148,6 +150,66 @@ pub enum SidecarEvent {
     Server(Box<ServerEvent>),
 }
 
+/// What became of the events a plugin returned, counted since the sidecar
+/// started.
+///
+/// The harness writes what [`Sidecar::tick`] and [`Sidecar::on_event`] return,
+/// and drops it when there is no connection to write it on — see [`Sidecar`].
+/// These are the counts of both. They are shared between the harness and every
+/// clone of the [`SidecarContext`], so a plugin can put them in what its
+/// [`health`](Sidecar::health) hook reports, and a test can assert on *what
+/// happened* to a batch rather than on how long it took to arrive, which
+/// measures the machine the test ran on.
+#[derive(Debug, Default)]
+pub struct StreamStats {
+    published: AtomicUsize,
+    discarded: AtomicUsize,
+    discarded_before_first_connection: AtomicUsize,
+}
+
+impl StreamStats {
+    /// Events handed to a CoT stream connection that was up.
+    ///
+    /// Counted as each event is handed over and before the batch is flushed,
+    /// so anything a peer has received has already been counted here.
+    pub fn published(&self) -> usize {
+        self.published.load(Ordering::Relaxed)
+    }
+
+    /// Events dropped because there was no connection to write them on.
+    pub fn discarded(&self) -> usize {
+        self.discarded.load(Ordering::Relaxed)
+    }
+
+    /// The part of [`discarded`](Self::discarded) that was dropped before the
+    /// stream had connected even once.
+    ///
+    /// Zero on a clean start: the harness holds the first tick until the first
+    /// connection is up, so a plugin's first batch is published rather than
+    /// thrown away. Anything else is a server that took longer than that hold
+    /// to answer, or a sidecar with no `[server] stream` at all.
+    pub fn discarded_before_first_connection(&self) -> usize {
+        self.discarded_before_first_connection
+            .load(Ordering::Relaxed)
+    }
+
+    /// One event was handed to a connection that was up.
+    pub(crate) fn record_published(&self) {
+        self.published.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// `count` events were dropped, by a stream that had or had not connected
+    /// before.
+    pub(crate) fn record_discarded(&self, count: usize, ever_connected: bool) {
+        self.discarded.fetch_add(count, Ordering::Relaxed);
+
+        if !ever_connected {
+            self.discarded_before_first_connection
+                .fetch_add(count, Ordering::Relaxed);
+        }
+    }
+}
+
 /// Everything the harness knows, handed to the plugin when it starts.
 ///
 /// A plugin keeps this (it is cheap to clone) and reads from it whenever it
@@ -166,6 +228,10 @@ pub struct SidecarContext<S = NoSettings> {
     /// The exchange that buys this sidecar's control-API token from its
     /// orchestrator's identity, for a deployment that has no `[service] token`.
     pub(crate) workload: Option<Arc<AccessTokens>>,
+    /// What became of the events this sidecar returned, counted by the harness.
+    stream_stats: Arc<StreamStats>,
+    /// How long the first tick is held for the stream's first connection.
+    first_connect: Duration,
     shutdown: Shutdown,
     span: Span,
 }
@@ -273,6 +339,8 @@ impl<S> SidecarContext<S> {
             marti,
             control,
             workload,
+            stream_stats: Arc::default(),
+            first_connect: link::FIRST_CONNECT,
             shutdown,
             span,
         })
@@ -306,6 +374,38 @@ impl<S> SidecarContext<S> {
     /// what the harness asks for and cannot be overwritten by it.
     pub fn control(&self) -> Option<&ControlClient> {
         self.control.as_deref()
+    }
+
+    /// What has become of the events this sidecar returned: how many reached
+    /// the CoT stream, and how many were dropped for want of a connection.
+    ///
+    /// Shared with the harness rather than copied, so a clone taken before
+    /// [`drive`] is called reads what the running sidecar has done since.
+    pub fn stream_stats(&self) -> &Arc<StreamStats> {
+        &self.stream_stats
+    }
+
+    /// Sets how long the harness holds the first tick for the CoT stream's
+    /// first connection. Ten seconds unless this is called.
+    ///
+    /// The hold is what keeps a feed plugin's first batch from being published
+    /// into a connection that is still being made, and the bound on it is what
+    /// lets a sidecar start when its server is not there. A deployment has no
+    /// reason to change it, which is why it is not a configuration key. A test
+    /// asserting that a clean start discards nothing does: with a generous
+    /// bound the only thing that can discard a first batch is the hold not
+    /// working, rather than a handshake that was given less than ten seconds
+    /// of a loaded machine's time.
+    #[must_use]
+    pub fn with_first_connect_hold(mut self, within: Duration) -> Self {
+        self.first_connect = within;
+        self
+    }
+
+    /// How long the harness holds the first tick for the CoT stream's first
+    /// connection before carrying on without one.
+    pub fn first_connect_hold(&self) -> Duration {
+        self.first_connect
     }
 
     /// Who this sidecar is, including the credentials it connects with.
@@ -355,6 +455,8 @@ impl<S> Clone for SidecarContext<S> {
             marti: self.marti.clone(),
             control: self.control.clone(),
             workload: self.workload.clone(),
+            stream_stats: self.stream_stats.clone(),
+            first_connect: self.first_connect,
             shutdown: self.shutdown.clone(),
             span: self.span.clone(),
         }
@@ -562,6 +664,42 @@ mod tests {
         assert!(!held.shutdown().is_cancelled());
         context.shutdown().cancel();
         assert!(held.shutdown().is_cancelled());
+    }
+
+    #[test]
+    fn a_clone_shares_the_stream_counters_rather_than_copying_them() {
+        // `Clone` is written out by hand, so this is the line somebody would
+        // forget: a plugin that kept its context, or a test that kept the
+        // counters before handing the context to `drive`, has to be reading
+        // what the harness is writing.
+        let context = context();
+        let held = Arc::clone(context.clone().stream_stats());
+
+        context.stream_stats().record_published();
+        context.stream_stats().record_discarded(3, false);
+        context.stream_stats().record_discarded(2, true);
+
+        assert_eq!(held.published(), 1);
+        assert_eq!(held.discarded(), 5);
+        assert_eq!(held.discarded_before_first_connection(), 3);
+    }
+
+    #[test]
+    fn the_first_connect_hold_is_ten_seconds_unless_a_test_says_otherwise() {
+        // The production bound is pinned here, because the builder below exists
+        // for tests and must never become the way production drifts.
+        let context = context();
+
+        assert_eq!(context.first_connect_hold(), Duration::from_secs(10));
+
+        let generous = context.with_first_connect_hold(Duration::from_secs(120));
+
+        assert_eq!(generous.first_connect_hold(), Duration::from_secs(120));
+        assert_eq!(
+            generous.clone().first_connect_hold(),
+            Duration::from_secs(120),
+            "`Clone` is written by hand, and the plugin is handed a clone",
+        );
     }
 
     #[test]
