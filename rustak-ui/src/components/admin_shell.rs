@@ -63,6 +63,10 @@ pub fn admin_shell(props: &AdminShellProps) -> Html {
     let route = use_route::<Route>().unwrap_or(Route::Dashboard);
     let (title, subtitle) = route.heading();
 
+    // Every other page is a column of cards that reads best at a fixed
+    // measure. A map is the one thing here that is better for every pixel.
+    let wide = route == Route::Map;
+
     // A page's actions belong to the page. Clearing them on every route change
     // stops the previous page's refresh button outliving it — and following a
     // link is what closes the drawer, so the page it opened can be seen.
@@ -90,7 +94,7 @@ pub fn admin_shell(props: &AdminShellProps) -> Html {
             <div class="app-body">
                 <AdminNav open={*nav_open} on_close={close_nav} />
                 <main class="app-main">
-                    <div class="app-container">
+                    <div class={classes!("app-container", wide.then_some("app-container--wide"))}>
                         <ContextProvider<PageActions> context={(*page_actions).clone()}>
                             <Protected>
                                 <PageTitle title={title} subtitle={subtitle}>
@@ -123,6 +127,7 @@ const NAV: &[NavGroup] = &[
         title: "Overview",
         links: &[
             (Route::Dashboard, "Dashboard"),
+            (Route::Map, "Map"),
             (Route::Situation, "Situation"),
             (Route::Activity, "Activity"),
         ],

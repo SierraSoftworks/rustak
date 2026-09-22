@@ -86,7 +86,9 @@ fn shell_of(index: Option<&'static [u8]>) -> HttpResponse {
 fn content_type(path: &str) -> &'static str {
     match path.rsplit('.').next() {
         Some("html") => "text/html; charset=utf-8",
-        Some("js") => "application/javascript; charset=utf-8",
+        // `.mjs` is what the map's libraries ship as. A module script is
+        // refused outright when it is served as anything but JavaScript.
+        Some("js" | "mjs") => "application/javascript; charset=utf-8",
         Some("wasm") => "application/wasm",
         Some("css") => "text/css; charset=utf-8",
         // No charset parameter: the admin API's responses are compared byte for

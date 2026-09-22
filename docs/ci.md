@@ -104,6 +104,12 @@ deduplicate ──┬─ version ───────────────�
   compiled out of release) and a **release** bundle (for the `build` matrix to
   embed).
 
+  Both builds run `rustak-ui/scripts/vendor.mjs` as a Trunk hook, which copies
+  the map page's JavaScript (MapLibre GL, milsymbol) into `dist/vendor` from
+  the versions locked in `rustak-ui/package-lock.json` — `npm ci` on a cold
+  runner, a file copy after that. It uses the Node the runner image ships;
+  those two pins *are* dependabot's to bump (`npm`, `/rustak-ui`).
+
   It also **runs `rustak-ui`'s unit tests**, on the *host* target rather than on
   wasm32. Until M7-04 it only lint-checked them: `cargo clippy --all-targets`
   type-checks a test without running it, so an assertion that would fail was not

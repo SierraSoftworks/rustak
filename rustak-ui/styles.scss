@@ -891,7 +891,7 @@ pre {
   align-items: stretch;
 }
 
-// The navigation, down the left. Thirteen destinations are more than a bar
+// The navigation, down the left. Fourteen destinations are more than a bar
 // can hold and more than a flat list is easy to scan, so they are grouped by
 // what somebody is there to do — and the column has the height for it.
 .sidebar {
@@ -3016,5 +3016,268 @@ footer {
 
   .pref-row {
     gap: 0.5rem;
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 5.12 Map
+// -----------------------------------------------------------------------------
+
+// The one page that wants every pixel: see `AdminShell`.
+.app-container--wide {
+  max-width: none;
+}
+
+.map-page {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+
+  &__bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+
+  &__count {
+    margin-right: auto;
+    font-size: 0.85rem;
+    color: $text-regular;
+  }
+
+  // Always present, so that what comes and goes inside them never shifts the
+  // element the map lives in. See `pages::map`.
+  &__notes:empty,
+  &__portal {
+    display: none;
+  }
+
+  &__note {
+    margin: 0;
+    font-size: 0.85rem;
+    color: $text-regular;
+  }
+
+  // As tall as the window allows under the bar and the title, and never so
+  // short that the map is a letterbox.
+  &__body {
+    display: flex;
+    gap: 1rem;
+    height: max(26rem, calc(100vh - 17.5rem));
+  }
+
+  &__canvas {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid $border-light;
+    border-radius: $radius-lg;
+    overflow: hidden;
+    background: $fill-light;
+    font-family: $font-sans;
+  }
+
+  // MapLibre's pop-over, brought into line with a card.
+  .maplibregl-popup-content {
+    padding: 0.9rem 1rem;
+    border-radius: $radius-lg;
+    box-shadow: $shadow-md;
+    font-family: $font-sans;
+    color: $text-primary;
+  }
+
+  .maplibregl-popup-close-button {
+    width: 1.75rem;
+    height: 1.75rem;
+    font-size: 1.1rem;
+    color: $text-secondary;
+    border-radius: $radius-sm;
+
+    &:hover {
+      background: $fill-light;
+      color: $text-primary;
+    }
+  }
+
+  @media (max-width: 900px) {
+    &__body {
+      flex-direction: column;
+      height: auto;
+    }
+
+    &__canvas {
+      flex: none;
+      height: 60vh;
+    }
+  }
+}
+
+.map-popover {
+  // Never taller than the shortest the map can be, less the pop-over's own
+  // padding and tip, so that there is always somewhere it fits.
+  &__card {
+    min-width: 15rem;
+    max-height: 19rem;
+    overflow-y: auto;
+  }
+
+  &__head {
+    margin-bottom: 0.6rem;
+    padding-right: 1.5rem;
+  }
+
+  &__name {
+    font-size: 1rem;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+
+  &__kind {
+    margin: 0.1rem 0 0;
+    font-size: 0.8rem;
+    color: $text-regular;
+
+    code {
+      font-family: $font-mono;
+      font-size: 0.75rem;
+    }
+  }
+
+  &__facts {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.2rem 0.75rem;
+    margin: 0;
+    font-size: 0.8rem;
+
+    dt {
+      color: $text-secondary;
+    }
+
+    dd {
+      margin: 0;
+      overflow-wrap: anywhere;
+    }
+  }
+
+  &__remarks {
+    margin: 0.6rem 0 0;
+    padding-top: 0.5rem;
+    border-top: 1px solid $border-lighter;
+    font-size: 0.8rem;
+    white-space: pre-wrap;
+  }
+
+  &__age {
+    margin: 0.6rem 0 0;
+    font-size: 0.75rem;
+    color: $text-secondary;
+
+    &--stale {
+      color: darken($warning, 15%);
+    }
+  }
+}
+
+.map-roster {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: 17rem;
+  min-height: 0;
+
+  &__list {
+    flex: 1;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    overflow-y: auto;
+    border: 1px solid $border-lighter;
+    border-radius: $radius;
+    background: $bg-white;
+  }
+
+  &__row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    column-gap: 0.55rem;
+    align-items: center;
+    width: 100%;
+    padding: 0.45rem 0.65rem;
+    background: none;
+    border: none;
+    border-bottom: 1px solid $border-lighter;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+    transition: background $transition;
+
+    &:hover {
+      background: $fill-light;
+    }
+
+    &:focus-visible {
+      outline: 2px solid $brand;
+      outline-offset: -2px;
+    }
+
+    &--selected {
+      background: $brand-tint;
+    }
+
+    &--stale {
+      opacity: 0.55;
+    }
+  }
+
+  &__swatch {
+    grid-row: span 2;
+    width: 0.7rem;
+    height: 0.7rem;
+    border-radius: 50%;
+    border: 1px solid rgba(0, 0, 0, 0.35);
+  }
+
+  &__name {
+    font-size: 0.85rem;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &__detail {
+    grid-column: 2;
+    font-size: 0.75rem;
+    color: $text-secondary;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &__empty,
+  &__more {
+    margin: 0;
+    font-size: 0.8rem;
+    color: $text-secondary;
+
+    &:empty {
+      display: none;
+    }
+  }
+
+  &__list:empty {
+    display: none;
+  }
+
+  @media (max-width: 900px) {
+    width: 100%;
+
+    &__list {
+      max-height: 40vh;
+    }
   }
 }

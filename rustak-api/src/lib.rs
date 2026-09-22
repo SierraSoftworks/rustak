@@ -44,6 +44,7 @@ pub mod event;
 pub mod group;
 pub mod health;
 pub mod identity;
+pub mod map;
 pub mod mission;
 pub mod package;
 pub mod passkey;
@@ -88,6 +89,7 @@ pub use identity::{
     GroupName, GroupNameError, MissionGuid, MissionId, PasskeyId, ProfileId, ResourceId, ServiceId,
     ServiceName, ServiceNameError, UserId, Username, UsernameError,
 };
+pub use map::{MapFeature, MapPoint, MapShape, MapUpdate};
 pub use mission::{
     MissionChangeKind, MissionChangeSummary, MissionDetail, MissionLayerSummary, MissionRoleKind,
     MissionRoleUpdate, MissionSubscriptionSummary, MissionSummary, UidDetails,

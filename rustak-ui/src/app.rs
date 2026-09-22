@@ -52,6 +52,10 @@ pub enum Route {
     MissionDetail { guid: String },
     #[at("/admin/packages")]
     Packages,
+    /// Everything that is reporting, drawn where it says it is and kept
+    /// current while the page is open.
+    #[at("/admin/map")]
+    Map,
     /// The latest situational-awareness message per identifier.
     #[at("/admin/situation")]
     Situation,
@@ -113,6 +117,7 @@ impl Route {
                 "One Data Sync mission: who is on it, what changed, and how it is arranged.",
             ),
             Route::Packages => ("Data packages", "The files this server hands out."),
+            Route::Map => ("Map", "Where everything is, as it reports it."),
             Route::Situation => (
                 "Situation",
                 "Every entity this server knows of, where it last was, and when it last spoke.",
@@ -340,6 +345,7 @@ fn switch(route: Route) -> Html {
         Route::Missions => admin(html! { <pages::Missions /> }),
         Route::MissionDetail { guid } => admin(html! { <pages::MissionDetailPage {guid} /> }),
         Route::Packages => admin(html! { <pages::Packages /> }),
+        Route::Map => admin(html! { <pages::LiveMap /> }),
         Route::Situation => admin(html! { <pages::Situation /> }),
         Route::Profiles => admin(html! { <pages::Profiles /> }),
         Route::ProfileEditor { id } => admin(html! { <pages::ProfileEditor {id} /> }),
