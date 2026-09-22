@@ -25,6 +25,7 @@
 
 use rustak_cot::Event;
 use rustak_cot::detail::Element;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{Affiliation, AircraftClass, TrackKind, VesselClass};
@@ -36,17 +37,20 @@ const SINGLE_POINT: &str = "__milicon";
 const MULTI_POINT: &str = "__milsym";
 
 /// Which symbol code a feed writes into its events, if any.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub enum Symbology {
     /// The CoT type and nothing else.
     #[default]
     #[serde(rename = "none")]
+    #[schemars(title = "CoT type only")]
     TypeOnly,
     /// The fifteen-letter MIL-STD-2525C code.
     #[serde(rename = "2525c")]
+    #[schemars(title = "MIL-STD-2525C")]
     Milstd2525C,
     /// The twenty-digit MIL-STD-2525D code.
     #[serde(rename = "2525d")]
+    #[schemars(title = "MIL-STD-2525D")]
     Milstd2525D,
 }
 

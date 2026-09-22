@@ -227,11 +227,13 @@ attempt after it, one line every five minutes saying how many there have been
 since the last one, and one line when it comes back naming how long it was
 gone. A stream that closes and reopens cleanly says nothing at all.
 
-An administrator may also set an `area` in the service's configuration, which
-wins over the file:
+An administrator may also set an `area` and a `symbology` in the service's
+configuration, from the form the Services page draws. Either wins over the
+file, and takes effect on the sidecar's next read without a restart; removing
+`symbology` gives the choice back to the file:
 
 ```json
-{"area": {"kind": "circle", "lat": 51.95, "lon": 4.13, "radius_km": 60}}
+{"area": {"kind": "circle", "lat": 51.95, "lon": 4.13, "radius_km": 60}, "symbology": "2525d"}
 ```
 
 ## Data sources and licensing

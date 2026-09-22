@@ -20,20 +20,23 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("the edition of MIL-STD-2525 chosen under Account is kept by the server", async ({ page }) => {
+  // Drawn from the preferences schema by the form that draws a service's
+  // configuration, so an edition is chosen by the name the schema gives it.
+  const chosen = () => page.getByLabel("Symbol edition").locator("option:checked");
+
   await gotoApp(page, ACCOUNT);
-  const symbols = page.getByLabel("Symbol edition");
-  await expect(symbols).toHaveValue("2525c");
-  await symbols.selectOption("2525d");
+  await expect(chosen()).toHaveText("MIL-STD-2525C");
+  await page.getByLabel("Symbol edition").selectOption({ label: "MIL-STD-2525D" });
 
   // Saved the moment it is chosen, and the session re-read: no button to press.
-  await expect(symbols).toHaveValue("2525d");
-  await expect(symbols).toBeEnabled();
+  await expect(chosen()).toHaveText("MIL-STD-2525D");
+  await expect(page.getByLabel("Symbol edition")).toBeEnabled();
 
   // A full navigation, so this is the server's answer and not the page's memory.
   await gotoApp(page, ACCOUNT);
-  await expect(page.getByLabel("Symbol edition")).toHaveValue("2525d");
+  await expect(chosen()).toHaveText("MIL-STD-2525D");
 
-  await page.getByLabel("Symbol edition").selectOption("2525c");
-  await expect(page.getByLabel("Symbol edition")).toHaveValue("2525c");
+  await page.getByLabel("Symbol edition").selectOption({ label: "MIL-STD-2525C" });
+  await expect(chosen()).toHaveText("MIL-STD-2525C");
   await expect(page.getByLabel("Symbol edition")).toBeEnabled();
 });

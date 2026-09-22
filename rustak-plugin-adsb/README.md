@@ -286,9 +286,11 @@ how many there have been since the last one; and coming back is one line naming
 how long it was gone. A change to the poll interval is one line per change. Everything else lives on the Services page, which is where
 the *current* state belongs.
 
-An administrator may also set an `area` for the service through
-`PUT /api/v1/services/adsb/config`; the sidecar reads it at start-up and it wins
-over the one in the file, logged at `info` when it does.
+An administrator may also set an `area` and a `symbology` for the service, from
+the form the Services page draws or through `PUT /api/v1/services/adsb/config`.
+Either wins over the one in the file and is logged at `info` when it takes
+effect, which needs no restart; removing `symbology` gives the choice back to
+the file.
 
 ## Docker
 
