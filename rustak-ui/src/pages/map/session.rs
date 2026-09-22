@@ -26,6 +26,7 @@ use crate::api::map::{Canceller, Feed};
 use crate::api::{self, ApiError};
 use crate::components::StatusTone;
 
+use super::focus::Focus;
 use super::glue::{Basemap, Map};
 use super::store::{Changes, Store};
 
@@ -76,7 +77,7 @@ impl FeedStatus {
 pub struct Session {
     store: Store,
     map: Option<Map>,
-    selected: Option<String>,
+    focus: Focus,
     feed: Option<Canceller>,
     /// Whether anything has changed since the page last drew itself.
     dirty: bool,
@@ -94,11 +95,16 @@ impl Session {
         self.map.as_ref().map(Map::popover_element)
     }
 
-    pub fn select(&mut self, uid: Option<String>) {
+    /// Opens the pop-over on whatever is in focus, or closes it.
+    pub fn focus(&mut self, focus: Focus) {
         if let Some(map) = &self.map {
-            map.select(uid.as_deref());
+            match &focus {
+                Focus::Nothing => map.select(None),
+                Focus::Feature(uid) => map.select(Some(uid)),
+                Focus::Choosing { at, .. } => map.choose(*at),
+            }
         }
-        self.selected = uid;
+        self.focus = focus;
     }
 
     pub fn fly_to(&self, uid: &str) {
@@ -120,7 +126,7 @@ pub struct Running {
     session: Rc<RefCell<Session>>,
     alive: Rc<Cell<bool>>,
     on_status: Callback<FeedStatus>,
-    on_select: Callback<Option<String>>,
+    on_focus: Callback<Focus>,
     on_redraw: Callback<()>,
     on_signed_out: Callback<()>,
 }
@@ -128,7 +134,9 @@ pub struct Running {
 /// What the page wants to hear about.
 pub struct Listeners {
     pub on_status: Callback<FeedStatus>,
-    pub on_select: Callback<Option<String>>,
+    /// The pop-over should be on something else: a click, or what it was on
+    /// leaving the map.
+    pub on_focus: Callback<Focus>,
     pub on_redraw: Callback<()>,
     /// The server refused the session. The console re-resolves it, which is
     /// what puts the sign-in prompt where this page was.
@@ -141,7 +149,7 @@ pub fn start(session: Rc<RefCell<Session>>, container: NodeRef, listeners: Liste
         session,
         alive: Rc::new(Cell::new(true)),
         on_status: listeners.on_status,
-        on_select: listeners.on_select,
+        on_focus: listeners.on_focus,
         on_redraw: listeners.on_redraw,
         on_signed_out: listeners.on_signed_out,
     };
@@ -169,9 +177,9 @@ impl Running {
             return;
         };
 
-        let on_select = self.on_select.clone();
+        let on_focus = self.on_focus.clone();
         let basemap = Basemap::default();
-        let created = Map::create(&element, &basemap, move |uid| on_select.emit(uid));
+        let created = Map::create(&element, &basemap, move |pick| on_focus.emit(pick.into()));
 
         match created.await {
             // The page went away while the libraries were loading.
@@ -270,7 +278,7 @@ impl Running {
             self.apply(swept);
 
             let mut session = self.session.borrow_mut();
-            let redraw = session.dirty || session.selected.is_some();
+            let redraw = session.dirty || session.focus != Focus::Nothing;
             session.dirty = false;
             drop(session);
 
@@ -291,14 +299,11 @@ impl Running {
         }
         session.dirty = true;
 
-        let deselect = session
-            .selected
-            .as_ref()
-            .is_some_and(|uid| changes.removes.contains(uid));
+        let refocus = session.focus.without(&changes.removes);
         drop(session);
 
-        if deselect {
-            self.on_select.emit(None);
+        if let Some(focus) = refocus {
+            self.on_focus.emit(focus);
         }
     }
 

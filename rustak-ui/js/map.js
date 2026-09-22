@@ -14,8 +14,10 @@
 
 const VENDOR = "/vendor";
 
-// Layers a click may land on, topmost first.
-const HIT_LAYERS = ["symbols", "dots", "labels", "shape-lines", "shape-fills"];
+// Layers a click may land on, topmost first. Labels are not among them: a
+// callsign is as wide as several markers, so a label that could be clicked
+// would take the clicks meant for whatever it happens to be drawn across.
+const HIT_LAYERS = ["symbols", "dots", "shape-lines", "shape-fills"];
 
 const LABEL_FONT = '600 12px system-ui, -apple-system, "Segoe UI", sans-serif';
 
@@ -172,17 +174,18 @@ function addLayers(map) {
 }
 
 class MapHandle {
-  constructor(maplibre, ms, map, onSelect) {
-    Object.assign(this, { maplibre, ms, map, onSelect });
+  constructor(maplibre, ms, map, onPick) {
+    Object.assign(this, { maplibre, ms, map, onPick });
     this.features = new Map();
     this.selected = null;
+    // Set while this file is itself moving or closing the pop-over. See `quietly`.
+    this.quiet = false;
     this.frame = null;
     this.content = Object.assign(document.createElement("div"), { className: "map-popover" });
     this.popup = new maplibre.Popup({ closeOnClick: false, maxWidth: "22rem", offset: 16 });
     this.popup.setDOMContent(this.content);
-    // Only the pop-over's own close button reaches here with something still
-    // selected; every other way of closing it clears `selected` first.
-    this.popup.on("close", () => this.selected !== null && this.onSelect(undefined));
+    // The pop-over's own close button, and nothing else: see `quietly`.
+    this.popup.on("close", () => this.quiet || this.pick([], [0, 0]));
 
     // Symbols and labels are drawn the first time a feature asks for one, and
     // the name says what to draw: there is no sprite sheet to keep in step with
@@ -194,16 +197,26 @@ class MapHandle {
       }
     });
 
-    map.on("click", (event) => this.onSelect(this.hit(event.point)));
+    map.on("click", (event) => this.pick(this.hits(event.point), event.lngLat.toArray()));
     map.on("mousemove", (event) => {
-      map.getCanvas().style.cursor = this.hit(event.point) ? "pointer" : "";
+      map.getCanvas().style.cursor = this.hits(event.point).length > 0 ? "pointer" : "";
     });
   }
 
-  // The uid under a point, with a few pixels' grace for a finger or a thin line.
-  hit({ x, y }) {
+  // Every uid under a point, topmost first, with a few pixels' grace for a
+  // finger or a thin line. A drawing is under the point once however many of
+  // its layers are: its anchor, its outline and its fill are one thing.
+  hits({ x, y }) {
     const box = [[x - 5, y - 5], [x + 5, y + 5]];
-    return this.map.queryRenderedFeatures(box, { layers: HIT_LAYERS })[0]?.properties.uid;
+    const found = this.map.queryRenderedFeatures(box, { layers: HIT_LAYERS });
+    return [...new Set(found.map((feature) => feature.properties.uid))];
+  }
+
+  // Says what was clicked, and where. None is a click on the bare map; one is
+  // a selection; several is a question only the person clicking can answer,
+  // and Rust asks it with `choose`.
+  pick(uids, at) {
+    this.onPick(JSON.stringify({ uids, at }));
   }
 
   // `upserts` is a JSON array of `{ uid, anchor, shape }`, the last two being
@@ -242,23 +255,52 @@ class MapHandle {
     return this.content;
   }
 
+  // Moves or closes the pop-over without it counting as the reader closing
+  // it. MapLibre fires `close` from `remove()`, and `addTo()` on a pop-over
+  // that is already open removes it first — so re-anchoring an open pop-over
+  // looks, from the event alone, exactly like somebody pressing its ×. Without
+  // this, going from one feature to another, or from the chooser to what was
+  // chosen, would report a dismissal and close what had just been opened.
+  quietly(change) {
+    this.quiet = true;
+    try {
+      change();
+    } finally {
+      this.quiet = false;
+    }
+  }
+
   select(uid) {
     const feature = this.features.get(uid);
     this.selected = feature ? uid : null;
     this.map.setFilter("selected", ["==", ["get", "uid"], this.selected ?? ""]);
 
     if (feature) {
-      this.popup.setLngLat(feature.anchor.geometry.coordinates).addTo(this.map);
-
-      // Once the map has stopped moving and the pop-over has been laid out.
-      const settled = () => requestAnimationFrame(() => this.reveal());
-      if (this.map.isMoving()) {
-        this.map.once("moveend", settled);
-      } else {
-        settled();
-      }
+      this.quietly(() => this.popup.setLngLat(feature.anchor.geometry.coordinates).addTo(this.map));
+      this.settle();
     } else {
-      this.popup.remove();
+      this.quietly(() => this.popup.remove());
+    }
+  }
+
+  // Opens the pop-over on a place rather than on a feature, for the chooser.
+  // It stays where the click was: the things under it may be moving, and a
+  // list that followed one of them would be choosing on the reader's behalf.
+  choose(lon, lat) {
+    this.selected = null;
+    this.map.setFilter("selected", ["==", ["get", "uid"], ""]);
+    this.quietly(() => this.popup.setLngLat([lon, lat]).addTo(this.map));
+    this.settle();
+  }
+
+  // Reveals the pop-over once the map has stopped moving and it has been laid
+  // out.
+  settle() {
+    const settled = () => requestAnimationFrame(() => this.reveal());
+    if (this.map.isMoving()) {
+      this.map.once("moveend", settled);
+    } else {
+      settled();
     }
   }
 
@@ -266,7 +308,7 @@ class MapHandle {
   // of the point with the most room, which near an edge is still not enough.
   reveal() {
     const box = this.popup.getElement()?.getBoundingClientRect();
-    if (!box || this.selected === null) {
+    if (!box || !this.popup.isOpen()) {
       return;
     }
 
@@ -301,15 +343,16 @@ class MapHandle {
 
   destroy() {
     cancelAnimationFrame(this.frame);
-    this.popup.remove();
+    this.quietly(() => this.popup.remove());
     this.map.remove();
   }
 }
 
 // `options` is JSON: `{ tiles: [url], attribution, maxZoom, center: [lon, lat], zoom }`.
-// `onSelect` is called with a uid when something is clicked and with
-// `undefined` when nothing was, or the pop-over was closed.
-export async function createMap(container, options, onSelect) {
+// `onPick` is called with JSON, `{ uids: [uid], at: [lon, lat] }`, for every
+// click on the map: the uids of everything under it, topmost first. It is also
+// called with no uids when the pop-over is closed.
+export async function createMap(container, options, onPick) {
   const { maplibre, ms } = await load();
   const { tiles, attribution, maxZoom, center, zoom } = JSON.parse(options);
 
@@ -339,5 +382,5 @@ export async function createMap(container, options, onSelect) {
   }
   addLayers(map);
 
-  return new MapHandle(maplibre, ms, map, onSelect);
+  return new MapHandle(maplibre, ms, map, onPick);
 }

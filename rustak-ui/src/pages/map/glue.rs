@@ -8,6 +8,8 @@
 use wasm_bindgen::prelude::*;
 use web_sys::{Element, HtmlElement};
 
+use super::focus::Pick;
+
 #[wasm_bindgen(module = "/js/map.js")]
 extern "C" {
     type MapHandle;
@@ -16,7 +18,7 @@ extern "C" {
     async fn create_map(
         container: &HtmlElement,
         options: &str,
-        on_select: &Closure<dyn Fn(Option<String>)>,
+        on_pick: &Closure<dyn Fn(String)>,
     ) -> Result<JsValue, JsValue>;
 
     #[wasm_bindgen(method)]
@@ -24,6 +26,9 @@ extern "C" {
 
     #[wasm_bindgen(method)]
     fn select(this: &MapHandle, uid: Option<String>);
+
+    #[wasm_bindgen(method)]
+    fn choose(this: &MapHandle, lon: f64, lat: f64);
 
     #[wasm_bindgen(method, js_name = popoverElement)]
     fn popover_element(this: &MapHandle) -> Element;
@@ -74,7 +79,7 @@ pub struct Map {
     handle: MapHandle,
 
     /// Held because the JavaScript calls it for as long as the map exists.
-    _on_select: Closure<dyn Fn(Option<String>)>,
+    _on_pick: Closure<dyn Fn(String)>,
 }
 
 impl Map {
@@ -88,12 +93,19 @@ impl Map {
     pub async fn create(
         container: &HtmlElement,
         basemap: &Basemap,
-        on_select: impl Fn(Option<String>) + 'static,
+        on_pick: impl Fn(Pick) + 'static,
     ) -> Result<Self, String> {
-        let on_select = Closure::<dyn Fn(Option<String>)>::new(on_select);
+        // A click the glue described in a way this build cannot read is a
+        // click on nothing, which closes the pop-over rather than guessing.
+        let on_pick = Closure::<dyn Fn(String)>::new(move |described: String| {
+            on_pick(serde_json::from_str(&described).unwrap_or(Pick {
+                uids: Vec::new(),
+                at: [0.0, 0.0],
+            }));
+        });
         let options = serde_json::to_string(basemap).map_err(|err| err.to_string())?;
 
-        let handle = create_map(container, &options, &on_select)
+        let handle = create_map(container, &options, &on_pick)
             .await
             .map_err(|err| {
                 js_sys::Reflect::get(&err, &JsValue::from_str("message"))
@@ -104,7 +116,7 @@ impl Map {
 
         Ok(Self {
             handle: handle.unchecked_into(),
-            _on_select: on_select,
+            _on_pick: on_pick,
         })
     }
 
@@ -124,6 +136,11 @@ impl Map {
     /// Opens the pop-over on a uid, or closes it.
     pub fn select(&self, uid: Option<&str>) {
         self.handle.select(uid.map(str::to_owned));
+    }
+
+    /// Opens the pop-over on a place, `[lon, lat]`, for the chooser.
+    pub fn choose(&self, at: [f64; 2]) {
+        self.handle.choose(at[0], at[1]);
     }
 
     /// The element the pop-over's content is portalled into.
