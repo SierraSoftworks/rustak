@@ -62,20 +62,38 @@ pub fn draw(feature: &MapFeature, now: DateTime<Utc>) -> Value {
     })
 }
 
-/// The image a symbol is drawn with: `sidc:<code>`, and `:<direction>` when it
-/// is going somewhere. [`None`] for anything drawn as a dot.
+/// The image a symbol is drawn with: `sidc:<code>[:<direction>[:<fallback>]]`.
+/// [`None`] for anything drawn as a dot.
+///
+/// The code is the one the sender asked for in `<__milicon>` or `<__milsym>`
+/// when it wrote one, in whichever edition of MIL-STD-2525 it wrote it, and the
+/// letter code its CoT type implies when it did not. A sender's code is
+/// followed by the type's as a fallback, for a code the drawing library has no
+/// picture for; a direction of 0 is "none", which is what lets a fallback
+/// follow a track that is standing still.
 fn icon(feature: &MapFeature) -> Option<String> {
     if feature.team.is_some() {
         return None;
     }
 
-    let code = sidc::from_cot_type(&feature.kind)?;
+    let implied = sidc::from_cot_type(&feature.kind);
     let moving = feature.speed.is_some_and(|speed| speed > MOVING);
+    let direction = feature.course.filter(|_| moving).map(direction);
 
-    Some(match feature.course.filter(|_| moving) {
-        Some(course) => format!("sidc:{code}:{}", direction(course)),
-        None => format!("sidc:{code}"),
-    })
+    let asked = feature.sidc.as_deref();
+    let code = asked.or(implied.as_deref())?;
+
+    // Only a sender's code needs the type's behind it; the type's own is
+    // already the last word.
+    Some(
+        match (implied.as_deref().filter(|_| asked.is_some()), direction) {
+            (Some(implied), direction) => {
+                format!("sidc:{code}:{}:{implied}", direction.unwrap_or(0))
+            }
+            (None, Some(direction)) => format!("sidc:{code}:{direction}"),
+            (None, None) => format!("sidc:{code}"),
+        },
+    )
 }
 
 /// A course as the arrow that is drawn for it: a multiple of the step in
@@ -156,6 +174,7 @@ mod tests {
             battery: None,
             remarks: None,
             software: None,
+            sidc: None,
             groups: Vec::new(),
         }
     }
@@ -185,6 +204,34 @@ mod tests {
             teammate["anchor"]["properties"]["color"],
             team_color("cyan")
         );
+    }
+
+    #[test]
+    fn a_code_the_sender_asked_for_is_drawn_with_the_types_own_behind_it() {
+        const ASKED: &str = "10060100001102000000";
+        let asked = |kind: &str, course, speed| {
+            icon(&MapFeature {
+                sidc: Some(ASKED.to_string()),
+                course,
+                speed,
+                ..feature(kind)
+            })
+        };
+
+        assert_eq!(
+            asked("a-h-A-M-H", None, None).as_deref(),
+            Some("sidc:10060100001102000000:0:SHAPMH---------")
+        );
+        assert_eq!(
+            asked("a-h-A-M-H", Some(92.0), Some(60.0)).as_deref(),
+            Some("sidc:10060100001102000000:90:SHAPMH---------")
+        );
+        // A type that implies no symbol of its own still draws the one asked for.
+        assert_eq!(
+            asked("b-m-p-s-m", None, None).as_deref(),
+            Some("sidc:10060100001102000000")
+        );
+        assert_eq!(icon(&feature("b-m-p-s-m")), None);
     }
 
     #[test]

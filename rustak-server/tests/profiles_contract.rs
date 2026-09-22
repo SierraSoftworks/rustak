@@ -208,6 +208,44 @@ async fn a_connection_fetch_with_nothing_to_send_is_a_204_with_an_empty_body() {
 }
 
 #[actix_web::test]
+async fn what_an_account_chose_for_itself_reaches_its_own_devices_and_nobody_elses() {
+    let server = TestServer::start().await;
+    let (_, ada) = server.signed_in("ada", false).await;
+    let (_, grace) = server.signed_in("grace", false).await;
+    let app = test::init_service(App::new().configure(server.app())).await;
+
+    let chosen = test::call_service(
+        &app,
+        test::TestRequest::patch()
+            .uri("/api/v1/me/preferences")
+            .insert_header(("authorization", bearer(&ada)))
+            .set_json(serde_json::json!({ "symbology": "2525d" }))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(chosen.status(), StatusCode::OK);
+
+    let connection = |session: &_| {
+        test::TestRequest::get()
+            .uri("/Marti/api/device/profile/connection?clientUid=ANDROID-1&syncSecago=-1")
+            .insert_header(("authorization", bearer(session)))
+            .to_request()
+    };
+
+    let hers = test::call_service(&app, connection(&ada)).await;
+    assert_eq!(hers.status(), StatusCode::OK);
+
+    let body = test::read_body(hers).await.to_vec();
+    let prefs = String::from_utf8(entry(&body, "file0/rustak-account.pref")).unwrap();
+    assert!(prefs.contains(r#"key="symbologyProvider""#), "{prefs}");
+    assert!(prefs.contains(">2525D<"), "{prefs}");
+
+    // Somebody who has chosen nothing is sent nothing, not this console's default.
+    let theirs = test::call_service(&app, connection(&grace)).await;
+    assert_eq!(theirs.status(), StatusCode::NO_CONTENT);
+}
+
+#[actix_web::test]
 async fn a_connection_fetch_with_a_profile_returns_it_as_a_package() {
     let server = TestServer::start().await;
     seeded(&server, everywhere("Channels"), "prefs_enable_channels").await;

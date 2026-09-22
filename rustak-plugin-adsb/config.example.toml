@@ -139,6 +139,14 @@ shutdown_grace = "10s"
 # putting an assertion on the map that nothing in the data supports.
 affiliation = "unknown"
 
+# Which MIL-STD-2525 symbol code each track carries beside its CoT type: "none",
+# "2525c" or "2525d". Default: "none" — the type alone, which every client can
+# draw. A device draws a bare type from its 2525C tables whatever edition it is
+# set to, so a fleet on 2525D sets "2525d" to have these tracks drawn in the
+# edition its own markers are. The code travels in <__milicon id> (and, for
+# 2525C, <__milsym id> as well), which is what ATAK 5 writes itself.
+symbology = "none"
+
 
 # Where this feed is looking. The source subscribes with it and the publisher
 # re-checks it, so an aggregator that rounds a radius upwards does not fill a

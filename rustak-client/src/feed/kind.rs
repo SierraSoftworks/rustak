@@ -137,7 +137,7 @@ impl TrackKind {
     }
 
     /// The part of the type below the affiliation: the 2525 path itself.
-    const fn branch(self) -> &'static str {
+    pub(super) const fn branch(self) -> &'static str {
         match self {
             // Sea surface (`S`), civil (`X`) unless the hull is a combatant.
             Self::Vessel(VesselClass::Merchant) => "S-X-M",

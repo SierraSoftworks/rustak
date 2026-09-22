@@ -112,3 +112,19 @@ test("a click that lands on several things asks which one was meant", async ({ p
   await expect(page.getByRole("article", { name: "Details for CASEVAC ROUTE" })).toBeVisible();
   await expect(chooser).toHaveCount(0);
 });
+
+test("a symbol code the sender wrote is drawn, whichever edition it is in", async ({ page }) => {
+  // The demo helicopter says which symbol it means in a 2525D number code, the
+  // way a device set to 2525D does; everything else leaves it to its CoT type.
+  // MapLibre says so when an image it asked for never arrived.
+  const warnings: string[] = [];
+  page.on("console", (message) => {
+    if (message.text().includes("could not be loaded")) warnings.push(message.text());
+  });
+
+  await gotoApp(page, MAP);
+
+  await expect(page.getByRole("application")).toHaveAttribute("data-features", /^[1-9]\d*$/);
+  await page.waitForTimeout(1500);
+  expect(warnings).toEqual([]);
+});

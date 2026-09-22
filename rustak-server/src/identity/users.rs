@@ -402,6 +402,7 @@ pub async fn me(db: &Database, row: &UserRow, principal: &Principal) -> Result<M
         source: row.source,
         identity_provider: row.oidc_issuer.clone(),
         groups: members::grants_for_user(db, row.id).await?,
+        preferences: db.user_preferences().get(row.id).await?,
     })
 }
 

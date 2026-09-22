@@ -234,6 +234,13 @@ flag, so nothing from it is ever flipped. `affiliation` changes the `u` to
 `f`/`n`/`h`/`p`; it defaults to `unknown`, because open ADS-B says nothing about
 whose side an airframe is on.
 
+`[settings] symbology` adds the exact MIL-STD-2525 symbol code beside the type:
+`"2525c"` writes the letter code into `<__milicon id>` and `<__milsym id>`,
+`"2525d"` writes the number code into `<__milicon id>`, and `"none"` (the
+default) writes neither. ATAK draws a bare type from its 2525C tables whatever
+edition the device is set to, so `"2525d"` is how these tracks are drawn in
+2525D on a fleet that uses it.
+
 The rest of the event:
 
 | CoT | From |

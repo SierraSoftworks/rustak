@@ -24,6 +24,7 @@ pub mod revoked_jtis;
 pub mod services;
 pub mod settings;
 pub mod stream_segments;
+pub mod user_preferences;
 pub mod user_state;
 pub mod users;
 
@@ -49,6 +50,7 @@ pub use revoked_jtis::RevokedJtisRepo;
 pub use services::{NewService, ServiceRow, ServicesRepo};
 pub use settings::{SettingRow, SettingsRepo};
 pub use stream_segments::{NewStreamSegment, StreamSegmentRow, StreamSegmentsRepo};
+pub use user_preferences::UserPreferencesRepo;
 pub use user_state::{AccountChannel, UserStateRepo};
 pub use users::profile::ProfileChange;
 pub use users::{NewUser, OidcProfile, UserRow, UsersRepo};
@@ -167,6 +169,11 @@ impl Database {
     /// The index over the append-only stream segments.
     pub fn stream_segments(&self) -> StreamSegmentsRepo<'_> {
         StreamSegmentsRepo::new(self)
+    }
+
+    /// What each account has chosen about how the console looks to it.
+    pub fn user_preferences(&self) -> UserPreferencesRepo<'_> {
+        UserPreferencesRepo::new(self)
     }
 
     /// Which channels an account — rather than one of its devices — has
