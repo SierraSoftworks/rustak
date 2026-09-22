@@ -69,9 +69,15 @@ pub enum Source {
 
         /// How often to ask. Default: the provider's own — `"10s"` for
         /// `adsb_lol` and `airplanes_live`, `"5s"` for `adsb_fi` — and never
-        /// faster than two seconds whatever this says. A provider that answers
-        /// `429` with a `Retry-After` twice inside ten polls raises it for the
-        /// rest of the process.
+        /// faster than two seconds whatever this says.
+        ///
+        /// A **floor, not a pin**: the source starts here and never asks
+        /// faster, but a provider that rate-limits is asked less often for as
+        /// long as it does. A `429` with a `Retry-After` twice inside ten polls
+        /// raises the interval to what it asked for, for the rest of the
+        /// process; two that name no delay raise it by half as much again (to
+        /// two minutes at most), and sixty clean polls in a row earn one step
+        /// back towards this value.
         #[serde(default, with = "duration::humane_option")]
         poll: Option<chrono::Duration>,
     },

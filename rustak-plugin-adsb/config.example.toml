@@ -232,12 +232,27 @@ max_tracks = 5000
 # plugin so that they can tell us to stop, and repeated 403s stop the source
 # with a log line.
 #
-# adsb.lol's 10s is a measurement rather than a published figure: at "5s" it
-# answered 429 with Retry-After: 10 on about every other request. A provider
-# that asks for more room twice inside ten polls gets it — the interval becomes
-# what it asked for, for the rest of the process, said once at `info` and never
-# lowered again until a restart. The heartbeat carries the cadence actually in
-# use as source.poll_effective_s, beside source.rate_limited.
+# It is a FLOOR, NOT A PIN. The source starts at this interval and never asks
+# faster, but what the provider does can raise the interval actually in use:
+#
+#   - a 429 that says how long to wait (Retry-After, in whole or decimal seconds
+#     or as an HTTP date) is waited out, and two of them inside ten polls make
+#     that delay the interval until a restart;
+#   - a 429 that names no delay — all adsb.lol has ever been seen to send — is
+#     waited out on twice the interval, and two inside ten polls raise the
+#     interval by half as much again (10s, 15s, 23s, 35s ... 120s at most).
+#     Sixty polls in a row that nobody refused earn one step back down, towards
+#     and never below the value written here.
+#
+# Each change is one line at `info`, and the start-up line says the interval may
+# be raised. The heartbeat carries the cadence in use as source.poll_effective_s
+# beside this one as source.poll_configured_s, and a count of 429s as
+# source.rate_limited. Slowing down for a provider is reported `healthy`; being
+# refused on more than half of the last twenty polls is `degraded`.
+#
+# adsb.lol's 10s is a starting point rather than a published figure: at "5s" it
+# refused about every other request and at "10s" about one in five, without a
+# Retry-After either time, so the source finds the rate it tolerates for itself.
 # poll = "10s"
 
 
@@ -258,7 +273,8 @@ max_tracks = 5000
 #
 # How often to ask. Default: "10s" anonymously and "5s" with a credential, which
 # are OpenSky's own two resolutions — asking faster returns the same numbers and
-# spends the budget twice as fast.
+# spends the budget twice as fast. A floor rather than a pin, exactly as for an
+# aggregator above: a 429 can raise the interval in use, never lower it.
 # poll = "10s"
 
 
