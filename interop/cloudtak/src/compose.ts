@@ -22,6 +22,9 @@ import {
   SUITE_ROOT,
 } from "./settings.js";
 
+/** The compose service CloudTAK itself runs as, for a log read by name. */
+export const CLOUDTAK_SERVICE = "cloudtak";
+
 /** The container runtime, so a runner on podman can say so. */
 export const DOCKER = process.env.RUSTAK_INTEROP_DOCKER ?? "docker";
 
@@ -147,4 +150,52 @@ export function keepLogs(name = "compose.log"): string | undefined {
   fs.writeFileSync(file, `${logs.output}\n`, "utf8");
 
   return file;
+}
+
+/**
+ * The lines CloudTAK writes when rustak hands it XML its parser will not read.
+ *
+ * This is the whole symptom of the 2026-09-22 outage, and it appeared *only*
+ * here: rustak had answered `200`, so nothing in rustak's own log said
+ * anything. CloudTAK parses every CoT it receives with sax, which is strict,
+ * and the flow tag rustak stamps on each relay is an attribute named after the
+ * installation's display name — `SierraSoftworks TAK`, with a space in it. sax
+ * read `TAK-Server-SierraSoftworks TAK="…"` as an attribute with no value,
+ * threw, and CloudTAK dropped the message off its socket. Three days of feed
+ * tracks, EUD positions and chat went nowhere.
+ *
+ * Substrings rather than expressions, because what is being matched is the
+ * text of somebody else's error messages: a regular expression tuned to the
+ * exact wording of one CloudTAK release stops matching at the next one, and a
+ * guard that silently stops matching is worse than none.
+ */
+export const PARSE_FAILURES: readonly string[] = [
+  // CloudTAK's own wrapper around a failed `sax` parse of an inbound message.
+  "Failed to parse CoT XML",
+  // sax itself, which is the line that actually appeared in production.
+  "Attribute without value",
+  // The neighbouring sax refusals a badly derived name could produce instead:
+  // a name that starts with a digit or punctuation, or an unquoted value.
+  "Invalid attribute name",
+  "Unquoted attribute value",
+  "Invalid character in tag name",
+];
+
+/** One service's log, without compose's `service | ` prefix. */
+export function serviceLog(service: string, timeoutMs = 120_000): string {
+  return compose(["logs", "--no-color", "--no-log-prefix", service], timeoutMs).output;
+}
+
+/**
+ * The lines of `log` that say a parser refused something we sent.
+ *
+ * Case-insensitive: the wording is somebody else's and its capitalisation is
+ * not something this suite should depend on.
+ */
+export function parseFailures(log: string): string[] {
+  const needles = PARSE_FAILURES.map((needle) => needle.toLowerCase());
+
+  return log
+    .split("\n")
+    .filter((line) => needles.some((needle) => line.toLowerCase().includes(needle)));
 }

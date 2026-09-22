@@ -25,6 +25,7 @@ import { fileURLToPath } from "node:url";
 import { bootstrap } from "../../shared/src/bootstrap.js";
 import { httpsClient } from "../../shared/src/http.js";
 import { hasBinary, startServer, waitForPort, waitForServer } from "../../shared/src/launch.js";
+import { hostileServerName } from "../../shared/src/names.js";
 import { probeSurfaces } from "../../shared/src/probe.js";
 
 import { dockerAvailable, IMAGE, pullImage, requireDocker } from "./docker.js";
@@ -40,7 +41,7 @@ const suiteRoot = path.resolve(here, "..");
 async function probe(): Promise<Record<SurfaceName, boolean>> {
   const server = await startServer({
     prefix: "rustak-interop-eud-probe-",
-    name: "rustak-interop-eud-probe",
+    name: hostileServerName("eud-probe"),
     host: "localhost",
   });
 
@@ -54,7 +55,7 @@ async function probe(): Promise<Record<SurfaceName, boolean>> {
     const admin = await bootstrap(server, client, {
       adminUsername: "interop-admin",
       displayName: "EUD interop probe",
-      serverName: "rustak-interop-eud-probe",
+      serverName: hostileServerName("eud-probe"),
       domains: [server.host],
       baseUrl: server.webtak,
     });

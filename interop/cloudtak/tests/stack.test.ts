@@ -16,8 +16,10 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { renderConfig } from "../../shared/src/config.js";
+import { HOSTILE_SERVER_NAME } from "../../shared/src/names.js";
+import { CLOUDTAK_SERVICE, parseFailures } from "../src/compose.js";
 import { serverAltNames } from "../src/pki.js";
-import { configuration } from "../src/rustak.js";
+import { SERVER_NAME, WIZARD, configuration } from "../src/rustak.js";
 import { CLOUDTAK_TAG, CONTAINER_TLS, PORTS, SUITE_ROOT } from "../src/settings.js";
 
 const compose = fs.readFileSync(path.join(SUITE_ROOT, "docker-compose.yml"), "utf8");
@@ -120,4 +122,53 @@ test("the server certificate names both the service and the loopback", () => {
   assert.match(names, /DNS:rustak/);
   assert.match(names, /DNS:localhost/);
   assert.match(names, /IP:127\.0\.0\.1/);
+});
+
+test("the compose file defines the service whose log the run reads", () => {
+  // `cloudtak-parse-log` reads this service by name at the end of every run;
+  // a renamed service would turn that assertion into an empty string, which
+  // would pass while proving nothing.
+  assert.match(compose, new RegExp(`^  ${CLOUDTAK_SERVICE}:$`, "m"));
+});
+
+test("the installation is called something a careless derivation breaks on", () => {
+  const tables = configuration();
+
+  // The 2026-09-22 outage in one assertion: `[server] name` is free text, it
+  // ends up as an XML attribute *name* on every relayed message, and a suite
+  // that runs under `rustak-interop-cloudtak` proves nothing about either.
+  assert.equal(tables.server.name, SERVER_NAME);
+  assert.equal(WIZARD.serverName, SERVER_NAME, "the wizard must record the name the file sets");
+  assert.ok(SERVER_NAME.startsWith(HOSTILE_SERVER_NAME.slice(0, "Rustak Test & Co.".length)));
+
+  for (const character of [" ", "&", "(", ")", "."]) {
+    assert.ok(SERVER_NAME.includes(character), `the name should carry a '${character}'`);
+  }
+
+  assert.match(SERVER_NAME, /[^\u0000-\u007f]/, "the name should carry a non-ASCII letter");
+});
+
+test("a name full of punctuation still renders as one TOML string", () => {
+  const rendered = renderConfig(configuration());
+  const line = rendered.split("\n").find((entry) => entry.startsWith("name = "));
+
+  assert.ok(line, `no [server] name was rendered:\n${rendered}`);
+  assert.equal(line, `name = ${JSON.stringify(SERVER_NAME)}`);
+  // TOML basic strings are JSON strings for every character this name has, so
+  // the value has to survive a JSON round trip unchanged.
+  assert.equal(JSON.parse(line.slice("name = ".length)), SERVER_NAME);
+});
+
+test("the parse-failure guard matches what production actually logged", () => {
+  const log = [
+    "2026-09-22T09:14:02.118Z ok: mission sync",
+    "2026-09-22T09:14:02.119Z Error: Attribute without value",
+    "2026-09-22T09:14:02.120Z Failed to parse CoT XML",
+    "2026-09-22T09:14:03.001Z ok: 42 markers",
+  ].join("\n");
+
+  assert.deepEqual(parseFailures(log).length, 2);
+  assert.equal(parseFailures("nothing whatsoever went wrong").length, 0);
+  // Case is somebody else's to change, so the guard must not depend on it.
+  assert.equal(parseFailures("failed to parse cot xml").length, 1);
 });

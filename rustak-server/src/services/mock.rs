@@ -24,6 +24,12 @@ impl AppContext {
     /// Nothing here touches the filesystem: the content store and the signing
     /// keys are left uninstalled, and a test that needs one installs it.
     ///
+    /// The installation is called
+    /// [`TEST_SERVER_NAME`](crate::config::TEST_SERVER_NAME) before `f` runs,
+    /// so every test carries a display name that is illegal or special in most
+    /// of the grammars the name reaches. A test about the *default* name says
+    /// so by setting it back.
+    ///
     /// # Errors
     ///
     /// A [`Kind::System`](human_errors::Kind::System) error if the in-memory
@@ -33,6 +39,7 @@ impl AppContext {
         let db = Database::open_in_memory().await?;
 
         let mut config = Config::default();
+        config.server.name = crate::config::TEST_SERVER_NAME.to_string();
         f(&mut config);
 
         // Built here rather than through `rustak_core::telemetry::testing_session`,

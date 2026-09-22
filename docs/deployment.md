@@ -37,7 +37,15 @@ fully wired and tested today.
 The sections below follow `config.example.toml` top to bottom; see that file
 for the full comment on every key.
 
-- **`[server]`** — `name` (shown on `/Marti/api/version` and the admin UI),
+- **`[server]`** — `name` (a free-text **display** name, shown at the top of
+  the admin UI and on `/api/v1/settings`; it is safe to contain spaces,
+  punctuation and non-ASCII letters — `SierraSoftworks TAK & Co.` is a
+  perfectly good value. It is not a host name, it is never parsed, and
+  anywhere it reaches something with a grammar a safe form is derived from it:
+  the `<_flow-tags_>` attribute stamped on every relayed message replaces
+  every character an XML name may not carry with `-`, and the connection
+  strings in a mission archive are built from `[marti] public_host` or the
+  canonical `domains` entry rather than from this),
   `domains` (the canonical first entry becomes the enrollment-QR host, the
   internal server certificate's subject, and the default token issuer —
   changing it invalidates what already-enrolled devices hold), `base_url`

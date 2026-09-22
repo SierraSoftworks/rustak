@@ -174,6 +174,23 @@ impl std::fmt::Debug for MissionTokens {
     }
 }
 
+/// The `iss` a mission token carries when `[auth] issuer` names none.
+///
+/// `iss` is a **StringOrURI** (RFC 7519 §2): an arbitrary string is allowed,
+/// but one containing a `:` must be a URI. `[server] name` is free text an
+/// operator types, and `SierraSoftworks: TAK` is not an unreasonable thing to
+/// type — so the one character that would turn this from a legal plain string
+/// into an illegal pseudo-URI is replaced. Everything else, spaces and
+/// ampersands and non-ASCII letters included, is a perfectly ordinary JSON
+/// string and is carried verbatim.
+///
+/// Nothing verifies this claim: it is here so that somebody reading a token can
+/// tell which installation minted it, and two names that differ only by a colon
+/// producing the same issuer costs nothing.
+fn default_issuer(server_name: &str) -> String {
+    format!("rustak/{}", server_name.replace(':', "-"))
+}
+
 impl MissionTokens {
     /// Reads the signing secret back, generating and sealing one the first time.
     ///
@@ -187,7 +204,7 @@ impl MissionTokens {
             .auth
             .issuer
             .clone()
-            .unwrap_or_else(|| format!("rustak/{}", services.config().server.name));
+            .unwrap_or_else(|| default_issuer(&services.config().server.name));
 
         Ok(Self {
             secret: Zeroizing::new(load_secret(services).await?),
@@ -399,6 +416,26 @@ mod tests {
 
     fn tokens() -> MissionTokens {
         MissionTokens::with_secret(vec![7; SECRET_BYTES], "rustak/test")
+    }
+
+    #[test]
+    fn the_default_issuer_stays_a_plain_string_whatever_the_installation_is_called() {
+        // A display name is free text, and `iss` is a StringOrURI: a colon in
+        // it would make the claim a URI that is not one. Everything else about
+        // a display name is a legal JSON string and is kept.
+        assert_eq!(
+            default_issuer(crate::config::TEST_SERVER_NAME),
+            "rustak/Rustak Test & Co. (näme)",
+        );
+        assert_eq!(default_issuer("rustak"), "rustak/rustak");
+        assert_eq!(
+            default_issuer("SierraSoftworks: TAK"),
+            "rustak/SierraSoftworks- TAK",
+        );
+        assert!(
+            !default_issuer("https://tak.example.com").contains("://"),
+            "a name that looked like a URL must not become one this server did not mean",
+        );
     }
 
     #[test]

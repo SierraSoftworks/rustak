@@ -21,7 +21,7 @@
 import { bootstrap as walk, createUser, mintCredential } from "../../shared/src/bootstrap.js";
 import { fetchClient } from "../../shared/src/http.js";
 
-import type { ServerInfo } from "./rustak.js";
+import { SERVER_NAME, type ServerInfo } from "./rustak.js";
 import type { Credentials } from "./session.js";
 
 /** The account the wizard creates. */
@@ -43,7 +43,7 @@ export async function bootstrap(server: ServerInfo): Promise<Bootstrapped> {
   const admin = await walk(server, client, {
     adminUsername: ADMIN_USERNAME,
     displayName: "node-tak interop suite",
-    serverName: "rustak-interop-node-tak",
+    serverName: SERVER_NAME,
     domains: ["localhost"],
     baseUrl: server.webtak,
   });

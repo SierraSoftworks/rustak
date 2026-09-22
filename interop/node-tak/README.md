@@ -32,6 +32,7 @@ interop/node-tak/
     groups.test.ts    channels: Group.list() / Group.update()
     contacts.test.ts  Contacts.list() and clientEndPoints
     stream.test.ts    ssl:// connect, ping → t-x-c-t-r
+    relay.test.ts     one client's message reaching another, flow tag and all
     missions.test.ts  Data Sync CRUD and subscriptions
     files.test.ts     /files/api/config and Enterprise Sync
 ```
