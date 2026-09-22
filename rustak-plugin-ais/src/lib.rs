@@ -47,7 +47,9 @@ use std::time::Duration;
 
 use chrono::Utc;
 use rustak_api::Heartbeat;
-use rustak_client::feed::{Affiliation, Area, Feed, FeedCounters, FeedPublisher, PublishPolicy};
+use rustak_client::feed::{
+    Affiliation, Area, Feed, FeedCounters, FeedPublisher, PublishPolicy, Symbology,
+};
 use rustak_client::sidecar::{ServiceSettings, Sidecar, SidecarContext, SidecarEvent, async_trait};
 use rustak_core::config::duration;
 use rustak_core::prelude::*;
@@ -103,6 +105,15 @@ pub struct Settings {
     #[serde(default)]
     pub affiliation: Affiliation,
 
+    /// Which MIL-STD-2525 symbol code each track carries beside its CoT type:
+    /// `none`, `2525c` or `2525d`. Default: `none`, the type alone.
+    ///
+    /// A device draws a bare type from the 2525C tables whatever edition it is
+    /// set to, so a fleet on 2525D sets this to have these tracks drawn in the
+    /// edition its own markers are.
+    #[serde(default)]
+    pub symbology: Symbology,
+
     /// The upstream. Required, because choosing one is the whole deployment
     /// decision.
     pub source: Source,
@@ -119,6 +130,7 @@ impl Default for Settings {
             publish: default_publish(),
             under_way_stale: default_under_way_stale(),
             affiliation: Affiliation::default(),
+            symbology: Symbology::default(),
             source: Source::Replay {
                 path: "tracks.ndjson".into(),
             },
@@ -217,7 +229,11 @@ impl AisSidecar {
         })?);
         self.connection = Some(state);
         self.publisher =
-            Some(FeedPublisher::new(settings.publish, settings.affiliation).with_area(area));
+            Some(
+                FeedPublisher::new(settings.publish, settings.affiliation)
+                    .with_symbology(settings.symbology)
+                    .with_area(area),
+            );
         self.area = area;
         self.area_from = from;
 
@@ -309,6 +325,7 @@ impl Sidecar for AisSidecar {
             ?area,
             area_from = self.area_from,
             affiliation = ?settings.affiliation,
+            symbology = ?settings.symbology,
             "The AIS sidecar is watching.",
         );
 
@@ -448,6 +465,7 @@ mod tests {
 
         assert_eq!(config.service.name.as_str(), "ais");
         assert_eq!(config.settings.affiliation, Affiliation::Unknown);
+        assert_eq!(config.settings.symbology, Symbology::TypeOnly);
         assert!(matches!(config.settings.source, Source::Replay { .. }));
         assert!(config.settings.area.contains(51.95, 4.13));
         assert_eq!(config.settings.publish.stale(), Duration::from_secs(600));

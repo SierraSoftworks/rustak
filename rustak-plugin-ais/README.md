@@ -122,6 +122,13 @@ published — a ship is a thing on the map, not a chat peer.
 The affiliation letter is `[settings] affiliation`, defaulting to `unknown`:
 open AIS says nothing about whose side a hull is on.
 
+`[settings] symbology` adds the exact MIL-STD-2525 symbol code beside the type:
+`"2525c"` writes the letter code into `<__milicon id>` and `<__milsym id>`,
+`"2525d"` writes the number code into `<__milicon id>`, and `"none"` (the
+default) writes neither. ATAK draws a bare type from its 2525C tables whatever
+edition the device is set to, so `"2525d"` is how these tracks are drawn in
+2525D on a fleet that uses it.
+
 | Field | From |
 |---|---|
 | `<contact callsign>` | The vessel's name, or `MMSI <n>` until the static report arrives |
