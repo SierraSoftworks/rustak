@@ -876,9 +876,14 @@ and who rustak decided that made the process:
 
 ```text
 INFO Identity: this sidecar is 'ais', from the workload identity from NOMAD_TOKEN_rustak
+INFO Identity: authenticating to the control API as 'svc.ais' with the workload identity from NOMAD_TOKEN_rustak
 ```
 
-It is one line, at `info`, on every start. Grep for `Identity:`.
+The first says what the sidecar *is*; the second, written once when the first
+access token comes back, says what it authenticates to `[server] control` **as**
+— the `sub` of the token rustak issued, which is the account the
+`[auth.workload]` binding resolved to. Both are at `info`, on every start. Grep
+for `Identity:`.
 
 ## Logging and telemetry
 
@@ -897,11 +902,48 @@ which reads these environment variables:
 
 What gets logged at `info`: start-up and shutdown, listener binds, CoT stream
 connections opening and closing, enrolment and credential events, and the
-handler-level events some HTTP routes emit (rendered inside their request
-span, so they carry the route and the caller). Nothing is logged per CoT
-message relayed, and there is no per-request access log: every HTTP request
-becomes a span, which reaches an OTLP collector when one is configured and is
-otherwise not printed. Set `LOG_LEVEL=warn` for a quiet stdout.
+handful of handler-level events that record a decision somebody made (rendered
+inside their request span, so they carry the route and the caller). Nothing is
+logged per CoT message relayed, and there is no per-request access log: every
+HTTP request becomes a span, which reaches an OTLP collector when one is
+configured and is otherwise not printed.
+
+**A request that succeeded is not a log line.** `2xx` and `3xx` print nothing,
+`4xx` is `debug`, `5xx` is `warn`; the audit log (`GET /api/v1/audit`) is a
+separate, unaffected record, and the refusals whose *reason* an operator needs
+— a workload identity that named no account, an access-control expression that
+said no — are still logged where that decision is made. The practical shape of
+this: **an idle server with a couple of sidecars attached prints nothing at
+all.** Each sidecar holds one server-event feed open and posts one heartbeat a
+tick, all of them successful, so a quiet log can be read as a quiet server.
+`LOG_LEVEL=debug` is the way to watch individual requests.
+
+### A reverse proxy in front of `[web.public]`
+
+`GET /api/v1/events` is a `text/event-stream` held open for hours, and it is how
+every sidecar hears about anything. A proxy in front of the public listener has
+to leave it alone:
+
+- **Do not buffer it.** rustak sends `X-Accel-Buffering: no` and
+  `Cache-Control: no-cache, no-store, must-revalidate`; nginx honours the first
+  (or set `proxy_buffering off;` for the route), Apache needs
+  `SetEnv proxy-sendchunked` with `mod_proxy_http`, and Traefik and Caddy pass
+  streams through by default.
+- **Do not idle it out under ~70 seconds.** rustak writes an SSE keep-alive
+  comment (`: keep-alive`) into an idle feed **every 20 seconds**, and sidecars
+  treat three missed keep-alives — 65 seconds of complete silence — as a dead
+  feed and reconnect. A proxy read timeout below that turns a healthy feed into
+  a reconnect loop; `proxy_read_timeout 300s;` or the equivalent is ample.
+- **Do not put a total request timeout on it.** A deadline on the whole
+  exchange cuts the body, however much traffic is flowing. This is the failure
+  the sidecar end of it had: the feed was read through a client carrying a 30
+  second total timeout, so every feed was cut at 30 seconds and reopened, which
+  looked exactly like an unstable link and was not one.
+
+A sidecar that reconnects to the feed often says so: a run of clean closes
+inside five minutes produces one counted `warn` naming how many. An otherwise
+healthy deployment should see that line only if something in the middle is
+cutting the connection.
 
 ## Stopping cleanly
 

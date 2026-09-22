@@ -27,18 +27,36 @@
 //! is never ready, and publishing into it is a logged no-op. That keeps one
 //! loop in [`run`](super::run) rather than two.
 
+use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
-use futures::{SinkExt, Stream};
+use chrono::{DateTime, Utc};
+use futures::{SinkExt, Stream, StreamExt};
 use rustak_core::prelude::*;
 use rustak_cot::Event;
 
+use super::link_health::{REMIND_EVERY, humanised};
 use super::{SidecarContext, SidecarEvent};
 use crate::stream::{Endpoint, Mode, Reconnecting, StreamConfig, TlsIdentity};
 
 /// What is reported when a connection ends without the wrapper saying why.
 const UNEXPLAINED: &str = "the connection ended";
+
+/// How long [`Link::settle`] waits for the very first connection.
+///
+/// The first tick of a feed plugin happens the instant the sidecar starts, and
+/// the first connection takes a handshake — tens of milliseconds in the
+/// deployment this was found in. Without this wait the first batch was
+/// published into a connection that was still being made and thrown away, with
+/// a `warn` on every clean start that called a first connection a
+/// reconnection.
+///
+/// Bounded, because a server that is not there must not stop a sidecar
+/// starting: past this the ordinary path takes over, and the next tick
+/// republishes.
+pub(crate) const FIRST_CONNECT: Duration = Duration::from_secs(10);
 
 /// The sidecar's connection to the CoT stream, and the bookkeeping that turns
 /// its state changes into [`SidecarEvent`]s.
@@ -59,6 +77,102 @@ pub(crate) struct Link {
     /// An event the connection produced while a transition was still owed to
     /// the plugin. Held rather than dropped, because it arrived first.
     held: Option<Box<Event>>,
+
+    /// What [`settle`](Self::settle) drained while it waited for the first
+    /// connection, handed out before anything newer.
+    queued: VecDeque<SidecarEvent>,
+
+    /// Whether a publish into a connection that is not up is worth saying
+    /// anything about, and at what level.
+    discards: Discards,
+}
+
+/// Whether the stream has ever been up, and what a discarded batch is worth
+/// saying.
+///
+/// The distinction is the point. Before the first connection there is nothing
+/// wrong: the handshake is in flight, the plugin has simply produced its first
+/// batch first, and "the CoT stream is reconnecting" is not true of a stream
+/// that has never connected. After the stream has been up and dropped, the
+/// discards are real and the first of them is worth a `warn` — once, with the
+/// count, in [`link_health`](super::link_health)'s style rather than one line
+/// per tick.
+#[derive(Debug, Default)]
+struct Discards {
+    /// Whether the connection has ever come up.
+    ever_connected: bool,
+
+    /// Whether this run of discards has been announced.
+    announced: bool,
+
+    /// Events thrown away since the run was last mentioned.
+    dropped: usize,
+
+    /// When the run was last mentioned.
+    mentioned_at: Option<DateTime<Utc>>,
+}
+
+/// What one discarded batch is worth saying.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Discarded {
+    /// The stream has never connected: there is nothing wrong yet.
+    Starting,
+
+    /// The stream was up and dropped, and this is the first batch lost to it.
+    First { count: usize },
+
+    /// Still down. Nothing new to say.
+    Quiet,
+
+    /// Still down, and it has been long enough to say how much has been lost.
+    Reminder { count: usize, failing_for: Duration },
+}
+
+impl Discards {
+    /// Records what the connection's state is, so a drop is a state change.
+    fn connected(&mut self, connected: bool, now: DateTime<Utc>) {
+        if connected {
+            self.ever_connected = true;
+            self.announced = false;
+            self.dropped = 0;
+            self.mentioned_at = None;
+        } else if self.ever_connected && self.mentioned_at.is_none() {
+            self.mentioned_at = Some(now);
+        }
+    }
+
+    /// Records a discarded batch and answers what to say about it.
+    fn discarded(&mut self, count: usize, now: DateTime<Utc>) -> Discarded {
+        if !self.ever_connected {
+            return Discarded::Starting;
+        }
+
+        self.dropped = self.dropped.saturating_add(count);
+
+        if !self.announced {
+            self.announced = true;
+            self.mentioned_at = Some(now);
+
+            return Discarded::First {
+                count: self.dropped,
+            };
+        }
+
+        let since = self.mentioned_at.unwrap_or(now);
+        let quiet_for = (now - since).to_std().unwrap_or_default();
+
+        if quiet_for < REMIND_EVERY {
+            return Discarded::Quiet;
+        }
+
+        let count = std::mem::take(&mut self.dropped);
+        self.mentioned_at = Some(now);
+
+        Discarded::Reminder {
+            count,
+            failing_for: quiet_for,
+        }
+    }
 }
 
 impl Link {
@@ -97,7 +211,54 @@ impl Link {
             connected: false,
             negotiated: false,
             held: None,
+            queued: VecDeque::new(),
+            discards: Discards::default(),
         }
+    }
+
+    /// Waits, bounded, for the connection to come up for the first time.
+    ///
+    /// Called once, before the first tick. A feed plugin's first batch is
+    /// produced the instant the sidecar starts and the first connection takes a
+    /// handshake, so without this the first batch is published into a socket
+    /// that is not there yet and thrown away — which is what every clean start
+    /// in the first live deployment did, with a `warn` to go with it.
+    ///
+    /// Whatever the connection produced while waiting is queued rather than
+    /// consumed: the plugin is still told it connected, and in the same order.
+    /// Answers whether the connection came up within `within`; `false` for a
+    /// sidecar with no `[server] stream`, which has nothing to wait for.
+    pub(crate) async fn settle(&mut self, within: Duration) -> bool {
+        if self.connection.is_none() {
+            return false;
+        }
+
+        let deadline = tokio::time::Instant::now() + within;
+        let mut drained = Vec::new();
+
+        let connected = loop {
+            if self.connected {
+                break true;
+            }
+
+            match tokio::time::timeout_at(deadline, self.next()).await {
+                Ok(Some(event)) => drained.push(event),
+                // The stream ended, or the wait ran out. Either way the
+                // ordinary path takes it from here.
+                Ok(None) | Err(_) => break self.connected,
+            }
+        };
+
+        self.queued.extend(drained);
+
+        if !connected {
+            tracing::debug!(
+                waited = %humanised(within),
+                "The CoT stream has not connected yet; the first batch may be published into a connection that is still being made.",
+            );
+        }
+
+        connected
     }
 
     /// The endpoint this link dials, for the start-up log line.
@@ -135,7 +296,7 @@ impl Link {
         };
 
         if !connection.is_connected() {
-            tracing::warn!(count, "Discarding events: the CoT stream is reconnecting.");
+            self.discard(count);
 
             return Ok(());
         }
@@ -150,6 +311,35 @@ impl Link {
         Ok(())
     }
 
+    /// Says as much about a batch that could not be published as its state
+    /// calls for.
+    ///
+    /// A stream that has never connected is not "reconnecting" and is not a
+    /// fault: the handshake is in flight and the plugin was simply first. A
+    /// stream that *was* up and dropped is worth one `warn`, and then one every
+    /// five minutes carrying the count, rather than one per tick.
+    fn discard(&mut self, count: usize) {
+        match self.discards.discarded(count, Utc::now()) {
+            Discarded::Starting => tracing::debug!(
+                count,
+                "Discarding events: the CoT stream has not finished connecting yet.",
+            ),
+            Discarded::First { count } => tracing::warn!(
+                count,
+                "Discarding events: the CoT stream is reconnecting. Further discards are logged at debug until it is back.",
+            ),
+            Discarded::Quiet => tracing::debug!(
+                count,
+                "Discarding events: the CoT stream is still reconnecting.",
+            ),
+            Discarded::Reminder { count, failing_for } => tracing::warn!(
+                count,
+                "The CoT stream has been reconnecting for {}; {count} events have been discarded since this was last reported.",
+                humanised(failing_for),
+            ),
+        }
+    }
+
     /// The one transition the connection's current state owes the plugin, if
     /// there is one. Called after every poll, and drained one per poll.
     fn transition(&mut self) -> Option<SidecarEvent> {
@@ -159,6 +349,7 @@ impl Link {
         if connected != self.connected {
             self.connected = connected;
             self.negotiated = false;
+            self.discards.connected(connected, Utc::now());
 
             return Some(if connected {
                 SidecarEvent::Connected {
@@ -194,6 +385,12 @@ impl Stream for Link {
         let this = self.get_mut();
 
         loop {
+            // Whatever `settle` drained while it waited for the first
+            // connection, in the order the connection produced it.
+            if let Some(event) = this.queued.pop_front() {
+                return Poll::Ready(Some(event));
+            }
+
             // What the connection did comes before what it carried, so that a
             // plugin has been told it is connected before the first event of
             // that connection reaches it.
@@ -341,6 +538,95 @@ mod tests {
         link.publish(vec![Event::builder("a-f-G", "SERVICE-adsb").build()])
             .await
             .unwrap();
+    }
+
+    /// The clock the discard tests move by hand, so that nothing here waits.
+    fn at(seconds: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(1_789_646_400 + seconds, 0).expect("an instant")
+    }
+
+    #[test]
+    fn a_stream_that_has_never_connected_is_not_reconnecting() {
+        // The production finding: every clean start logged `WARN Discarding
+        // events: the CoT stream is reconnecting` because the first poll's
+        // batch was published ~40ms before the first connect completed. It was
+        // not reconnecting. It had never connected.
+        let mut discards = Discards::default();
+
+        assert_eq!(discards.discarded(17, at(0)), Discarded::Starting);
+        assert_eq!(discards.discarded(17, at(1)), Discarded::Starting);
+    }
+
+    #[test]
+    fn the_first_batch_lost_to_a_stream_that_dropped_is_the_one_that_is_announced() {
+        let mut discards = Discards::default();
+
+        discards.connected(true, at(0));
+        discards.connected(false, at(10));
+
+        assert_eq!(discards.discarded(4, at(11)), Discarded::First { count: 4 });
+        assert_eq!(discards.discarded(4, at(12)), Discarded::Quiet);
+        assert_eq!(discards.discarded(4, at(200)), Discarded::Quiet);
+    }
+
+    #[test]
+    fn a_stream_that_is_still_down_says_how_much_has_been_lost_every_five_minutes() {
+        let mut discards = Discards::default();
+
+        discards.connected(true, at(0));
+        discards.connected(false, at(1));
+        discards.discarded(10, at(2));
+
+        for second in [3, 100, 299] {
+            assert_eq!(discards.discarded(10, at(second)), Discarded::Quiet);
+        }
+
+        assert_eq!(
+            discards.discarded(10, at(302)),
+            Discarded::Reminder {
+                count: 50,
+                failing_for: Duration::from_secs(300),
+            },
+            "the reminder carries everything thrown away since the last one",
+        );
+    }
+
+    #[test]
+    fn a_stream_that_came_back_announces_the_next_outage_again() {
+        let mut discards = Discards::default();
+
+        discards.connected(true, at(0));
+        discards.connected(false, at(1));
+        discards.discarded(3, at(2));
+        discards.connected(true, at(5));
+        discards.connected(false, at(9));
+
+        assert_eq!(discards.discarded(3, at(10)), Discarded::First { count: 3 });
+    }
+
+    #[tokio::test]
+    async fn settling_a_link_with_no_stream_answers_at_once() {
+        // `--check`-shaped sidecars and every offline unit test: there is
+        // nothing to wait for, and waiting ten seconds for it would be ten
+        // seconds on every test that drives a streamless harness.
+        let mut link = Link::open(&context("[service]\nname = \"adsb\"\n")).unwrap();
+
+        let started = std::time::Instant::now();
+
+        assert!(!link.settle(FIRST_CONNECT).await);
+        assert!(started.elapsed() < std::time::Duration::from_millis(500));
+    }
+
+    #[tokio::test]
+    async fn settling_gives_up_on_a_server_that_is_not_there() {
+        // Bounded, because a sidecar whose server is down still has to start:
+        // past the wait the ordinary path takes over and the next tick
+        // republishes.
+        let context =
+            context("[service]\nname = \"adsb\"\n\n[server]\nstream = \"tcp://127.0.0.1:1\"\n");
+        let mut link = Link::open(&context).unwrap();
+
+        assert!(!link.settle(std::time::Duration::from_millis(200)).await);
     }
 
     #[tokio::test]

@@ -61,6 +61,7 @@
 pub mod config;
 mod control_link;
 pub(crate) mod enrolment;
+mod event_feed;
 mod link;
 mod link_health;
 pub mod run;
@@ -227,11 +228,18 @@ impl<S> SidecarContext<S> {
         };
 
         let control = match (&config.server.control, &public) {
-            (Some(base), Some(http)) => Some(Arc::new(ControlClient::with_http(
-                base,
-                http.clone(),
-                &identity,
-            )?)),
+            (Some(base), Some(http)) => Some(Arc::new(
+                ControlClient::with_http(base, http.clone(), &identity)?
+                    // A third client, and the reason for it is one setting: the
+                    // server-event feed is a body read for hours, and `public`
+                    // carries the thirty-second *total* timeout every ordinary
+                    // call wants. See `http::feed_client`.
+                    .with_feed_http(crate::http::feed_client(
+                        &identity,
+                        crate::http::Trust::Public,
+                        crate::http::FEED_IDLE_TIMEOUT,
+                    )?),
+            )),
             _ => None,
         };
 
@@ -248,11 +256,13 @@ impl<S> SidecarContext<S> {
             &config.server.control,
             &public,
         ) {
-            (None, Some(source), Some(base), Some(http)) => Some(Arc::new(AccessTokens::new(
-                source,
-                base.clone(),
-                http.clone(),
-            ))),
+            (None, Some(source), Some(base), Some(http)) => Some(Arc::new(
+                AccessTokens::new(source, base.clone(), http.clone())
+                    // So the identity line can name the account this sidecar is
+                    // authenticating *as*, even before a token comes back to
+                    // read a `sub` out of.
+                    .for_account(config.service.account()),
+            )),
             _ => None,
         };
 

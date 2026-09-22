@@ -32,6 +32,11 @@
 //! has a link that is never ready, and one with no `[server] control` has a feed
 //! that is never ready, so it is the same loop with branches that never fire.
 //!
+//! The first tick waits, briefly, for the CoT stream's first connection. A feed
+//! plugin produces its first batch the instant it starts and a connection takes
+//! a handshake, so without that wait every clean start threw its first batch
+//! away.
+//!
 //! # Registration and heartbeats
 //!
 //! A sidecar with `[server] control` registers itself before
@@ -70,6 +75,7 @@ use rustak_core::telemetry::{self, TelemetryOptions};
 use rustak_cot::Event;
 use tracing::Instrument;
 
+use super::link::FIRST_CONNECT;
 use super::{ControlLink, Link, Sidecar, SidecarConfig, SidecarContext, SidecarEvent, enrolment};
 
 /// The command line every sidecar shares.
@@ -319,6 +325,19 @@ async fn tick_until_shutdown<S: Sidecar>(
     control.register().await;
 
     sidecar.start(context).await?;
+
+    // Before the first tick, because the first tick is where a feed plugin's
+    // first batch comes from and a batch published into a connection that is
+    // still being made is a batch thrown away. Bounded, and racing the
+    // shutdown: a server that is not there must not stop a sidecar starting,
+    // and Ctrl-C must not have to wait ten seconds for one that is not.
+    tokio::select! {
+        biased;
+
+        () = shutdown.cancelled() => {}
+        _ = link.settle(FIRST_CONNECT) => {}
+    }
+
     tracing::info!(?interval, stream = ?link.endpoint(), "The sidecar has started.");
 
     let mut ticker = tokio::time::interval(interval);
@@ -572,6 +591,56 @@ mod tests {
 
         assert_eq!(sidecar.ticks, 1);
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn the_first_tick_publishes_into_a_connection_that_is_actually_up() {
+        // M9-11. The first tick used to happen the instant the sidecar started,
+        // before the CoT stream had finished its handshake, so a feed plugin's
+        // first batch was published into a connection that was not there and
+        // thrown away — `WARN Discarding events: the CoT stream is
+        // reconnecting`, on every clean start, about a stream that had never
+        // connected.
+        //
+        // The interval is an hour, so the tick at start-up is the *only* tick
+        // there will ever be: the batch either reaches the wire or it does not,
+        // and nothing republishes it.
+        use crate::stream::testing::Eud;
+        use std::time::Duration;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut peer = Eud::over(socket, "ANDROID-1", "BRAVO");
+
+            peer.expect_uid("SERVICE-example", Duration::from_secs(10))
+                .await
+        });
+
+        let context = context_for(3_600_000, 1_000, Some(format!("tcp://127.0.0.1:{port}")));
+        let shutdown = context.shutdown().clone();
+        let mut sidecar = Counter {
+            stop_after: usize::MAX,
+            publishes: vec![
+                Event::builder("a-f-G-U-C", "SERVICE-example")
+                    .point(48.85, 2.35)
+                    .build(),
+            ],
+            ..Counter::default()
+        };
+
+        let driving = tokio::spawn(async move { drive(&mut sidecar, context).await });
+
+        let published = server.await.unwrap();
+
+        shutdown.cancel();
+        driving.await.unwrap().expect("the sidecar stops cleanly");
+
+        let published = published.expect("the first tick's batch has to reach the wire");
+        assert_eq!(published.uid, "SERVICE-example");
+        assert_eq!(published.r#type, "a-f-G-U-C");
     }
 
     #[tokio::test]

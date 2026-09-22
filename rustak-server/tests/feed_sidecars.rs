@@ -194,6 +194,40 @@ async fn the_ais_sidecar_publishes_its_replayed_vessels_to_a_device_on_the_chann
 }
 
 #[actix_web::test]
+async fn the_first_batch_a_feed_produces_reaches_the_stream_on_a_clean_start() {
+    // M9-11. The harness used to take its first tick the instant it started,
+    // ~40ms before the CoT stream finished connecting, so a feed plugin's very
+    // first batch was published into a connection that was not up and thrown
+    // away — with `WARN Discarding events: the CoT stream is reconnecting` on
+    // every clean start, naming a first connection a reconnection.
+    //
+    // It was invisible because the next tick republishes. What makes it visible
+    // is the clock: the publisher's `min_interval` is five seconds and the
+    // sidecar ticks every second, so a track that was dropped on the first tick
+    // cannot arrive again for five. Anything that arrives inside that window
+    // was the first batch.
+    let directory = tempfile::tempdir().expect("a directory for the fixture");
+    let (_, settings) = replay_settings(&directory, &vessels());
+
+    let started = std::time::Instant::now();
+    let mut feed = RunningFeed::start::<AisSidecar>("ais", &settings).await;
+
+    feed.eud
+        .expect_uid("AIS-244660000", EXPECT)
+        .await
+        .expect("the first vessel arrives");
+
+    let elapsed = started.elapsed();
+
+    feed.stop().await;
+
+    assert!(
+        elapsed < Duration::from_secs(4),
+        "the first batch was discarded and republished {elapsed:?} later",
+    );
+}
+
+#[actix_web::test]
 async fn the_adsb_sidecar_publishes_its_replayed_aircraft_with_their_altitudes() {
     let directory = tempfile::tempdir().expect("a directory for the fixture");
     let (_, settings) = replay_settings(&directory, &aircraft());

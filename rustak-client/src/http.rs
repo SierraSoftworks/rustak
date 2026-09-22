@@ -63,6 +63,28 @@ use url::Url;
 /// heartbeat cannot pile up behind a wedged connection for a whole tick.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long a connection may take to establish, whatever the body does next.
+///
+/// A long-lived response has no total deadline, so this is the only thing
+/// standing between a sidecar and a black-holed SYN: a server that is not there
+/// must be found out about in seconds rather than never.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long the server-event feed may go without a single byte.
+///
+/// The feed is not a request: it is a body read for hours, and
+/// [`DEFAULT_TIMEOUT`] applied to it cut every stream at thirty seconds —
+/// 74 rustak log lines in two and a half minutes from two idle sidecars, and a
+/// reopening every 31 seconds that an operator had no way to read as anything
+/// but a fault.
+///
+/// Liveness comes from the server's own SSE keep-alive comment instead, which
+/// rustak writes into an idle feed every 20 seconds (`KEEPALIVE`, in the
+/// server's `web::api::events`). Three missed keep-alives and a little slack is
+/// a feed nothing is coming down, which is the point at which reopening it is
+/// better than waiting.
+pub const FEED_IDLE_TIMEOUT: Duration = Duration::from_secs(65);
+
 /// What a sidecar calls itself to the server it talks to.
 const USER_AGENT: &str = concat!("SierraSoftworks/rustak-client/", env!("CARGO_PKG_VERSION"));
 
@@ -160,9 +182,53 @@ pub fn client(
     trust: Trust,
     timeout: Duration,
 ) -> Result<reqwest::Client, Error> {
-    let mut builder = reqwest::Client::builder()
-        .user_agent(USER_AGENT)
-        .timeout(timeout);
+    build(
+        identity,
+        trust,
+        reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(timeout),
+    )
+}
+
+/// Builds the client a long-lived response body is read through.
+///
+/// The difference from [`client`] is the *absence* of a total timeout.
+/// `reqwest`'s `timeout` is a deadline on the whole exchange, body included, so
+/// a client that carries one cannot hold a `text/event-stream` open for longer
+/// than it — which is why the server-event feed was reopening every 31 seconds
+/// against a 30 second timeout it had inherited from ordinary calls.
+///
+/// What bounds it instead: [`CONNECT_TIMEOUT`] on getting the connection up,
+/// and `idle` — a *read* timeout, which `reqwest` resets on every byte that
+/// arrives — on the silence afterwards. `idle` is a parameter rather than a
+/// constant so a test can assert the behaviour in milliseconds instead of
+/// minutes; production passes [`FEED_IDLE_TIMEOUT`].
+///
+/// # Errors
+///
+/// The same as [`client`].
+pub fn feed_client(
+    identity: &ServiceIdentity,
+    trust: Trust,
+    idle: Duration,
+) -> Result<reqwest::Client, Error> {
+    build(
+        identity,
+        trust,
+        reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .read_timeout(idle),
+    )
+}
+
+/// The half of a client that is the identity rather than the timeouts.
+fn build(
+    identity: &ServiceIdentity,
+    trust: Trust,
+    builder: reqwest::ClientBuilder,
+) -> Result<reqwest::Client, Error> {
+    let mut builder = builder.user_agent(USER_AGENT);
 
     builder = match roots_for(identity, trust) {
         Roots::Platform => builder,
@@ -486,6 +552,43 @@ mod tests {
 
         assert!(client(&identity, Trust::Internal, DEFAULT_TIMEOUT).is_ok());
         assert!(client(&identity, Trust::Public, DEFAULT_TIMEOUT).is_ok());
+    }
+
+    #[test]
+    fn the_feed_client_is_built_from_the_same_identity_and_the_same_roots() {
+        // It differs from `client` in its timeouts and in nothing else: a feed
+        // that trusted a different set of roots, or presented a different
+        // certificate, would be a second security decision nobody made.
+        let directory = tempfile::tempdir().unwrap();
+        let both = identity()
+            .with_truststore(truststore(directory.path(), "internal.pem"))
+            .with_control_truststore(truststore(directory.path(), "public.pem"));
+
+        assert!(feed_client(&both, Trust::Public, FEED_IDLE_TIMEOUT).is_ok());
+        assert!(feed_client(&both, Trust::Internal, FEED_IDLE_TIMEOUT).is_ok());
+        assert!(feed_client(&identity(), Trust::Public, FEED_IDLE_TIMEOUT).is_ok());
+
+        let missing = identity().with_truststore("/nonexistent/truststore.pem");
+        let err = feed_client(&missing, Trust::Internal, FEED_IDLE_TIMEOUT).unwrap_err();
+
+        assert!(err.is(human_errors::Kind::User), "{err}");
+    }
+
+    #[test]
+    fn the_feeds_idle_timeout_leaves_room_for_missed_keepalives() {
+        // The server writes a keep-alive comment every 20s. An idle timeout at
+        // or below that would reopen a perfectly healthy feed on a slow link,
+        // which is the bug this was written to fix wearing another number.
+        let keepalive = Duration::from_secs(20);
+
+        assert!(
+            FEED_IDLE_TIMEOUT >= keepalive * 3,
+            "three missed keep-alives is the threshold, not one",
+        );
+        assert!(
+            FEED_IDLE_TIMEOUT < keepalive * 6,
+            "and a dead feed still has to be noticed in a couple of minutes",
+        );
     }
 
     #[test]
