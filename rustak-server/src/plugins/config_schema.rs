@@ -44,6 +44,29 @@ fn validator(schema: &serde_json::Value) -> Result<Validator, String> {
         .map_err(|err| err.masked().to_string())
 }
 
+/// Whether the schema's root could accept a JSON object, which is the only
+/// thing `PUT …/config` lets a configuration be.
+///
+/// Not a proof — a `oneOf` of scalars gets past it — but it refuses the root
+/// that names another type, pins a scalar `const`, or lists an `enum` with no
+/// object in it: schemas that would register and then refuse every save.
+fn admits_an_object(schema: &serde_json::Value) -> bool {
+    let named = match schema.get("type") {
+        Some(serde_json::Value::String(name)) => name == "object",
+        Some(serde_json::Value::Array(names)) => {
+            names.iter().any(|name| name.as_str() == Some("object"))
+        }
+        _ => true,
+    };
+    let pinned = schema.get("const").is_none_or(serde_json::Value::is_object);
+    let listed = schema
+        .get("enum")
+        .and_then(serde_json::Value::as_array)
+        .is_none_or(|values| values.iter().any(serde_json::Value::is_object));
+
+    named && pinned && listed
+}
+
 /// Whether `schema` is one a configuration could be held to.
 ///
 /// # Errors
@@ -52,6 +75,13 @@ fn validator(schema: &serde_json::Value) -> Result<Validator, String> {
 pub fn check(schema: &serde_json::Value) -> Result<(), String> {
     if !schema.is_object() {
         return Err("A configuration schema has to be a JSON Schema object.".to_string());
+    }
+
+    if !admits_an_object(schema) {
+        return Err(
+            "A service's configuration is a JSON object, and that schema could never accept one."
+                .to_string(),
+        );
     }
 
     let size = schema.to_string().len();
@@ -163,6 +193,14 @@ mod tests {
     fn a_schema_nobody_could_use_is_refused_when_it_arrives() {
         for (schema, why) in [
             (serde_json::json!([]), "not an object"),
+            (
+                serde_json::json!({ "type": "string" }),
+                "could never accept an object",
+            ),
+            (
+                serde_json::json!({ "enum": ["on", "off"] }),
+                "lists no object",
+            ),
             (
                 serde_json::json!({ "type": "no-such-type" }),
                 "not a schema",

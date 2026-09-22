@@ -86,11 +86,22 @@ impl SchemaNodeProps {
             .as_i64()
             .or_else(|| bound.as_f64().map(|bound| bound as i64))
     }
+
+    fn limit(&self, keyword: &str) -> Option<f64> {
+        schema::keyword(&self.root, &self.schema, keyword)?.as_f64()
+    }
 }
 
 #[function_component(SchemaNode)]
 pub fn schema_node(props: &SchemaNodeProps) -> Html {
-    match schema::kind(&props.root, &props.schema) {
+    // A schema may contain itself, and a required self-reference has no last
+    // level to stop at. Past this depth the rest is one JSON box.
+    let kind = match props.pointer.matches('/').count() > schema::MAX_DEPTH {
+        true => Kind::Unknown,
+        false => schema::kind(&props.root, &props.schema),
+    };
+
+    match kind {
         Kind::Object(fields) => groups::object(props, &fields),
         Kind::Variants(variants) => groups::variants(props, &variants),
         Kind::List(items) => groups::list(props, items),
@@ -146,6 +157,8 @@ fn input(props: &SchemaNodeProps, kind: &Kind<'_>) -> Html {
             <DecimalInput
                 {id}
                 value={value.and_then(Value::as_f64)}
+                min={props.limit("minimum")}
+                max={props.limit("maximum")}
                 onchange={props.onchange.reform(|number: Option<f64>| {
                     number.and_then(serde_json::Number::from_f64).map(Value::Number)
                 })}
@@ -153,6 +166,33 @@ fn input(props: &SchemaNodeProps, kind: &Kind<'_>) -> Html {
                 {invalid}
             />
         },
+        // Three answers, because "not set" is one of them: an absent key takes
+        // the plugin's own default, which `false` is not.
+        Kind::Boolean if !props.required => {
+            let options = vec![
+                SelectOption::new("true".to_string(), "Yes".to_string()),
+                SelectOption::new("false".to_string(), "No".to_string()),
+            ];
+            let chosen = value
+                .and_then(Value::as_bool)
+                .map(|on| AttrValue::from(on.to_string()));
+            let onchange = props
+                .onchange
+                .reform(|picked: Option<String>| picked?.parse::<bool>().ok().map(Value::Bool));
+
+            html! {
+                <Select
+                    {id}
+                    value={chosen}
+                    {options}
+                    {onchange}
+                    clearable=true
+                    placeholder="Not set"
+                    {disabled}
+                    {invalid}
+                />
+            }
+        }
         Kind::Boolean => html! {
             <Switch
                 {id}

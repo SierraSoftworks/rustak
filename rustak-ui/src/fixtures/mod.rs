@@ -28,6 +28,8 @@ mod packages;
 #[cfg(debug_assertions)]
 mod profiles;
 #[cfg(debug_assertions)]
+mod schema_check;
+#[cfg(debug_assertions)]
 mod services;
 #[cfg(debug_assertions)]
 mod store;

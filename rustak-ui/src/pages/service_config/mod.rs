@@ -173,22 +173,22 @@ pub fn service_config_panel(props: &ServiceConfigProps) -> Html {
             error.set(None);
             spawn_local(async move {
                 let outcome = async {
-                    if Some(&api::services::config(&name).await?) != loaded.as_ref() {
-                        return Err(api::ApiError::Server(
-                            "This service's configuration changed somewhere else while you were \
-                             editing it. Reload the page to see what it says now, then make your \
-                             change again."
-                                .to_string(),
-                        ));
-                    }
+                    // Asked twice. Before the check, so that nobody waits on a
+                    // validation that is already moot; and again after it,
+                    // because the running service may take ten seconds to
+                    // answer and somebody else may have saved by then.
+                    still_as_loaded(&name, loaded.as_ref()).await?;
 
                     let checked = api::services::validate_config(&name, &wanted).await?;
                     let written = match checked.valid {
-                        true => Some(api::services::set_config(&name, &wanted).await?),
+                        true => {
+                            still_as_loaded(&name, loaded.as_ref()).await?;
+                            Some(api::services::set_config(&name, &wanted).await?)
+                        }
                         false => None,
                     };
 
-                    Ok((checked, written))
+                    Ok::<_, api::ApiError>((checked, written))
                 };
 
                 match outcome.await {
@@ -325,4 +325,18 @@ pub fn service_config_panel(props: &ServiceConfigProps) -> Html {
             { editor }
         </Card>
     }
+}
+
+/// Refuses when the stored configuration is no longer the one this editor
+/// loaded, so that a save never silently undoes somebody else's.
+async fn still_as_loaded(name: &str, loaded: Option<&Value>) -> Result<(), api::ApiError> {
+    if Some(&api::services::config(name).await?) == loaded {
+        return Ok(());
+    }
+
+    Err(api::ApiError::Server(
+        "This service's configuration changed somewhere else while you were editing it. Reload \
+         the page to see what it says now, then make your change again."
+            .to_string(),
+    ))
 }

@@ -595,8 +595,9 @@ async fn validate_config(&mut self, config: &serde_json::Value) -> ConfigValidat
   is not there, two fields that contradict each other. The server has already
   applied the schema; an issue's path puts the message beside that input.
 - **It is a candidate.** It may never be saved, so do not apply it; it may hold
-  a secret, so do not log it. An administrator waits about ten seconds, on the
-  harness's own task, so bound anything that goes upstream.
+  a secret, so do not log it. Nothing else of the plugin's runs
+  meanwhile, so the harness stops waiting after eight seconds (reported as
+  `unreachable`): bound anything that goes upstream well inside that.
 - **Nothing to implement by default.** Every sidecar on the harness advertises
   the `config.validate` capability and accepts unless this hook says otherwise.
 

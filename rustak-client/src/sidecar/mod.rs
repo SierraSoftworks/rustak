@@ -611,9 +611,11 @@ pub trait Sidecar: Send + 'static {
     /// [`config_schema`](Sidecar::config_schema); start from [`parse_config`].
     ///
     /// `config` is a candidate — it may never be saved, so **do not apply it** —
-    /// and it may hold a secret, so **do not log it**. An administrator is
-    /// waiting on the answer for about ten seconds, and this runs on the
-    /// harness's own task: bound anything that goes to an upstream. When the
+    /// and it may hold a secret, so **do not log it**. Nothing else of
+    /// this plugin's runs while it does — no tick, no heartbeat — so the harness
+    /// stops waiting after eight seconds, which an administrator sees as a
+    /// service that could not be asked: bound anything that goes to an upstream
+    /// well inside that. When the
     /// plugin cannot tell — the upstream is down — accept: a refusal is a claim
     /// that the configuration is wrong, and an outage must not make a working
     /// one unsaveable.

@@ -397,8 +397,18 @@ async fn tick_until_shutdown<S: Sidecar>(
                     // A candidate nobody is waiting on any more — one replayed
                     // from the feed's ring, say — is not worth the plugin's time.
                     if let Some(candidate) = control.candidate(id).await {
-                        let verdict = sidecar.validate_config(&candidate.config).await;
-                        control.answer(id, &verdict).await;
+                        let hook = sidecar.validate_config(&candidate.config);
+
+                        match ask_within(VALIDATE_WITHIN, shutdown.cancelled(), hook).await {
+                            Asked::Answered(verdict) => control.answer(id, &verdict).await,
+                            // No answer, which the server reports as a service
+                            // that could not be asked: never as a refusal.
+                            Asked::OutOfTime => tracing::warn!(
+                                within = ?VALIDATE_WITHIN,
+                                "The plugin took too long over a configuration it was asked about; not answering.",
+                            ),
+                            Asked::Stopping => break,
+                        }
                     }
 
                     Vec::new()
@@ -419,6 +429,37 @@ async fn tick_until_shutdown<S: Sidecar>(
 
     tracing::info!("The sidecar is stopping.");
     with_grace("the sidecar", sidecar.stop(), grace).await?
+}
+
+/// How long a plugin's `validate_config` may take.
+///
+/// The hook holds `&mut` to the plugin, so nothing else of the plugin's runs
+/// beside it: no tick, no heartbeat, no other event. Inside the ten seconds the
+/// server waits, so that a slow hook costs an administrator an "it could not be
+/// asked" and the sidecar nothing more than this.
+const VALIDATE_WITHIN: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// What became of asking the plugin about a candidate configuration.
+enum Asked {
+    Answered(rustak_api::ConfigValidation),
+    OutOfTime,
+    Stopping,
+}
+
+/// Runs a validation hook for at most `within`, and never past a shutdown.
+async fn ask_within(
+    within: std::time::Duration,
+    stopping: impl Future<Output = ()>,
+    hook: impl Future<Output = rustak_api::ConfigValidation>,
+) -> Asked {
+    tokio::select! {
+        biased;
+
+        () = stopping => Asked::Stopping,
+        answer = tokio::time::timeout(within, hook) => {
+            answer.map_or(Asked::OutOfTime, Asked::Answered)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1140,5 +1181,27 @@ mod tests {
 
         assert_eq!(command.get_name(), "rustak-client-test");
         assert_eq!(command.get_version(), Some("0.0.0-test"));
+    }
+
+    #[tokio::test]
+    async fn a_validation_hook_is_bounded_and_never_delays_a_stop() {
+        use rustak_api::ConfigValidation;
+
+        let soon = std::time::Duration::from_millis(20);
+        let minute = std::time::Duration::from_secs(60);
+        let never = std::future::pending::<ConfigValidation>;
+        let running = std::future::pending::<()>;
+
+        let answered = ask_within(soon, running(), async { ConfigValidation::accepted() }).await;
+        assert!(matches!(answered, Asked::Answered(verdict) if verdict.is_valid()));
+
+        assert!(matches!(
+            ask_within(soon, running(), never()).await,
+            Asked::OutOfTime
+        ));
+        assert!(matches!(
+            ask_within(minute, std::future::ready(()), never()).await,
+            Asked::Stopping
+        ));
     }
 }

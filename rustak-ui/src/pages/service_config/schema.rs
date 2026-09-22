@@ -21,9 +21,10 @@
 
 use serde_json::{Map, Value};
 
-/// How many `$ref`s are followed before giving up, so that a schema that refers
-/// to itself is a plain field rather than a hung tab.
-const MAX_DEPTH: usize = 16;
+/// How deep anything here goes before giving up: `$ref`s followed from one
+/// node, levels of defaults built, and — in the form — levels drawn. A schema
+/// may contain itself, and one that *requires* itself has no last level.
+pub const MAX_DEPTH: usize = 16;
 
 /// What kind of input a schema node wants.
 #[derive(Debug, PartialEq)]
@@ -230,15 +231,23 @@ pub fn keyword<'a>(root: &'a Value, node: &'a Value, name: &str) -> Option<&'a V
 /// The value a newly added field starts with: the schema's own `default` where
 /// it has one, and otherwise the emptiest thing of the right shape.
 pub fn default_for(root: &Value, node: &Value) -> Value {
+    default_at(root, node, 0)
+}
+
+fn default_at(root: &Value, node: &Value, depth: usize) -> Value {
+    if depth > MAX_DEPTH {
+        return Value::Null;
+    }
+
     if let Some(given) = keyword(root, node, "default").or_else(|| keyword(root, node, "const")) {
         return given.clone();
     }
 
     match kind(root, node) {
-        Kind::Object(properties) => Value::Object(required_defaults(root, &properties)),
-        Kind::Variants(variants) => variants
-            .first()
-            .map_or(Value::Null, |first| default_for(root, first.schema)),
+        Kind::Object(properties) => Value::Object(required_defaults(root, &properties, depth + 1)),
+        Kind::Variants(variants) => variants.first().map_or(Value::Null, |first| {
+            default_at(root, first.schema, depth + 1)
+        }),
         Kind::Choice(values) => values.first().copied().cloned().unwrap_or(Value::Null),
         Kind::Text { .. } => Value::String(String::new()),
         Kind::Integer | Kind::Number => keyword(root, node, "minimum")
@@ -250,11 +259,20 @@ pub fn default_for(root: &Value, node: &Value) -> Value {
     }
 }
 
-fn required_defaults(root: &Value, properties: &[Property<'_>]) -> Map<String, Value> {
+fn required_defaults(
+    root: &Value,
+    properties: &[Property<'_>],
+    depth: usize,
+) -> Map<String, Value> {
     properties
         .iter()
         .filter(|property| property.required)
-        .map(|property| (property.key.to_string(), default_for(root, property.schema)))
+        .map(|property| {
+            (
+                property.key.to_string(),
+                default_at(root, property.schema, depth),
+            )
+        })
         .collect()
 }
 
@@ -421,5 +439,17 @@ mod tests {
 
         assert_eq!(kind(&root, &root), Kind::Unknown);
         assert_eq!(humanise("radius_km"), "Radius km");
+    }
+
+    #[test]
+    fn a_schema_that_requires_itself_still_has_a_default() {
+        let root = json!({
+            "type": "object",
+            "properties": { "child": { "$ref": "#" } },
+            "required": ["child"],
+        });
+
+        // Whatever it holds, it is finite: the point is that this returns.
+        assert!(default_for(&root, &root).is_object());
     }
 }

@@ -78,13 +78,14 @@ fn fields(props: &SchemaNodeProps, fields: &[Property<'_>]) -> Html {
         .collect()
 }
 
-pub fn object(props: &SchemaNodeProps, properties: &[Property<'_>]) -> Html {
-    // The document itself: no frame, because the card around it is the frame.
-    if props.pointer.is_empty() {
-        return fields(props, properties);
+/// The switch that says whether an optional group is there at all. Off removes
+/// the key, which is not the same as an empty object or an empty list: an
+/// absent key is what takes the plugin's own default.
+fn presence(props: &SchemaNodeProps) -> Html {
+    if props.required {
+        return Html::default();
     }
 
-    let present = props.value.is_some();
     let toggle = {
         let (root, node, onchange) = (
             props.root.clone(),
@@ -94,20 +95,29 @@ pub fn object(props: &SchemaNodeProps, properties: &[Property<'_>]) -> Html {
         Callback::from(move |on: bool| onchange.emit(on.then(|| schema::default_for(&root, &node))))
     };
 
+    html! {
+        <Switch
+            id={format!("{}-set", props.id())}
+            checked={props.value.is_some()}
+            label="Set"
+            onchange={toggle}
+            disabled={props.disabled}
+        />
+    }
+}
+
+pub fn object(props: &SchemaNodeProps, properties: &[Property<'_>]) -> Html {
+    // The document itself: no frame, because the card around it is the frame.
+    if props.pointer.is_empty() {
+        return fields(props, properties);
+    }
+
     group(
         props,
         html! {
             <>
-                if !props.required {
-                    <Switch
-                        id={format!("{}-set", props.id())}
-                        checked={present}
-                        label="Set"
-                        onchange={toggle}
-                        disabled={props.disabled}
-                    />
-                }
-                if present || props.required {
+                { presence(props) }
+                if props.value.is_some() || props.required {
                     { fields(props, properties) }
                 }
             </>
@@ -247,8 +257,13 @@ pub fn list(props: &SchemaNodeProps, item: &Value) -> Html {
         props,
         html! {
             <>
-                { for rows }
-                <Button small=true disabled={props.disabled} onclick={add}>{ "Add" }</Button>
+                { presence(props) }
+                if props.value.is_some() || props.required {
+                    <>
+                        { for rows }
+                        <Button small=true disabled={props.disabled} onclick={add}>{ "Add" }</Button>
+                    </>
+                }
             </>
         },
     )

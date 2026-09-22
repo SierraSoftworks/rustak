@@ -23,6 +23,15 @@ pub struct DecimalInputProps {
     pub value: Option<f64>,
     pub onchange: Callback<Option<f64>>,
 
+    /// The schema's `minimum` and `maximum`. A text input has no range of its
+    /// own, so they are shown as the placeholder and a value outside them is
+    /// marked before anybody saves.
+    #[prop_or_default]
+    pub min: Option<f64>,
+
+    #[prop_or_default]
+    pub max: Option<f64>,
+
     #[prop_or_default]
     pub disabled: bool,
 
@@ -70,12 +79,27 @@ pub fn decimal_input(props: &DecimalInputProps) -> Html {
         })
     };
 
+    let outside = props.value.is_some_and(|value| {
+        props.min.is_some_and(|min| value < min) || props.max.is_some_and(|max| value > max)
+    });
+    let range = match (props.min, props.max) {
+        (Some(min), Some(max)) => Some(format!("Between {min} and {max}")),
+        (Some(min), None) => Some(format!("At least {min}")),
+        (None, Some(max)) => Some(format!("At most {max}")),
+        (None, None) => None,
+    }
+    .map(AttrValue::from);
+    let invalid = props.invalid || outside;
+
     html! {
         <input
             id={props.id.clone()}
-            class={classes!("field__input", props.invalid.then_some("field__input--invalid"))}
+            class={classes!("field__input", invalid.then_some("field__input--invalid"))}
             type="text"
             inputmode="decimal"
+            aria-invalid={invalid.then_some("true")}
+            placeholder={range.clone()}
+            title={range}
             value={(*text).clone()}
             disabled={props.disabled}
             {oninput}
