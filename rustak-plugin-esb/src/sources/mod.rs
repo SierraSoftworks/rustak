@@ -19,7 +19,7 @@ use crate::outage::Outage;
 
 pub use powercheck::PowerCheckFeed;
 pub use replay::ReplayFeed;
-pub use state::{MAX_BACKOFF, SourceState};
+pub use state::{MAX_BACKOFF, MAX_RETRY_AFTER, SourceState};
 
 /// What this plugin calls itself upstream, so that ESB can tell who is asking.
 pub const USER_AGENT: &str = concat!(

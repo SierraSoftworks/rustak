@@ -15,8 +15,10 @@
 //! - details are fetched only for outages inside the [`Scope`], only when an
 //!   outage is new or [`DETAIL_REFRESH`] old, never once it is final, and a
 //!   batch stops at [`DETAIL_BUDGET`] so a slow upstream cannot hold a tick;
-//! - a `429` is waited out for as long as it asks, and [`DENIED_LIMIT`]
-//!   refusals in a row (`401`/`403` — a key ESB has rotated) stop the source.
+//! - a `429` to either request holds **both** back for as long as it asks, a
+//!   detail that fails or outlasts the budget holds the rest back for
+//!   [`DETAIL_COOLDOWN`], and [`DENIED_LIMIT`] refusals in a row (`401`/`403`
+//!   — a key ESB has rotated) stop the source.
 //!
 //! # An upstream that is down does not clear the map
 //!
@@ -58,6 +60,10 @@ pub const DETAIL_REFRESH: Duration = Duration::from_secs(1800);
 
 /// How long one tick's batch of detail requests may take.
 pub const DETAIL_BUDGET: Duration = Duration::from_secs(5);
+
+/// How long details are left alone after one fails, or is rate-limited
+/// without saying for how long.
+pub const DETAIL_COOLDOWN: Duration = Duration::from_secs(60);
 
 /// How long the last list that worked is kept while the upstream is failing.
 pub const HOLD: Duration = Duration::from_secs(7200);
@@ -202,7 +208,11 @@ impl PowerCheckFeed {
                 self.denied = 0;
                 self.state.succeeded();
             }
-            Fetched::Limited(asked) => self.state.wait_for(asked),
+            Fetched::Limited(asked) => {
+                // "Not so fast" is about the key, not about one endpoint.
+                let wait = self.state.wait_for(asked);
+                self.hold_details(Utc::now(), wait);
+            }
             Fetched::Denied(status) => self.refused(status),
             Fetched::Missing => {
                 return Err(human_errors::user(
@@ -268,11 +278,22 @@ impl PowerCheckFeed {
         let started = Instant::now();
 
         for id in self.wanting_detail(now) {
-            if now < self.details_after || self.stopped || started.elapsed() > DETAIL_BUDGET {
+            let remaining = DETAIL_BUDGET.saturating_sub(started.elapsed());
+
+            if now < self.details_after || self.stopped || remaining.is_zero() {
                 break;
             }
 
-            match self.get(format!("{}/outages/{id}/", self.base)).await {
+            // The budget bounds the request as well as the batch: one detail
+            // that hangs must not hold the tick for the client's own timeout.
+            let request = self.get(format!("{}/outages/{id}/", self.base));
+            let Ok(fetched) = tokio::time::timeout(remaining, request).await else {
+                debug!(id, "A PowerCheck detail outlasted this tick's budget.");
+                self.hold_details(now, DETAIL_COOLDOWN);
+                break;
+            };
+
+            match fetched {
                 Ok(Fetched::Body(body)) => match serde_json::from_str::<Detail>(&body) {
                     Ok(detail) => self.detailed(&id, now, Some(detail)),
                     Err(err) => {
@@ -283,23 +304,36 @@ impl PowerCheckFeed {
                 // Purged between the list and now; the next list drops it.
                 Ok(Fetched::Missing) => self.detailed(&id, now, None),
                 Ok(Fetched::Limited(asked)) => {
-                    let wait = asked.unwrap_or(POLL_FLOOR).min(super::MAX_BACKOFF);
-                    self.details_after = now + wait;
+                    let wait =
+                        asked.map_or(DETAIL_COOLDOWN, |stated| stated.min(super::MAX_RETRY_AFTER));
                     debug!(
                         seconds = wait.as_secs(),
                         "PowerCheck asked us to wait for details."
                     );
+                    self.hold_details(now, wait);
                 }
                 Ok(Fetched::Denied(status)) => self.refused(status),
                 Err(err) => {
+                    // Without this, the same outage is asked about every tick
+                    // for as long as the upstream is struggling.
                     debug!(id, "A PowerCheck detail did not arrive: {err}");
-                    break;
+                    self.hold_details(now, DETAIL_COOLDOWN);
                 }
             }
         }
     }
 
+    /// Leaves the detail endpoint alone for a while; the top of the batch
+    /// loop is what honours it.
+    fn hold_details(&mut self, now: DateTime<Utc>, wait: Duration) {
+        self.details_after = self.details_after.max(now + wait);
+    }
+
+    /// Records an answer about one outage, which is also the key being
+    /// accepted: refusals only count when they are consecutive.
     fn detailed(&mut self, id: &str, now: DateTime<Utc>, detail: Option<Detail>) {
+        self.denied = 0;
+
         if let Some(entry) = self.entries.get_mut(id) {
             entry.detailed_at = Some(now);
 

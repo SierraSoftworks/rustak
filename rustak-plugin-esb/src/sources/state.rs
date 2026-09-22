@@ -13,6 +13,11 @@ use rustak_core::prelude::*;
 /// The longest a source waits between attempts, however many have failed.
 pub const MAX_BACKOFF: Duration = Duration::from_secs(900);
 
+/// The longest a stated `Retry-After` is believed. An upstream is taken at its
+/// word well past [`MAX_BACKOFF`], but a header that says "next week" is a
+/// misconfiguration somewhere, and not a reason to go dark through a storm.
+pub const MAX_RETRY_AFTER: Duration = Duration::from_secs(3600);
+
 /// Doublings allowed before [`MAX_BACKOFF`] catches the backoff anyway.
 const MAX_DOUBLINGS: u32 = 6;
 
@@ -106,12 +111,22 @@ impl SourceState {
 
     /// Holds off because the upstream said "not so fast", which is an upstream
     /// that is working: the connection state is left alone.
-    pub fn wait_for(&mut self, asked: Option<Duration>) {
-        let delay = asked.unwrap_or(self.interval * 2).min(MAX_BACKOFF);
+    ///
+    /// A stated delay is honoured up to [`MAX_RETRY_AFTER`]; without one the
+    /// guess is twice the interval. Answers how long the wait is, so a source
+    /// can hold its other requests back for as long.
+    pub fn wait_for(&mut self, asked: Option<Duration>) -> Duration {
+        let delay = asked
+            .map_or((self.interval * 2).min(MAX_BACKOFF), |stated| {
+                stated.min(MAX_RETRY_AFTER)
+            })
+            .max(self.interval);
 
         info!(source = %self.name, seconds = delay.as_secs(), "{} asked us to wait.", self.name);
 
-        self.next_attempt = Utc::now() + delay.max(self.interval);
+        self.next_attempt = Utc::now() + delay;
+
+        delay
     }
 
     /// Whether the last attempt worked.
@@ -152,6 +167,13 @@ impl SourceState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stated_delay_is_believed_only_so_far() {
+        let week = Duration::from_secs(7 * 24 * 3600);
+
+        assert_eq!(state().wait_for(Some(week)), MAX_RETRY_AFTER);
+    }
 
     fn state() -> SourceState {
         SourceState::new("PowerCheck", Duration::from_secs(300))
@@ -195,8 +217,13 @@ mod tests {
         let mut state = state();
         state.succeeded();
 
-        state.wait_for(Some(Duration::from_secs(600)));
+        let wait = state.wait_for(Some(Duration::from_secs(600)));
 
+        assert_eq!(
+            wait,
+            Duration::from_secs(600),
+            "longer than any backoff of ours"
+        );
         assert!(state.is_connected());
         assert_eq!(state.last_error(), None);
         assert!(!state.ready());

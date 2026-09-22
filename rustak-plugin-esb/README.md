@@ -25,7 +25,9 @@ and it is busiest exactly when it matters most, so the plugin is a careful guest
   floor `1m`). Details cost one request per outage, so they are fetched
   `details_per_tick` at a time (default 10 per `10s` tick), refreshed every 30
   minutes, and never for an outage outside `[settings.area]` or one that is
-  restored and final. A `429` is waited out for as long as it asks.
+  restored and final. A `429` to either request holds both back for as long
+  as it asks, up to an hour, and a detail that fails holds the rest back for a
+  minute.
 - **Outages of the API.** A failed poll keeps the last known outages on the map
   for up to two hours rather than clearing it.
 

@@ -128,6 +128,88 @@ async fn a_detail_is_not_asked_for_again_on_the_next_tick() {
 }
 
 #[tokio::test]
+async fn a_rate_limited_list_holds_the_details_back_too() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/outages"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(LISTING))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    serve(
+        &server,
+        "/outages",
+        ResponseTemplate::new(429).insert_header("retry-after", "600"),
+    )
+    .await;
+    serve(
+        &server,
+        "/outages/2826455/",
+        ResponseTemplate::new(200).set_body_string(DETAIL),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path("/outages/2826460/"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let mut feed = PowerCheckFeed::open(
+        &server.uri(),
+        &Secret::new("test-key"),
+        Scope::default(),
+        DEFAULT_POLL,
+        1,
+    )
+    .expect("it opens");
+    let _ = feed
+        .poll()
+        .await
+        .expect("the list, and the one detail a tick allows");
+
+    feed.state.due_now();
+    let held = feed.poll().await.expect("a 429 is not an error");
+
+    assert_eq!(held.len(), 2, "and the second detail was not asked for");
+}
+
+#[tokio::test]
+async fn a_detail_that_fails_is_not_asked_for_again_on_the_next_tick() {
+    let server = MockServer::start().await;
+    serve(
+        &server,
+        "/outages",
+        ResponseTemplate::new(200).set_body_string(LISTING),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path("/outages/2826455/"))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/outages/2826460/"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let mut feed = feed(&server, Scope::default());
+
+    let first = feed
+        .poll()
+        .await
+        .expect("a failed detail is not a failed poll");
+    let second = feed.poll().await.expect("the next tick");
+
+    assert_eq!(
+        (first.len(), second.len()),
+        (2, 2),
+        "the markers stay, bare"
+    );
+}
+
+#[tokio::test]
 async fn an_upstream_that_stops_answering_does_not_clear_the_map() {
     let server = serving_the_fixtures().await;
     let mut feed = feed(&server, Scope::default());
