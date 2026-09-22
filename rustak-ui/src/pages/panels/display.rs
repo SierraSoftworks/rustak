@@ -6,24 +6,35 @@
 //! the sender wrote none. The choice matters on a *device*, which is where it
 //! is delivered: as `symbologyProvider`, with the account's device profile.
 //!
+//! # Drawn, not written
+//!
+//! The inputs are drawn from [`rustak_api::preferences::schema`] by the same
+//! [`SchemaNode`] that draws a service's configuration, so a preference added
+//! to that schema appears here without anybody writing an input for it — its
+//! title as the label, its description as the help, its `oneOf` as a picker.
+//!
 //! These are the account's own preferences rather than the installation's
 //! settings, so they sit on the account page, anybody may change theirs, and
-//! they follow the account to whichever browser it signs in from. The choice
-//! is saved the moment it is made — there is nothing here to get half right —
-//! and the session is re-resolved afterwards, because that is where every
-//! other page reads it from.
+//! they follow the account to whichever browser it signs in from. A choice is
+//! saved the moment it is made — there is nothing here to get half right — and
+//! only what changed is sent. The session is re-resolved afterwards, because
+//! that is where every other page reads it from.
 
-use rustak_api::{Symbology, UserPreferencesPatch};
+use std::rc::Rc;
+
+use rustak_api::UserPreferences;
+use serde_json::Value;
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
 use crate::api;
-use crate::components::{Alert, AlertKind, Card, Field, Select, SelectOption};
+use crate::components::{Alert, AlertKind, Card};
+use crate::pages::service_config::SchemaNode;
 
 #[derive(Properties, PartialEq)]
 pub struct DisplayPanelProps {
     /// What the account has chosen, as the session last reported it.
-    pub symbology: Symbology,
+    pub preferences: UserPreferences,
 
     /// Emitted once a change has been saved, so the session can be read again.
     pub on_changed: Callback<()>,
@@ -33,26 +44,26 @@ pub struct DisplayPanelProps {
 pub fn display_panel(props: &DisplayPanelProps) -> Html {
     let busy = use_state(|| false);
     let error = use_state(|| None::<String>);
+    let root = use_memo((), |()| rustak_api::preferences::schema());
 
     let onchange = {
         let (busy, error, on_changed) = (busy.clone(), error.clone(), props.on_changed.clone());
-        let current = props.symbology;
+        let current = props.preferences;
 
-        Callback::from(move |chosen: Option<String>| {
-            let Some(symbology) = chosen.as_deref().and_then(Symbology::parse) else {
+        Callback::from(move |edited: Option<Value>| {
+            // A form that reports something the type cannot hold has been
+            // cleared or half filled in, and there is nothing to save yet.
+            let Some(next) = edited.and_then(|value| serde_json::from_value(value).ok()) else {
                 return;
             };
-            if symbology == current {
+            let patch = current.changes_to(&next);
+            if patch.is_empty() {
                 return;
             }
 
             let (busy, error, on_changed) = (busy.clone(), error.clone(), on_changed.clone());
             busy.set(true);
             spawn_local(async move {
-                let patch = UserPreferencesPatch {
-                    symbology: Some(symbology),
-                };
-
                 match api::auth::set_preferences(&patch).await {
                     Ok(_) => {
                         error.set(None);
@@ -64,14 +75,6 @@ pub fn display_panel(props: &DisplayPanelProps) -> Html {
             });
         })
     };
-
-    let options: Vec<SelectOption> = Symbology::ALL
-        .into_iter()
-        .map(|edition| SelectOption {
-            value: edition.as_str().into(),
-            label: edition.label().into(),
-        })
-        .collect();
 
     html! {
         <Card
@@ -86,21 +89,18 @@ pub fn display_panel(props: &DisplayPanelProps) -> Html {
                 />
             }
 
-            <Field
-                id="pref-symbology"
-                label="Symbol edition"
-                help="Which edition of MIL-STD-2525 your devices author symbols in. It reaches \
-                    each device with its profile, the next time it connects. The map here draws \
-                    every symbol in the edition its sender wrote it in."
-            >
-                <Select
-                    id="pref-symbology"
-                    value={Some(AttrValue::from(props.symbology.as_str()))}
-                    {onchange}
-                    {options}
-                    disabled={*busy}
-                />
-            </Field>
+            <SchemaNode
+                root={root.clone()}
+                schema={(*root).clone()}
+                pointer=""
+                label=""
+                required=true
+                value={serde_json::to_value(props.preferences).ok()}
+                {onchange}
+                issues={Rc::new(Vec::new())}
+                disabled={*busy}
+                scope="pref"
+            />
         </Card>
     }
 }

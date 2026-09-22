@@ -72,6 +72,7 @@ fn fields(props: &SchemaNodeProps, fields: &[Property<'_>]) -> Html {
                     {onchange}
                     issues={props.issues.clone()}
                     disabled={props.disabled}
+                    scope={props.scope.clone()}
                 />
             }
         })
@@ -240,6 +241,7 @@ pub fn list(props: &SchemaNodeProps, item: &Value) -> Html {
                     {onchange}
                     issues={props.issues.clone()}
                     disabled={props.disabled}
+                    scope={props.scope.clone()}
                 />
                 <Button
                     kind={ButtonKind::Subtle}

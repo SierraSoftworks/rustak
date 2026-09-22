@@ -49,12 +49,17 @@ pub struct SchemaNodeProps {
 
     #[prop_or_default]
     pub disabled: bool,
+
+    /// What every input's id starts with, so that two forms drawn on one page
+    /// — or the same form drawn for two different documents — never share one.
+    #[prop_or(AttrValue::Static("service-config"))]
+    pub scope: AttrValue,
 }
 
 impl SchemaNodeProps {
-    /// `service-config-area-lat`, for `/area/lat`.
+    /// `service-config-area-lat`, for `/area/lat` in the default scope.
     pub fn id(&self) -> AttrValue {
-        format!("service-config{}", self.pointer.replace('/', "-")).into()
+        format!("{}{}", self.scope, self.pointer.replace('/', "-")).into()
     }
 
     /// The schema's `description`: a plugin's doc comment, as help text.
@@ -209,8 +214,8 @@ fn input(props: &SchemaNodeProps, kind: &Kind<'_>) -> Html {
                 .iter()
                 .enumerate()
                 .map(|(index, value)| {
-                    let label = value
-                        .as_str()
+                    let label = schema::choice_label(&props.root, &props.schema, value)
+                        .or_else(|| value.as_str())
                         .map_or_else(|| value.to_string(), str::to_string);
 
                     SelectOption::new(index.to_string(), label)

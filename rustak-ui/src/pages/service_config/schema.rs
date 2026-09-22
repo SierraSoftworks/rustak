@@ -222,6 +222,18 @@ pub fn kind<'a>(root: &'a Value, node: &'a Value) -> Kind<'a> {
     }
 }
 
+/// What to call one value of a [`Kind::Choice`]: the `title` beside its `const`
+/// when the schema offers one, which is how `"2525d"` is shown as
+/// "MIL-STD-2525D". [`None`] for a plain `enum`, whose values are their own
+/// names.
+pub fn choice_label<'a>(root: &'a Value, node: &'a Value, value: &Value) -> Option<&'a str> {
+    alternatives(unwrapped(root, node))?
+        .iter()
+        .find(|entry| entry.get("const") == Some(value))?
+        .get("title")?
+        .as_str()
+}
+
 /// A keyword of `node`, looked for on the node itself before what it refers
 /// to: a `description` beside a `$ref` is about this use of the type.
 pub fn keyword<'a>(root: &'a Value, node: &'a Value, name: &str) -> Option<&'a Value> {

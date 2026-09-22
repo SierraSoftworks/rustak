@@ -41,7 +41,7 @@ pub fn me() -> Html {
             </Card>
 
             <DisplayPanel
-                symbology={user.preferences.symbology}
+                preferences={user.preferences}
                 on_changed={auth.refresh.clone()}
             />
 

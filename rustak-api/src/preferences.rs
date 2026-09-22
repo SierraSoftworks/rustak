@@ -39,6 +39,51 @@ impl UserPreferencesPatch {
     }
 }
 
+impl UserPreferences {
+    /// What would have to be sent to turn these preferences into `next`: only
+    /// the fields that differ, which is what `PATCH /me/preferences` takes.
+    #[must_use]
+    pub fn changes_to(&self, next: &Self) -> UserPreferencesPatch {
+        UserPreferencesPatch {
+            symbology: Some(next.symbology).filter(|symbology| *symbology != self.symbology),
+        }
+    }
+}
+
+/// A JSON Schema for [`UserPreferences`], which is what the console draws the
+/// account's preferences from — with the same form it draws a service's
+/// configuration from.
+///
+/// Written out rather than derived, because this crate is compiled to wasm for
+/// the console and carries no schema library; this module's tests hold it to the type, so
+/// an edition added to [`Symbology`] and not offered here is a failing test
+/// rather than a choice nobody can make. Every property is required: a
+/// preference always has a value, even when it is only the default.
+#[must_use]
+pub fn schema() -> serde_json::Value {
+    let editions: Vec<serde_json::Value> = Symbology::ALL
+        .into_iter()
+        .map(|edition| serde_json::json!({ "const": edition.as_str(), "title": edition.label() }))
+        .collect();
+
+    serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Preferences",
+        "type": "object",
+        "required": ["symbology"],
+        "properties": {
+            "symbology": {
+                "title": "Symbol edition",
+                "description": "Which edition of MIL-STD-2525 your devices author symbols in. It \
+                    reaches each device with its profile, the next time it connects. The map here \
+                    draws every symbol in the edition its sender wrote it in.",
+                "default": Symbology::default().as_str(),
+                "oneOf": editions,
+            },
+        },
+    })
+}
+
 /// An edition of MIL-STD-2525, the US standard for military map symbols.
 ///
 /// CoT types were laid out on 2525B/C's hierarchy, which is why C is the
@@ -121,5 +166,48 @@ mod tests {
         let one: UserPreferencesPatch = serde_json::from_str(r#"{"symbology":"2525d"}"#).unwrap();
         assert_eq!(one.symbology, Some(Symbology::Milstd2525D));
         assert!(!one.is_empty());
+    }
+
+    #[test]
+    fn the_schema_describes_exactly_what_the_type_holds() {
+        let schema = schema();
+        let held = serde_json::to_value(UserPreferences::default()).unwrap();
+
+        // Every field the type serialises is a required property, and no more.
+        let mut described: Vec<&String> =
+            schema["properties"].as_object().unwrap().keys().collect();
+        let mut fields: Vec<&String> = held.as_object().unwrap().keys().collect();
+        described.sort();
+        fields.sort();
+        assert_eq!(described, fields);
+        assert_eq!(schema["required"].as_array().unwrap().len(), fields.len());
+
+        // Every edition is offered under the value it is stored as.
+        let offered: Vec<&str> = schema["properties"]["symbology"]["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| entry["const"].as_str())
+            .collect();
+        let known: Vec<&str> = Symbology::ALL.into_iter().map(Symbology::as_str).collect();
+        assert_eq!(offered, known);
+        assert_eq!(
+            schema["properties"]["symbology"]["default"],
+            held["symbology"]
+        );
+    }
+
+    #[test]
+    fn only_what_differs_is_a_change() {
+        let current = UserPreferences::default();
+        let next = UserPreferences {
+            symbology: Symbology::Milstd2525D,
+        };
+
+        assert!(current.changes_to(&current).is_empty());
+        assert_eq!(
+            current.changes_to(&next).symbology,
+            Some(Symbology::Milstd2525D)
+        );
     }
 }

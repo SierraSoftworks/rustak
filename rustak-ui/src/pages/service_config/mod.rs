@@ -45,7 +45,7 @@ use crate::api;
 use crate::components::{Alert, AlertKind, Button, ButtonKind, Card, Field, LoadingNote, TextArea};
 
 use super::load::use_resource;
-use form::SchemaNode;
+pub use form::SchemaNode;
 use json::{as_text, config_problem};
 
 /// What to say, after a save, about whether the service itself was asked.
