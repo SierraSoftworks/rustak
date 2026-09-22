@@ -50,6 +50,7 @@ pub mod package;
 pub mod passkey;
 pub mod profile;
 pub mod service;
+pub mod service_config;
 pub mod settings;
 pub mod setup;
 pub mod user;
@@ -76,8 +77,8 @@ pub use credential::{
 pub use device::Device;
 pub use error::ApiErrorBody;
 pub use event::{
-    ChannelEvent, ClientEvent, MissionEvent, PackageEvent, ServerEvent, ServerEventPayload,
-    ServiceEvent,
+    ChannelEvent, ClientEvent, ConfigValidationEvent, MissionEvent, PackageEvent, ServerEvent,
+    ServerEventPayload, ServiceEvent,
 };
 pub use group::{
     ActiveGroup, CreateGroupRequest, Group, GroupMember, GroupMembership, GroupPatch, GroupSource,
@@ -105,6 +106,10 @@ pub use profile::{
 pub use service::{
     Capability, CapabilityError, Heartbeat, ServiceDescriptor, ServiceEndpoints, ServiceState,
     ServiceStatus, ServiceSummary,
+};
+pub use service_config::{
+    CONFIG_VALIDATE, ConfigIssue, ConfigValidation, ConfigValidationReport,
+    ConfigValidationRequest, ServiceCheck,
 };
 pub use settings::{
     FileSettings, MartiSettings, ServerSettings, TlsCertificateState, TlsSource, TlsStatus,

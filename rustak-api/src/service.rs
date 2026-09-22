@@ -145,6 +145,15 @@ pub struct ServiceDescriptor {
 
     #[serde(default)]
     pub endpoints: ServiceEndpoints,
+
+    /// A JSON Schema for this service's configuration document.
+    ///
+    /// What the admin UI draws a form from, and what a written configuration
+    /// is held to. Absent for a service that never said, whose configuration
+    /// stays free-form JSON. Carried as plain JSON so that this crate — and the
+    /// wasm UI — need no schema library; see [`crate::service_config`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_schema: Option<serde_json::Value>,
 }
 
 impl ServiceDescriptor {
@@ -156,7 +165,15 @@ impl ServiceDescriptor {
             version: None,
             capabilities: Vec::new(),
             endpoints: ServiceEndpoints::default(),
+            config_schema: None,
         }
+    }
+
+    /// Whether this service answers configuration validation requests.
+    pub fn validates_config(&self) -> bool {
+        self.capabilities
+            .iter()
+            .any(|capability| capability.as_str() == crate::service_config::CONFIG_VALIDATE)
     }
 
     /// What to call this service in the UI.
@@ -314,6 +331,10 @@ mod tests {
                 marti: Some("https://rustak:8443".into()),
                 control: Some("https://rustak:8446".into()),
             },
+            config_schema: Some(serde_json::json!({
+                "type": "object",
+                "properties": { "interval_seconds": { "type": "integer", "minimum": 1 } },
+            })),
         }
     }
 
@@ -328,6 +349,14 @@ mod tests {
         );
         assert_eq!(descriptor.display(), "Weather feed");
         assert_eq!(descriptor.uid().as_str(), "SERVICE-weather-feed");
+        assert!(!descriptor.validates_config());
+        assert!(
+            ServiceDescriptor {
+                capabilities: vec![Capability::parse("config.validate").unwrap()],
+                ..descriptor
+            }
+            .validates_config()
+        );
     }
 
     #[test]

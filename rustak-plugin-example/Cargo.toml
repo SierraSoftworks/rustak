@@ -23,6 +23,10 @@ rustak-core = { workspace = true }
 rustak-cot = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
+# The configuration an administrator sets is a JSON document, and `schemars`
+# derives the schema the admin UI draws its form from.
+serde_json = { workspace = true }
+schemars = { workspace = true }
 tracing = { workspace = true }
 human-errors = { workspace = true }
 clap = { workspace = true }

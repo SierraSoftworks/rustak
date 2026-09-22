@@ -300,7 +300,26 @@ enum Woken {
     /// The CoT stream produced something.
     Stream(SidecarEvent),
     /// The server-event feed produced something.
-    Server(SidecarEvent),
+    Server(Box<crate::control::ServerEvent>),
+}
+
+/// The validation this event asks this sidecar for, when it is one.
+///
+/// These are the harness's to answer rather than the plugin's to notice: the
+/// exchange is two control-API calls around one hook, and every plugin would
+/// otherwise write the same two.
+fn asked_to_validate(
+    event: &crate::control::ServerEvent,
+    name: &ServiceName,
+) -> Option<uuid::Uuid> {
+    match &event.payload {
+        crate::control::ServerEventPayload::ConfigValidationRequested(asked)
+            if &asked.service == name =>
+        {
+            Some(asked.request_id)
+        }
+        _ => None,
+    }
 }
 
 /// [`drive`], inside the context's span.
@@ -316,7 +335,8 @@ async fn tick_until_shutdown<S: Sidecar>(
     // Before `start`, so that a connect string or a certificate the operator
     // got wrong is reported instead of the plugin's own start-up work.
     let mut link = Link::open(&context)?;
-    let mut control = ControlLink::open(&context);
+    let mut control = ControlLink::open(&context).with_config_schema(S::config_schema());
+    let name = context.identity().name().clone();
 
     // Registration is best-effort and happens before `start`, so that a plugin
     // whose own start-up reads its per-service configuration finds a
@@ -356,7 +376,7 @@ async fn tick_until_shutdown<S: Sidecar>(
             () = shutdown.cancelled() => break,
             _ = ticker.tick() => Woken::Tick,
             Some(event) = link.next() => Woken::Stream(event),
-            Some(event) = control.next() => Woken::Server(SidecarEvent::Server(Box::new(event))),
+            Some(event) = control.next() => Woken::Server(Box::new(event)),
         };
 
         let published: Vec<Event> = match woken {
@@ -371,7 +391,20 @@ async fn tick_until_shutdown<S: Sidecar>(
 
                 published
             }
-            Woken::Stream(event) | Woken::Server(event) => sidecar.on_event(event).await?,
+            Woken::Stream(event) => sidecar.on_event(event).await?,
+            Woken::Server(event) => match asked_to_validate(&event, &name) {
+                Some(id) => {
+                    // A candidate nobody is waiting on any more — one replayed
+                    // from the feed's ring, say — is not worth the plugin's time.
+                    if let Some(candidate) = control.candidate(id).await {
+                        let verdict = sidecar.validate_config(&candidate.config).await;
+                        control.answer(id, &verdict).await;
+                    }
+
+                    Vec::new()
+                }
+                None => sidecar.on_event(SidecarEvent::Server(event)).await?,
+            },
         };
 
         // Raced against the shutdown because a write into a connection that is

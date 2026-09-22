@@ -31,15 +31,15 @@
 //! see that module. A consumer of this feed is authenticated but is not
 //! necessarily an administrator, so "what a service may see" is the bar.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::Utc;
 use parking_lot::Mutex;
 use rustak_api::event::{
-    ChannelEvent, ClientEvent, MissionEvent, PackageEvent, ServerEvent, ServerEventPayload,
-    ServiceEvent,
+    ChannelEvent, ClientEvent, ConfigValidationEvent, MissionEvent, PackageEvent, ServerEvent,
+    ServerEventPayload, ServiceEvent,
 };
 use rustak_api::{ServiceName, ServiceState};
 use tokio::sync::broadcast;
@@ -97,6 +97,29 @@ struct Inner {
     /// Accounts whose open feeds must re-authorize immediately, rather than
     /// waiting for the next periodic check.
     invalidated: broadcast::Sender<Username>,
+    /// How many feeds each service holds open right now, which is whether there
+    /// is anything to carry a request *to* it. See [`ServerEvents::attach`].
+    attached: Mutex<HashMap<ServiceName, usize>>,
+}
+
+/// One service's open feed, counted until this is dropped.
+pub struct Attachment {
+    events: ServerEvents,
+    service: ServiceName,
+}
+
+impl Drop for Attachment {
+    fn drop(&mut self) {
+        let mut attached = self.events.inner.attached.lock();
+
+        if let Some(count) = attached.get_mut(&self.service) {
+            *count -= 1;
+
+            if *count == 0 {
+                attached.remove(&self.service);
+            }
+        }
+    }
 }
 
 impl Default for ServerEvents {
@@ -117,6 +140,7 @@ impl ServerEvents {
                 next_id: AtomicU64::new(0),
                 recent: Mutex::new(VecDeque::with_capacity(RING)),
                 invalidated,
+                attached: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -138,6 +162,30 @@ impl ServerEvents {
     /// buffer per receiver, so unbounded subscribers is unbounded memory.
     pub fn subscribers(&self) -> usize {
         self.inner.sender.receiver_count()
+    }
+
+    /// Records that `service` has a feed open, for as long as the answer lives.
+    ///
+    /// The feed is the only way this server has of reaching a sidecar, which
+    /// dials us and never the other way round, so "is there a feed" is "can it
+    /// be asked anything" — see [`crate::plugins::validation`].
+    pub fn attach(&self, service: &ServiceName) -> Attachment {
+        *self
+            .inner
+            .attached
+            .lock()
+            .entry(service.clone())
+            .or_default() += 1;
+
+        Attachment {
+            events: self.clone(),
+            service: service.clone(),
+        }
+    }
+
+    /// Whether `service` has a feed open right now.
+    pub fn is_attached(&self, service: &ServiceName) -> bool {
+        self.inner.attached.lock().contains_key(service)
     }
 
     /// Starts hearing about accounts whose open feeds must re-authorize.
@@ -323,6 +371,20 @@ impl ServerEvents {
                 submitter: resource.submitter.clone(),
             }),
             Audience::Channels(resource.groups.clone()),
+        );
+    }
+
+    /// `service.config.validate`: a service is asked to check a candidate.
+    ///
+    /// To that service alone, and carrying an id rather than the candidate —
+    /// which may hold a secret, and this bus keeps a ring of what it carried.
+    pub fn config_validation(&self, service: &ServiceName, id: uuid::Uuid) {
+        self.publish(
+            ServerEventPayload::ConfigValidationRequested(ConfigValidationEvent {
+                service: service.clone(),
+                request_id: id,
+            }),
+            Audience::Service(service.clone()),
         );
     }
 

@@ -57,9 +57,9 @@
 
 use std::sync::Arc;
 
-use rustak_api::Heartbeat;
+use rustak_api::{CONFIG_VALIDATE, ConfigValidation, ConfigValidationRequest, Heartbeat};
 use rustak_core::prelude::*;
-use rustak_core::service::ServiceDescriptor;
+use rustak_core::service::{Capability, ServiceDescriptor};
 use tokio::sync::mpsc;
 
 use crate::control::{ControlClient, ServerEvent};
@@ -101,7 +101,19 @@ pub(crate) struct ControlLink {
 
 impl ControlLink {
     /// Builds the link a context describes, and starts the feed task.
+    ///
+    /// The descriptor gains the `config.validate` capability here, because every
+    /// sidecar on this harness has it: the link answers validation requests,
+    /// with the trait's accepting default for a plugin that has nothing to add.
     pub(crate) fn open<S>(context: &SidecarContext<S>) -> Self {
+        let mut descriptor = context.descriptor().clone();
+
+        if !descriptor.validates_config() {
+            descriptor
+                .capabilities
+                .push(Capability::from_storage(CONFIG_VALIDATE));
+        }
+
         let Some(control) = context.control.clone() else {
             tracing::debug!(
                 "This sidecar has no [server] control, so it will not register or report health.",
@@ -109,7 +121,7 @@ impl ControlLink {
 
             return Self {
                 control: None,
-                descriptor: context.descriptor().clone(),
+                descriptor,
                 events: None,
                 workload: None,
                 health: Arc::new(LinkHealth::new()),
@@ -128,11 +140,22 @@ impl ControlLink {
 
         Self {
             control: Some(control),
-            descriptor: context.descriptor().clone(),
+            descriptor,
             events: Some(receiver),
             workload: context.workload.clone(),
             health,
         }
+    }
+
+    /// Registers `schema` as what this sidecar's configuration may hold.
+    ///
+    /// [`Sidecar::config_schema`](super::Sidecar::config_schema) is the plugin's
+    /// rather than the configuration file's, so it joins the descriptor here
+    /// instead of in [`SidecarConfig::descriptor`](super::SidecarConfig::descriptor).
+    #[must_use]
+    pub(crate) fn with_config_schema(mut self, schema: Option<serde_json::Value>) -> Self {
+        self.descriptor.config_schema = schema;
+        self
     }
 
     /// Puts a live access token in place before a call goes out, answering
@@ -284,6 +307,45 @@ impl ControlLink {
                 self.register().await;
             }
             Err(err) => self.note("report a heartbeat", &err),
+        }
+    }
+
+    /// The candidate configuration the server asked this sidecar about.
+    ///
+    /// [`None`] when nobody is waiting any more, or the call failed — which is
+    /// logged like any other, and costs the administrator a "could not be
+    /// asked" rather than costing the sidecar anything.
+    pub(crate) async fn candidate(&self, id: uuid::Uuid) -> Option<ConfigValidationRequest> {
+        let control = self.control.as_ref()?;
+
+        if !self.ensure_credential().await {
+            return None;
+        }
+
+        match control.validation_request(id).await {
+            Ok(candidate) => candidate,
+            Err(err) => {
+                self.note("read a configuration to validate", &err);
+
+                None
+            }
+        }
+    }
+
+    /// Answers a validation, best-effort: an answer nobody was waiting for any
+    /// more is not worth more than a `debug`.
+    pub(crate) async fn answer(&self, id: uuid::Uuid, validation: &ConfigValidation) {
+        let Some(control) = &self.control else {
+            return;
+        };
+
+        match control.answer_validation(id, validation).await {
+            Ok(true) => tracing::debug!(
+                valid = validation.is_valid(),
+                "Answered a configuration validation.",
+            ),
+            Ok(false) => tracing::debug!("Nobody was waiting on that validation any more."),
+            Err(err) => self.note("answer a configuration validation", &err),
         }
     }
 

@@ -21,11 +21,11 @@
 //! that.
 
 use actix_web::{HttpRequest, HttpResponse, web};
-use rustak_api::{Heartbeat, ServiceDescriptor};
+use rustak_api::{ConfigValidation, Heartbeat, ServiceDescriptor};
 
 use crate::auth::resolve::AuthFailure;
 use crate::db::repos::ServiceRow;
-use crate::plugins::{Caller, RegistryError, auth, health, registry};
+use crate::plugins::{Caller, RegistryError, auth, health, registry, validation};
 use crate::prelude::*;
 
 use super::error::{ApiError, ApiResult, json_ok};
@@ -38,7 +38,19 @@ pub fn routes(config: &mut web::ServiceConfig) {
         .route("/services/{name}", web::delete().to(remove))
         .route("/services/{name}/heartbeat", web::post().to(heartbeat))
         .route("/services/{name}/config", web::get().to(get_config))
-        .route("/services/{name}/config", web::put().to(put_config));
+        .route("/services/{name}/config", web::put().to(put_config))
+        .route(
+            "/services/{name}/config/validate",
+            web::post().to(validate_config),
+        )
+        .route(
+            "/services/{name}/config/validations/{id}",
+            web::get().to(validation_candidate),
+        )
+        .route(
+            "/services/{name}/config/validations/{id}",
+            web::post().to(answer_validation),
+        );
 }
 
 /// `POST /api/v1/services/register`.
@@ -177,14 +189,7 @@ pub async fn put_config(
     let caller = caller(&context, &request).await?;
     caller.require_admin().map_err(refusal)?;
 
-    let config: serde_json::Value = parse(&body, "a configuration document")?;
-
-    if !config.is_object() {
-        return Err(ApiError::bad_request(
-            "A service's configuration has to be a JSON object.",
-        ));
-    }
-
+    let config = document(&body)?;
     let row = registry::configure(
         context.get_ref(),
         &service_name(&name)?,
@@ -195,6 +200,104 @@ pub async fn put_config(
     .map_err(|err| failed(&context, err))?;
 
     Ok(json_ok(&row.config))
+}
+
+/// `POST /api/v1/services/{name}/config/validate`.
+///
+/// Says everything that can be said about a candidate without storing it: what
+/// the service's schema makes of it and — when the service has a feed open to
+/// be asked over — what the service itself does. Always a `200`; the verdict is
+/// the body, and `service` in it says whether the service had a say.
+///
+/// # Errors
+///
+/// A `400` for a body that is not a JSON object, a `401` without a credential, a
+/// `403` for anybody but an administrator, and a `404` when it is not registered.
+pub async fn validate_config(
+    context: web::Data<AppContext>,
+    request: HttpRequest,
+    name: web::Path<String>,
+    body: web::Bytes,
+) -> ApiResult {
+    let caller = caller(&context, &request).await?;
+    caller.require_admin().map_err(refusal)?;
+
+    let config = document(&body)?;
+    let row = registry::require(context.get_ref(), &service_name(&name)?)
+        .await
+        .map_err(|err| failed(&context, err))?;
+
+    Ok(json_ok(
+        &validation::validate(context.get_ref(), &row, &config).await,
+    ))
+}
+
+/// `GET /api/v1/services/{name}/config/validations/{id}`: the candidate a
+/// service was asked about on the feed.
+///
+/// # Errors
+///
+/// A `401` without a credential, and a `404` when the service is not the
+/// caller's or nobody is waiting on that id any more.
+pub async fn validation_candidate(
+    context: web::Data<AppContext>,
+    request: HttpRequest,
+    path: web::Path<(String, String)>,
+) -> ApiResult {
+    let (name, id) = path.into_inner();
+    let (_, row) = owned(&context, &request, &name).await?;
+
+    validation_id(&id)
+        .and_then(|id| context.validations().candidate(&row.name, id))
+        .map(|candidate| json_ok(&candidate))
+        .ok_or_else(nobody_waiting)
+}
+
+/// `POST /api/v1/services/{name}/config/validations/{id}`: what the service
+/// made of it.
+///
+/// # Errors
+///
+/// A `400` for a body that is not a validation, a `401` without a credential,
+/// and a `404` when the service is not the caller's or nobody is waiting.
+pub async fn answer_validation(
+    context: web::Data<AppContext>,
+    request: HttpRequest,
+    path: web::Path<(String, String)>,
+    body: web::Bytes,
+) -> ApiResult {
+    let (name, id) = path.into_inner();
+    let (_, row) = owned(&context, &request, &name).await?;
+    let answer: ConfigValidation = parse(&body, "a configuration validation")?;
+
+    match validation_id(&id) {
+        Some(id) if context.validations().answer(&row.name, id, answer) => {
+            Ok(HttpResponse::NoContent().finish())
+        }
+        _ => Err(nobody_waiting()),
+    }
+}
+
+/// An id from the path. One that could never be an id is simply not pending.
+fn validation_id(raw: &str) -> Option<uuid::Uuid> {
+    uuid::Uuid::parse_str(raw).ok()
+}
+
+fn nobody_waiting() -> ApiError {
+    ApiError::not_found("Nobody is waiting on that validation any more.")
+}
+
+/// A configuration document from a request body: JSON, and an object.
+fn document(body: &web::Bytes) -> Result<serde_json::Value, ApiError> {
+    let config: serde_json::Value = parse(body, "a configuration document")?;
+
+    if !config.is_object() {
+        return Err(ApiError::bad_request(
+            "A service's configuration has to be a JSON object.",
+        ));
+    }
+
+    Ok(config)
 }
 
 /// Resolves the caller and the named service, refusing one that is not theirs.
@@ -287,6 +390,26 @@ fn failed(context: &AppContext, err: RegistryError) -> ApiError {
         RegistryError::Unknown(name) => {
             ApiError::not_found(format!("No service named '{name}' is registered."))
         }
+        RegistryError::InvalidSchema(why) => {
+            ApiError::bad_request(why).with_code("config_schema_invalid")
+        }
+        RegistryError::Refused(issues) => ApiError::new(
+            actix_web::http::StatusCode::UNPROCESSABLE_ENTITY,
+            format!(
+                "That configuration is not one this service accepts. {}",
+                issues
+                    .iter()
+                    .take(3)
+                    .map(|issue| format!(
+                        "{}: {}",
+                        issue.path.as_deref().unwrap_or("/"),
+                        issue.message
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+        )
+        .with_code("config_invalid"),
         RegistryError::Unavailable(err) => {
             context.session().record_human_error(&err);
 
@@ -588,6 +711,206 @@ mod tests {
             .send_request(&app)
             .await;
         assert_eq!(refused.status(), StatusCode::NOT_FOUND);
+    }
+
+    fn schema() -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "interval": { "type": "integer", "minimum": 1 } },
+            "additionalProperties": false,
+        })
+    }
+
+    /// Registers `$name` with a configuration schema and the given capabilities.
+    ///
+    /// A macro for the reason `app!` is one: the service `init_service` answers
+    /// has a type nobody wants to write down.
+    macro_rules! registered_with_schema {
+        ($app:expr, $token:expr, $name:expr, $capabilities:expr) => {{
+            let capabilities: &[&str] = $capabilities;
+            let registered = test::TestRequest::post()
+                .uri("/api/v1/services/register")
+                .insert_header(("authorization", format!("Bearer {}", $token)))
+                .set_json(serde_json::json!({
+                    "name": $name,
+                    "capabilities": capabilities,
+                    "config_schema": schema(),
+                }))
+                .send_request($app)
+                .await;
+            assert_eq!(registered.status(), StatusCode::OK);
+
+            test::read_body_json::<ServiceSummary, _>(registered).await
+        }};
+    }
+
+    #[actix_web::test]
+    async fn a_registered_schema_is_listed_and_every_write_is_held_to_it() {
+        let server = TestServer::start().await;
+        let (_, token) = sidecar(&server, "weather").await;
+        let (_, admin) = server.signed_in("ada", true).await;
+        let app = app!(server);
+
+        let summary = registered_with_schema!(&app, &token, "weather", &[]);
+        assert_eq!(summary.descriptor.config_schema, Some(schema()));
+
+        for (config, expected) in [
+            (serde_json::json!({ "interval": 60 }), StatusCode::OK),
+            (
+                serde_json::json!({ "interval": 0 }),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            (
+                serde_json::json!({ "intervl": 30 }),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+        ] {
+            let written = test::TestRequest::put()
+                .uri("/api/v1/services/weather/config")
+                .insert_header(("authorization", format!("Bearer {}", admin.token)))
+                .set_json(&config)
+                .send_request(&app)
+                .await;
+
+            assert_eq!(written.status(), expected, "{config}");
+        }
+
+        // What was refused never replaced what was accepted.
+        let read = test::TestRequest::get()
+            .uri("/api/v1/services/weather/config")
+            .insert_header(("authorization", format!("Bearer {token}")))
+            .send_request(&app)
+            .await;
+        assert_eq!(
+            test::read_body_json::<serde_json::Value, _>(read).await,
+            serde_json::json!({ "interval": 60 })
+        );
+    }
+
+    #[actix_web::test]
+    async fn a_schema_nobody_could_use_is_refused_at_registration() {
+        let server = TestServer::start().await;
+        let (_, token) = sidecar(&server, "weather").await;
+        let app = app!(server);
+
+        let refused = test::TestRequest::post()
+            .uri("/api/v1/services/register")
+            .insert_header(("authorization", format!("Bearer {token}")))
+            .set_json(serde_json::json!({
+                "name": "weather",
+                "config_schema": { "type": "no-such-type" },
+            }))
+            .send_request(&app)
+            .await;
+
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[actix_web::test]
+    async fn an_administrator_validates_a_candidate_and_the_running_service_has_its_say() {
+        use rustak_api::event::ServerEventPayload;
+        use rustak_api::{ConfigValidationReport, ServiceCheck};
+
+        let server = TestServer::start().await;
+        let (_, weather) = sidecar(&server, "weather").await;
+        let (_, adsb) = sidecar(&server, "adsb").await;
+        let (_, admin) = server.signed_in("ada", true).await;
+        let app = app!(server);
+        registered_with_schema!(&app, &weather, "weather", &["config.validate"]);
+        registered_with_schema!(&app, &adsb, "adsb", &[]);
+
+        // Only an administrator may ask.
+        let refused = test::TestRequest::post()
+            .uri("/api/v1/services/weather/config/validate")
+            .insert_header(("authorization", format!("Bearer {weather}")))
+            .set_json(serde_json::json!({ "interval": 60 }))
+            .send_request(&app)
+            .await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+
+        // The sidecar's half, played by hand: it holds a feed open, hears the
+        // request on it, reads the candidate back and answers.
+        let _feed = server
+            .events()
+            .attach(&ServiceName::parse("weather").unwrap());
+        let mut events = server.events().subscribe();
+        let candidate = serde_json::json!({ "interval": 60 });
+
+        let asking = async {
+            let asked = test::TestRequest::post()
+                .uri("/api/v1/services/weather/config/validate")
+                .insert_header(("authorization", format!("Bearer {}", admin.token)))
+                .set_json(&candidate)
+                .send_request(&app)
+                .await;
+            assert_eq!(asked.status(), StatusCode::OK);
+
+            test::read_body_json::<ConfigValidationReport, _>(asked).await
+        };
+        let answering = async {
+            let id = loop {
+                if let ServerEventPayload::ConfigValidationRequested(asked) =
+                    &events.recv().await.unwrap().event.payload
+                {
+                    break asked.request_id;
+                }
+            };
+            let uri = format!("/api/v1/services/weather/config/validations/{id}");
+
+            // Another service learns nothing, not even that there is a question.
+            let stranger = test::TestRequest::get()
+                .uri(&uri)
+                .insert_header(("authorization", format!("Bearer {adsb}")))
+                .send_request(&app)
+                .await;
+            assert_eq!(stranger.status(), StatusCode::NOT_FOUND);
+
+            let read = test::TestRequest::get()
+                .uri(&uri)
+                .insert_header(("authorization", format!("Bearer {weather}")))
+                .send_request(&app)
+                .await;
+            assert_eq!(read.status(), StatusCode::OK);
+            assert_eq!(
+                test::read_body_json::<serde_json::Value, _>(read).await["config"],
+                candidate
+            );
+
+            let answered = test::TestRequest::post()
+                .uri(&uri)
+                .insert_header(("authorization", format!("Bearer {weather}")))
+                .set_json(serde_json::json!({
+                    "issues": [{ "path": "/interval", "message": "Too slow for this upstream." }],
+                }))
+                .send_request(&app)
+                .await;
+            assert_eq!(answered.status(), StatusCode::NO_CONTENT);
+
+            // Answered once; the question is closed.
+            let again = test::TestRequest::get()
+                .uri(&uri)
+                .insert_header(("authorization", format!("Bearer {weather}")))
+                .send_request(&app)
+                .await;
+            assert_eq!(again.status(), StatusCode::NOT_FOUND);
+        };
+
+        let (report, ()) = futures::join!(asking, answering);
+
+        assert_eq!(report.service, ServiceCheck::Checked);
+        assert!(!report.valid);
+        assert_eq!(report.issues[0].path.as_deref(), Some("/interval"));
+
+        // A service that cannot be asked still gets the schema's verdict.
+        let unasked = test::TestRequest::post()
+            .uri("/api/v1/services/adsb/config/validate")
+            .insert_header(("authorization", format!("Bearer {}", admin.token)))
+            .set_json(serde_json::json!({ "interval": "often" }))
+            .send_request(&app)
+            .await;
+        let unasked: ConfigValidationReport = test::read_body_json(unasked).await;
+        assert_eq!(unasked.service, ServiceCheck::Skipped);
+        assert!(!unasked.valid);
     }
 
     #[actix_web::test]

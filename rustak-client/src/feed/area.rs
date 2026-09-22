@@ -8,6 +8,7 @@
 //! on the map, because an upstream that widens its box is not a reason for a
 //! channel to fill up with the Atlantic.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Metres per degree of latitude, which is constant enough at this scale: the
@@ -41,28 +42,35 @@ const EARTH_RADIUS_M: f64 = 6_371_008.8;
 /// lon = -0.4614
 /// radius_km = 120.0
 /// ```
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Area {
     /// A latitude/longitude box, which may cross the anti-meridian (`west`
     /// greater than `east`, e.g. Fiji: west 175, east -178).
     Bbox {
         /// Southern edge, decimal degrees.
+        #[schemars(range(min = -90.0, max = 90.0))]
         south: f64,
         /// Western edge, decimal degrees.
+        #[schemars(range(min = -180.0, max = 180.0))]
         west: f64,
         /// Northern edge, decimal degrees.
+        #[schemars(range(min = -90.0, max = 90.0))]
         north: f64,
         /// Eastern edge, decimal degrees.
+        #[schemars(range(min = -180.0, max = 180.0))]
         east: f64,
     },
     /// A circle around a point, which is what most HTTP feeds take.
     Circle {
         /// Centre latitude, decimal degrees.
+        #[schemars(range(min = -90.0, max = 90.0))]
         lat: f64,
         /// Centre longitude, decimal degrees.
+        #[schemars(range(min = -180.0, max = 180.0))]
         lon: f64,
         /// Radius in kilometres.
+        #[schemars(range(min = 0.0))]
         radius_km: f64,
     },
 }

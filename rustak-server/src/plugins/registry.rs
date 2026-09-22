@@ -13,19 +13,21 @@
 //! `web::api::services` stays a parsing layer and these rules can be tested
 //! without a request.
 
-use rustak_api::{ServiceDescriptor, ServiceStatus, ServiceSummary};
+use rustak_api::{ConfigIssue, ServiceDescriptor, ServiceStatus, ServiceSummary};
 use rustak_core::prelude::*;
 
 use crate::db::repos::{NewService, ServiceRow, UserRow};
 use crate::prelude::*;
 
+use super::config_schema;
+
 /// Why a control-API call could not be answered.
 ///
-/// Three variants rather than a [`human_errors::Error`], because the two that
-/// are not ours map to statuses a caller branches on — `409` for a name that is
-/// somebody else's, `404` for a service that is not registered — and rendering
-/// both as `400` would make "try a different name" indistinguishable from "that
-/// service is gone".
+/// Variants rather than a [`human_errors::Error`], because the ones that are
+/// not ours map to statuses a caller branches on — `409` for a name that is
+/// somebody else's, `404` for a service that is not registered, `422` for a
+/// configuration its own schema refuses — and rendering them all as `400` would
+/// make "try a different name" indistinguishable from "that service is gone".
 #[derive(Debug)]
 pub enum RegistryError {
     /// The name is registered to a different account.
@@ -33,6 +35,12 @@ pub enum RegistryError {
 
     /// Nothing is registered under that name.
     Unknown(ServiceName),
+
+    /// The configuration schema in a descriptor is not one we can use.
+    InvalidSchema(String),
+
+    /// The configuration does not match the schema its service registered.
+    Refused(Vec<ConfigIssue>),
 
     /// Something of ours failed.
     Unavailable(Error),
@@ -54,8 +62,9 @@ impl From<Error> for RegistryError {
 ///
 /// # Errors
 ///
-/// [`RegistryError::Taken`] when another account already holds that name, and
-/// [`RegistryError::Unavailable`] when a write fails.
+/// [`RegistryError::Taken`] when another account already holds that name,
+/// [`RegistryError::InvalidSchema`] when the descriptor's configuration schema
+/// is unusable, and [`RegistryError::Unavailable`] when a write fails.
 #[instrument("plugins.register", skip_all, fields(service = %descriptor.name, account = %account.username), err(Debug))]
 pub async fn register(
     services: &impl Services,
@@ -63,6 +72,12 @@ pub async fn register(
     descriptor: &ServiceDescriptor,
 ) -> Result<ServiceRow, RegistryError> {
     let db = services.db();
+
+    // Before anything is written: a schema nobody could satisfy would make the
+    // configuration unwritable, and registration is where its author sees why.
+    if let Some(schema) = &descriptor.config_schema {
+        config_schema::check(schema).map_err(RegistryError::InvalidSchema)?;
+    }
 
     if let Some(existing) = db.services().get_by_name(&descriptor.name).await?
         && existing.user_id != account.id
@@ -85,8 +100,17 @@ pub async fn register(
             version: descriptor.version.clone(),
             capabilities: descriptor.capabilities.clone(),
             endpoints: Some(descriptor.endpoints.clone()),
+            config_schema: descriptor.config_schema.clone(),
         })
         .await?;
+
+    // A sidecar opens its event feed and registers at the same moment, and when
+    // the feed wins it was authorized as an account that held no
+    // registration, which is the identity `Audience::Service` and
+    // `ServerEvents::is_attached` both go by. Re-authorizing now, rather than at
+    // the feed's next periodic check, is what makes a service reachable from
+    // its first second instead of its sixtieth.
+    services.events().invalidate(&account.username);
 
     record(
         services,
@@ -173,9 +197,15 @@ pub async fn remove(
 /// tick, so a setting changed in the admin UI reaches the sidecar without
 /// anybody restarting it.
 ///
+/// Held to the schema the service registered, when it registered one. What a
+/// schema cannot say — that an API key works — is `plugins::validation`'s, and
+/// is deliberately not enforced here: a sidecar that is down must never be what
+/// stops an administrator fixing its configuration.
+///
 /// # Errors
 ///
-/// [`RegistryError::Unknown`] when nothing is registered under that name.
+/// [`RegistryError::Unknown`] when nothing is registered under that name, and
+/// [`RegistryError::Refused`] when the schema does not accept the document.
 #[instrument("plugins.configure", skip_all, fields(service = %name), err(Debug))]
 pub async fn configure(
     services: &impl Services,
@@ -184,6 +214,11 @@ pub async fn configure(
     actor: &Username,
 ) -> Result<ServiceRow, RegistryError> {
     let row = require(services, name).await?;
+
+    let issues = config_schema::issues(row.config_schema.as_ref(), &config);
+    if !issues.is_empty() {
+        return Err(RegistryError::Refused(issues));
+    }
 
     services.db().services().set_config(row.id, config).await?;
     record(
@@ -208,6 +243,7 @@ pub fn summary(row: &ServiceRow) -> ServiceSummary {
             version: row.version.clone(),
             capabilities: row.capabilities.clone(),
             endpoints: row.endpoints.clone().unwrap_or_default(),
+            config_schema: row.config_schema.clone(),
         },
         status: ServiceStatus {
             state: row.status,

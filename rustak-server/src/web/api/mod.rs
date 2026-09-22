@@ -331,6 +331,15 @@ mod tests {
         ("POST", "/api/v1/services/weather/heartbeat"),
         ("GET", "/api/v1/services/weather/config"),
         ("PUT", "/api/v1/services/weather/config"),
+        ("POST", "/api/v1/services/weather/config/validate"),
+        (
+            "GET",
+            "/api/v1/services/weather/config/validations/00000000-0000-0000-0000-000000000000",
+        ),
+        (
+            "POST",
+            "/api/v1/services/weather/config/validations/00000000-0000-0000-0000-000000000000",
+        ),
         ("GET", "/api/v1/events"),
     ];
 

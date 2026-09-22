@@ -170,7 +170,10 @@ impl ControlClient {
 }
 
 /// Reads a JSON body, naming what it was meant to be.
-async fn parse<T: DeserializeOwned>(response: reqwest::Response, what: &str) -> Result<T, Error> {
+pub(super) async fn parse<T: DeserializeOwned>(
+    response: reqwest::Response,
+    what: &str,
+) -> Result<T, Error> {
     let body = response
         .text()
         .await
@@ -207,6 +210,7 @@ mod tests {
 
     fn descriptor() -> ServiceDescriptor {
         ServiceDescriptor {
+            config_schema: None,
             version: Some("1.2.3".into()),
             ..ServiceDescriptor::new(ServiceName::parse("weather").unwrap())
         }

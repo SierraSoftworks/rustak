@@ -171,6 +171,10 @@ pub async fn feed(context: web::Data<AppContext>, request: HttpRequest) -> ApiRe
             opened: false,
             context: context.clone(),
             request,
+            attachment: subscriber
+                .service
+                .as_ref()
+                .map(|service| context.events().attach(service)),
             subscriber,
             next_check: tokio::time::Instant::now() + REAUTHORIZE,
         })))
@@ -268,6 +272,9 @@ struct Feed {
     request: HttpRequest,
     /// What this caller may be shown, as of the last authorization.
     subscriber: Subscriber,
+    /// Says, for as long as this feed is open, that the service reading it can
+    /// be reached — which is what `plugins::validation` asks before it waits.
+    attachment: Option<crate::plugins::events::Attachment>,
     /// When the credential is next resolved again.
     ///
     /// On the feed rather than beside the keepalive, because the stream's
@@ -297,6 +304,12 @@ impl Feed {
 
         match subscriber_for(&self.context, &caller).await {
             Ok(subscriber) => {
+                // The new one before the old one is dropped, so a feed that is
+                // merely re-authorizing is never briefly "not attached".
+                self.attachment = subscriber
+                    .service
+                    .as_ref()
+                    .map(|service| self.events.attach(service));
                 self.subscriber = subscriber;
                 self.next_check = tokio::time::Instant::now() + REAUTHORIZE;
 

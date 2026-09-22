@@ -55,6 +55,11 @@ tokio-util = { workspace = true }
 bytes = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Derives the JSON Schema a sidecar registers for its configuration, which is
+# what the admin UI draws a form from. Re-exported as `sidecar::schemars`.
+schemars = { workspace = true }
+# The id a configuration validation is asked and answered under.
+uuid = { workspace = true }
 url = { workspace = true }
 tracing = { workspace = true }
 human-errors = { workspace = true }
