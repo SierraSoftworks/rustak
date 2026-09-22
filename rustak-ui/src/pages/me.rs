@@ -12,7 +12,7 @@ use yew::prelude::*;
 use crate::app::AuthHandle;
 use crate::components::{Alert, AlertKind, Card, LoadingNote};
 
-use super::panels::{CredentialsPanel, DevicesPanel, PasskeysPanel, SignInMethods};
+use super::panels::{CredentialsPanel, DevicesPanel, DisplayPanel, PasskeysPanel, SignInMethods};
 
 #[function_component(Me)]
 pub fn me() -> Html {
@@ -39,6 +39,11 @@ pub fn me() -> Html {
                         and it is worthless afterwards."
                 />
             </Card>
+
+            <DisplayPanel
+                symbology={user.preferences.symbology}
+                on_changed={auth.refresh.clone()}
+            />
 
             <SignInMethods user={user.clone()} on_changed={auth.refresh.clone()} />
 

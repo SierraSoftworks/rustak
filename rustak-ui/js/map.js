@@ -22,7 +22,6 @@ const HIT_LAYERS = ["symbols", "dots", "shape-lines", "shape-fills"];
 const LABEL_FONT = '600 12px system-ui, -apple-system, "Segoe UI", sans-serif';
 
 let libraries;
-
 function stylesheet(href) {
   return new Promise((resolve, reject) => {
     const link = Object.assign(document.createElement("link"), { rel: "stylesheet", href });
@@ -49,18 +48,28 @@ function load() {
 
 const ratio = () => Math.min(globalThis.devicePixelRatio || 1, 2);
 
-// A MIL-STD-2525 symbol for `sidc:<code>[:<direction>]`, with the point it
-// marks moved to the middle of the image — which is where MapLibre anchors an
-// icon, and not where milsymbol leaves it once a direction arrow is attached.
+// A MIL-STD-2525 symbol for `sidc:<code>[:<direction>[:<fallback>]]`, with the
+// point it marks moved to the middle of the image — which is where MapLibre
+// anchors an icon, and not where milsymbol leaves it once a direction arrow is
+// attached.
+//
+// `code` is whatever the sender asked for, in whichever edition it wrote it:
+// milsymbol reads 2525C letters and 2525D/E numbers alike. `fallback` is the
+// letter code the CoT type implies, for a code milsymbol has no drawing for. A
+// direction of 0 is none, which is how a fallback can follow it.
 function symbolImage(ms, id) {
-  const [, sidc, direction] = id.split(":");
-  const options = { size: 22, ...(direction ? { direction: Number(direction) } : {}) };
+  const [, code, direction, fallback] = id.split(":");
+  const options = { size: 22, ...(Number(direction) > 0 ? { direction: Number(direction) } : {}) };
 
-  let symbol = new ms.Symbol(sidc, options);
+  let symbol = new ms.Symbol(code, options);
+  if (!symbol.isValid() && fallback) {
+    symbol = new ms.Symbol(fallback, options);
+  }
   if (!symbol.isValid()) {
     // A function nobody has drawn an icon for still has an affiliation and a
     // battle dimension, and the frame alone says both.
-    symbol = new ms.Symbol(sidc.slice(0, 4).padEnd(15, "-"), options);
+    const letters = /^\d/.test(code) ? fallback : code;
+    symbol = letters ? new ms.Symbol(letters.slice(0, 4).padEnd(15, "-"), options) : symbol;
   }
 
   const scale = ratio();
@@ -190,11 +199,12 @@ class MapHandle {
     // Symbols and labels are drawn the first time a feature asks for one, and
     // the name says what to draw: there is no sprite sheet to keep in step with
     // what happens to be on the map.
+    const add = (id, image) => map.hasImage(id) || map.addImage(id, image, { pixelRatio: ratio() });
     map.setMissingStyleImageResolver((id) => {
-      const image = id.startsWith("sidc:") ? symbolImage(ms, id) : id.startsWith("label:") ? labelImage(id) : null;
-      if (image && !map.hasImage(id)) {
-        map.addImage(id, image, { pixelRatio: ratio() });
+      if (id.startsWith("label:")) {
+        return add(id, labelImage(id));
       }
+      return id.startsWith("sidc:") ? add(id, symbolImage(ms, id)) : undefined;
     });
 
     map.on("click", (event) => this.pick(this.hits(event.point), event.lngLat.toArray()));

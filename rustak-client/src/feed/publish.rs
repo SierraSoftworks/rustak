@@ -30,7 +30,7 @@ use rustak_cot::Event;
 use serde::Serialize;
 
 use super::policy::{COURSE_CHANGE_DEG, SPEED_CHANGE_MPS};
-use super::{Affiliation, Area, PublishPolicy, Track, distance_m};
+use super::{Affiliation, Area, PublishPolicy, Symbology, Track, distance_m};
 
 /// How often the counters are logged at `info`. Slow on purpose: a feed that
 /// logged its rate every tick would be the noisiest thing in the journal.
@@ -83,6 +83,7 @@ struct Published {
 pub struct FeedPublisher {
     policy: PublishPolicy,
     affiliation: Affiliation,
+    symbology: Symbology,
     area: Area,
     tracks: HashMap<String, Tracked>,
     pending: Vec<Event>,
@@ -97,12 +98,21 @@ impl FeedPublisher {
         Self {
             policy,
             affiliation,
+            symbology: Symbology::default(),
             area: Area::default(),
             tracks: HashMap::new(),
             pending: Vec::new(),
             counters: FeedCounters::default(),
             reported_at: None,
         }
+    }
+
+    /// The same publisher, writing each track's symbol code in an edition of
+    /// MIL-STD-2525 as well as its CoT type.
+    #[must_use]
+    pub fn with_symbology(mut self, symbology: Symbology) -> Self {
+        self.symbology = symbology;
+        self
     }
 
     /// The same publisher, filtering on an area of interest.
@@ -162,8 +172,10 @@ impl FeedPublisher {
             bearing_deg: track.bearing_deg(),
         });
 
-        self.pending
-            .push(track.to_event(self.affiliation, self.policy.stale()));
+        let mut event = track.to_event(self.affiliation, self.policy.stale());
+        self.symbology
+            .mark(&mut event, track.kind, self.affiliation);
+        self.pending.push(event);
         self.counters.published += 1;
         self.enforce_capacity();
 

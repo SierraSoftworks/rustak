@@ -48,6 +48,7 @@ pub mod map;
 pub mod mission;
 pub mod package;
 pub mod passkey;
+pub mod preferences;
 pub mod profile;
 pub mod service;
 pub mod service_config;
@@ -100,6 +101,7 @@ pub use passkey::{
     PasskeyChallenge, PasskeyLoginFinish, PasskeyLoginStart, PasskeyRegistrationFinish,
     PasskeyRegistrationStart, PasskeySummary,
 };
+pub use preferences::{Symbology, UserPreferences, UserPreferencesPatch};
 pub use profile::{
     PrefCatalogEntry, PrefClass, PrefEntry, Profile, ProfileCreate, ProfileFile, ProfileUpdate,
 };

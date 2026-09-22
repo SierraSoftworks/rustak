@@ -57,6 +57,12 @@ const ENTRIES: &[Entry] = &[
         Some("a-f-G-U-C"),
     ),
     (
+        "symbologyProvider",
+        PrefClass::String,
+        "Which edition of MIL-STD-2525 the device authors symbols in: 2525C, 2525D or 2525E. An account's own choice, under Account in this console, is delivered as this key.",
+        Some("2525C"),
+    ),
+    (
         "coord_display_pref",
         PrefClass::String,
         "Which coordinate format the map shows: MGRS, DD, DM, DMS or UTM.",

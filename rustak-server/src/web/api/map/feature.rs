@@ -89,8 +89,22 @@ pub fn from_event(event: &Event, received_at: DateTime<Utc>, groups: Vec<String>
             .map(|remarks| remarks.text.trim().to_owned())
             .filter(|text| !text.is_empty()),
         software: event.takv().as_ref().and_then(software),
+        sidc: symbol(event),
         groups,
     }
+}
+
+/// The symbol code the sender asked for, if it wrote one.
+///
+/// `<__milicon id>` is what ATAK 5 writes for a single point and `<__milsym
+/// id>` what it writes for a drawing — and beside the first, for a 2525C code,
+/// so that older clients still find it. The single-point one is looked at
+/// first because it is the one a 2525D device fills in.
+fn symbol(event: &Event) -> Option<String> {
+    ["__milicon", "__milsym"]
+        .into_iter()
+        .filter_map(|name| event.detail.find(name)?.get("id"))
+        .find_map(rustak_api::map::sidc)
 }
 
 /// The names of the channels a sender was publishing into.
@@ -301,5 +315,44 @@ mod tests {
 
         assert_eq!(removals(&event), ["MARKER-1"]);
         assert!(removals(&Event::builder("a-f-G-U-C", "ANDROID-1").build()).is_empty());
+    }
+
+    #[test]
+    fn the_symbol_a_sender_asked_for_is_carried_in_whichever_detail_it_used() {
+        const LETTERS: &str = "SFAPMH---------";
+        const DIGITS: &str = "10030100001102000000";
+
+        /// The `(detail, id)` pairs an event carries, and the code that is drawn.
+        type Case<'a> = (&'a [(&'a str, &'a str)], Option<&'a str>);
+
+        let cases: [Case<'_>; 5] = [
+            (&[], None),
+            (&[("__milicon", DIGITS)], Some(DIGITS)),
+            (&[("__milsym", LETTERS)], Some(LETTERS)),
+            (
+                &[("__milsym", LETTERS), ("__milicon", DIGITS)],
+                Some(DIGITS),
+            ),
+            (
+                &[("__milicon", "a-f-A-M-H"), ("__milsym", LETTERS)],
+                Some(LETTERS),
+            ),
+        ];
+
+        for (details, expected) in cases {
+            let event = details
+                .iter()
+                .fold(
+                    Event::builder("a-f-A-M-H", "HELO-1"),
+                    |builder, (name, id)| builder.push(Element::new(*name).attr("id", *id)),
+                )
+                .build();
+
+            assert_eq!(
+                from_event(&event, received(), Vec::new()).sidc.as_deref(),
+                expected,
+                "{details:?}"
+            );
+        }
     }
 }

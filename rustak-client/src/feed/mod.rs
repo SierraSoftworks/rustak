@@ -87,6 +87,7 @@ mod policy;
 mod publish;
 mod replay;
 mod source;
+mod symbol;
 mod track;
 
 pub use area::{Area, distance_m};
@@ -96,4 +97,5 @@ pub use policy::PublishPolicy;
 pub use publish::{FeedCounters, FeedPublisher};
 pub use replay::Replay;
 pub use source::Feed;
+pub use symbol::Symbology;
 pub use track::Track;

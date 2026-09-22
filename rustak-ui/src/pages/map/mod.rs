@@ -61,11 +61,11 @@ pub fn live_map() -> Html {
     let search = use_state(String::new);
     let session = use_mut_ref(Session::default);
 
+    let auth = use_context::<AuthHandle>();
+
     // Re-resolving the session is what turns a refusal into the sign-in
     // prompt: `Protected`, above this page, draws whatever the answer is.
-    let on_signed_out = use_context::<AuthHandle>()
-        .map(|auth| auth.refresh)
-        .unwrap_or_default();
+    let on_signed_out = auth.map(|auth| auth.refresh).unwrap_or_default();
 
     {
         let (container, session, status, focus) = (

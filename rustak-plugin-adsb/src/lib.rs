@@ -152,8 +152,11 @@ impl AdsbSidecar {
     fn watch(&mut self, settings: &Settings, area: Area, from: &'static str) -> Result<(), Error> {
         self.kind = settings.source.kind();
         self.feed = Some(settings.source.open(area)?);
-        self.publisher =
-            Some(FeedPublisher::new(settings.publish, settings.affiliation).with_area(area));
+        self.publisher = Some(
+            FeedPublisher::new(settings.publish, settings.affiliation)
+                .with_symbology(settings.symbology)
+                .with_area(area),
+        );
         self.area = area;
         self.area_from = from;
 
@@ -200,6 +203,7 @@ impl Sidecar for AdsbSidecar {
             ?area,
             area_from = self.area_from,
             affiliation = ?settings.affiliation,
+            symbology = ?settings.symbology,
             "The ADS-B sidecar is watching.",
         );
 
@@ -350,6 +354,10 @@ mod tests {
         assert_eq!(
             config.settings.affiliation,
             rustak_client::feed::Affiliation::Unknown
+        );
+        assert_eq!(
+            config.settings.symbology,
+            rustak_client::feed::Symbology::TypeOnly
         );
         assert_eq!(config.settings.source.kind(), "replay");
         assert!(config.settings.area.contains(51.4775, -0.4614));

@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use actix_web::{HttpRequest, web};
-use rustak_api::{AuditOutcome, TokenExchangeRequest};
+use rustak_api::{AuditOutcome, TokenExchangeRequest, UserPreferencesPatch};
 
 use crate::auth::RateLimiter;
 use crate::identity::users;
@@ -34,6 +34,37 @@ pub async fn me(context: web::Data<AppContext>, caller: Authenticated) -> ApiRes
         })?;
 
     Ok(json_ok(&me))
+}
+
+/// `PATCH /api/v1/me/preferences` — change what the caller has chosen about
+/// how the console looks to them, and answer all of it.
+///
+/// Anybody signed in may: these are the account's own, and there is no route
+/// by which one account reaches another's.
+///
+/// # Errors
+///
+/// A `400` when the patch names nothing, and a `500` when the write fails.
+pub async fn preferences(
+    context: web::Data<AppContext>,
+    caller: Authenticated,
+    patch: web::Json<UserPreferencesPatch>,
+) -> ApiResult {
+    if patch.is_empty() {
+        return Err(ApiError::bad_request("That change would do nothing."));
+    }
+
+    let preferences = context
+        .db()
+        .user_preferences()
+        .apply(caller.user.id, patch.into_inner())
+        .await
+        .map_err(|err| {
+            context.session().record_human_error(&err);
+            ApiError::from_human(&err)
+        })?;
+
+    Ok(json_ok(&preferences))
 }
 
 /// `POST /me/oidc-link`: binds the caller's account to the identity the

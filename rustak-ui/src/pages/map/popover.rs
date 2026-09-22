@@ -174,6 +174,7 @@ mod tests {
             battery: None,
             remarks: None,
             software: None,
+            sidc: None,
             groups: Vec::new(),
         }
     }

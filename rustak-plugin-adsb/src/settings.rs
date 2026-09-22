@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use rustak_client::feed::{Affiliation, Area, PublishPolicy};
+use rustak_client::feed::{Affiliation, Area, PublishPolicy, Symbology};
 use rustak_core::config::duration;
 use rustak_core::prelude::*;
 
@@ -173,6 +173,15 @@ pub struct Settings {
     #[serde(default)]
     pub affiliation: Affiliation,
 
+    /// Which MIL-STD-2525 symbol code each track carries beside its CoT type:
+    /// `none`, `2525c` or `2525d`. Default: `none`, the type alone.
+    ///
+    /// A device draws a bare type from the 2525C tables whatever edition it is
+    /// set to, so a fleet on 2525D sets this to have these tracks drawn in the
+    /// edition its own markers are.
+    #[serde(default)]
+    pub symbology: Symbology,
+
     /// The upstream. Required, because choosing one is the whole deployment
     /// decision.
     pub source: Source,
@@ -188,6 +197,7 @@ impl Default for Settings {
             area: Area::default(),
             publish: default_publish(),
             affiliation: Affiliation::default(),
+            symbology: Symbology::default(),
             source: Source::Replay {
                 path: PathBuf::from("tracks.ndjson"),
             },

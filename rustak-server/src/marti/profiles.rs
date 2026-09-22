@@ -114,7 +114,13 @@ pub async fn enrollment(
     };
 
     let assembled = service
-        .enrollment(&hostname(&request, &context), &held, &user, true)
+        .enrollment(
+            &hostname(&request, &context),
+            &held,
+            &user,
+            true,
+            Some(resolved.user.id),
+        )
         .await
         .map_err(internal)?;
 
@@ -136,7 +142,7 @@ pub async fn connection(
 
     let (service, held) = caller(&context, &who).await?;
     let assembled = service
-        .connection(&held, sync_secago(&query)?)
+        .connection(&held, sync_secago(&query)?, Some(who.require()?.user.id))
         .await
         .map_err(internal)?;
 

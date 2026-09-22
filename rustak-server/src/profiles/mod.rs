@@ -11,6 +11,7 @@
 //! * [`model`] is storage: the profiles, their files and their typed
 //!   preferences.
 //! * [`prefs`] renders a `.pref` document, whose exact bytes matter.
+//! * [`account`] is what one account chose for itself, as its devices take it.
 //! * [`builder`] packs files into the Mission Package layouts ATAK expects.
 //! * [`config_package`] builds the manual configuration zip an operator emails
 //!   to somebody setting a client up by hand.
@@ -24,6 +25,7 @@
 //! profile. [`prefs::enrollment_defaults`] turns it on, which is why the
 //! enrolment profile is generated even when an operator has configured nothing.
 
+pub mod account;
 pub mod builder;
 pub mod catalog;
 pub mod config_package;
