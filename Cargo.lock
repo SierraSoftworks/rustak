@@ -70,9 +70,9 @@ dependencies = [
 
 [[package]]
 name = "actix-multipart"
-version = "0.8.2"
+version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7bd51a7e04a5e6c84efa4b45ecc5c36f6769ff5b936537c988d39560df0bb5eb"
+checksum = "0d0034dce074729c15d94c7e971012c9d6bb6e901c5505eb75e9b388933c4721"
 dependencies = [
  "actix-multipart-derive",
  "actix-utils",
@@ -95,15 +95,15 @@ dependencies = [
 
 [[package]]
 name = "actix-multipart-derive"
-version = "0.8.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8720bceaa6797fd8b2deab968d52e1120b2a8c30950939f6c8cdb42a910bc885"
+checksum = "69112d423cd092e024d7a5473b7862b0e5d95247728a5b414545c0251f9df5a7"
 dependencies = [
  "bytesize",
  "darling",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -1166,9 +1166,9 @@ dependencies = [
 
 [[package]]
 name = "darling"
-version = "0.23.0"
+version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25ae13da2f202d56bd7f91c25fba009e7717a1e4a1cc98a76d844b65ae912e9d"
+checksum = "ed17f5901b6630b993ca003def43f2f8ef4014fc13b047b57aad617ff32bc2ec"
 dependencies = [
  "darling_core",
  "darling_macro",
@@ -1176,26 +1176,26 @@ dependencies = [
 
 [[package]]
 name = "darling_core"
-version = "0.23.0"
+version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9865a50f7c335f53564bb694ef660825eb8610e0a53d3e11bf1b0d3df31e03b0"
+checksum = "6837e2cf7485aaae18f86181d2f0e9a7ed297a025e220aeabf63fdebd3a2ddff"
 dependencies = [
  "ident_case",
  "proc-macro2",
  "quote",
  "strsim",
- "syn 2.0.119",
+ "syn 3.0.6",
 ]
 
 [[package]]
 name = "darling_macro"
-version = "0.23.0"
+version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac3984ec7bd6cfa798e62b4a642426a5be0e68f9401cfc2a01e3fa9ea2fcdb8d"
+checksum = "2ac7135c3ef02b2f7833bbeb1be5ba7f966dcde8a87c6b87f65a778d71a02785"
 dependencies = [
  "darling_core",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -4127,39 +4127,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustak-plugin-example"
-version = "0.1.0"
-dependencies = [
- "clap",
- "human-errors",
- "rustak-client",
- "rustak-core",
- "rustak-cot",
- "serde",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "rustak-plugin-firms"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "human-errors",
- "reqwest 0.13.5",
- "rustak-api",
- "rustak-client",
- "rustak-core",
- "rustak-cot",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "wiremock",
-]
-
-[[package]]
 name = "rustak-server"
 version = "0.1.0"
 dependencies = [
@@ -4919,7 +4886,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
