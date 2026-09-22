@@ -51,26 +51,26 @@ pub async fn history(
     let (start, end) = request.window()?;
     let limit = request.limit.unwrap_or(MAX_FIXES).clamp(1, MAX_FIXES);
 
-    let events = query::history(
+    // Filtered as it is read, so that a chat sent under a marker's uid does
+    // not use up the fixes the answer carries.
+    let events = query::history_where(
         context.db(),
         &context.config().streams_dir(),
         &uid,
         start,
         end,
         limit,
+        |event| feature::drawable(&event.r#type),
     )
     .await
     .map_err(|err| failed(&context, &err))?;
 
     let groups = names(&row, &index(&context).await?);
 
-    // The read answers newest first; a track is drawn the other way. A message
-    // that is not drawable — a chat sent under a marker's uid — is left out, as
-    // the snapshot leaves it out.
+    // The read answers newest first; a track is drawn the other way.
     let mut track: Vec<MapFeature> = events
         .iter()
         .rev()
-        .filter(|event| feature::drawable(&event.r#type))
         .map(|event| {
             let received_at = event.time.to_datetime().unwrap_or(row.received_at);
             feature::from_event(event, received_at, groups.clone())

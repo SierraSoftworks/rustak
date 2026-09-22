@@ -151,6 +151,27 @@ pub async fn history(
     to: DateTime<Utc>,
     limit: usize,
 ) -> Result<Vec<Event>, Error> {
+    history_where(db, streams_dir, uid, from, to, limit, |_| true).await
+}
+
+/// As [`history`], keeping only the events `keep` says to.
+///
+/// The predicate is applied *before* the limit is counted, so that a caller
+/// asking for the newest hundred of one kind gets a hundred of that kind
+/// rather than a hundred records with the other kinds taken back out.
+///
+/// # Errors
+///
+/// As [`history`].
+pub async fn history_where(
+    db: &Database,
+    streams_dir: &Path,
+    uid: &str,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    limit: usize,
+    keep: impl Fn(&Event) -> bool,
+) -> Result<Vec<Event>, Error> {
     let limit = limit.clamp(1, MAX_HISTORY_ROWS);
     let mut events = Vec::new();
     let mut undecodable = 0usize;
@@ -166,7 +187,7 @@ pub async fn history(
             scanned += 1;
 
             match decode(payload) {
-                Some(event) if within(&event, from, to) => events.push(event),
+                Some(event) if within(&event, from, to) && keep(&event) => events.push(event),
                 Some(_) => {}
                 None => undecodable += 1,
             }

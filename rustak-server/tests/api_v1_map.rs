@@ -266,6 +266,54 @@ async fn a_track_is_the_history_read_back_oldest_first_and_narrowed_to_a_window(
 }
 
 #[actix_web::test]
+async fn what_a_map_does_not_draw_does_not_use_up_a_tracks_fixes() {
+    let server = TestServer::start().await;
+    let (_, admin) = server.signed_in("grace", true).await;
+    let now = Utc::now();
+
+    store(
+        &server,
+        message("ANDROID-1", "a-f-G-U-C", now + Duration::minutes(2)),
+        &[2],
+    )
+    .await;
+    // Two chats, newer than every fix, under the same uid.
+    let chat = |seconds: i64| {
+        Arc::new(EncodedEvent::new(
+            Event::builder("b-t-f", "ANDROID-1")
+                .time(CotTime::from_datetime(now - Duration::seconds(seconds)))
+                .stale(CotTime::from_datetime(now + Duration::minutes(2)))
+                .typed(&Chat::default())
+                .build(),
+        ))
+    };
+    record(
+        &server,
+        "ANDROID-1",
+        &[
+            fix("ANDROID-1", now - Duration::seconds(120), -0.12, 90),
+            fix("ANDROID-1", now - Duration::seconds(60), -0.11, 95),
+            chat(30),
+            chat(10),
+        ],
+    )
+    .await;
+
+    let app = app!(server);
+    let listed: Vec<MapFeature> = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/map/features/ANDROID-1/history?secago=3600&limit=2")
+            .insert_header(("authorization", bearer(&admin)))
+            .to_request(),
+    )
+    .await;
+
+    let lons: Vec<f64> = listed.iter().map(|fix| fix.point.lon).collect();
+    assert_eq!(lons, [-0.12, -0.11], "{listed:?}");
+}
+
+#[actix_web::test]
 async fn a_track_is_gated_the_way_the_snapshot_is() {
     let server = TestServer::start().await;
     let (_, admin) = server.signed_in("grace", true).await;
