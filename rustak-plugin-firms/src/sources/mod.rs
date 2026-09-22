@@ -37,6 +37,14 @@ pub const USER_AGENT: &str = concat!(
 /// bounded, because a wedged request must not hold up the sidecar's tick.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The most of one reply that is held in memory.
+///
+/// `max_detections` bounds what is kept, but only after a reply has been read;
+/// this bounds the reading. Five days of every VIIRS detection on Earth is
+/// tens of megabytes, so the ceiling is above any honest request and below what
+/// would trouble the micro-server this is meant to run on.
+pub const MAX_REPLY_BYTES: usize = 64 * 1024 * 1024;
+
 /// A source of detections that also says how its upstream is doing.
 #[async_trait]
 pub trait HotspotFeed: Send {
@@ -75,6 +83,53 @@ pub fn http_client() -> Result<reqwest::Client, Error> {
         ])
 }
 
+/// Reads a reply's body as text, refusing one larger than `limit` bytes
+/// instead of buffering it: by its declared length when it has one, and by
+/// what actually arrives when it does not or when that was a lie.
+///
+/// # Errors
+///
+/// A [`human_errors::Kind::User`] error when the reply is too large, which an
+/// operator fixes with a smaller request, or when the connection broke. Neither
+/// carries the request URL.
+pub async fn read_bounded(mut response: reqwest::Response, limit: usize) -> Result<String, Error> {
+    let too_large = || {
+        human_errors::user(
+            format!(
+                "NASA FIRMS sent more than {limit} bytes for one request, which is more than this sidecar will hold."
+            ),
+            &["Narrow `[settings.area]`, or lower `[settings.source] days`."],
+        )
+    };
+
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
+        return Err(too_large());
+    }
+
+    let mut body: Vec<u8> = Vec::new();
+
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(reqwest::Error::without_url)
+        .wrap_user_err(
+            "NASA FIRMS sent a broken reply.",
+            &["FIRMS is somebody else's service; the next poll may simply work."],
+        )?
+    {
+        if body.len() + chunk.len() > limit {
+            return Err(too_large());
+        }
+
+        body.extend_from_slice(&chunk);
+    }
+
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
 /// Reads a `Retry-After` header, which is a number of seconds or an HTTP date.
 /// One we cannot read answers [`None`], and the caller falls back to its own
 /// guess rather than waiting for a moment it cannot work out.
@@ -107,6 +162,42 @@ mod tests {
     fn the_user_agent_names_the_software_and_links_to_it() {
         assert!(USER_AGENT.starts_with("rustak-plugin-firms/"));
         assert!(USER_AGENT.contains("github.com/SierraSoftworks/rustak"));
+    }
+
+    #[tokio::test]
+    async fn a_reply_is_read_up_to_a_ceiling_and_no_further() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("x".repeat(1_000)))
+            .mount(&server)
+            .await;
+
+        let get = || async {
+            http_client()
+                .expect("a client")
+                .get(server.uri())
+                .send()
+                .await
+                .expect("the mock answers")
+        };
+
+        assert_eq!(
+            read_bounded(get().await, 10_000)
+                .await
+                .expect("it fits")
+                .len(),
+            1_000,
+        );
+
+        let err = read_bounded(get().await, 100)
+            .await
+            .expect_err("ten times the ceiling");
+
+        assert!(err.to_string().contains("100 bytes"), "{err}");
     }
 
     #[test]

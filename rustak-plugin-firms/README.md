@@ -63,7 +63,7 @@ The uid is `FIRMS-<satellite>-<yyyymmddHHMM>-<lat>-<lon>`: the same detection re
 
 ### Rate
 
-Each detection is published once, then every `republish` (10 m) for devices that joined since. At most `max_per_tick` (500) leave per tick, newest first.
+Each detection is published once, then every `republish` (10 m) for devices that joined since. At most `max_per_tick` (500, or 0 for no cap) leave per tick, newest first. A row FIRMS revises replaces what was held and is published again at once.
 
 ## Terms
 

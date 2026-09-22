@@ -219,6 +219,7 @@ impl Sidecar for FirmsSidecar {
             offered = counters.offered,
             published = counters.published,
             republished = counters.republished,
+            revised = counters.revised,
             suppressed = counters.suppressed,
             expired = counters.expired,
             "The FIRMS sidecar is stopping.",

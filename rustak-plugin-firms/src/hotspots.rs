@@ -8,7 +8,8 @@
 //!
 //! - a detection is **filtered** by area, confidence, power and age, then held
 //!   under its deterministic uid, so a poll that returns the same rows again
-//!   adds nothing;
+//!   adds nothing, while a row FIRMS has **revised** replaces what was held and
+//!   goes out again at once;
 //! - it is **published** once, then **republished** every `republish`, because
 //!   a server replays only one event per connection to a device that joins
 //!   later, and a fire map that is empty for latecomers is not a fire map;
@@ -63,7 +64,7 @@ pub struct Publish {
     #[serde(default = "default_max_detections")]
     pub max_detections: usize,
 
-    /// How many detections may be published on one tick.
+    /// How many detections may be published on one tick; 0 is no limit.
     #[serde(default = "default_max_per_tick")]
     pub max_per_tick: usize,
 }
@@ -110,10 +111,13 @@ const fn default_max_per_tick() -> usize {
 pub struct Counters {
     /// Detections handed to [`Hotspots::offer`].
     pub offered: u64,
-    /// Detections published for the first time.
+    /// Detections published for the first time, or again at once because FIRMS
+    /// revised them.
     pub published: u64,
     /// Publications of a detection that had been published before.
     pub republished: u64,
+    /// Known detections that FIRMS sent again with different data.
+    pub revised: u64,
     /// Detections dropped: filtered out, or already known.
     pub suppressed: u64,
     /// Detections forgotten: older than `max_age`, or evicted for room.
@@ -163,21 +167,43 @@ impl Hotspots {
 
         let uid = mapping::uid(&detection);
 
-        if !self.wanted(&detection, now) || self.known.contains_key(&uid) {
+        if !self.wanted(&detection, now) {
+            // A revision the filter no longer wants also stops being said again;
+            // what clients hold ages out on the `stale` they were given.
+            self.known.remove(&uid);
             self.counters.suppressed += 1;
 
             return false;
         }
 
-        self.known.insert(
-            uid,
-            Known {
-                detection,
-                published_at: None,
-            },
-        );
+        match self.known.get_mut(&uid) {
+            // The same row again, which is what every poll after the first is.
+            Some(known) if known.detection == detection => {
+                self.counters.suppressed += 1;
 
-        true
+                false
+            }
+            // FIRMS revised it: the same pixel and overpass, with a new
+            // confidence or power. It replaces what was held and is due at once.
+            Some(known) => {
+                known.detection = detection;
+                known.published_at = None;
+                self.counters.revised += 1;
+
+                true
+            }
+            None => {
+                self.known.insert(
+                    uid,
+                    Known {
+                        detection,
+                        published_at: None,
+                    },
+                );
+
+                true
+            }
+        }
     }
 
     /// Whether this detection passes every filter.
@@ -250,7 +276,11 @@ impl Hotspots {
                 .then_with(|| b.1.cmp(&a.1))
                 .then_with(|| a.2.cmp(&b.2))
         });
-        due.truncate(self.publish.max_per_tick.max(1));
+        due.truncate(match self.publish.max_per_tick {
+            // The cap an operator removes, rather than a sidecar that says nothing.
+            0 => usize::MAX,
+            limit => limit,
+        });
 
         let max_age = self.publish.max_age();
         let mut events = Vec::with_capacity(due.len());
@@ -484,6 +514,61 @@ mod tests {
             .collect();
 
         assert!(!kept.contains(&mapping::uid(&detection(0, 60))), "{kept:?}");
+    }
+
+    #[test]
+    fn a_row_firms_revised_replaces_what_was_held_and_goes_out_again() {
+        let mut hotspots = hotspots(Filter::default(), Publish::default());
+        hotspots.offer_at(detection(0, 30), now());
+        let first = hotspots.drain_at(now());
+
+        let revised = Detection {
+            frp_mw: Some(88.0),
+            ..detection(0, 30)
+        };
+
+        assert!(hotspots.offer_at(revised, now() + minutes(1)));
+
+        let again = hotspots.drain_at(now() + minutes(1));
+
+        assert_eq!(again.len(), 1, "well inside `republish`, and still due");
+        assert_eq!(again[0].uid, first[0].uid, "the same object on the map");
+        assert_ne!(again[0].detail, first[0].detail, "drawn with the new power");
+        assert_eq!(hotspots.tracked(), 1);
+        assert_eq!(hotspots.counters().revised, 1);
+    }
+
+    #[test]
+    fn a_revision_the_filter_no_longer_wants_stops_being_said() {
+        let strict = Filter {
+            min_confidence: Confidence::Nominal,
+            min_frp_mw: 0.0,
+        };
+        let mut hotspots = hotspots(strict, Publish::default());
+        hotspots.offer_at(detection(0, 30), now());
+
+        let downgraded = Detection {
+            confidence: Some(Confidence::Low),
+            ..detection(0, 30)
+        };
+
+        assert!(!hotspots.offer_at(downgraded, now()));
+        assert_eq!(hotspots.tracked(), 0);
+    }
+
+    #[test]
+    fn a_batch_size_of_zero_is_no_limit() {
+        let publish = Publish {
+            max_per_tick: 0,
+            ..Publish::default()
+        };
+        let mut hotspots = hotspots(Filter::default(), publish);
+
+        for offset in 0..5 {
+            hotspots.offer_at(detection(offset, 30), now());
+        }
+
+        assert_eq!(hotspots.drain_at(now()).len(), 5);
     }
 
     #[test]

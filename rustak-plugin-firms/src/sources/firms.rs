@@ -29,7 +29,7 @@ use rustak_client::feed::Area;
 use rustak_client::sidecar::async_trait;
 use rustak_core::prelude::*;
 
-use super::{HotspotFeed, SourceState, http_client, retry_after};
+use super::{HotspotFeed, MAX_REPLY_BYTES, SourceState, http_client, read_bounded, retry_after};
 use crate::wire::{self, Detection};
 
 /// Where FIRMS lives, unless a configuration names a mirror or a proxy.
@@ -139,10 +139,22 @@ impl FirmsFeed {
         }
 
         let base = base_url.unwrap_or(DEFAULT_BASE_URL).trim_end_matches('/');
-        reqwest::Url::parse(base).wrap_user_err(
-            format!("`[settings.source] base_url` ('{base}') is not a URL."),
-            &["Remove it to use FIRMS itself, or write it as https://host[:port]."],
+        // The value is never repeated back: a proxy's URL may carry a password.
+        const ADVICE_BASE_URL: &[&str] =
+            &["Remove it to use FIRMS itself, or write it as https://host[:port]."];
+        let parsed = reqwest::Url::parse(base).wrap_user_err(
+            "`[settings.source] base_url` is not a URL.",
+            ADVICE_BASE_URL,
         )?;
+
+        // Anything else parses, and then fails on every poll looking like an
+        // outage rather than like the setting it is.
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(human_errors::user(
+                "`[settings.source] base_url` is not an http:// or https:// URL.",
+                ADVICE_BASE_URL,
+            ));
+        }
 
         let interval = poll.unwrap_or(DEFAULT_POLL).max(POLL_FLOOR);
         let clamped_days = days.clamp(1, MAX_DAYS);
@@ -226,11 +238,7 @@ impl FirmsFeed {
             return Ok(Reply::Wait(retry_after(response.headers())));
         }
 
-        let body = response
-            .text()
-            .await
-            .map_err(reqwest::Error::without_url)
-            .wrap_user_err("NASA FIRMS sent a broken reply.", ADVICE_UNREACHABLE)?;
+        let body = read_bounded(response, MAX_REPLY_BYTES).await?;
 
         let refused = |why: &str| {
             human_errors::user(
@@ -416,6 +424,24 @@ mod tests {
 
             assert!(err.to_string().contains("map_key"), "{err}");
             assert!(bad.is_empty() || !err.to_string().contains(bad), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_base_url_must_be_one_http_can_reach_and_is_never_repeated() {
+        for bad in ["not a url", "ftp://user:hunter2@mirror.example"] {
+            let err = FirmsFeed::open(
+                Secret::new(KEY),
+                &[Sensor::Modis],
+                1,
+                None,
+                Some(bad),
+                Area::default(),
+            )
+            .expect_err(bad);
+
+            assert!(err.to_string().contains("base_url"), "{err}");
+            assert!(!err.to_string().contains("hunter2"), "{err}");
         }
     }
 

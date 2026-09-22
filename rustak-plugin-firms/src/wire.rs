@@ -51,7 +51,9 @@ impl Confidence {
     pub fn parse(raw: &str) -> Option<Self> {
         let raw = raw.trim();
 
-        if let Ok(percent) = raw.parse::<f64>() {
+        // `NaN` and the infinities parse as numbers and fail every comparison
+        // below, which would land them on `High` and past a confidence filter.
+        if let Some(percent) = raw.parse::<f64>().ok().filter(|p| p.is_finite()) {
             return Some(match percent {
                 p if p < 30.0 => Self::Low,
                 p if p < 80.0 => Self::Nominal,
@@ -342,6 +344,9 @@ mod tests {
             ("30", Some(Confidence::Nominal)),
             ("80", Some(Confidence::High)),
             ("?", None),
+            ("NaN", None),
+            ("inf", None),
+            ("-inf", None),
         ] {
             assert_eq!(Confidence::parse(written), expected, "{written}");
         }

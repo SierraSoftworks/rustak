@@ -204,6 +204,11 @@ async fn being_rate_limited_is_waited_out_rather_than_retried() {
 
     let beat = plugin.health().await.expect("a started sidecar reports");
 
+    assert_eq!(
+        beat.state,
+        ServiceState::Healthy,
+        "a 429 is an answer, not a wrong setting",
+    );
     assert_eq!(beat.metrics["source"]["rate_limited"], 1);
     assert_eq!(
         server.received_requests().await.expect("recording").len(),

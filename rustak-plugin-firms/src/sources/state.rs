@@ -142,8 +142,16 @@ impl SourceState {
 
     /// Holds off because the upstream said "not so fast".
     ///
-    /// Not a failure: an upstream that is rate limiting is one that is working,
-    /// so the connection state is left alone and only the schedule moves.
+    /// Not a failure, and more than that an **answer**: an upstream that is rate
+    /// limiting is reachable and working, so this counts as connected. A source
+    /// whose very first reply is a `429` is therefore not reported as one that
+    /// has never worked, which would send an administrator looking for a wrong
+    /// setting that is not there.
+    ///
+    /// A stated delay is honoured up to [`MAX_BACKOFF`] and no further, which is
+    /// the ceiling the ADS-B plugin puts on `Retry-After` too: FIRMS' quota is a
+    /// ten-minute window, so a longer wait is a mistake somewhere, and a mistake
+    /// must not silence a fire feed for a day.
     pub fn wait_for(&mut self, asked: Option<Duration>) {
         self.wait_for_at(asked, Utc::now());
     }
@@ -154,6 +162,14 @@ impl SourceState {
             .unwrap_or(self.interval * 2)
             .clamp(self.interval, MAX_BACKOFF.max(self.interval));
 
+        if !self.connected {
+            self.since = now;
+        }
+
+        self.connected = true;
+        self.ever_connected = true;
+        self.failures = 0;
+        self.last_error = None;
         self.rate_limited = self.rate_limited.saturating_add(1);
         self.next_attempt = now + delay;
 
@@ -248,6 +264,17 @@ mod tests {
 
         assert_eq!(state.last_error(), None);
         assert_eq!((state.next_attempt - now()).num_minutes(), 10);
+    }
+
+    #[test]
+    fn a_rate_limit_is_an_answer_even_when_it_is_the_first_one() {
+        let mut state = SourceState::new("FIRMS", TEN_MINUTES);
+        state.failed_at("timed out", now());
+
+        state.wait_for_at(None, now());
+
+        assert!(state.is_connected() && state.ever_connected());
+        assert_eq!(state.last_error(), None);
     }
 
     #[test]

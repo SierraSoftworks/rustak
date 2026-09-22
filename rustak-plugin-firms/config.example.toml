@@ -204,7 +204,8 @@ max_detections = 5000
 
 # How many detections may be published on one tick, newest first; the rest wait
 # for the next. With shape = "both" that is twice as many events. Keeps a bad
-# day from arriving at every device as one burst. Default: 500.
+# day from arriving at every device as one burst. 0 removes the cap.
+# Default: 500.
 max_per_tick = 500
 
 
@@ -246,8 +247,8 @@ max_per_tick = 500
 # is waited out for as long as it asks. Default: "10m".
 # poll = "10m"
 #
-# A mirror or an authenticating proxy to ask instead of FIRMS itself. The path
-# FIRMS uses is appended to it. Default: none.
+# A mirror or an authenticating proxy to ask instead of FIRMS itself, as an
+# http:// or https:// URL. The path FIRMS uses is appended to it. Default: none.
 # base_url = "https://firms.modaps.eosdis.nasa.gov"
 
 

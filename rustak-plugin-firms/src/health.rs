@@ -105,6 +105,7 @@ mod tests {
             offered: 40,
             published: 12,
             republished: 24,
+            revised: 1,
             suppressed: 28,
             expired: 3,
         }
