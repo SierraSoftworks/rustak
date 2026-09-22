@@ -17,6 +17,9 @@ use crate::api::ApiError;
 thread_local! {
     /// What the demo has placed on the map, which lives as long as the tab does.
     static PUBLISHED: RefCell<Vec<MapFeature>> = const { RefCell::new(Vec::new()) };
+
+    /// What the demo has deleted of what it started with.
+    static REMOVED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
 fn ago(seconds: i64) -> DateTime<Utc> {
@@ -143,7 +146,13 @@ pub fn map_history(uid: &str, secago: i64) -> Vec<MapFeature> {
 
 pub fn map_features() -> Vec<MapFeature> {
     let mut listed = fixtures();
-    PUBLISHED.with(|published| listed.extend(published.borrow().iter().cloned()));
+    REMOVED.with(|removed| listed.retain(|feature| !removed.borrow().contains(&feature.uid)));
+    // What was published over something the demo started with replaces it.
+    PUBLISHED.with(|published| {
+        let published = published.borrow();
+        listed.retain(|feature| !published.iter().any(|over| over.uid == feature.uid));
+        listed.extend(published.iter().cloned());
+    });
     listed
 }
 
@@ -182,18 +191,28 @@ pub fn map_publish(uid: &str, draft: &PublishFeature) -> MapFeature {
 /// Forgets a marker the demo published, or refuses as the server would for
 /// one it never held.
 pub fn map_remove(uid: &str) -> Result<(), ApiError> {
-    PUBLISHED.with(|held| {
+    let published = PUBLISHED.with(|held| {
         let mut held = held.borrow_mut();
         let before = held.len();
         held.retain(|feature| feature.uid != uid);
-
-        match held.len() < before {
-            true => Ok(()),
-            false => Err(ApiError::Server(
-                "Nothing is stored under that uid.".to_string(),
-            )),
+        held.len() < before
+    });
+    let original = REMOVED.with(|removed| {
+        let mut removed = removed.borrow_mut();
+        let held = fixtures().iter().any(|feature| feature.uid == uid)
+            && !removed.iter().any(|gone| gone == uid);
+        if held {
+            removed.push(uid.to_string());
         }
-    })
+        held
+    });
+
+    match published || original {
+        true => Ok(()),
+        false => Err(ApiError::Server(
+            "Nothing is stored under that uid.".to_string(),
+        )),
+    }
 }
 
 fn fixtures() -> Vec<MapFeature> {

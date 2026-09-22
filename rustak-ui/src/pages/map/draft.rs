@@ -59,14 +59,19 @@ impl Draft {
             sidc: feature.sidc.clone().unwrap_or_default(),
             lat: format!("{:.6}", feature.point.lat),
             lon: format!("{:.6}", feature.point.lon),
-            hae: feature
-                .point
-                .hae
-                .map(|hae| format!("{hae:.0}"))
-                .unwrap_or_default(),
+            hae: feature.point.hae.map(metres).unwrap_or_default(),
             remarks: feature.remarks.clone().unwrap_or_default(),
             groups: feature.groups.clone(),
         }
+    }
+
+    /// The draft with only the channels in `publishable` kept. What a feature
+    /// was recorded under is every channel its sender held, and naming one the
+    /// editor may not publish into would refuse the save over a channel the
+    /// form never showed.
+    pub fn within(mut self, publishable: &[String]) -> Self {
+        self.groups.retain(|group| publishable.contains(group));
+        self
     }
 
     /// A marker just placed at `[lon, lat]`, the `n`th on this map, into
@@ -104,13 +109,13 @@ impl Draft {
         let hae = number(&self.hae, "altitude")?;
 
         let sidc = self.sidc.trim();
-        let sidc = match sidc.is_empty() {
-            true => None,
-            false => Some(
-                rustak_api::map::sidc(sidc)
-                    .ok_or_else(|| "A symbol code is 15 letters or 20 digits.".to_string())?,
-            ),
-        };
+        let sidc =
+            match sidc.is_empty() {
+                true => None,
+                false => Some(rustak_api::map::sidc(sidc).ok_or_else(|| {
+                    "A symbol code is 15 letters, or 20 or 30 digits.".to_string()
+                })?),
+            };
 
         let remarks = self.remarks.trim();
 
@@ -133,14 +138,23 @@ impl Draft {
     }
 }
 
-/// Whether a feature is something the console may edit: anything a person
-/// placed or typed, and nothing a device measured, which would only be
-/// overwritten by the device's next report.
+/// Whether a feature is something the console may edit: a point a person
+/// placed or typed. Not what a device measured, which would only be
+/// overwritten by the device's next report; and not a route or a drawing,
+/// whose outline this form does not carry and a save would throw away.
 pub fn editable(feature: &MapFeature) -> bool {
-    feature
-        .how
-        .as_deref()
-        .is_none_or(|how| how.starts_with("h-"))
+    feature.shape.is_none()
+        && feature
+            .how
+            .as_deref()
+            .is_none_or(|how| how.starts_with("h-"))
+}
+
+/// Metres as somebody would type them: to the centimetre, without the zeros
+/// nobody would.
+fn metres(value: f64) -> String {
+    let text = format!("{value:.2}");
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 /// A number from a field, or [`None`] from an empty one.
@@ -220,6 +234,14 @@ mod tests {
     }
 
     #[test]
+    fn a_channel_the_editor_may_not_publish_into_is_not_sent() {
+        let mut recorded = draft();
+        recorded.groups = vec!["Blue".to_string(), "Red".to_string()];
+
+        assert_eq!(recorded.within(&["Blue".to_string()]).groups, ["Blue"]);
+    }
+
+    #[test]
     fn a_placed_marker_is_a_spot_marker_where_the_click_was() {
         let placed = Draft::placed("M-1", [-0.12, 51.5], 3, vec!["Blue".to_string()]);
 
@@ -260,6 +282,14 @@ mod tests {
         assert!(editable(&feature(Some("h-g-i-g-o"))));
         assert!(editable(&feature(None)));
         assert!(!editable(&feature(Some("m-g"))));
-        assert_eq!(Draft::of(&feature(None)).hae, "12");
+        assert_eq!(
+            Draft::of(&feature(None)).hae,
+            "12.4",
+            "to the precision it had"
+        );
+
+        let mut drawn = feature(Some("h-e"));
+        drawn.shape = Some(rustak_api::MapShape::LineString(Vec::new()));
+        assert!(!editable(&drawn), "an outline this form would throw away");
     }
 }

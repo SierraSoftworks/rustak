@@ -523,6 +523,11 @@ async fn a_marker_is_refused_where_a_device_would_be() {
         "a control type is not let through by a space in front of it"
     );
 
+    let mut nowhere = marker("M", &[]);
+    nowhere.point.lat = 91.0;
+    let misplaced = test::call_service(&app, publish("M-5", nowhere)).await;
+    assert_eq!(misplaced.status(), StatusCode::BAD_REQUEST);
+
     let nonsense = test::call_service(
         &app,
         publish(

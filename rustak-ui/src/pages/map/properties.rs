@@ -167,9 +167,11 @@ fn editor(props: &EditorProps) -> Html {
             draft.set(next);
         })
     };
+    // Only the channels the form shows are sent: see `Draft::within`.
     let onsave = {
-        let (onsave, draft) = (props.onsave.clone(), draft.clone());
-        Callback::from(move |_: MouseEvent| onsave.emit((*draft).clone()))
+        let (onsave, draft, channels) =
+            (props.onsave.clone(), draft.clone(), props.channels.clone());
+        Callback::from(move |_: MouseEvent| onsave.emit((*draft).clone().within(&channels)))
     };
     let ondelete = {
         let (ondelete, uid) = (props.ondelete.clone(), props.feature.uid.clone());

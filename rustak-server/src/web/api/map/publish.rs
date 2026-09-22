@@ -50,7 +50,8 @@ const DEFAULT_LIFETIME: Duration = Duration::hours(24);
 ///
 /// # Errors
 ///
-/// A `400` for a uid or type that is not one, or a type a map does not draw;
+/// A `400` for a uid, type or position that is not one, or a type a map does
+/// not draw;
 /// a `403` for a channel the caller may not publish into; a `404` for a
 /// channel that does not exist; a `503` when there is no stream to publish
 /// through.
@@ -73,6 +74,17 @@ pub async fn put(
     if !well_formed_type(&draft.kind) || !feature::drawable(&draft.kind) {
         return Err(ApiError::bad_request(
             "That is not a CoT type a map draws: it should look like a-u-G or b-m-p-s-m.",
+        ));
+    }
+
+    let point = draft.point;
+    let placed = point.lat.is_finite()
+        && point.lon.is_finite()
+        && (-90.0..=90.0).contains(&point.lat)
+        && (-180.0..=180.0).contains(&point.lon);
+    if !placed {
+        return Err(ApiError::bad_request(
+            "That is not a position: latitude is between -90 and 90, and longitude between -180 and 180.",
         ));
     }
 
