@@ -46,6 +46,10 @@ const KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(20);
 /// How often an open feed resolves its credential and its channels again.
 const REAUTHORIZE: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// How many relayed messages are taken in a row before the feed looks up to
+/// see whether it should still be running.
+const MAX_DRAIN: usize = 64;
+
 /// How many maps may be open at once. Each holds a ring of relayed messages,
 /// so an unbounded number is an unbounded amount of memory one account can pin.
 const MAX_FEEDS: usize = 64;
@@ -93,6 +97,7 @@ pub async fn feed(
         index: GroupIndex::default(),
         pending: Vec::new(),
         opened: false,
+        drained: 0,
         next_check: tokio::time::Instant::now() + REAUTHORIZE,
         context: context.clone(),
         request,
@@ -136,6 +141,8 @@ struct Feed {
     pending: Vec<Bytes>,
     /// Whether the `retry:` preamble has been written.
     opened: bool,
+    /// How many messages have been taken since the feed last waited.
+    drained: usize,
     /// On the feed rather than beside the keepalive, because the stream's
     /// closure is re-entered for every frame it yields.
     next_check: tokio::time::Instant,
@@ -223,19 +230,27 @@ fn frames(feed: Feed) -> impl Stream<Item = Result<Bytes, actix_web::Error>> {
 
             // Whatever has already arrived is written before anything is
             // waited for, so a burst goes out as a burst and a server that is
-            // stopping still says what it had relayed.
-            match feed.receiver.try_recv() {
-                Ok(relayed) => {
-                    feed.take(&relayed);
-                    continue;
+            // stopping still says what it had relayed. Only so much of it,
+            // though: a feed that is never idle would otherwise never reach
+            // the `select!` below, and that is where the credential is
+            // checked again and a revocation is heard.
+            if feed.drained < MAX_DRAIN {
+                match feed.receiver.try_recv() {
+                    Ok(relayed) => {
+                        feed.drained += 1;
+                        feed.take(&relayed);
+                        continue;
+                    }
+                    Err(TryRecvError::Lagged(missed)) => {
+                        feed.drained += 1;
+                        feed.fell_behind(missed);
+                        continue;
+                    }
+                    Err(TryRecvError::Closed) => return None,
+                    Err(TryRecvError::Empty) => {}
                 }
-                Err(TryRecvError::Lagged(missed)) => {
-                    feed.fell_behind(missed);
-                    continue;
-                }
-                Err(TryRecvError::Closed) => return None,
-                Err(TryRecvError::Empty) => {}
             }
+            feed.drained = 0;
 
             tokio::select! {
                 biased;

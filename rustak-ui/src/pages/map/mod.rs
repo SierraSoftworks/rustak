@@ -40,11 +40,12 @@ mod store;
 
 use yew::prelude::*;
 
+use crate::app::AuthHandle;
 use crate::components::{Alert, AlertKind, Button, StatusPill, StatusTone};
 
 use popover::Popover;
 use roster::{ROSTER_ROWS, Roster, RosterEntry};
-use session::{FeedStatus, Session};
+use session::{FeedStatus, Listeners, Session};
 
 #[function_component(LiveMap)]
 pub fn live_map() -> Html {
@@ -54,6 +55,12 @@ pub fn live_map() -> Html {
     let selected = use_state(|| None::<String>);
     let search = use_state(String::new);
     let session = use_mut_ref(Session::default);
+
+    // Re-resolving the session is what turns a refusal into the sign-in
+    // prompt: `Protected`, above this page, draws whatever the answer is.
+    let on_signed_out = use_context::<AuthHandle>()
+        .map(|auth| auth.refresh)
+        .unwrap_or_default();
 
     {
         let (container, session, status, selected) = (
@@ -67,9 +74,12 @@ pub fn live_map() -> Html {
             let running = session::start(
                 session,
                 container,
-                Callback::from(move |next| status.set(next)),
-                Callback::from(move |uid| selected.set(uid)),
-                Callback::from(move |()| redraw.force_update()),
+                Listeners {
+                    on_status: Callback::from(move |next| status.set(next)),
+                    on_select: Callback::from(move |uid| selected.set(uid)),
+                    on_redraw: Callback::from(move |()| redraw.force_update()),
+                    on_signed_out,
+                },
             );
 
             move || running.stop()

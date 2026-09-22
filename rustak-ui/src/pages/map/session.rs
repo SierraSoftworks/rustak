@@ -50,6 +50,9 @@ pub enum FeedStatus {
     Reconnecting(String),
     /// There is no map at all: the libraries did not load, or there is no WebGL.
     Failed(String),
+    /// The server no longer accepts this session. The map has been emptied:
+    /// what it showed was shown to somebody who may not be entitled to it now.
+    SignedOut(String),
 }
 
 impl FeedStatus {
@@ -63,6 +66,7 @@ impl FeedStatus {
             Self::NotLive(why) => (StatusTone::Warning, "Not live".into(), said(why)),
             Self::Reconnecting(why) => (StatusTone::Warning, "Reconnecting".into(), said(why)),
             Self::Failed(why) => (StatusTone::Error, "Unavailable".into(), said(why)),
+            Self::SignedOut(why) => (StatusTone::Error, "Signed out".into(), said(why)),
         }
     }
 }
@@ -118,22 +122,28 @@ pub struct Running {
     on_status: Callback<FeedStatus>,
     on_select: Callback<Option<String>>,
     on_redraw: Callback<()>,
+    on_signed_out: Callback<()>,
+}
+
+/// What the page wants to hear about.
+pub struct Listeners {
+    pub on_status: Callback<FeedStatus>,
+    pub on_select: Callback<Option<String>>,
+    pub on_redraw: Callback<()>,
+    /// The server refused the session. The console re-resolves it, which is
+    /// what puts the sign-in prompt where this page was.
+    pub on_signed_out: Callback<()>,
 }
 
 /// Starts the map, the feed and the clock.
-pub fn start(
-    session: Rc<RefCell<Session>>,
-    container: NodeRef,
-    on_status: Callback<FeedStatus>,
-    on_select: Callback<Option<String>>,
-    on_redraw: Callback<()>,
-) -> Running {
+pub fn start(session: Rc<RefCell<Session>>, container: NodeRef, listeners: Listeners) -> Running {
     let running = Running {
         session,
         alive: Rc::new(Cell::new(true)),
-        on_status,
-        on_select,
-        on_redraw,
+        on_status: listeners.on_status,
+        on_select: listeners.on_select,
+        on_redraw: listeners.on_redraw,
+        on_signed_out: listeners.on_signed_out,
     };
 
     spawn_local(running.clone().run(container));
@@ -177,6 +187,8 @@ impl Running {
             }
 
             let wait = match &ended {
+                // Trying again would only be refused again.
+                FeedStatus::SignedOut(_) => return self.on_status.emit(ended),
                 FeedStatus::NotLive(_) => RETRY_REFUSED_MS,
                 _ => RETRY_MS,
             };
@@ -200,13 +212,13 @@ impl Running {
                 self.apply(changes);
                 self.fit_once();
             }
-            Err(err) => return FeedStatus::Reconnecting(err.to_string()),
+            Err(err) => return self.lost(&err),
         }
 
         let mut feed: Feed = match feed {
             Ok(feed) => feed,
             Err(ApiError::Server(refused)) => return FeedStatus::NotLive(refused),
-            Err(err) => return FeedStatus::Reconnecting(err.to_string()),
+            Err(err) => return self.lost(&err),
         };
 
         self.session.borrow_mut().feed = Some(feed.canceller());
@@ -226,8 +238,26 @@ impl Running {
             self.apply(changes);
         }
 
-        feed.canceller().cancel();
+        // Dropping the feed cancels it; the next connection is what finds out
+        // why it ended. If the server closed it because the credential stopped
+        // being good, that connection is refused and `lost` empties the map.
         FeedStatus::Reconnecting("The live feed ended. Reconnecting.".to_string())
+    }
+
+    /// What a failed request means. A refusal is not a failure to retry: the
+    /// map is emptied, because what it shows was read under a session the
+    /// server no longer honours, and the console is told to look again at who
+    /// is signed in.
+    fn lost(&self, err: &ApiError) -> FeedStatus {
+        if !matches!(err, ApiError::Unauthorized | ApiError::Forbidden) {
+            return FeedStatus::Reconnecting(err.to_string());
+        }
+
+        let cleared = self.session.borrow_mut().store.clear();
+        self.apply(cleared);
+        self.on_signed_out.emit(());
+
+        FeedStatus::SignedOut(err.to_string())
     }
 
     /// Dims and drops what has gone stale, and lets the page redraw when there

@@ -9,7 +9,7 @@
 //! Every method answers a [`Changes`]: what to draw again and what to take
 //! away. The clock is always passed in, so none of this needs a browser.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Duration, Utc};
 use rustak_api::MapFeature;
@@ -96,7 +96,7 @@ impl Store {
         }
         if self
             .get(&feature.uid)
-            .is_some_and(|held| held.time > feature.time)
+            .is_some_and(|known| known.time > feature.time)
         {
             return changes;
         }
@@ -125,18 +125,33 @@ impl Store {
         }
     }
 
+    /// Forgets everything, for a reader who may no longer see any of it.
+    pub fn clear(&mut self) -> Changes {
+        Changes {
+            upserts: Vec::new(),
+            removes: self.held.drain().map(|(uid, _)| uid).collect(),
+        }
+    }
+
     /// Takes a snapshot: everything in it, and nothing that is not — except
     /// what arrived so recently that the snapshot could not have known.
     pub fn replace(&mut self, snapshot: Vec<MapFeature>, now: DateTime<Utc>) -> Changes {
         let mut changes = Changes::default();
 
+        // A set, because both sides can be thousands long and this runs on the
+        // page's only thread.
+        let listed: HashSet<&str> = snapshot
+            .iter()
+            .map(|feature| feature.uid.as_str())
+            .collect();
+
         let gone: Vec<String> = self
             .held
             .values()
             .map(|held| &held.feature)
-            .filter(|held| held.received_at + JUST_ARRIVED < now)
-            .filter(|held| !snapshot.iter().any(|listed| listed.uid == held.uid))
-            .map(|held| held.uid.clone())
+            .filter(|known| known.received_at + JUST_ARRIVED < now)
+            .filter(|known| !listed.contains(known.uid.as_str()))
+            .map(|known| known.uid.clone())
             .collect();
 
         for uid in gone {
@@ -257,6 +272,15 @@ mod tests {
         assert!(store.sweep(at("12:03:00")).is_empty());
 
         assert_eq!(store.sweep(at("12:07:30")).removes, ["A"]);
+        assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn clearing_takes_everything_off_the_map() {
+        let mut store = Store::default();
+        store.upsert(feature("A", "12:00:00"), at("12:00:00"));
+
+        assert_eq!(store.clear().removes, ["A"]);
         assert_eq!(store.len(), 0);
     }
 

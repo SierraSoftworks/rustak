@@ -147,11 +147,11 @@ async fn the_snapshot_is_what_is_current_and_worth_drawing() {
     let (_, admin) = server.signed_in("grace", true).await;
     let soon = Utc::now() + Duration::minutes(2);
 
-    store(&server, message("ANDROID-1", "a-f-G-U-C", soon), &[0]).await;
+    store(&server, message("ANDROID-1", "a-f-G-U-C", soon), &[2]).await;
     store(
         &server,
         message("LONG-GONE", "a-f-G-U-C", Utc::now() - Duration::hours(1)),
-        &[0],
+        &[2],
     )
     .await;
     store(
@@ -162,7 +162,7 @@ async fn the_snapshot_is_what_is_current_and_worth_drawing() {
                 .typed(&Chat::default())
                 .build(),
         )),
-        &[0],
+        &[2],
     )
     .await;
 
@@ -215,15 +215,15 @@ async fn the_feed_carries_what_is_relayed_and_what_is_deleted() {
     let body = watched(&server, &admin, || {
         let tap = router.tap();
 
-        tap.publish(&message("ANDROID-1", "a-f-G-U-C", soon), &sender(&[0]));
-        tap.publish(&message("PING", "t-x-c-t", soon), &sender(&[0]));
+        tap.publish(&message("ANDROID-1", "a-f-G-U-C", soon), &sender(&[2]));
+        tap.publish(&message("PING", "t-x-c-t", soon), &sender(&[2]));
         tap.publish(
             &Arc::new(EncodedEvent::new(
                 Event::builder("t-x-d-d", "throwaway")
                     .push(Element::new("link").attr("uid", "MARKER-1"))
                     .build(),
             )),
-            &sender(&[0]),
+            &sender(&[2]),
         );
     })
     .await;

@@ -93,6 +93,16 @@ impl Canceller {
     }
 }
 
+/// A feed nobody is reading is a request nobody is reading, and the server
+/// holds a place for it until the request ends. Dropping the reader does not
+/// end it — only cancelling does — so every way out of reading a feed,
+/// including an early return, goes through here.
+impl Drop for Feed {
+    fn drop(&mut self) {
+        self.canceller().cancel();
+    }
+}
+
 impl Feed {
     pub fn canceller(&self) -> Canceller {
         match &self.source {

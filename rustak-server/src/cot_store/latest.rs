@@ -240,6 +240,9 @@ pub async fn latest_events(
 /// year to live belongs on the map, and a position report relayed a minute ago
 /// that went stale ten seconds later does not.
 ///
+/// Read a page at a time, because what a reader may see is decided after the
+/// read: a `LIMIT` alone would count the rows they may not.
+///
 /// # Errors
 ///
 /// A [`human_errors::Kind::System`] error carrying whatever SQLite reported.
@@ -247,16 +250,23 @@ pub async fn current(
     db: &Database,
     since: DateTime<Utc>,
     limit: u32,
+    offset: u32,
 ) -> Result<Vec<LatestRow>, Error> {
+    // The uid breaks ties, so that two rows relayed in the same millisecond
+    // are in the same order on every page.
     let sql = format!(
-        "SELECT {} FROM cot_latest WHERE stale >= ?1 ORDER BY received_at DESC LIMIT ?2",
+        "SELECT {} FROM cot_latest WHERE stale >= ?1 \
+         ORDER BY received_at DESC, uid LIMIT ?2 OFFSET ?3",
         LatestRow::COLUMNS
     );
 
     db.read(move |connection| {
         connection
             .prepare_cached(&sql)?
-            .query_map(params![Timestamp::from(since), limit], LatestRow::from_row)?
+            .query_map(
+                params![Timestamp::from(since), limit, offset],
+                LatestRow::from_row,
+            )?
             .collect()
     })
     .await
