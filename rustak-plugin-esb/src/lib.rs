@@ -204,10 +204,18 @@ mod tests {
     /// Starts the plugin over a replay of the demonstration fixture.
     async fn started(settings: &str) -> EsbSidecar {
         let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/outages.example.ndjson");
-        let config: SidecarConfig<Settings> = rustak_core::config::load_str(&format!(
-            "[service]\nname = \"esb\"\n\n[settings]\n{settings}\n\n[settings.source]\nkind = \"replay\"\npath = \"{fixture}\"\n",
+
+        started_over(&format!(
+            "[settings]\n{settings}\n\n[settings.source]\nkind = \"replay\"\npath = \"{fixture}\"\n",
         ))
-        .expect("the configuration loads");
+        .await
+    }
+
+    /// Starts the plugin over whatever `[settings]` an operator might write.
+    async fn started_over(settings: &str) -> EsbSidecar {
+        let config: SidecarConfig<Settings> =
+            rustak_core::config::load_str(&format!("[service]\nname = \"esb\"\n\n{settings}"))
+                .expect("the configuration loads");
 
         let mut sidecar = EsbSidecar::default();
         sidecar
@@ -216,7 +224,7 @@ mod tests {
                     .expect("a usable identity"),
             )
             .await
-            .expect("the replay file opens");
+            .expect("the source opens");
 
         sidecar
     }
@@ -287,6 +295,44 @@ mod tests {
             .expect("handled");
 
         assert_eq!(sidecar.tick().await.expect("the next tick").len(), 5);
+    }
+
+    #[tokio::test]
+    async fn an_upstream_that_fails_is_a_quiet_tick_and_a_heartbeat_that_says_why() {
+        let esb = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::any())
+            .respond_with(wiremock::ResponseTemplate::new(503))
+            .mount(&esb)
+            .await;
+        let mut sidecar = started_over(&format!(
+            "[settings.source]\nkind = \"powercheck\"\napi_key = \"test-key\"\nbase_url = \"{}\"\n",
+            esb.uri(),
+        ))
+        .await;
+
+        let published = sidecar.tick().await.expect("never a stopped sidecar");
+        let beat = sidecar.health().await.expect("a started sidecar reports");
+
+        assert!(published.is_empty());
+        assert_eq!(beat.state, ServiceState::Unhealthy, "it has never answered");
+        assert!(
+            beat.message
+                .is_some_and(|message| message.contains("not answering"))
+        );
+    }
+
+    #[tokio::test]
+    async fn events_this_sidecar_does_not_act_on_publish_nothing() {
+        let mut sidecar = started("").await;
+
+        for event in [
+            SidecarEvent::Disconnected {
+                reason: "connection reset".to_string(),
+            },
+            SidecarEvent::Negotiated { protobuf: true },
+        ] {
+            assert!(sidecar.on_event(event).await.expect("handled").is_empty());
+        }
     }
 
     #[tokio::test]

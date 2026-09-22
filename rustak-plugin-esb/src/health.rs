@@ -141,6 +141,36 @@ mod tests {
     }
 
     #[test]
+    fn a_source_that_has_not_been_asked_yet_says_so() {
+        let beat = heartbeat(
+            "powercheck",
+            &state(),
+            FeedCounters::default(),
+            Summary::default(),
+        );
+
+        assert_eq!(beat.state, ServiceState::Unhealthy);
+        assert!(
+            beat.message
+                .is_some_and(|message| message.contains("not answered yet"))
+        );
+    }
+
+    #[test]
+    fn a_source_that_has_been_failing_for_two_intervals_is_degraded() {
+        let mut state = SourceState::new("ESB PowerCheck", Duration::ZERO);
+        state.succeeded();
+        state.failed("timed out");
+        // Two intervals of nothing is nothing; this is what makes it elapse.
+        std::thread::sleep(Duration::from_millis(2));
+
+        let beat = heartbeat("powercheck", &state, FeedCounters::default(), summary());
+
+        assert_eq!(beat.state, ServiceState::Degraded);
+        assert_eq!(beat.metrics["source"]["connection"], "reconnecting");
+    }
+
+    #[test]
     fn a_source_that_has_only_just_stopped_is_still_healthy() {
         let mut state = state();
         state.succeeded();

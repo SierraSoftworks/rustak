@@ -75,6 +75,13 @@ impl SourceState {
         self.next_attempt = Utc::now();
     }
 
+    /// Moves the last answer into the past, so a test can stand two hours
+    /// into an upstream outage without waiting for one.
+    #[cfg(test)]
+    pub(crate) fn answered_at(&mut self, at: DateTime<Utc>) {
+        self.last_success = Some(at);
+    }
+
     /// Records an answer, and schedules the next request an interval away.
     pub fn succeeded(&mut self) {
         let now = Utc::now();

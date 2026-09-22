@@ -192,24 +192,47 @@ mod tests {
         assert_eq!(settings.stale(), STALE);
         assert_eq!(settings.refresh(), REFRESH);
 
-        match &settings.source {
-            Source::PowerCheck {
-                poll,
-                details_per_tick,
-                base_url,
-                ..
-            } => {
-                assert_eq!(poll.to_std().ok(), Some(DEFAULT_POLL));
-                assert_eq!(*details_per_tick, DEFAULT_DETAILS_PER_TICK);
-                assert_eq!(base_url, DEFAULT_BASE_URL);
-            }
-            other => panic!("expected PowerCheck, got {other:?}"),
-        }
+        let Source::PowerCheck {
+            poll,
+            details_per_tick,
+            base_url,
+            ..
+        } = &settings.source
+        else {
+            panic!("expected PowerCheck, got {:?}", settings.source);
+        };
+        assert_eq!(poll.to_std().ok(), Some(DEFAULT_POLL));
+        assert_eq!(*details_per_tick, DEFAULT_DETAILS_PER_TICK);
+        assert_eq!(base_url, DEFAULT_BASE_URL);
 
         assert!(
             settings.source.open(Scope::default()).is_ok(),
             "without a request"
         );
+    }
+
+    #[test]
+    fn a_file_with_no_settings_table_replays_a_file_from_the_working_directory() {
+        let settings = load("").expect("it loads").settings;
+
+        assert_eq!(settings.source.kind(), "replay");
+        assert_eq!(settings.include, OutageKind::ALL.to_vec());
+        assert_eq!((settings.stale(), settings.refresh()), (STALE, REFRESH));
+        assert!(
+            settings.source.open(Scope::default()).is_err(),
+            "and says so by name when that file is not there",
+        );
+    }
+
+    #[test]
+    fn a_negative_duration_is_a_typo_rather_than_a_reason_not_to_start() {
+        let settings = Settings {
+            stale: chrono::Duration::seconds(-1),
+            refresh: chrono::Duration::seconds(-1),
+            ..Settings::default()
+        };
+
+        assert_eq!((settings.stale(), settings.refresh()), (STALE, REFRESH));
     }
 
     #[test]

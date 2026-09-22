@@ -109,6 +109,23 @@ mod tests {
     }
 
     #[test]
+    fn a_retry_after_as_a_date_is_the_delay_until_then() {
+        let at = chrono::Utc::now() + chrono::Duration::seconds(120);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "retry-after",
+            HeaderValue::from_str(&at.to_rfc2822()).expect("a header"),
+        );
+
+        let delay = retry_after(&headers).expect("an HTTP date is a delay");
+
+        assert!(
+            delay > Duration::from_secs(100) && delay <= Duration::from_secs(120),
+            "{delay:?}"
+        );
+    }
+
+    #[test]
     fn the_user_agent_names_the_software_and_links_to_it() {
         assert!(USER_AGENT.starts_with("rustak-plugin-esb/"));
         assert!(USER_AGENT.contains("github.com/SierraSoftworks/rustak"));

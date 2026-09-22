@@ -1,5 +1,6 @@
 //! The PowerCheck source against a local mock; never against ESB.
 
+use rstest::rstest;
 use rustak_client::feed::Area;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -210,6 +211,58 @@ async fn a_detail_that_fails_is_not_asked_for_again_on_the_next_tick() {
 }
 
 #[tokio::test]
+async fn an_outage_whose_type_changes_has_its_detail_asked_for_again() {
+    // `Restored` overwrites `Fault` in the list well before DETAIL_REFRESH
+    // comes round, and the restore time is only in the detail.
+    const FAULT: &str =
+        r#"{"outageMessage": [{"i": 2826455, "t": "Fault", "p": {"c": "51.8139,-8.3986"}}]}"#;
+    const RESTORED: &str =
+        r#"{"outageMessage": [{"i": 2826455, "t": "Restored", "p": {"c": "51.8139,-8.3986"}}]}"#;
+    let restored_detail = DETAIL
+        .replace("\"outageType\": \"Fault\"", "\"outageType\": \"Restored\"")
+        .replace(
+            "\"restoreTime\": \"\"",
+            "\"restoreTime\": \"22/09/2026 18:10\"",
+        );
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/outages"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(FAULT))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    serve(
+        &server,
+        "/outages",
+        ResponseTemplate::new(200).set_body_string(RESTORED),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path("/outages/2826455/"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(DETAIL))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    serve(
+        &server,
+        "/outages/2826455/",
+        ResponseTemplate::new(200).set_body_string(restored_detail),
+    )
+    .await;
+    let mut feed = feed(&server, Scope::default());
+    let _ = feed.poll().await.expect("the fault, with its detail");
+
+    feed.state.due_now();
+    let outages = feed.poll().await.expect("the restoration");
+
+    let restored = find(&outages, "2826455");
+    assert_eq!(restored.kind, OutageKind::Restored);
+    assert_eq!(restored.restored_at, "2026-09-22T17:10:00Z".parse().ok());
+    assert!(restored.is_final(), "and it will not be asked about again");
+}
+
+#[tokio::test]
 async fn an_upstream_that_stops_answering_does_not_clear_the_map() {
     let server = serving_the_fixtures().await;
     let mut feed = feed(&server, Scope::default());
@@ -227,6 +280,118 @@ async fn an_upstream_that_stops_answering_does_not_clear_the_map() {
         .await
         .expect("and then the last list is answered");
     assert_eq!(held.len(), 2);
+}
+
+/// A server that lists the fixtures and answers the fault's detail with
+/// `response`, exactly once; the planned outage's detail must never be asked
+/// for, because whatever went wrong with the first holds the rest back.
+async fn serving_one_detail(response: ResponseTemplate) -> MockServer {
+    let server = MockServer::start().await;
+    serve(
+        &server,
+        "/outages",
+        ResponseTemplate::new(200).set_body_string(LISTING),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path("/outages/2826455/"))
+        .respond_with(response)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/outages/2826460/"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    server
+}
+
+#[rstest]
+#[case::rate_limited(ResponseTemplate::new(429).insert_header("retry-after", "600"))]
+#[case::rate_limited_without_saying_for_how_long(ResponseTemplate::new(429))]
+#[case::refused(ResponseTemplate::new(401))]
+#[tokio::test]
+async fn a_detail_esb_will_not_answer_holds_the_rest_back(#[case] response: ResponseTemplate) {
+    let server = serving_one_detail(response).await;
+    let mut feed = feed(&server, Scope::default());
+
+    let first = feed.poll().await.expect("not a failed poll");
+    let second = feed.poll().await.expect("nor is the next tick");
+
+    assert_eq!(
+        (first.len(), second.len()),
+        (2, 2),
+        "the markers stay, bare"
+    );
+}
+
+#[tokio::test]
+async fn a_detail_we_cannot_read_leaves_the_marker_as_the_list_had_it() {
+    let server = MockServer::start().await;
+    serve(
+        &server,
+        "/outages",
+        ResponseTemplate::new(200).set_body_string(LISTING),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path("/outages/2826455/"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<html>maintenance</html>"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    serve(&server, "/outages/2826460/", ResponseTemplate::new(404)).await;
+    let mut feed = feed(&server, Scope::default());
+
+    let _ = feed.poll().await.expect("a poll");
+    let outages = feed
+        .poll()
+        .await
+        .expect("and it is not asked for again at once");
+
+    assert_eq!(find(&outages, "2826455").location, None);
+}
+
+#[rstest]
+#[case::no_such_endpoint(ResponseTemplate::new(404))]
+#[case::not_a_list(ResponseTemplate::new(200).set_body_string("<html>maintenance</html>"))]
+#[tokio::test]
+async fn a_list_that_is_not_there_or_not_a_list_is_a_failure_that_says_so(
+    #[case] response: ResponseTemplate,
+) {
+    let server = MockServer::start().await;
+    serve(&server, "/outages", response).await;
+    let mut feed = feed(&server, Scope::default());
+
+    let err = feed.poll().await.expect_err("nothing to put on a map");
+
+    assert!(err.to_string().contains("list of outages"), "{err}");
+    assert!(feed.state().last_error().is_some());
+    assert!(!feed.state().is_connected());
+}
+
+#[tokio::test]
+async fn an_upstream_that_has_been_gone_for_hours_does_clear_the_map() {
+    let server = serving_the_fixtures().await;
+    let mut feed = feed(&server, Scope::default());
+    let _ = feed.poll().await.expect("the list arrives");
+
+    server.reset().await;
+    serve(&server, "/outages", ResponseTemplate::new(503)).await;
+    feed.state.due_now();
+    let _ = feed.poll().await.expect_err("the upstream has gone");
+    feed.state
+        .answered_at(Utc::now() - chrono::Duration::hours(3));
+
+    let released = feed.poll().await.expect("not an error, just nothing known");
+
+    assert!(
+        released.is_empty(),
+        "two hours is as long as a guess is held"
+    );
 }
 
 #[tokio::test]
@@ -272,11 +437,13 @@ async fn being_rate_limited_is_waited_out_and_is_not_a_failure() {
     assert!(!feed.state().ready(), "ESB asked for ten minutes");
 }
 
-#[test]
-fn an_empty_key_is_refused_with_where_to_find_one() {
+#[rstest]
+#[case::empty(" ")]
+#[case::not_a_header("two\nlines")]
+fn a_key_that_cannot_work_is_refused_with_where_to_find_one(#[case] key: &str) {
     let err = PowerCheckFeed::open(
         DEFAULT_BASE_URL,
-        &Secret::new(" "),
+        &Secret::new(key),
         Scope::default(),
         DEFAULT_POLL,
         10,

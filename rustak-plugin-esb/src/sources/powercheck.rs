@@ -312,7 +312,11 @@ impl PowerCheckFeed {
                     );
                     self.hold_details(now, wait);
                 }
-                Ok(Fetched::Denied(status)) => self.refused(status),
+                Ok(Fetched::Denied(status)) => {
+                    // A key refused once is not worth a second request this tick.
+                    self.refused(status);
+                    break;
+                }
                 Err(err) => {
                     // Without this, the same outage is asked about every tick
                     // for as long as the upstream is struggling.
