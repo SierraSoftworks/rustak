@@ -41,6 +41,7 @@ use super::hub::Hub;
 use super::metrics::StreamMetrics;
 use super::mission_hook::MissionIngest;
 use super::subscription::{ConnId, Outbound, SendResult};
+use super::tap::CotTap;
 
 /// What became of one inbound message.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,6 +70,8 @@ pub struct Router {
     /// The channel name → bit position map, shared by every connection routing
     /// through this router. See [`GroupCache`].
     groups: Arc<GroupCache>,
+    /// What is being relayed, for a watcher that is not a connection.
+    tap: CotTap,
     server_id: String,
 }
 
@@ -98,6 +101,7 @@ impl Router {
             missions,
             metrics,
             groups: Arc::new(GroupCache::new()),
+            tap: CotTap::new(),
             server_id: server_id.into(),
         }
     }
@@ -115,6 +119,11 @@ impl Router {
     /// The registry this router delivers through.
     pub fn hub(&self) -> &Arc<Hub> {
         &self.hub
+    }
+
+    /// Where this router announces what it relays. See [`CotTap`].
+    pub fn tap(&self) -> &CotTap {
+        &self.tap
     }
 
     /// The counters this router keeps.
@@ -162,6 +171,7 @@ impl Router {
         // what this message's own recipients were sent.
         self.hub.apply_event(from, encoded.event(), Some(&encoded));
         self.record(from, &sender, &encoded);
+        self.tap.publish(&encoded, &sender);
 
         let selection = match dest::select_recipients(
             &dest::Selecting {

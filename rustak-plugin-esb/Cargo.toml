@@ -1,0 +1,47 @@
+[package]
+name = "rustak-plugin-esb"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+description = "ESB Networks power-outage sidecar: PowerCheck faults, planned works and restorations as CoT markers on a rustak channel."
+
+# A library as well as a binary, so that `rustak-server`'s integration suite can
+# drive this plugin the way the harness does rather than shelling out to it.
+[lib]
+name = "rustak_plugin_esb"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rustak-plugin-esb"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+rustak-api = { workspace = true }
+rustak-client = { workspace = true }
+rustak-core = { workspace = true }
+rustak-cot = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+human-errors = { workspace = true }
+clap = { workspace = true }
+# PowerCheck gzips every response whatever `Accept-Encoding` says, so this crate
+# switches decompression on rather than reading bytes it cannot parse.
+reqwest = { workspace = true, features = ["gzip"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+rstest = { workspace = true }
+# The source suite serves hand-written fixtures from a local mock: ESB's API is
+# somebody else's service, and busiest exactly when a test run would be rude.
+wiremock = { workspace = true }

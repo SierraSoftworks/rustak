@@ -247,7 +247,11 @@ mod tests {
             vec!["localhost".to_string()],
             "the configuration file's host name wins over the wizard's",
         );
-        assert_eq!(settings.name, "Hilltop TAK");
+        assert_eq!(
+            settings.name,
+            crate::config::TEST_SERVER_NAME,
+            "a name in the file is not something a web form gets to replace either",
+        );
         assert!(settings.node_id.is_some());
     }
 

@@ -17,17 +17,29 @@
 //!   [`Provider::min_interval`] whatever a configuration says;
 //! - a `429` is honoured for as long as `Retry-After` asks, and a provider that
 //!   asks twice inside ten polls has the interval raised to what it asked for;
+//! - a `429` that names no delay is waited out on twice the interval, and two of
+//!   those inside ten polls slow the source down by half as much again — which
+//!   it earns back, one step per sixty clean polls, down to where it started;
 //! - [`FORBIDDEN_LIMIT`] consecutive `403`s stop the source, with a log line
 //!   saying so, rather than retrying against a service that has said no.
 //!
 //! # The defaults came from a deployment, not from a document
 //!
-//! adsb.lol publishes no number — its limits are "dynamic, API keys planned" —
-//! and the first live deployment found out what that meant: `429`,
-//! `Retry-After: 10`, on about every other request at a five-second poll. So
-//! its default is ten seconds, which is what it asked for; adsb.fi documents
-//! one request a second and gets five, which is a polite margin rather than a
-//! measurement; airplanes.live is unverified and gets the conservative one.
+//! adsb.lol publishes no number — its limits are "dynamic based on the
+//! environment load", with API keys planned — and two live deployments found
+//! out what that meant: `429` on about every other request at a five-second
+//! poll, and still on one in five at ten. It has never been seen to say how
+//! long to wait. (An earlier version of this file recorded `Retry-After: 10`;
+//! that was this plugin's own fallback of twice the interval, read back out of
+//! its own log line.) So ten seconds is where adsb.lol *starts*, and
+//! [`SourceState`] finds the rate it will actually put up with; adsb.fi
+//! documents one request a second and gets five, which is a polite margin
+//! rather than a measurement; airplanes.live is unverified and gets the
+//! conservative one.
+//!
+//! Which is why a `poll` — configured or defaulted — is a **floor and not a
+//! pin**: the source never asks faster than it, and asks slower for as long as
+//! the provider keeps refusing.
 //!
 //! Each provider's terms and the attribution it asks for are in the crate's
 //! README, and [`Provider::terms`] carries the short version into the log at
@@ -104,15 +116,17 @@ impl Provider {
 
     /// How often this provider is asked when a configuration does not say.
     ///
-    /// Not a published figure in any of the three cases: adsb.lol's is what it
-    /// asked the first live deployment for in a `Retry-After`, and the other
-    /// two are a margin under what they document, because being refused is
-    /// worse for a feed than being a little behind.
+    /// Not a published figure in any of the three cases: adsb.lol's is twice
+    /// the interval it refused every other request at, and the other two are a
+    /// margin under what they document, because being refused is worse for a
+    /// feed than being a little behind. It is where the source starts, and the
+    /// fastest it ever asks; [`SourceState`] slows it down from here when the
+    /// provider refuses, and brings it back when it stops.
     #[must_use]
     pub const fn default_poll(self) -> Duration {
         match self {
-            // Observed: `429`, `Retry-After: 10`, on about every other request
-            // at five seconds.
+            // Observed: `429` with no `Retry-After` on about every other
+            // request at five seconds, and on one in five at ten.
             Self::AdsbLol => Duration::from_secs(10),
             // Documented at one request a second; five is the polite margin.
             Self::AdsbFi => Duration::from_secs(5),
@@ -171,6 +185,11 @@ impl AggregatorFeed {
     /// is clamped up to [`min_interval`](Provider::min_interval), and an
     /// operator who asked for something faster is told which one they got.
     ///
+    /// It is the **floor** under this source's cadence and not a pin on it: a
+    /// provider that rate-limits is asked less often than this for as long as
+    /// it does, and the line below says so once, at start-up, so that an
+    /// operator who later reads "every 23s" has already been told why.
+    ///
     /// # Errors
     ///
     /// A [`human_errors::Kind::System`] error when the HTTP client or the URL
@@ -204,7 +223,9 @@ impl AggregatorFeed {
             lon,
             radius_nm = radius,
             poll_s = interval.as_secs(),
-            "Reading aircraft from a public aggregator. {}",
+            "Reading aircraft from a public aggregator every {}s (may be raised if the provider \
+             rate-limits, and eases back when it stops). {}",
+            interval.as_secs(),
             provider.terms(),
         );
 
@@ -514,6 +535,60 @@ mod tests {
             "two inside the window is adsb.lol saying how often it wants to be asked",
         );
         assert_eq!(feed.state().rate_limited(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_provider_that_refuses_twice_and_names_no_delay_is_backed_off_from() {
+        // The second Dublin finding, over the wire: a bare 429, which is what
+        // adsb.lol sends. M9-08 waited each one out and learned nothing.
+        let server = serving(429, "").await;
+        let mut feed = against(&server, Duration::from_secs(10));
+
+        assert!(feed.fetch().await.expect("429 is not an error").is_empty());
+        assert_eq!(
+            feed.state().interval(),
+            Duration::from_secs(10),
+            "one is a bad minute",
+        );
+
+        assert!(feed.fetch().await.expect("429 is not an error").is_empty());
+
+        assert_eq!(
+            feed.state().interval(),
+            Duration::from_secs(15),
+            "two inside the window is a rate limit, header or no header",
+        );
+        assert_eq!(
+            feed.state().configured(),
+            Duration::from_secs(10),
+            "and what was configured is the floor it eases back to",
+        );
+        assert_eq!(feed.state().rate_limited(), 2);
+        assert_eq!(
+            feed.state().last_error(),
+            None,
+            "a refusal is an upstream that is working, not a failure",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_retry_after_in_decimal_seconds_is_a_stated_delay_and_not_silence() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "9.5"))
+            .mount(&server)
+            .await;
+
+        let mut feed = against(&server, Duration::from_secs(5));
+
+        assert!(feed.fetch().await.expect("429 is not an error").is_empty());
+        assert!(feed.fetch().await.expect("429 is not an error").is_empty());
+
+        assert_eq!(
+            feed.state().interval(),
+            Duration::from_secs(10),
+            "9.5s rounds up to ten, and is taken at its word rather than guessed around",
+        );
     }
 
     #[test]

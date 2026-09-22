@@ -164,30 +164,39 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    # Sixty, and the extra minutes buy runner variance rather than the suite's
+    # Ninety, and the extra minutes buy runner variance rather than the suite's
     # own cost. The *same* tests cost 2-4x more on a slow host —
     # `rustak_server`'s library measured 102s on one run and 341s on another,
-    # `stream_routing` 81s against 309s — and nothing in this repository
-    # changes between those.
+    # `stream_routing` 81s against 309s — and nothing in this repository changes
+    # between those.
     #
-    # The history is why the number has moved twice. Thirty was set against a
-    # normal band of 11-16 minutes and was the good case dressed up as a bound:
-    # run 35450602916 was cancelled at exactly 30 with four binaries still to
-    # go. Forty-five was set against 15-17. On 2026-09-20 the M9 wave added 184
-    # tests across four landings and the band became **16-20 minutes**, which
-    # puts the bad case at 20 x 2.8 = 56 — past 45. Raised before a release run
-    # discovered it, because a `Test` failure takes the whole release with it:
-    # `build` needs `ui` and `test`, and v0.0.2 published nothing at all after
-    # one job died.
+    # The history is why the number has moved three times. Thirty was set
+    # against a normal band of 11-16 minutes and was the good case dressed up as
+    # a bound: run 35450602916 was cancelled at exactly 30 with four binaries
+    # still to go. Forty-five was set against 15-17. On 2026-09-20 the M9 wave
+    # added 184 tests across four landings and the band became 16-20 minutes,
+    # which puts the bad case at 20 x 2.8 = 56 — past 45. Sixty was raised
+    # before a release run discovered it, because a `Test` failure takes the
+    # whole release with it: `build` needs `ui` and `test`, and v0.0.2 published
+    # nothing at all after one job died.
     #
-    # Revisit once the M9 tests settle into a band. `docs/ci.md` argues a job
-    # hitting its timeout is a bug report rather than a number to raise, and
-    # that is still right for a job slow because of what it does. This one is
-    # slow because of where it runs. **A `Test` job that hits 60 is a bug report
-    # again** — and the shape to check first is per-binary: cost landing in the
-    # binaries a change touched is growth, cost spread evenly across binaries
-    # nothing touched is the host.
-    timeout-minutes: 60
+    # Revisited 2026-09-22: the band is now **22-28 minutes** (thirteen of
+    # fifteen `main` runs). The suite grew — the binaries' own times went from
+    # 660-870s to 1110-1250s, `workload_identity` alone 170-215s of it — and by
+    # the same arithmetic the bad case is 28 x 2.8 = 78, past 60. So ninety: 78,
+    # with margin. The worst whole job seen against this band is 41m30s; the
+    # margin is deliberate, because with images gated on the suite a cancelled
+    # `Test` blocks every image, and a timeout is cheap and reversible. Making
+    # `workload_identity` cheaper is on the backlog; `docs/ci.md` has the
+    # samples.
+    #
+    # `docs/ci.md` argues a job hitting its timeout is a bug report rather than
+    # a number to raise, and that is still right for a job slow because of what
+    # it does. This one is slow because of where it runs. **A `Test` job that
+    # hits 90 is a bug report again** — and the shape to check first is
+    # per-binary: cost landing in the binaries a change touched is growth, cost
+    # spread evenly across binaries nothing touched is the host.
+    timeout-minutes: 90
     needs: deduplicate
 
     permissions:
@@ -541,6 +550,7 @@ jobs:
           - { name: rustak-plugin-example, bin: rustak-plugin-example }
           - { name: rustak-plugin-ais, bin: rustak-plugin-ais }
           - { name: rustak-plugin-adsb, bin: rustak-plugin-adsb }
+          - { name: rustak-plugin-esb, bin: rustak-plugin-esb }
           - { name: rustak-plugin-firms, bin: rustak-plugin-firms }
         # `target` is a real matrix axis so the `include` entries below merge
         # onto it by key (an include list without a shared key would collapse
@@ -843,8 +853,8 @@ jobs:
       # red `tap`, which was the right outcome. `ui` is not listed because
       # `build`, `e2e` and `interop-node-tak` all need it already.
       #
-      # The cost: images now publish *after* `test`, which is 16-20 minutes
-      # normally and up to an hour on a slow host under its 60-minute bound.
+      # The cost: images now publish *after* `test`, which is 22-28 minutes
+      # normally and up to its 90-minute bound on a slow host.
       # That delay is the price of `:latest` meaning something.
       - build
       - lint
@@ -870,6 +880,7 @@ jobs:
           - { name: rustak-plugin-example, bin: rustak-plugin-example }
           - { name: rustak-plugin-ais, bin: rustak-plugin-ais }
           - { name: rustak-plugin-adsb, bin: rustak-plugin-adsb }
+          - { name: rustak-plugin-esb, bin: rustak-plugin-esb }
           - { name: rustak-plugin-firms, bin: rustak-plugin-firms }
         platform: [linux/amd64, linux/arm64]
 
@@ -985,6 +996,7 @@ jobs:
           - { name: rustak-plugin-example, bin: rustak-plugin-example }
           - { name: rustak-plugin-ais, bin: rustak-plugin-ais }
           - { name: rustak-plugin-adsb, bin: rustak-plugin-adsb }
+          - { name: rustak-plugin-esb, bin: rustak-plugin-esb }
           - { name: rustak-plugin-firms, bin: rustak-plugin-firms }
 
     steps:

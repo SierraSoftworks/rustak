@@ -939,6 +939,8 @@ checksum = "bef16c47ba2797aa6a909cc37d39911f3a6743811fe7408ac0b0cc0276b656e9"
 dependencies = [
  "brotli",
  "compression-core",
+ "flate2",
+ "memchr",
 ]
 
 [[package]]
@@ -4104,6 +4106,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustak-plugin-esb"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "human-errors",
+ "reqwest 0.13.5",
+ "rstest",
+ "rustak-api",
+ "rustak-client",
+ "rustak-core",
+ "rustak-cot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
 name = "rustak-plugin-example"
 version = "0.1.0"
 dependencies = [
@@ -4186,6 +4209,7 @@ dependencies = [
  "rustak-cot",
  "rustak-plugin-adsb",
  "rustak-plugin-ais",
+ "rustak-plugin-esb",
  "rustak-server",
  "rustls",
  "rustls-pki-types",

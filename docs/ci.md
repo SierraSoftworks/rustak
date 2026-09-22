@@ -1,9 +1,9 @@
 # CI/CD
 
 rustak's pipeline is a direct port of [`automate`](https://github.com/SierraSoftworks/automate)'s
-GitHub Actions setup, adapted for a multi-crate workspace with five release
+GitHub Actions setup, adapted for a multi-crate workspace with six release
 binaries (`rustak-server` → `rustak`, and the `rustak-plugin-example`,
-`rustak-plugin-ais`, `rustak-plugin-adsb` and `rustak-plugin-firms` sidecars)
+`rustak-plugin-ais`, `rustak-plugin-adsb`, `rustak-plugin-esb` and `rustak-plugin-firms` sidecars)
 instead of one.
 See `.claude/plan/design/01-foundations-storage-ci.md` §7 for the design this
 implements and `.claude/plan/research/01-automate-architecture.md` §1 for what
@@ -20,7 +20,7 @@ deduplicate ──┬─ version ───────────────�
               ├─ ui      (lints + tests rustak-ui; trunk build → ui-dist-e2e; trunk build --release → ui-dist)
               ├─ e2e     (needs ui; cargo build -p rustak-server; Playwright)
               ├─ interop-node-tak  (needs ui; @tak-ps/node-tak contract suite)
-              └─ build   (needs version, ui; crate × target matrix, 20 jobs) ─┬─ ci (aggregator, always())
+              └─ build   (needs version, ui; crate × target matrix, 25 jobs) ─┬─ ci (aggregator, always())
                                                                                 ├─ docker-build  (per crate × platform)
                                                                                 │     └─ docker-publish (per crate, manifest list)
                                                                                 └─ tap (release only)
@@ -43,7 +43,7 @@ deduplicate ──┬─ version ───────────────�
   `-Cinstrument-coverage`; see [Keeping the test job inside its
   timeout](#keeping-the-test-job-inside-its-timeout) for what that costs and
   what pays for it.
-- **Every job carries a `timeout-minutes`** — 60 for `test`, 45 for `build`,
+- **Every job carries a `timeout-minutes`** — 90 for `test`, 45 for `build`,
   30 for the four that compile or image something big (`ui`, `e2e`,
   `interop-node-tak`, `docker-build`), 20 for `lint`, `docker-publish` and
   `tap`, 10 for the bookkeeping jobs (`deduplicate`, `version`, `ci`).
@@ -62,18 +62,35 @@ deduplicate ──┬─ version ───────────────�
   `stream_routing` 81 s against 309 s. Nothing in the repository changes
   between those; GitHub's two-vCPU hosts simply vary.
 
-  The number has moved twice, and the history is the argument. **Thirty** was
-  set against a normal band of 11–16 minutes — the good case dressed up as a
+  The number has moved three times, and the history is the argument. **Thirty**
+  was set against a normal band of 11–16 minutes — the good case dressed up as a
   bound — and on 2026-09-19 the multiplier met a suite that had also grown, so
   the job was cancelled at exactly 30 with four binaries still to run.
   **Forty-five** was set against 15–17. On 2026-09-20 the M9 wave added 184
-  tests across four landings and the band became **16–20 minutes**, which puts
-  the bad case at 20 × 2.8 ≈ 56 — past 45 again. So `test` now carries **60**,
-  raised deliberately rather than discovered from a cancelled release: `build`
-  needs `ui` and `test`, and v0.0.2 published nothing at all after a single job
-  died. Revisit once the M9 tests settle into a band.
+  tests across four landings and the band became 16–20 minutes, which puts the
+  bad case at 20 × 2.8 ≈ 56 — past 45 again. So `test` went to **60**, raised
+  deliberately rather than discovered from a cancelled release: `build` needs
+  `ui` and `test`, and v0.0.2 published nothing at all after a single job died.
 
-  **A `test` job that hits 60 is a bug report again** — and the first thing to
+  **Then the band moved again, and the number moved with it.** Fifteen `main`
+  runs between 2026-09-20 23:34Z and 2026-09-22 01:34Z: thirteen took
+  22m05s–28m35s, one 17m22s, and one slow host 41m30s. So the normal band is
+  **22–28 minutes**, not 16–20. The per-binary shape says it is the suite and
+  not the hosts: the binaries' own times summed to 660–870 s on 2026-09-20 and
+  sum to 1110–1250 s now, and the difference is in what landed —
+  `workload_identity` (new; 22 tests, 170–215 s, the most expensive binary in
+  the job), `sidecar_enrolment` (2 tests → 5, 12 s → 40–60 s),
+  `hostile_server_name` and `sidecar_trust` (new, 10–25 s each). By the same
+  arithmetic the bad case is 28 × 2.8 ≈ 78 — past 60 — so `test` now carries
+  **90**: 78, with margin. The worst whole job actually seen against this band
+  is that 41m30s, so the margin is generous, and deliberately: with images gated
+  on the test suite a cancelled `test` blocks every image, while a timeout is
+  cheap and reversible. The other lever is the suite's own cost —
+  `workload_identity`'s 22 tests each boot a server and enrol, and sharing one
+  server per suite or grouping the cases is on the backlog. If that lands, the
+  band and this number should both come back down.
+
+  **A `test` job that hits 90 is a bug report again** — and the first thing to
   check is the per-binary shape, not the total. Cost landing in the binaries a
   change touched is growth; cost spread evenly across binaries nothing touched
   is the host. Reading a single slow run as a trend has produced two wrong
@@ -87,6 +104,12 @@ deduplicate ──┬─ version ───────────────�
   It builds a **debug** bundle (for `e2e`'s `?demo` fixtures, which are
   compiled out of release) and a **release** bundle (for the `build` matrix to
   embed).
+
+  Both builds run `rustak-ui/scripts/vendor.mjs` as a Trunk hook, which copies
+  the map page's JavaScript (MapLibre GL, milsymbol) into `dist/vendor` from
+  the versions locked in `rustak-ui/package-lock.json` — `npm ci` on a cold
+  runner, a file copy after that. It uses the Node the runner image ships;
+  those two pins *are* dependabot's to bump (`npm`, `/rustak-ui`).
 
   It also **runs `rustak-ui`'s unit tests**, on the *host* target rather than on
   wasm32. Until M7-04 it only lint-checked them: `cargo clippy --all-targets`
@@ -111,9 +134,9 @@ deduplicate ──┬─ version ───────────────�
   their own when it lands. See `interop/node-tak/README.md`.
 - **`build`** is a `crate × target` matrix: `{rustak-server → rustak,
   rustak-plugin-example, rustak-plugin-ais, rustak-plugin-adsb,
-  rustak-plugin-firms}` ×
+  rustak-plugin-esb, rustak-plugin-firms}` ×
   `{x86_64-unknown-linux-musl, aarch64-unknown-linux-musl (cross),
-  x86_64-apple-darwin, aarch64-apple-darwin, x86_64-pc-windows-msvc}` — 25
+  x86_64-apple-darwin, aarch64-apple-darwin, x86_64-pc-windows-msvc}` — 30
   jobs. A new plugin crate is three lines: one in each of this matrix and the
   two Docker ones below. **No `protoc` is installed anywhere in this
   workflow**: `rustak-cot` builds its protobuf definitions with `protox`, a
@@ -127,8 +150,8 @@ deduplicate ──┬─ version ───────────────�
   let a new upstream release change how that target is built with no commit
   saying so. The binary is **cached** on that version, which is the other half
   of why it is pinned: an unpinned cache would be worse than none, restoring
-  whatever was current the day it was first stored, forever. Four of the twenty
-  jobs use `cross` and share one cache key, so on a cold key three of them log
+  whatever was current the day it was first stored, forever. Five of the twenty-five
+  jobs use `cross` and share one cache key, so on a cold key four of them log
   `Cache already exists` — a warning, not a failure.
 - **`ci`** is the required check: `always()`-gated, it fails the run if any
   dependency did not succeed, then saves the merge-tree success marker for
@@ -143,8 +166,8 @@ deduplicate ──┬─ version ───────────────�
 - **`docker-build`**/**`docker-publish`** build and publish one multi-arch
   (`linux/amd64` + `linux/arm64`) image per crate to
   `ghcr.io/sierrasoftworks/<bin>` — `ghcr.io/sierrasoftworks/rustak`,
-  `…/rustak-plugin-example`, `…/rustak-plugin-ais`, `…/rustak-plugin-adsb` and
-  `…/rustak-plugin-firms`.
+  `…/rustak-plugin-example`, `…/rustak-plugin-ais`, `…/rustak-plugin-adsb`,
+  `…/rustak-plugin-esb` and `…/rustak-plugin-firms`.
   Unlike automate (which only publishes on a GitHub release), this also runs on
   every push to `main`,
   because rustak's M0 exit criterion is a multi-arch
@@ -162,9 +185,9 @@ deduplicate ──┬─ version ───────────────�
   `e2e` and `interop-node-tak` all need it already.
 
   **The trade-off is delay.** Images now publish after `test` rather than
-  alongside it — 16–20 minutes on a normal runner, and up to an hour on a slow
-  one under `test`'s 60-minute bound. A push whose images are wanted sooner has
-  to wait; that is the price of the tag meaning something.
+  alongside it — 22–28 minutes on a normal runner, and as long as `test`'s
+  90-minute bound allows on a slow one. A push whose images are wanted sooner
+  has to wait; that is the price of the tag meaning something.
   **Floating tags move forward only.** On a push to `main`, `docker-publish`
   reads `org.opencontainers.image.revision` off the current `:latest` and moves
   `:latest` and `:main` **only if that revision is an ancestor of the commit
@@ -437,7 +460,7 @@ code scanning), not as pull-request comments.
    `rust.yml`.
 2. `version` rewrites `Cargo.toml`'s workspace version to `0.1.0` (the tag
    name with its leading `v` stripped) and uploads it.
-3. `build` downloads that manifest, compiles all 20 crate×target
+3. `build` downloads that manifest, compiles all 25 crate×target
    combinations, and uploads each binary both as a GitHub Actions artifact and
    (via `SierraSoftworks/gh-releases@v1.0.10`) as a release asset named
    `<bin>-<os>-<arch>[.exe]`.
@@ -445,7 +468,8 @@ code scanning), not as pull-request comments.
    crate; `docker-publish` combines them into multi-arch manifest lists
    tagged `latest`, `<major>.<minor>.<patch>`, `<major>.<minor>` and `<major>`
    at `ghcr.io/sierrasoftworks/rustak`, `…/rustak-plugin-example`,
-   `…/rustak-plugin-ais`, `…/rustak-plugin-adsb` and `…/rustak-plugin-firms`.
+   `…/rustak-plugin-ais`, `…/rustak-plugin-adsb`, `…/rustak-plugin-esb` and
+   `…/rustak-plugin-firms`.
 5. `tap` pushes an updated `rustak` formula (aliased `major`/`minor`) to the
    `SierraSoftworks` Homebrew tap.
 
@@ -507,7 +531,7 @@ cd ..
 # a single build-matrix leg, e.g. the native target
 cargo build --release -p rustak-server
 cargo build --release -p rustak-plugin-example
-cargo build --release -p rustak-plugin-ais -p rustak-plugin-adsb -p rustak-plugin-firms
+cargo build --release -p rustak-plugin-ais -p rustak-plugin-adsb -p rustak-plugin-esb -p rustak-plugin-firms
 
 # a cross-compiled leg (needs `cross`: cargo binstall cross@0.2.5 — the same
 # pin the build matrix uses)

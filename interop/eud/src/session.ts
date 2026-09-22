@@ -31,6 +31,7 @@ import {
   type Admin,
 } from "../../shared/src/bootstrap.js";
 import { httpsClient, type HttpClient } from "../../shared/src/http.js";
+import { hostileServerName } from "../../shared/src/names.js";
 import {
   startServer,
   waitForPort,
@@ -86,7 +87,7 @@ export interface ScenarioSession {
 export async function openSession(scenario: Scenario): Promise<ScenarioSession> {
   const server = await startServer({
     prefix: SCRATCH_PREFIX,
-    name: `rustak-interop-eud-${scenario.name}`,
+    name: hostileServerName(scenario.name),
     host: "localhost",
     config: scenario.config,
     ports: scenario.ports,
@@ -102,7 +103,7 @@ export async function openSession(scenario: Scenario): Promise<ScenarioSession> 
     const admin = await bootstrap(server, client, {
       adminUsername: "interop-admin",
       displayName: "EUD interop suite",
-      serverName: `rustak-interop-eud-${scenario.name}`,
+      serverName: hostileServerName(scenario.name),
       domains: [server.host],
       baseUrl: server.webtak,
     });

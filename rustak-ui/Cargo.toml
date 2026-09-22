@@ -70,6 +70,13 @@ web-sys = { version = "0.3", features = [
     "DataTransfer",
     "DragEvent",
 
+    # The map's live feed is Server-Sent Events read off a `fetch` body — an
+    # `EventSource` cannot carry the bearer token — so the body's reader is
+    # held directly: to read chunks as they arrive, and to cancel the request
+    # when the page goes away. See `api::sse`.
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+
     # WebAuthn. Passkeys are the local sign-in method (there are no passwords),
     # so `navigator.credentials` is not optional chrome here — it is the whole
     # of `auth::passkey`. The ceremony payloads themselves stay opaque JSON

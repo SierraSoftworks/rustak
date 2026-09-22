@@ -1,4 +1,4 @@
-//! The two feed sidecars, end to end, against a real server.
+//! The feed sidecars, end to end, against a real server.
 //!
 //! Enrol → connect → register → publish, with a fake EUD on the other side of
 //! the channel asserting on the CoT it receives. Every step goes through the
@@ -8,7 +8,7 @@
 //! `rustak_client::feed` publisher deciding what goes out.
 //!
 //! The plugins are driven **as libraries**, which is why
-//! `rustak-plugin-{ais,adsb}` have a `[lib]` target: a plugin exercised through
+//! `rustak-plugin-{ais,adsb,esb}` have a `[lib]` target: a plugin exercised through
 //! its own `Sidecar` implementation is the one that ships, whereas a plugin
 //! re-implemented in a test file is a test of the test.
 //!
@@ -29,9 +29,10 @@ use rustak_client::feed::{AircraftClass, Track, TrackKind, VesselClass};
 use rustak_client::sidecar::Sidecar;
 use rustak_plugin_adsb::AdsbSidecar;
 use rustak_plugin_ais::AisSidecar;
+use rustak_plugin_esb::EsbSidecar;
 use rustak_server::prelude::*;
 
-use feed_support::{RunningFeed, replay_settings};
+use feed_support::{FIRST_CONNECT_HOLD, RunningFeed, replay_settings};
 use stream_support::{EXPECT, SETTLE};
 
 /// Five vessels, as an AIS source would have reported them.
@@ -191,6 +192,68 @@ async fn the_ais_sidecar_publishes_its_replayed_vessels_to_a_device_on_the_chann
     assert_eq!(registered.version.as_deref(), Some(AisSidecar::VERSION));
 
     feed.stop().await;
+}
+
+#[actix_web::test]
+async fn the_first_batch_a_feed_produces_reaches_the_stream_on_a_clean_start() {
+    // M9-11. The harness used to take its first tick the instant it started,
+    // before the CoT stream had finished connecting, so a feed plugin's very
+    // first batch was published into a connection that was not up and thrown
+    // away — with `WARN Discarding events: the CoT stream is reconnecting` on
+    // every clean start, naming a first connection a reconnection.
+    //
+    // It is invisible from the far end of the channel: the plugin answers
+    // `Connected` by clearing its publish intervals, so the next tick sends
+    // everything again and every vessel still arrives. *When* it arrives says
+    // nothing either. This used to be asserted with a stopwatch started before
+    // `RunningFeed::start` — a server booting, two enrolments, three handshakes
+    // — and on a slow CI runner that start-up alone took 41 seconds, so the
+    // assertion failed having measured the runner (M9-13).
+    //
+    // So it is asserted as what it is, a count. The link counts every event it
+    // discards, and how many of those before the stream had ever been up, and
+    // it counts them before anything later can be published. By the time a
+    // vessel reaches the device every earlier discard has been recorded, and
+    // on a clean start there must not be one. There is no clock in this: a
+    // host a hundred times slower reads the same numbers.
+    //
+    // The one bound that could still have made it about the host is the hold
+    // itself, ten seconds in production: a handshake slower than that is a
+    // first batch legitimately discarded, with nothing wrong. So the harness
+    // runs the sidecar with `FIRST_CONNECT_HOLD` — two minutes — and the only
+    // thing left that can discard a first batch is the hold not working.
+    let directory = tempfile::tempdir().expect("a directory for the fixture");
+    let (_, settings) = replay_settings(&directory, &vessels());
+
+    let mut feed = RunningFeed::start::<AisSidecar>("ais", &settings).await;
+
+    // How long to wait before calling the test hung: longer than the hold, so
+    // that a connection slow enough to use the hold up is still waited for.
+    // It is not the assertion, and nothing is compared against it.
+    feed.eud
+        .expect_uid("AIS-244660000", FIRST_CONNECT_HOLD + EXPECT)
+        .await
+        .expect("the first vessel arrives");
+
+    let published = feed.stream.published();
+    let discarded = feed.stream.discarded();
+    let before_first_connection = feed.stream.discarded_before_first_connection();
+
+    feed.stop().await;
+
+    // First, that these are the running sidecar's own counters rather than a
+    // copy nobody writes to — which would make the zero below true of any
+    // harness at all.
+    assert!(
+        published >= 1,
+        "a vessel arrived, so the link must have counted publishing it",
+    );
+    assert_eq!(
+        discarded, 0,
+        "{discarded} events were discarded ahead of the first batch that reached the stream \
+         ({before_first_connection} of them before the stream had ever connected): the first \
+         batch was published into a connection that was not up",
+    );
 }
 
 #[actix_web::test]
@@ -576,6 +639,51 @@ async fn the_adsb_sidecar_publishes_what_a_readsb_receiver_serves() {
     assert_eq!(reported.metrics["source"]["kind"], "readsb");
     assert_eq!(reported.metrics["source"]["connection"], "connected");
     assert_eq!(reported.metrics["tracked"], 5);
+
+    feed.stop().await;
+}
+
+/// The demonstration fixture the ESB plugin ships with, shared rather than
+/// copied for the same reason as [`READSB`].
+const OUTAGES: &str = include_str!("../../rustak-plugin-esb/outages.example.ndjson");
+
+#[actix_web::test]
+async fn the_esb_sidecar_publishes_its_replayed_outages_as_coloured_markers() {
+    // Not a track feed: the plugin builds its own markers rather than going
+    // through `FeedPublisher`, so this is the only place that proves a device
+    // receives them with the detail a map needs to colour them.
+    let directory = tempfile::tempdir().expect("a directory for the fixture");
+    let path = directory.path().join("outages.ndjson");
+    std::fs::write(&path, OUTAGES).expect("the fixture lands");
+
+    let settings = format!(
+        "[settings.source]\nkind = \"replay\"\npath = \"{}\"\n",
+        path.display(),
+    );
+    let mut feed = RunningFeed::start::<EsbSidecar>("esb", &settings).await;
+
+    let fault = feed
+        .eud
+        .expect_uid("ESB-9000001", EXPECT)
+        .await
+        .expect("the first outage arrives");
+
+    assert_eq!(fault.r#type, "b-m-p-s-m");
+    assert!(
+        fault
+            .callsign()
+            .is_some_and(|label| label.contains("Carrigaline")),
+        "{:?}",
+        fault.callsign(),
+    );
+    assert_eq!(
+        fault
+            .detail
+            .find("color")
+            .and_then(|color| color.get("argb")),
+        Some("-65536"),
+        "a fault is red",
+    );
 
     feed.stop().await;
 }

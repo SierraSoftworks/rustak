@@ -630,6 +630,21 @@ INFO Identity: this sidecar is 'svc.adsb', from an enrolment token
 INFO Identity: this sidecar is 'svc.adsb', from the certificate at '/data/adsb.pem'
 ```
 
+A sidecar that keeps using its workload identity to reach the control API —
+rather than only to enrol — writes a **second** line, once, when the first
+access token comes back. It is a different sentence because it says a different
+thing: the certificate is what this sidecar *is*, and the workload identity is
+what it presents at `[server] control` in order to be its own account there.
+
+```text
+INFO Identity: authenticating to the control API as 'svc.adsb' with the workload identity from NOMAD_TOKEN_rustak
+```
+
+The account is the `sub` of the token the server issued — the account rustak
+resolved the assertion to, not the one the file asked for — so the two lines
+disagreeing is a `[auth.workload]` binding pointing somewhere unexpected, and
+worth looking at.
+
 ## Reacting to server events
 
 `GET /api/v1/events` is a Server-Sent Events feed of what happened on the
@@ -673,6 +688,36 @@ last one seen.
 The feed is for administrators and services. An ordinary account is refused,
 because it says which devices are on the stream and which packages arrived
 across every channel.
+
+### The feed is long-lived, and it says so quietly
+
+One `GET /api/v1/events` stays open for hours. It carries no total timeout —
+that would cut the body on a clock rather than on anything going wrong — and
+instead the server writes a `: keep-alive` comment into an idle feed **every 20
+seconds**, and the harness treats **three missed keep-alives (65 seconds of
+complete silence)** as a dead feed and reopens it. See **Logging and telemetry**
+in `docs/deployment.md` for what that asks of a reverse proxy.
+
+What a sidecar prints about all this, at `info`:
+
+| Line | When |
+|---|---|
+| `The server-event feed is open.` | The first opening, and the first after an outage |
+| `The control link is back after 2m11s.` | Any control-API call working again after a run of failures |
+| `Could not open the server-event feed. The control link is down; …` | The **first** failure of a run, with the whole cause chain |
+| `The server-event feed has closed and reopened 7 times in the last 5m00s; …` | More than five clean closes in five minutes — something in the middle is cutting it |
+
+Everything else is `debug`: a clean close, the reopening after it, and every
+repeat of a failure that has already been announced. A feed that is working
+costs an operator **nothing per hour**, and a feed that is being cut costs one
+line every five minutes with a count in it. The numbers are why: one earlier
+build reopened the feed every 31 seconds and produced 74 server-side log lines
+in two and a half minutes from two idle sidecars, with nothing at all wrong.
+
+The access token a workload identity buys is reused across reopenings until a
+minute before it expires, so reopening the feed is one request rather than two,
+and the identity line that names the account is written once at start-up rather
+than once per exchange.
 
 ## The Marti API
 
@@ -735,6 +780,15 @@ behind OAuth2 client credentials, and maps the ADS-B emitter categories onto
 its own attribution, and a couple need budgeting rather than just configuring:
 [`rustak-plugin-adsb/README.md`](../rustak-plugin-adsb/README.md) is where they
 are written down, and is worth reading before a deployment points at one.
+
+**Not every feed is a track.** [`rustak-plugin-esb`](../rustak-plugin-esb) puts
+Irish power outages on the map from ESB Networks' PowerCheck. An outage does not
+move and has no allegiance, so it uses `Area` and `FeedCounters` from
+`rustak_client::feed` but not `Track` or `FeedPublisher`: it builds spot-map
+markers (`b-m-p-s-m`) coloured by status, republishes each one when it changes
+and once per `refresh`, and keeps the last known outages on the map while its
+upstream is down. It is the one to copy for anything that sits still — road
+closures, weather warnings, river gauges.
 
 **FIRMS.** [`rustak-plugin-firms`](../rustak-plugin-firms) is a feed of things
 that do not move: NASA FIRMS' satellite active-fire detections, read over the
@@ -866,6 +920,8 @@ is what makes a replay a fair test of the policy.
 ## See also
 
 - `rustak-plugin-example/` — the template this document describes.
-- `rustak-plugin-ais/`, `rustak-plugin-adsb/`, `rustak-plugin-firms/` — the feed sidecars.
+- `rustak-plugin-ais/`, `rustak-plugin-adsb/` — the two track feed sidecars.
+- `rustak-plugin-esb/` — a feed of things that sit still: power outages as markers.
+- `rustak-plugin-firms/` — another: satellite fire detections as markers or pixel footprints.
 - `docs/ci.md` — how a plugin crate is built, published and released.
 - `.claude/plan/plan.md` → Architecture → "Plugin (sidecar) contract".

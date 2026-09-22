@@ -11,6 +11,14 @@ the compatibility contract in `.claude/plan/plan.md` → Appendix A.
 | `interop/eud` | ATAK's own `commoncommo`, via its stock `commotest` CLI | the transport/crypto/CoT half: enrollment, TLS, protobuf negotiation, ping/pong, SA and chat routing, mission packages | nightly |
 | `interop/cloudtak` | CloudTAK's own container and REST API | full-stack Data Sync round-trip, plus a Playwright UI smoke | nightly, and on a `run-cloudtak` PR label |
 
+Every suite starts its rustak under the same deliberately hostile `[server]
+name` — `Rustak Test & Co. (näme)`, from
+[`interop/shared/src/names.ts`](../interop/shared/src/names.ts) — because that
+field is free text and ends up inside an XML attribute name, a JWT `iss` and a
+log field: on 2026-09-22 a one-word name in every suite was the reason three
+days of malformed relays went unnoticed. The in-process suites use the same
+string (`rustak_server::config::TEST_SERVER_NAME`), and so does `e2e/`.
+
 `interop/node-tak` and `interop/eud` are complements, not alternatives:
 `commoncommo` does not implement the Marti HTTP surfaces (device profiles,
 channels, the mission API), and node-tak does not implement ATAK's TLS and
@@ -121,6 +129,12 @@ reference; the short version:
   this suite asserts touches them; the README says why for each.
 - **Steps skip with the brief that will serve them** when a rustak surface is
   missing, the same convention the other two suites use.
+- **The last step reads CloudTAK's own log** (`cloudtak-parse-log`) and fails
+  the run on `Failed to parse CoT XML` or `Attribute without value`. That line
+  was the *only* symptom of the 2026-09-22 outage: rustak had answered `200`
+  and logged nothing, while CloudTAK's sax parser dropped every relayed message
+  off its socket. This is the one suite whose parser is that strict, so it is
+  the one place a whole run of green steps can still be wrong.
 
 Unlike `interop/eud`, a machine without Docker gets no useful run at all here —
 every assertion is made *through* CloudTAK — so `npm test` fails loudly rather

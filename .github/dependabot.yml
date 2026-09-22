@@ -55,6 +55,15 @@ updates:
       interval: daily
 
   # e2e harness (Playwright/TypeScript)
+  # The map page's run-time JavaScript, copied into the bundle by
+  # rustak-ui/scripts/vendor.mjs.
+  - directory: /rustak-ui
+    package-ecosystem: npm
+    open-pull-requests-limit: 5
+    rebase-strategy: auto
+    schedule:
+      interval: daily
+
   - directory: /e2e
     package-ecosystem: npm
     open-pull-requests-limit: 5

@@ -20,9 +20,19 @@
 
 import fs from "node:fs";
 
-import { down, imageExists, keepLogs, requireDocker, up, dockerAvailable } from "./compose.js";
+import {
+  CLOUDTAK_SERVICE,
+  down,
+  imageExists,
+  keepLogs,
+  parseLogVerdict,
+  requireDocker,
+  serviceLog,
+  up,
+  dockerAvailable,
+} from "./compose.js";
 import { opensslAvailable, generatePki } from "./pki.js";
-import { writeConfiguration } from "./rustak.js";
+import { SERVER_NAME, writeConfiguration } from "./rustak.js";
 import { prepareSession, waitForStack } from "./session.js";
 import { ARTIFACT_DIR, HOST_URLS, RUN_DIR, RUSTAK_IMAGE } from "./settings.js";
 import { uiSmoke } from "./smoke.js";
@@ -213,6 +223,21 @@ try {
     status: smoke.status,
     reasons: [...smoke.reasons, ...smoke.screenshots.map((file) => `screenshot: ${file}`)],
   });
+
+  // Last, because it is about everything that came before it. CloudTAK parses
+  // every CoT rustak sends it with sax, which is strict, and when sax refuses
+  // a message CloudTAK drops it off the socket and answers 500 for a whole
+  // mission document — while rustak, which answered 200, logs nothing at all.
+  // That asymmetry is why a suite full of green steps ran for three days over
+  // an installation relaying XML nothing could read (2026-09-22): the only
+  // place the truth was written down was CloudTAK's own log, so this run reads
+  // it. The server this stack runs is deliberately called something a careless
+  // derivation breaks on — see `src/rustak.ts`.
+  const verdict = parseLogVerdict(serviceLog(CLOUDTAK_SERVICE), SERVER_NAME);
+
+  if (verdict.status === "fail") failed = true;
+
+  report({ name: "cloudtak-parse-log", status: verdict.status, reasons: verdict.reasons });
 } catch (error) {
   failed = true;
   report({

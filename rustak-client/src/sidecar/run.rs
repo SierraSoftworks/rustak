@@ -32,6 +32,11 @@
 //! has a link that is never ready, and one with no `[server] control` has a feed
 //! that is never ready, so it is the same loop with branches that never fire.
 //!
+//! The first tick waits, briefly, for the CoT stream's first connection. A feed
+//! plugin produces its first batch the instant it starts and a connection takes
+//! a handshake, so without that wait every clean start threw its first batch
+//! away.
+//!
 //! # Registration and heartbeats
 //!
 //! A sidecar with `[server] control` registers itself before
@@ -306,6 +311,7 @@ async fn tick_until_shutdown<S: Sidecar>(
     let shutdown = context.shutdown().clone();
     let interval = context.config().sidecar.tick();
     let grace = context.config().sidecar.shutdown_grace();
+    let first_connect = context.first_connect_hold();
 
     // Before `start`, so that a connect string or a certificate the operator
     // got wrong is reported instead of the plugin's own start-up work.
@@ -319,6 +325,20 @@ async fn tick_until_shutdown<S: Sidecar>(
     control.register().await;
 
     sidecar.start(context).await?;
+
+    // Before the first tick, because the first tick is where a feed plugin's
+    // first batch comes from and a batch published into a connection that is
+    // still being made is a batch thrown away. Bounded — by ten seconds,
+    // unless a test built the context with another bound — and racing the
+    // shutdown: a server that is not there must not stop a sidecar starting,
+    // and Ctrl-C must not have to wait ten seconds for one that is not.
+    tokio::select! {
+        biased;
+
+        () = shutdown.cancelled() => {}
+        _ = link.settle(first_connect) => {}
+    }
+
     tracing::info!(?interval, stream = ?link.endpoint(), "The sidecar has started.");
 
     let mut ticker = tokio::time::interval(interval);
@@ -572,6 +592,204 @@ mod tests {
 
         assert_eq!(sidecar.ticks, 1);
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn the_first_tick_publishes_into_a_connection_that_is_actually_up() {
+        // M9-11. The first tick used to happen the instant the sidecar started,
+        // before the CoT stream had finished its handshake, so a feed plugin's
+        // first batch was published into a connection that was not there and
+        // thrown away — `WARN Discarding events: the CoT stream is
+        // reconnecting`, on every clean start, about a stream that had never
+        // connected.
+        //
+        // The interval is an hour, so the tick at start-up is the *only* tick
+        // there will ever be: the batch either reaches the wire or it does not,
+        // and nothing republishes it.
+        use crate::stream::testing::Eud;
+        use std::time::Duration;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut peer = Eud::over(socket, "ANDROID-1", "BRAVO");
+
+            peer.expect_uid("SERVICE-example", Duration::from_secs(10))
+                .await
+        });
+
+        let context = context_for(3_600_000, 1_000, Some(format!("tcp://127.0.0.1:{port}")));
+        let shutdown = context.shutdown().clone();
+        let mut sidecar = Counter {
+            stop_after: usize::MAX,
+            publishes: vec![
+                Event::builder("a-f-G-U-C", "SERVICE-example")
+                    .point(48.85, 2.35)
+                    .build(),
+            ],
+            ..Counter::default()
+        };
+
+        let driving = tokio::spawn(async move { drive(&mut sidecar, context).await });
+
+        let published = server.await.unwrap();
+
+        shutdown.cancel();
+        driving.await.unwrap().expect("the sidecar stops cleanly");
+
+        let published = published.expect("the first tick's batch has to reach the wire");
+        assert_eq!(published.uid, "SERVICE-example");
+        assert_eq!(published.r#type, "a-f-G-U-C");
+    }
+
+    #[tokio::test]
+    async fn a_clean_start_discards_nothing_before_the_first_connection() {
+        // M9-13. The property above, asserted as a count instead of as an
+        // arrival, and arranged so that the outcome cannot depend on which of
+        // two things happened to be quicker.
+        //
+        // The harness suite (`rustak-server/tests/feed_sidecars.rs`) used to
+        // assert this with a stopwatch started before an in-process server had
+        // even booted, and failed in CI having measured the runner. What it
+        // reads now is what this reads: how many events the link discarded,
+        // and how many of those before the stream had ever been up.
+        //
+        // Against a listener that is already there, a first tick taken without
+        // the hold *races* a loopback connect, and the connect often wins — so
+        // that arrangement notices a missing hold only some of the time. Here
+        // the port is bound but not yet listening when the sidecar starts, so
+        // it refuses connections: a first tick that does not wait has nothing
+        // to publish into and is discarded, every time, and one that does wait
+        // publishes once the listener appears. An hourly tick again, so the
+        // start-up batch is the only batch there will ever be.
+        //
+        // The hold is given two minutes rather than production's ten seconds,
+        // so that the one thing able to discard this batch is the hold not
+        // working. Every timeout is there to end a hung test, is longer than
+        // that hold, and is not an assertion.
+        use crate::stream::testing::Eud;
+        use std::time::Duration;
+
+        const HOLD: Duration = Duration::from_secs(120);
+        const HUNG: Duration = Duration::from_secs(180);
+
+        // Ours from here on, so nothing else can take it, and refusing
+        // connections until `listen` is called on it.
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let port = socket.local_addr().unwrap().port();
+
+        let context = context_for(3_600_000, 1_000, Some(format!("tcp://127.0.0.1:{port}")))
+            .with_first_connect_hold(HOLD);
+        let shutdown = context.shutdown().clone();
+        let stats = std::sync::Arc::clone(context.stream_stats());
+        let mut sidecar = Counter {
+            stop_after: usize::MAX,
+            publishes: vec![
+                Event::builder("a-f-G-U-C", "SERVICE-example")
+                    .point(48.85, 2.35)
+                    .build(),
+            ],
+            ..Counter::default()
+        };
+
+        let driving = tokio::spawn(async move { drive(&mut sidecar, context).await });
+
+        // A sidecar with no hold takes its first tick at once, so by now it
+        // has, into a port that refuses connections. Nothing rests on this
+        // being long *enough*: with the hold in place there is nothing to
+        // publish into however long it is, and a host too slow to have ticked
+        // yet makes this easier to pass, never harder.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert_eq!(
+            (stats.published(), stats.discarded()),
+            (0, 0),
+            "(published, discarded): the first tick did not wait for a stream that cannot be up yet",
+        );
+
+        // Now the server appears, and the link finds it after its backoff.
+        let listener = socket.listen(8).unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut peer = Eud::over(socket, "ANDROID-1", "BRAVO");
+
+            peer.expect_uid("SERVICE-example", HUNG).await
+        });
+
+        tokio::time::timeout(HUNG, async {
+            while stats.published() + stats.discarded() == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the start-up batch is either published or discarded");
+
+        assert_eq!(
+            stats.discarded_before_first_connection(),
+            0,
+            "the first tick's batch was published into a connection that was not up yet",
+        );
+        assert_eq!(stats.discarded(), 0);
+
+        // What was counted as published is what reached the wire, and it is
+        // awaited before the shutdown so that stopping cannot cut the flush.
+        let published = server
+            .await
+            .unwrap()
+            .expect("the first tick's batch has to reach the wire");
+        assert_eq!(published.uid, "SERVICE-example");
+
+        shutdown.cancel();
+        driving.await.unwrap().expect("the sidecar stops cleanly");
+
+        assert_eq!(stats.published(), 1);
+        assert_eq!(stats.discarded(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_server_that_is_not_there_holds_the_first_tick_for_the_bound_and_no_longer() {
+        // The bound itself, on a clock the test owns. Nothing listens on port
+        // 1, so the stream never connects and the hold has to run out: after
+        // production's ten seconds when nobody said otherwise, and after
+        // whatever a test asked for when one did — which is what lets the
+        // suites that assert "nothing was discarded" give a slow host two
+        // minutes without production's ten seconds going untested.
+        //
+        // The clock is paused, so these are tokio's seconds and not the
+        // host's: the run takes milliseconds, and the upper bound below is a
+        // statement about the code rather than about the machine. The refused
+        // connections are real, and it does not matter how they interleave
+        // with the clock, because every one of them ends the same way.
+        use crate::sidecar::link::FIRST_CONNECT;
+        use std::time::Duration;
+
+        assert_eq!(FIRST_CONNECT, Duration::from_secs(10));
+
+        for asked in [None, Some(Duration::from_secs(120))] {
+            let mut context = context_for(3_600_000, 1_000, Some("tcp://127.0.0.1:1".to_string()));
+            if let Some(hold) = asked {
+                context = context.with_first_connect_hold(hold);
+            }
+
+            let expected = asked.unwrap_or(FIRST_CONNECT);
+            let mut sidecar = Counter {
+                stop_after: 1,
+                ..Counter::default()
+            };
+
+            let started = tokio::time::Instant::now();
+            drive(&mut sidecar, context).await.unwrap();
+            let held = started.elapsed();
+
+            assert_eq!(sidecar.ticks, 1, "bounded: the sidecar starts anyway");
+            assert!(held >= expected, "the first tick came early: {held:?}");
+            assert!(
+                held < expected + Duration::from_secs(1),
+                "the hold outlived its bound: {held:?}",
+            );
+        }
     }
 
     #[tokio::test]
