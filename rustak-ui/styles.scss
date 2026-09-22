@@ -3179,6 +3179,32 @@ footer {
   }
 }
 
+// The pop-over when a click landed on several things: the roster's rows, a
+// handful of them, inside the card.
+.map-chooser {
+  &__title {
+    margin: 0 1.5rem 0.5rem 0;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: $text-regular;
+  }
+
+  &__list {
+    margin: 0 -0.35rem;
+    padding: 0;
+    list-style: none;
+
+    .map-roster__row {
+      padding: 0.4rem 0.35rem;
+      border-radius: $radius-sm;
+    }
+
+    li:last-child .map-roster__row {
+      border-bottom: none;
+    }
+  }
+}
+
 .map-roster {
   flex: none;
   display: flex;

@@ -3,8 +3,9 @@
 //! The page is three things side by side. [`session`] is the part that talks
 //! to the server and owns what is on the map; [`glue`] is the map itself, in
 //! JavaScript; and this file is the Yew around them — the status line, the
-//! [`roster`], and the [`popover`], which is ordinary Yew portalled into an
-//! element the map positions.
+//! [`roster`], and the pop-over, which is ordinary Yew portalled into an
+//! element the map positions. What the pop-over shows is its [`focus`]: one
+//! feature's [`popover`], or the [`chooser`] when a click landed on several.
 //!
 //! # Yew is not in the hot path
 //!
@@ -31,6 +32,8 @@
 //! one more piece of page state — the channel or mission it is going to —
 //! which belongs in the bar below beside the status.
 
+mod chooser;
+mod focus;
 mod glue;
 mod popover;
 mod render;
@@ -43,6 +46,8 @@ use yew::prelude::*;
 use crate::app::AuthHandle;
 use crate::components::{Alert, AlertKind, Button, StatusPill, StatusTone};
 
+use chooser::Chooser;
+use focus::Focus;
 use popover::Popover;
 use roster::{ROSTER_ROWS, Roster, RosterEntry};
 use session::{FeedStatus, Listeners, Session};
@@ -52,7 +57,7 @@ pub fn live_map() -> Html {
     let container = use_node_ref();
     let redraw = use_force_update();
     let status = use_state(|| FeedStatus::Connecting);
-    let selected = use_state(|| None::<String>);
+    let focus = use_state(Focus::default);
     let search = use_state(String::new);
     let session = use_mut_ref(Session::default);
 
@@ -63,11 +68,11 @@ pub fn live_map() -> Html {
         .unwrap_or_default();
 
     {
-        let (container, session, status, selected) = (
+        let (container, session, status, focus) = (
             container.clone(),
             session.clone(),
             status.clone(),
-            selected.clone(),
+            focus.clone(),
         );
 
         use_effect_with((), move |_| {
@@ -76,7 +81,7 @@ pub fn live_map() -> Html {
                 container,
                 Listeners {
                     on_status: Callback::from(move |next| status.set(next)),
-                    on_select: Callback::from(move |uid| selected.set(uid)),
+                    on_focus: Callback::from(move |next| focus.set(next)),
                     on_redraw: Callback::from(move |()| redraw.force_update()),
                     on_signed_out,
                 },
@@ -86,22 +91,28 @@ pub fn live_map() -> Html {
         });
     }
 
-    // The pop-over follows the selection. The status is a dependency because
-    // the first thing it reports is that there is now a map to open one on.
+    // The pop-over follows the focus. The status is a dependency because the
+    // first thing it reports is that there is now a map to open one on.
     {
         let session = session.clone();
-        use_effect_with(((*selected).clone(), (*status).clone()), move |(uid, _)| {
-            session.borrow_mut().select(uid.clone());
+        use_effect_with(((*focus).clone(), (*status).clone()), move |(focus, _)| {
+            session.borrow_mut().focus(focus.clone());
             || ()
         });
     }
 
+    // From the roster, which may be naming something off the edge of the view.
     let onselect = {
-        let (session, selected) = (session.clone(), selected.clone());
+        let (session, focus) = (session.clone(), focus.clone());
         Callback::from(move |uid: String| {
             session.borrow().fly_to(&uid);
-            selected.set(Some(uid));
+            focus.set(Focus::Feature(uid));
         })
+    };
+    // From the chooser, which is by construction already looking at it.
+    let onchoose = {
+        let focus = focus.clone();
+        Callback::from(move |uid: String| focus.set(Focus::Feature(uid)))
     };
     let onsearch = {
         let search = search.clone();
@@ -122,13 +133,25 @@ pub fn live_map() -> Html {
 
     // Rendered into the element the map positions, so the pop-over is the
     // map's to place and Yew's to fill.
-    let popover = selected
-        .as_deref()
-        .and_then(|uid| held.store().get(uid))
+    let content = match &*focus {
+        Focus::Nothing => None,
+        Focus::Feature(uid) => held
+            .store()
+            .get(uid)
+            .map(|feature| html! { <Popover feature={feature.clone()} /> }),
+        Focus::Choosing { uids, .. } => {
+            let entries: Vec<RosterEntry> = uids
+                .iter()
+                .filter_map(|uid| held.store().get(uid))
+                .map(RosterEntry::of)
+                .collect();
+
+            Some(html! { <Chooser {entries} onselect={onchoose} /> })
+        }
+    };
+    let popover = content
         .zip(held.popover_element())
-        .map(|(feature, host)| {
-            create_portal(html! { <Popover feature={feature.clone()} /> }, host)
-        });
+        .map(|(content, host)| create_portal(content, host));
 
     let (tone, label, explanation) = status.describe();
 
@@ -171,7 +194,7 @@ pub fn live_map() -> Html {
                     matched={matching.len()}
                     search={(*search).clone()}
                     {onsearch}
-                    selected={(*selected).clone()}
+                    selected={focus.feature().map(str::to_owned)}
                     {onselect}
                 />
             </div>

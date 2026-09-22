@@ -54,8 +54,15 @@ test("picking something from the roster opens its pop-over on the map", async ({
   // says they cannot see a marker.
   await expect(details.getByText("Blue Team", { exact: false })).toBeVisible();
 
-  await page.getByRole("button", { name: "Close popup" }).click();
+  // Straight to somebody else, without closing the first: the pop-over moves
+  // rather than shutting, which re-anchoring an open one used to do.
+  await page.getByRole("button", { name: /^OKAFOR/ }).click();
+  const other = page.getByRole("article", { name: "Details for OKAFOR" });
+  await expect(other).toBeVisible();
   await expect(details).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Close popup" }).click();
+  await expect(other).toHaveCount(0);
 });
 
 test("the roster is searched by callsign and by type", async ({ page }) => {
@@ -75,4 +82,33 @@ test("the roster is searched by callsign and by type", async ({ page }) => {
 
   await search.fill("nothing is called this");
   await expect(page.getByText("Nothing on the map matches.")).toBeVisible();
+});
+
+test("a click that lands on several things asks which one was meant", async ({ page }) => {
+  // Tall enough that the pop-over fits above a point in the middle of the map,
+  // so that opening it does not nudge the view and the middle stays the middle.
+  await page.setViewportSize({ width: 1440, height: 1200 });
+  await gotoApp(page, MAP);
+
+  // The casualty collection point is also where the CASEVAC route starts, so
+  // the two are under the same pixel at every zoom. The roster puts that pixel
+  // in the middle of the map, which is the one place a test can find it.
+  await page.getByRole("button", { name: /^CCP NORTH/ }).click();
+  await expect(page.getByRole("article", { name: "Details for CCP NORTH" })).toBeVisible();
+  await page.getByRole("button", { name: "Close popup" }).click();
+  await page.waitForTimeout(1000);
+
+  const canvas = page.locator(".map-page__canvas canvas");
+  const box = (await canvas.boundingBox())!;
+  await canvas.click({ position: { x: box.width / 2, y: box.height / 2 } });
+
+  const chooser = page.getByRole("region", { name: "Choose what to look at" });
+  await expect(chooser).toBeVisible();
+  await expect(chooser.getByRole("button")).toHaveCount(2);
+  await expect(chooser.getByRole("button", { name: /^CCP NORTH/ })).toBeVisible();
+
+  await chooser.getByRole("button", { name: /^CASEVAC ROUTE/ }).click();
+
+  await expect(page.getByRole("article", { name: "Details for CASEVAC ROUTE" })).toBeVisible();
+  await expect(chooser).toHaveCount(0);
 });
