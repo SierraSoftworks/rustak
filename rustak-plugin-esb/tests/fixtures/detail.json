@@ -1,0 +1,14 @@
+{
+  "outageId": 2826455,
+  "outageType": "Fault",
+  "point": { "c": "51.81391234,-8.39861234" },
+  "location": "Carrigaline",
+  "plannerGroup": "Cork South",
+  "numCustAffected": "412",
+  "startTime": "22/09/2026 14:30",
+  "estRestoreTime": "22/09/2026 19:00",
+  "restoreTime": "",
+  "statusMessage": "Crew assigned",
+  "plannedOutageReason": "",
+  "somethingNew": true
+}

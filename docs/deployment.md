@@ -407,6 +407,7 @@ multi-arch images:
 | `ghcr.io/sierrasoftworks/rustak-plugin-example` | The copy-and-rename template |
 | `ghcr.io/sierrasoftworks/rustak-plugin-ais` | Vessels from a local AIS receiver (NMEA over UDP) or AISStream.io |
 | `ghcr.io/sierrasoftworks/rustak-plugin-adsb` | Aircraft from a local readsb receiver, the adsb.lol/adsb.fi aggregators or OpenSky |
+| `ghcr.io/sierrasoftworks/rustak-plugin-esb` | Irish power outages from ESB Networks' PowerCheck, as coloured spot markers |
 
 A sidecar dials out and listens on nothing, so there are no ports to publish.
 Each reads `/data/plugin.toml` and keeps its certificate, key and truststore
