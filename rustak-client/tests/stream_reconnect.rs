@@ -77,7 +77,12 @@ async fn a_dropped_connection_is_reopened_and_the_hook_runs_again() {
     // First connection: the greeting arrives, and the hook has introduced us.
     let first = client.next().await.expect("the first connection delivers");
     assert_eq!(first.uid, "SERVER-0");
-    assert_eq!(client.attempts(), 1);
+    assert_eq!(
+        client.attempts(),
+        0,
+        "a connection that is up has not failed at anything",
+    );
+    assert_eq!(client.connects(), 1, "and this process has connected once");
     assert!(client.is_connected());
     assert_eq!(
         client.stream().and_then(|stream| stream.server_version()),
@@ -92,7 +97,16 @@ async fn a_dropped_connection_is_reopened_and_the_hook_runs_again() {
         .expect("and the second connection delivers");
 
     assert_eq!(second.uid, "SERVER-1");
-    assert_eq!(client.attempts(), 2);
+    assert_eq!(
+        client.attempts(),
+        0,
+        "the reconnect succeeded, so nothing is outstanding",
+    );
+    assert_eq!(
+        client.connects(),
+        2,
+        "the lifetime figure is what says the stream has been up twice",
+    );
 
     server.await.expect("the server finishes");
 

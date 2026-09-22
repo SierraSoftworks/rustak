@@ -298,6 +298,13 @@ impl TakStream {
     }
 
     /// Writes as much of the outbox as the transport will take.
+    ///
+    /// Every frame that goes out restarts the outbound keepalive clock,
+    /// whatever it was — a position report, a chat message or a ping. A client
+    /// that publishes regularly therefore never sends a keepalive of its own;
+    /// one that publishes nothing sends one every
+    /// [`Keepalive::outbound_idle`](super::Keepalive::outbound_idle), which is
+    /// what keeps a receive-only sidecar off a server's idle list (M9-15).
     fn poll_outbox(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), CodecError>> {
         while !self.outbox.is_empty() {
             ready!(Sink::<&EncodedEvent>::poll_ready(
@@ -310,6 +317,7 @@ impl TakStream {
             };
 
             Sink::<&EncodedEvent>::start_send(Pin::new(&mut self.wire), &encoded)?;
+            self.keepalive.record_tx();
         }
 
         Sink::<&EncodedEvent>::poll_flush(Pin::new(&mut self.wire), cx)
@@ -434,5 +442,157 @@ impl std::fmt::Debug for TakStream {
             .field("queued", &self.queued())
             .field("dropped", &self.dropped())
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use futures::{FutureExt, SinkExt, StreamExt};
+    use tokio::io::DuplexStream;
+    use tokio_util::codec::Framed;
+
+    use super::super::{Endpoint, Keepalive};
+    use super::*;
+
+    /// The server's side of the socket: whatever the client writes, in frames.
+    type Peer = Framed<DuplexStream, TakCodec>;
+
+    /// A client that negotiates nothing, so the only thing it ever writes is
+    /// what the keepalive decides to write.
+    fn connected(keepalive: Keepalive) -> (TakStream, Peer) {
+        let (mine, theirs) = tokio::io::duplex(1 << 16);
+        let config = StreamConfig::new(Endpoint::tls("in-memory", 0), "SERVICE-firms")
+            .with_negotiation(false)
+            .with_keepalive(keepalive);
+
+        (
+            TakStream::new(Box::new(mine), &config),
+            Framed::new(theirs, TakCodec::new(Mode::Xml)),
+        )
+    }
+
+    /// One relayed position report, as the server would send it.
+    fn broadcast(uid: &str) -> Event {
+        Event::builder("a-f-G-U-C", uid).point(51.5, -0.12).build()
+    }
+
+    /// Everything the client has written and not yet been read, without
+    /// waiting for anything that has not been written.
+    fn drain(peer: &mut Peer) -> Vec<Event> {
+        let mut seen = Vec::new();
+
+        while let Some(Some(Ok(frame))) = peer.next().now_or_never() {
+            if let Ok(event) = parse(&frame) {
+                seen.push(event);
+            }
+        }
+
+        seen
+    }
+
+    /// Lets the connection task run whatever the clock has just made ready.
+    async fn settle() {
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_client_that_only_receives_keeps_its_own_connection_alive() {
+        // M9-15, on the wire. FIRMS hears the channel's traffic every few
+        // seconds and has nothing to publish, so ATAK's inbound rule never
+        // fires; without the outbound one it would write nothing at all and
+        // any server with a read-idle timer would reclaim it.
+        let (stream, mut peer) = connected(Keepalive::DEFAULT);
+        let reading = tokio::spawn(async move {
+            let mut stream = stream;
+
+            while let Some(Ok(_)) = stream.next().await {}
+        });
+
+        let mut pings = 0;
+        for second in 1..=120 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+
+            if second % 10 == 0 {
+                peer.send(&EncodedEvent::new(broadcast("UID-AIS")))
+                    .await
+                    .expect("the server writes to a client that is reading");
+            }
+
+            settle().await;
+            pings += drain(&mut peer)
+                .iter()
+                .filter(|event| event.r#type == cot_type::PING)
+                .count();
+        }
+
+        assert_eq!(
+            pings, 4,
+            "one ping per 30s of having written nothing, over two minutes",
+        );
+        assert!(!reading.is_finished(), "and the connection is still up");
+
+        reading.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_client_that_publishes_never_needs_a_keepalive_of_its_own() {
+        // The other half: a sidecar that writes every ten seconds resets the
+        // outbound clock every time, so it costs the connection nothing.
+        let (mut stream, mut peer) = connected(Keepalive::DEFAULT);
+
+        let mut pings = 0;
+        for second in 1..=120 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+
+            if second % 10 == 0 {
+                peer.send(&EncodedEvent::new(broadcast("UID-AIS")))
+                    .await
+                    .unwrap();
+                stream
+                    .send(broadcast("UID-FIRMS"))
+                    .await
+                    .expect("the sidecar publishes");
+            }
+
+            // Reads what the server sent, which is what makes the connection
+            // act on its own clocks.
+            let _ = std::future::poll_fn(|cx| stream.poll_event(cx)).now_or_never();
+            pings += drain(&mut peer)
+                .iter()
+                .filter(|event| event.r#type == cot_type::PING)
+                .count();
+        }
+
+        assert_eq!(pings, 0, "a client that publishes is never outbound-silent");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_keepalive_that_is_off_writes_nothing_at_all() {
+        // What the server's own integration tests connect with: the test
+        // decides what the client sends, and the client adds nothing.
+        let (stream, mut peer) = connected(Keepalive::OFF);
+        let reading = tokio::spawn(async move {
+            let mut stream = stream;
+
+            while let Some(Ok(_)) = stream.next().await {}
+        });
+
+        for _ in 0..12 {
+            tokio::time::advance(Duration::from_secs(10)).await;
+            peer.send(&EncodedEvent::new(broadcast("UID-AIS")))
+                .await
+                .unwrap();
+            settle().await;
+
+            assert!(drain(&mut peer).is_empty(), "nothing is ever written");
+        }
+
+        assert!(!reading.is_finished(), "and nothing is ever given up on");
+
+        reading.abort();
     }
 }

@@ -15,6 +15,7 @@
 //! | [`negotiation`] | the one `t-x-takp-v` and what may follow it |
 //! | [`hub`] | the lock, and every routing question asked under it |
 //! | [`registry`] | the map of connections and the two indexes over it |
+//! | [`liveness`] | the idle clock in both directions, and why a client left |
 //! | [`router`] | flow tags, `<marti>` stripping, incognito, fan-out |
 //! | [`dest`] | `<dest>` → a list of connections |
 //! | [`groups`] | the channel name → bit position map, cached |
@@ -53,6 +54,7 @@ pub mod groups;
 pub mod hub;
 pub mod listener_tls;
 pub mod live;
+pub mod liveness;
 pub mod metrics;
 pub mod mission_hook;
 pub mod mission_notify;
@@ -79,6 +81,7 @@ pub use dest::{DropReason, MAX_DESTS, Selection};
 pub use groups::GroupCache;
 pub use hub::Hub;
 pub use live::LiveState;
+pub use liveness::{LeaveReason, Liveness};
 pub use metrics::StreamMetrics;
 pub use mission_hook::{MissionIngest, MissionRef, NoMissions};
 pub use mission_notify::{ChangeKind, MissionNotice, NoticeMission, Recipients};

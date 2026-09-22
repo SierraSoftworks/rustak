@@ -28,6 +28,8 @@ use tokio::sync::mpsc;
 
 use crate::prelude::*;
 
+use super::liveness::{LeaveReason, Liveness};
+
 /// What a subscription reports for a field the client has not sent.
 pub const UNKNOWN: &str = "unknown";
 
@@ -94,6 +96,9 @@ pub struct ConnHandle {
     /// from outside is usually that its queue is *full*, and the revocation
     /// hook must work on a connection that has stopped reading entirely.
     closing: Shutdown,
+    /// The connection's clocks, and where [`close`](Self::close) writes the
+    /// cause it was given.
+    liveness: Arc<Liveness>,
 }
 
 impl ConnHandle {
@@ -111,7 +116,21 @@ impl ConnHandle {
             stats,
             close_after_drops,
             closing,
+            liveness: Arc::new(Liveness::new()),
         }
+    }
+
+    /// Shares the connection task's own [`Liveness`], so that closing this
+    /// handle names the cause on the line that connection logs.
+    #[must_use]
+    pub fn with_liveness(mut self, liveness: Arc<Liveness>) -> Self {
+        self.liveness = liveness;
+        self
+    }
+
+    /// The connection's clocks and cause of death.
+    pub fn liveness(&self) -> &Arc<Liveness> {
+        &self.liveness
     }
 
     /// The token this connection's tasks stop on.
@@ -154,7 +173,7 @@ impl ConnHandle {
                     + 1;
 
                 if run >= self.close_after_drops {
-                    self.close();
+                    self.close(LeaveReason::SlowConsumer);
                     SendResult::Closed
                 } else {
                     SendResult::Dropped
@@ -195,12 +214,19 @@ impl ConnHandle {
         }
     }
 
-    /// Tears the connection down.
+    /// Tears the connection down, saying why.
     ///
     /// Both halves: the token so that a connection whose queue is full still
     /// stops, and the queue message so that a writer part-way through a drain
     /// finishes what it has and closes rather than being cut off mid-message.
-    pub fn close(&self) {
+    ///
+    /// `reason` is what the connection's disconnect line will read, unless
+    /// something got there first — see [`Liveness::ended`]. Every caller names
+    /// one, because a close nobody can explain is the fault M9-15 was reported
+    /// as.
+    pub fn close(&self, reason: LeaveReason) {
+        self.liveness.ended(reason);
+
         let _ = self.tx.try_send(Outbound::Close);
         self.closing.cancel();
     }

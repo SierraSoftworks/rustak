@@ -25,7 +25,7 @@ use chrono::Utc;
 use rustak_api::Direction;
 
 use crate::prelude::*;
-use crate::stream::ClientEndpoint;
+use crate::stream::{ClientEndpoint, LeaveReason};
 
 use super::channels::{self, GroupJson};
 use super::error::{MartiError, MartiResult};
@@ -193,7 +193,7 @@ pub async fn delete(
     }
 
     for handle in &handles {
-        handle.close();
+        handle.close(LeaveReason::Administrator);
     }
 
     info!(uid = %uid, connections = handles.len(), "Closed a subscription an administrator asked us to.");

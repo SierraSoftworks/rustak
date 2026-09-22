@@ -27,7 +27,7 @@
 //! | | |
 //! |---|---|
 //! | Negotiation | Answers the server's one `t-x-takp-v` offer, then switches both directions to protobuf on `t-x-takp-r status="true"` — see [`negotiation`](self::Negotiation) |
-//! | Keepalive | Pings after 15 s of silence, repeats every 4.5 s, reports [`StreamError::RxTimeout`] at 25 s — ATAK's constants, see [`Keepalive`] |
+//! | Keepalive | Pings after 15 s of **inbound** silence, repeats every 4.5 s, reports [`StreamError::RxTimeout`] at 25 s — ATAK's constants — **and** pings after 30 s of **outbound** silence, which is what keeps a receive-only client off a server's idle list. See [`Keepalive`] |
 //! | Framing | 8 MiB inbound cap, protobuf resync, one unreadable message never ends the connection |
 //! | Reconnection | Only in [`Reconnecting`], which owns the backoff and the on-connect hook |
 //!
@@ -88,7 +88,8 @@ pub struct StreamConfig {
     /// the way CloudTAK does.
     pub negotiate: bool,
 
-    /// When to ping, and when to give up.
+    /// When to ping, and when to give up. [`Keepalive::DEFAULT`] unless the
+    /// caller says otherwise.
     pub keepalive: Keepalive,
 
     /// How long to wait for the socket and the TLS handshake together.
@@ -112,7 +113,7 @@ impl StreamConfig {
             uid: uid.into(),
             callsign: None,
             negotiate: true,
-            keepalive: Keepalive::ATAK,
+            keepalive: Keepalive::DEFAULT,
             connect_timeout: Self::DEFAULT_CONNECT_TIMEOUT,
             pass_control: false,
         }
@@ -225,12 +226,18 @@ mod tests {
     #[test]
     fn a_configuration_starts_out_behaving_like_atak() {
         // The defaults are the interoperable ones: negotiate, ping on ATAK's
-        // clock, and hide the control traffic a plugin has no use for.
+        // inbound clock and on our own outbound one, and hide the control
+        // traffic a plugin has no use for.
         let config = StreamConfig::new(Endpoint::tls("tak.example.com", 8089), "SERVICE-adsb");
 
         assert!(config.negotiate);
         assert!(!config.pass_control);
-        assert_eq!(config.keepalive, Keepalive::ATAK);
+        assert_eq!(config.keepalive, Keepalive::DEFAULT);
+        assert_eq!(
+            config.keepalive.outbound_idle,
+            Keepalive::OUTBOUND_IDLE,
+            "a sidecar with nothing to publish still reminds the server it is there",
+        );
         assert_eq!(
             config.connect_timeout,
             StreamConfig::DEFAULT_CONNECT_TIMEOUT

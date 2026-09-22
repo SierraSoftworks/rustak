@@ -180,6 +180,31 @@ raw `0xBF`-prefixed bytes would corrupt its control-character stripping. Verifie
 - A control message (see §7) with no `<point lat=…>` attribute must be **silently dropped**, not
   errored (05 §5.2).
 
+**A client pings on inbound silence only — so read-silence is not death.** Both
+clocks above are keyed on what the client has *received*: ATAK's 15s/4.5s/25s and CloudTAK's flat
+5s interval alike. Neither client has any rule about how long it has been since it last *sent*
+something. A client that receives a steady broadcast and has nothing of its own to say — a
+receive-only sidecar, a screen somebody is watching, any EUD whose position is not moving and whose
+SA interval is long — is therefore never silent inbound, never pings, and may send nothing at all
+for hours while working perfectly.
+
+A server must not treat that as a dead connection. rustak's idle timer measures
+`max(last_rx, last_tx)`: a connection is reclaimed only when nothing has arrived from it **and**
+nothing has been successfully written to it for `[stream.tls] idle_timeout`. A peer that has
+vanished under outbound traffic is caught by the write deadline instead (its socket stops taking
+bytes), which is the thing that actually distinguishes a quiet client from an absent one. Measuring
+reads alone closed a receive-only sidecar's stream every 90 seconds (M9-15), and would do the same
+to any receive-only TAK client on a busy server.
+
+rustak's **own** client SDK additionally pings after 30s of having sent nothing, which keeps a
+quiet sidecar alive against a server with a read-idle rule — TAK Server, and rustak builds from
+before that fix. That is rustak's rule, not ATAK's: the inbound rules above stay exactly as
+verified, and `Keepalive::ATAK` in `rustak-client` is still ATAK's constants alone.
+
+The server never pings a client. Nothing in the contract has it do so, and a client that receives
+an unsolicited `t-x-c-t` would answer it (CloudTAK) or ignore it — neither of which tells the
+server anything a completed write has not already told it.
+
 ## 7. Control messages
 
 The control set is **exactly these eleven type strings** (05 §5.1). A message whose type matches one

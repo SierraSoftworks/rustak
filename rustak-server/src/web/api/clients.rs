@@ -37,7 +37,7 @@ use crate::db::AuditEntry;
 use crate::db::repos::Page;
 use crate::identity::devices;
 use crate::prelude::*;
-use crate::stream::{ClientEndpoint, LiveState};
+use crate::stream::{ClientEndpoint, LeaveReason, LiveState};
 
 use super::error::{ApiError, ApiResult, json_ok};
 use super::extract::Administrative;
@@ -160,7 +160,7 @@ pub async fn disconnect(
     }
 
     for handle in &handles {
-        handle.close();
+        handle.close(LeaveReason::Administrator);
     }
 
     info!(
@@ -626,7 +626,7 @@ mod tests {
             "an incognito client is out of everybody else's contact list",
         );
 
-        handle.close();
+        handle.close(LeaveReason::Administrator);
         assert!(handle.is_closing());
 
         assert!(

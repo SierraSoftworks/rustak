@@ -17,6 +17,8 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use super::liveness::LeaveReason;
+
 /// The counters one stream listener keeps.
 #[derive(Debug, Default)]
 pub struct StreamMetrics {
@@ -76,6 +78,42 @@ pub struct StreamMetrics {
     /// Only a client that is broken or hostile reaches this: no real one
     /// addresses more than a handful of people. R-03 H2.
     pub dests_truncated: AtomicU64,
+    /// Disconnects, by cause.
+    ///
+    /// The shape of a fleet's disconnections is the thing an operator reads to
+    /// tell a network problem from a configuration one: a rising `idle` count
+    /// on a server whose clients are otherwise fine is a timeout set below what
+    /// the fleet's keepalive produces, `write_timeout` is a path that is
+    /// black-holing, and `slow_consumer` is `queue_len` against the traffic.
+    pub left: LeaveCounters,
+}
+
+/// One counter per [`LeaveReason`].
+///
+/// An array rather than a field each, so that adding a cause cannot leave a
+/// counter behind: the index is the variant's own.
+#[derive(Debug, Default)]
+pub struct LeaveCounters([AtomicU64; LeaveReason::ALL.len()]);
+
+impl LeaveCounters {
+    /// Counts one disconnect.
+    pub fn incr(&self, reason: LeaveReason) {
+        self.0[reason.index()].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// How many connections have ended for this cause.
+    #[must_use]
+    pub fn get(&self, reason: LeaveReason) -> u64 {
+        self.0[reason.index()].load(Ordering::Relaxed)
+    }
+
+    /// Every cause with a non-zero count.
+    pub fn nonzero(&self) -> impl Iterator<Item = (LeaveReason, u64)> + '_ {
+        LeaveReason::ALL
+            .into_iter()
+            .map(|reason| (reason, self.get(reason)))
+            .filter(|(_, count)| *count > 0)
+    }
 }
 
 impl StreamMetrics {
@@ -129,6 +167,24 @@ mod tests {
         StreamMetrics::decr(&metrics.connected);
 
         assert_eq!(StreamMetrics::get(&metrics.connected), 0);
+    }
+
+    #[test]
+    fn a_disconnect_is_counted_against_its_own_cause() {
+        let metrics = StreamMetrics::default();
+
+        metrics.left.incr(LeaveReason::Idle);
+        metrics.left.incr(LeaveReason::Idle);
+        metrics.left.incr(LeaveReason::Revoked);
+
+        assert_eq!(metrics.left.get(LeaveReason::Idle), 2);
+        assert_eq!(metrics.left.get(LeaveReason::Revoked), 1);
+        assert_eq!(metrics.left.get(LeaveReason::Shutdown), 0);
+        assert_eq!(
+            metrics.left.nonzero().collect::<Vec<_>>(),
+            vec![(LeaveReason::Idle, 2), (LeaveReason::Revoked, 1)],
+            "an operator reads the causes that happened, not ten zeroes",
+        );
     }
 
     #[test]

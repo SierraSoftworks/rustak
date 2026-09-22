@@ -81,7 +81,8 @@ for the full comment on every key.
 - **`[stream.tls]`** — the CoT streaming listener, `:8089` by default, always
   client-cert-required. There is deliberately no plaintext `[stream.tcp]`
   section and no anonymous access — see `plan.md` → Decisions → "Secure by
-  default".
+  default". `idle_timeout` (90s) is measured in **both directions** — see
+  **When a stream connection is reclaimed** below.
 - **`[auth]`** — token lifetimes, `user_acl`/`admin_acl` (filt-rs
   expressions over claims; **both default to denying everybody** — an
   installation that configures an identity provider and forgets these admits
@@ -966,7 +967,9 @@ which reads these environment variables:
 | `RUSTAK_SENTRY_DSN` | Sentry error reporting; unset means off. |
 
 What gets logged at `info`: start-up and shutdown, listener binds, CoT stream
-connections opening and closing, enrolment and credential events, and the
+connections opening and closing (each disconnect carries a `reason` and
+`connected_for` — see **When a stream connection is reclaimed**), enrolment and
+credential events, and the
 handful of handler-level events that record a decision somebody made (rendered
 inside their request span, so they carry the route and the caller). Nothing is
 logged per CoT message relayed, and there is no per-request access log: every
@@ -992,6 +995,55 @@ this: **an idle server with a couple of sidecars attached prints nothing at
 all.** Each sidecar holds one server-event feed open and posts one heartbeat a
 tick, all of them successful, so a quiet log can be read as a quiet server.
 `LOG_LEVEL=debug` is the way to watch individual requests.
+
+### When a stream connection is reclaimed
+
+A `:8089` connection is closed for idleness only when **nothing has been
+received from it and nothing has been successfully written to it** for
+`[stream.tls] idle_timeout` (90s by default). Both halves matter, because a TAK
+client pings after fifteen seconds of *inbound* silence and not otherwise: a
+receive-only client on a busy server — a sidecar with nothing to publish, a
+screen somebody is watching — hears traffic constantly, so it never pings and
+never sends a byte while working perfectly. Measuring reads alone dropped
+exactly those clients, every 90 seconds, for as long as the server had something
+to say to them.
+
+A peer that has **vanished** while the server is still writing to it is not this
+timeout's job and never was: its socket stops taking bytes, the writer's flush
+overruns `[stream.limits] write_timeout` (30s), and the connection is closed as
+`write_timeout` — or its queue fills first and `close_after_drops` closes it as
+`slow_consumer`. A peer that has vanished with nothing going either way is
+reclaimed by `idle_timeout`, which is what it is for.
+
+Every disconnect prints one line, `A client left the stream.`, carrying
+`reason`, `connected_for`, and the connection's message counts:
+
+```
+INFO A client left the stream. reason=idle connected_for=90.002s rx=5 tx=305 dropped=0
+```
+
+| `reason` | What happened | What to look at |
+|---|---|---|
+| `client_closed` | The client closed its end, or the socket reached end-of-file | Ordinary. A device switching networks, an app being closed |
+| `idle` | Nothing in either direction for `idle_timeout` | A device that fell off the network. A *rising* count with clients that are otherwise fine means `idle_timeout` is below what that fleet's keepalive produces |
+| `read_error` | Reading the socket failed | The network path, or a client that was killed rather than closed |
+| `write_timeout` | The peer stopped taking bytes for `write_timeout` | A path that is black-holing, or a device that is suspended |
+| `write_error` | Writing the socket failed | As `read_error` |
+| `slow_consumer` | `close_after_drops` deliveries in a row would not fit in the connection's queue | `[stream.limits] queue_len` against what that channel relays; the client reconnects and is replayed |
+| `revoked` | The certificate it authenticated with was revoked | Expected after a revocation |
+| `account_disabled` | The account it belongs to was switched off | Expected after a disable |
+| `administrator` | `DELETE /api/v1/clients/{uid}` or the Marti equivalent | Expected |
+| `shutdown` | The listener is draining | Expected on a restart |
+
+The same causes are counted per reason, so the shape of a fleet's
+disconnections is readable without reading every line.
+
+**Nothing to change in a deployment.** The rule is stricter about when it
+reclaims, not looser: a connection that was safe under the old behaviour is safe
+under this one, and `idle_timeout` keeps its meaning and its default. The
+sidecar SDK also pings after 30s of having sent nothing (`docs/plugins.md`), so
+a receive-only sidecar stays connected to older rustak builds and to TAK Server
+as well.
 
 ### A reverse proxy in front of `[web.public]`
 

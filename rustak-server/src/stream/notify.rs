@@ -23,6 +23,7 @@ use rustak_cot::{CotTime, Event, msgs};
 use crate::prelude::*;
 
 use super::hub::Hub;
+use super::liveness::LeaveReason;
 use super::subscription::{ConnHandle, ConnId, Outbound, SendResult, Subscription};
 
 /// Pushing a server-originated message at connected clients.
@@ -126,7 +127,7 @@ impl Notifier for Hub {
         let handles = self.handles_for_fingerprint(fingerprint);
 
         for handle in &handles {
-            handle.close();
+            handle.close(LeaveReason::Revoked);
         }
 
         if !handles.is_empty() {

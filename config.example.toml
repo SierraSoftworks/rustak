@@ -235,9 +235,23 @@ error_log_retention = 200
 enabled = true
 listen = ":8089"
 
-# How long a connection may go without traffic before it is closed. TAK clients
-# ping well inside this; the timeout reclaims connections whose device fell off
-# the network without closing its socket.
+# How long a connection may go without traffic **in either direction** before it
+# is closed. A connection is reclaimed only when nothing has been received from
+# it AND nothing has been successfully written to it for this long.
+#
+# Both halves matter. A TAK client pings after fifteen seconds of *inbound*
+# silence and not otherwise, so a receive-only client on a busy server — a
+# sidecar with nothing to publish, a screen somebody is watching — hears traffic
+# constantly, never pings, and sends nothing at all while working perfectly. A
+# server that measured only reads would drop exactly those clients every
+# idle_timeout.
+#
+# What this does NOT have to catch is a peer that has vanished while the server
+# is still writing to it: that one is reclaimed by [stream.limits] write_timeout,
+# whose flush stops completing once the socket stops taking bytes. This timeout
+# is for a connection where nothing at all is happening — a device that fell off
+# the network without closing its socket, which by then has also missed its own
+# ping.
 idle_timeout = "90s"
 
 

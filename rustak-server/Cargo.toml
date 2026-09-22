@@ -116,6 +116,11 @@ rustak-client = { workspace = true, features = ["testing"] }
 rustak-plugin-ais = { path = "../rustak-plugin-ais" }
 rustak-plugin-adsb = { path = "../rustak-plugin-adsb" }
 rustak-plugin-esb = { path = "../rustak-plugin-esb" }
+# `test-util` is what `tokio::time::pause`/`advance` need. The stream's idle
+# rule is a 90-second timer and its keepalive clocks are tens of seconds: the
+# tests drive those clocks rather than waiting for them, so that what they
+# assert is the rule and not how fast the host is.
+tokio = { workspace = true, features = ["test-util"] }
 rstest = { workspace = true }
 # The squashed-change fold is held against a naive replay model over generated
 # histories; nothing else in this crate needs generated input.

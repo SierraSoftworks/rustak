@@ -22,6 +22,7 @@ use crate::cot_store::CotStoreHandle;
 use crate::prelude::*;
 
 use super::hub::Hub;
+use super::liveness::LeaveReason;
 use super::metrics::StreamMetrics;
 use super::notify::{self, Notifier};
 use super::router::Router;
@@ -321,7 +322,7 @@ impl LiveState {
         let handles = self.hub.handles_for_user(username);
 
         for handle in &handles {
-            handle.close();
+            handle.close(LeaveReason::AccountDisabled);
         }
 
         if !handles.is_empty() {

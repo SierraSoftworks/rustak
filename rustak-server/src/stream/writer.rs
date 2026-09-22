@@ -36,6 +36,7 @@ use tokio_util::codec::FramedWrite;
 
 use crate::prelude::*;
 
+use super::liveness::{LeaveReason, Liveness};
 use super::metrics::StreamMetrics;
 use super::subscription::Outbound;
 
@@ -71,6 +72,19 @@ pub struct WriterContext {
     ///
     /// `[stream.limits] write_timeout`. See [`run`].
     pub write_timeout: Duration,
+    /// The connection's clocks and cause of death.
+    ///
+    /// The writer is the only task that knows when a write *completed*, which
+    /// is half of the idle rule (`liveness`), and the only one that can name a
+    /// peer that stopped taking bytes.
+    pub liveness: Arc<Liveness>,
+}
+
+impl WriterContext {
+    /// Records why this connection is ending, and reports it.
+    fn ended(&self, reason: LeaveReason) -> LeaveReason {
+        self.liveness.ended(reason)
+    }
 }
 
 /// Runs a connection's writer until its queue closes or the socket fails.
@@ -114,18 +128,30 @@ pub async fn run<W: AsyncWrite + Unpin>(
         for outbound in batch.drain(..) {
             if !write(&mut sink, outbound, &context).await {
                 close(&mut sink, context.write_timeout).await;
+                // The read side has nothing to wait for on a socket that will
+                // not take bytes: without this the connection would sit there
+                // until the idle timeout, still registered and still being
+                // routed to. `Outbound::Close` arrives here already cancelled,
+                // so this only ever ends a connection that was going anyway.
+                shutdown.cancel();
 
                 return;
             }
         }
 
-        if !flush(&mut sink, context.write_timeout).await {
+        if !flush(&mut sink, &context).await {
+            shutdown.cancel();
+
             return;
         }
+
+        // The flush returned, so these bytes have left this process: the
+        // connection is not idle, however long the client has been silent.
+        context.liveness.wrote();
     }
 
     // The queue closed, which is the connection task saying it has finished.
-    flush(&mut sink, context.write_timeout).await;
+    flush(&mut sink, &context).await;
     close(&mut sink, context.write_timeout).await;
 }
 
@@ -154,18 +180,21 @@ async fn next(rx: &mut mpsc::Receiver<Outbound>, shutdown: &Shutdown) -> Option<
 /// `false` means stop.
 async fn flush<W: AsyncWrite + Unpin>(
     sink: &mut FramedWrite<W, TakCodec>,
-    within: Duration,
+    context: &WriterContext,
 ) -> bool {
+    let within = context.write_timeout;
     let flushing = <FramedWrite<W, TakCodec> as SinkExt<&EncodedEvent>>::flush(sink);
 
     match tokio::time::timeout(within, flushing).await {
         Ok(Ok(())) => true,
         Ok(Err(err)) => {
+            context.ended(LeaveReason::WriteError);
             debug!(error = %err, "A stream connection's writer could not flush.");
 
             false
         }
         Err(_) => {
+            context.ended(LeaveReason::WriteTimeout);
             debug!(
                 seconds = within.as_secs(),
                 "A stream connection stopped accepting writes and was given up on."
@@ -198,7 +227,7 @@ async fn write<W: AsyncWrite + Unpin>(
                 return false;
             }
 
-            if !flush(sink, context.write_timeout).await {
+            if !flush(sink, context).await {
                 return false;
             }
 
@@ -223,13 +252,13 @@ async fn feed<W: AsyncWrite + Unpin>(
             Some(pointer) => {
                 StreamMetrics::incr(&context.metrics.oversize_substituted);
 
-                fed(sink.feed(&pointer), context.write_timeout).await
+                fed(sink.feed(&pointer), context).await
             }
             None => true,
         };
     }
 
-    fed(sink.feed(encoded.as_ref()), context.write_timeout).await
+    fed(sink.feed(encoded.as_ref()), context).await
 }
 
 /// Waits for one `feed`, under the same deadline the flush is held to.
@@ -239,16 +268,20 @@ async fn feed<W: AsyncWrite + Unpin>(
 /// draining this awaits too, and needs the deadline just as much.
 async fn fed(
     feeding: impl std::future::Future<Output = Result<(), CodecError>>,
-    within: Duration,
+    context: &WriterContext,
 ) -> bool {
+    let within = context.write_timeout;
+
     match tokio::time::timeout(within, feeding).await {
         Ok(Ok(())) => true,
         Ok(Err(err)) => {
+            context.ended(LeaveReason::WriteError);
             debug!(error = %err, "A stream connection's writer could not encode a message.");
 
             false
         }
         Err(_) => {
+            context.ended(LeaveReason::WriteTimeout);
             debug!(
                 seconds = within.as_secs(),
                 "A stream connection stopped accepting writes and was given up on."
@@ -353,6 +386,7 @@ mod tests {
             metrics: Arc::new(StreamMetrics::default()),
             public_url: public_url.map(str::to_owned),
             write_timeout: Duration::from_secs(5),
+            liveness: Arc::new(Liveness::new()),
         }
     }
 
@@ -374,18 +408,26 @@ mod tests {
         ))
     }
 
-    #[tokio::test]
-    async fn a_peer_that_stops_reading_is_given_up_on_within_the_write_timeout() {
+    #[tokio::test(start_paused = true)]
+    async fn a_peer_that_stops_reading_is_given_up_on_and_named_as_a_write_timeout() {
         // R-03 H1. The socket takes sixteen bytes and its peer never reads, so
         // the flush parks with nowhere to put the rest. Without a deadline the
         // task, the file descriptor and the TLS session behind it survive for
         // the life of the process — and this test does not terminate.
+        //
+        // The clock is paused, so what is asserted is the *order* — the writer
+        // stops, names the cause and cancels the connection — rather than how
+        // long any of it took on this host. M9-15: the cause is what turns the
+        // disconnect line from "a client left" into something an operator can
+        // act on.
         let (client, server) = tokio::io::duplex(16);
         let (tx, rx) = mpsc::channel(8);
         let sink = FramedWrite::new(server, TakCodec::new(Mode::Xml));
+        let closing = Shutdown::new();
 
         let mut context = context(None);
         context.write_timeout = Duration::from_millis(100);
+        let liveness = Arc::clone(&context.liveness);
 
         for uid in 0..8 {
             tx.send(Outbound::Event(event(&format!("UID-{uid}"))))
@@ -394,22 +436,53 @@ mod tests {
         }
         drop(tx);
 
-        let started = std::time::Instant::now();
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            run(rx, sink, context, Shutdown::new()),
-        )
-        .await
-        .expect("the writer gives up rather than parking for ever");
+        run(rx, sink, context, closing.clone()).await;
 
+        assert_eq!(
+            liveness.reason(),
+            Some(LeaveReason::WriteTimeout),
+            "the peer stopped taking bytes; that is what the disconnect must say",
+        );
         assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "it gave up after {:?}, not after its 100ms budget",
-            started.elapsed(),
+            closing.is_cancelled(),
+            "the read side must not wait out the idle timeout on a socket that \
+             will not take bytes",
         );
 
         // Held to the end, so the socket is not closed from under the writer
         // and the test is about the deadline rather than about an error.
+        drop(client);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_completed_flush_is_what_keeps_a_quiet_connection_alive() {
+        // The other half of M9-15: the idle clock is `max(last_rx, last_tx)`,
+        // and this is where `last_tx` moves. A client that says nothing while
+        // the server writes to it must not look idle.
+        let (client, server) = tokio::io::duplex(1 << 20);
+        let (tx, rx) = mpsc::channel(8);
+        let sink = FramedWrite::new(server, TakCodec::new(Mode::Xml));
+        let context = context(None);
+        let liveness = Arc::clone(&context.liveness);
+
+        let idle = Duration::from_secs(90);
+        let before = liveness.idle_deadline(idle);
+
+        // Half an hour of a client saying nothing, and then one message
+        // written to it.
+        tokio::time::advance(Duration::from_secs(1_800)).await;
+        tx.send(Outbound::Event(event("UID-1"))).await.unwrap();
+        drop(tx);
+        run(rx, sink, context, Shutdown::new()).await;
+
+        assert_eq!(
+            liveness.idle_deadline(idle) - before,
+            Duration::from_secs(1_800),
+            "a completed write pushes the idle deadline out by exactly as long \
+             as the connection had been quiet",
+        );
+        assert_eq!(liveness.reason(), None, "nothing went wrong here");
+
         drop(client);
     }
 

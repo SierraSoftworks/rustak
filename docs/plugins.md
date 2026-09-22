@@ -180,6 +180,18 @@ negotiation on your behalf, and hands you everything else:
 Control traffic never reaches a plugin: pings, pongs and the negotiation
 exchange are answered inside the client.
 
+**A sidecar with nothing to publish stays connected by itself.** The SDK pings
+on two clocks: ATAK's — after 15s of having *heard* nothing, giving up at 25s —
+and one of its own, after **30s of having *sent* nothing**. The second one is
+what a receive-only sidecar lives on. A plugin that subscribes to a busy channel
+and publishes nothing hears traffic constantly, so ATAK's rule never fires and
+without the outbound ping the plugin would write nothing at all; any server that
+measures idleness from reads alone then drops it on a timer. Anything the plugin
+publishes resets that clock, so a sidecar that reports regularly never sends a
+keepalive at all. Nothing to configure: it is on by default, and
+`Keepalive::OFF` (a test harness driving its own clock) is the only thing that
+turns it off.
+
 `SidecarEvent::Server` arrives on the same `on_event` and comes from the
 server-event feed rather than the stream — see "Reacting to server events"
 below.
