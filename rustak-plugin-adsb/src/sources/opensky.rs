@@ -17,12 +17,12 @@
 //!
 //! # The token
 //!
-//! Client credentials, exchanged for a bearer token that lasts half an hour and
-//! is refreshed when it is nearly out or when a request comes back `401`. The
-//! secret is a [`Secret`], so it redacts itself in every log line and every
-//! `Debug` — including the ones this module does not write.
+//! Client credentials, exchanged for a bearer token; the `token` module is
+//! that half, including how loudly a token endpoint that is down may complain.
 
-use std::time::{Duration, Instant};
+mod token;
+
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use rustak_client::feed::{Area, Feed, Track};
@@ -32,13 +32,10 @@ use rustak_core::prelude::*;
 use super::{AdsbFeed, SourceState, http_client, retry_after};
 use crate::mapping::track_from_state;
 use crate::wire::OpenSkyStates;
+use token::{ADVICE_CREDENTIAL, Tokens};
 
 /// Where the state vectors are.
 pub const STATES_URL: &str = "https://opensky-network.org/api/states/all";
-
-/// Where a client credential becomes a bearer token.
-pub const TOKEN_URL: &str =
-    "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token";
 
 /// The header a `429` carries its delay in.
 const RETRY_HEADER: &str = "x-rate-limit-retry-after-seconds";
@@ -46,62 +43,19 @@ const RETRY_HEADER: &str = "x-rate-limit-retry-after-seconds";
 /// The header that says how much of today's budget is left.
 const REMAINING_HEADER: &str = "x-rate-limit-remaining";
 
-/// How long before a token expires it is replaced.
-const TOKEN_SKEW: Duration = Duration::from_secs(60);
-
-/// How long a token lasts when the response does not say.
-const TOKEN_DEFAULT_LIFETIME: Duration = Duration::from_secs(1_800);
-
 /// The poll interval OpenSky's resolution supports without a credential.
 pub const ANONYMOUS_INTERVAL: Duration = Duration::from_secs(10);
 
 /// The poll interval an authenticated client gets.
 pub const AUTHENTICATED_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Advice for a credential OpenSky would not take.
-const ADVICE_CREDENTIAL: &[&str] = &[
-    "Create an API client under your OpenSky account and use its client id and secret.",
-    "Write them as \"${{ env.NAME }}\" in the configuration so they stay out of the file.",
-];
-
 /// The OpenSky Network, read over a bounding box.
 #[derive(Debug)]
 pub struct OpenSkyFeed {
     client: reqwest::Client,
     url: reqwest::Url,
-    token_url: reqwest::Url,
-    credentials: Option<Credentials>,
-    token: Option<Token>,
+    tokens: Tokens,
     state: SourceState,
-}
-
-/// An OAuth2 client credential. The secret redacts itself.
-#[derive(Debug)]
-struct Credentials {
-    client_id: String,
-    client_secret: Secret,
-}
-
-/// A bearer token and when it stops being one.
-#[derive(Debug)]
-struct Token {
-    value: Secret,
-    expires_at: Instant,
-}
-
-/// The token endpoint's answer.
-#[derive(Debug, Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    #[serde(default)]
-    expires_in: Option<u64>,
-}
-
-impl Token {
-    /// Whether this token is still worth sending.
-    fn usable(&self) -> bool {
-        Instant::now() + TOKEN_SKEW < self.expires_at
-    }
 }
 
 impl OpenSkyFeed {
@@ -117,14 +71,8 @@ impl OpenSkyFeed {
         client_secret: Option<Secret>,
         interval: Option<Duration>,
     ) -> Result<Self, Error> {
-        let credentials = match (client_id, client_secret) {
-            (Some(client_id), Some(client_secret)) => Some(Credentials {
-                client_id,
-                client_secret,
-            }),
-            _ => None,
-        };
-        let interval = interval.unwrap_or(if credentials.is_some() {
+        let tokens = Tokens::new(client_id, client_secret)?;
+        let interval = interval.unwrap_or(if tokens.authenticated() {
             AUTHENTICATED_INTERVAL
         } else {
             ANONYMOUS_INTERVAL
@@ -141,7 +89,7 @@ impl OpenSkyFeed {
             .append_pair("extended", "1");
 
         announce(
-            credentials.is_some(),
+            tokens.authenticated(),
             interval,
             credits(south, west, north, east),
         );
@@ -149,41 +97,14 @@ impl OpenSkyFeed {
         Ok(Self {
             client: http_client()?,
             url,
-            token_url: reqwest::Url::parse(TOKEN_URL)
-                .or_system_err(rustak_core::errors::ADVICE_REPORT_DEV)?,
-            credentials,
-            token: None,
+            tokens,
             state: SourceState::new("opensky-network.org", interval),
         })
     }
 
-    /// Makes sure a usable token is held, when this feed has a credential.
-    ///
-    /// A token endpoint that is down is a warning rather than a failure: the
-    /// anonymous endpoint still answers, at a coarser resolution, which is
-    /// better than a feed that went dark because somebody else's OAuth2 server
-    /// had a bad minute.
-    async fn ensure_token(&mut self, force: bool) {
-        let Some(credentials) = &self.credentials else {
-            return;
-        };
-
-        if !force && self.token.as_ref().is_some_and(Token::usable) {
-            return;
-        }
-
-        match refresh(&self.client, &self.token_url, credentials).await {
-            Ok(token) => self.token = Some(token),
-            Err(err) => {
-                warn!("Could not renew the OpenSky token; continuing anonymously. {err}");
-                self.token = None;
-            }
-        }
-    }
-
     /// One request, renewing the token once if it turns out to be stale.
     async fn fetch(&mut self) -> Result<Vec<Track>, Error> {
-        self.ensure_token(false).await;
+        self.tokens.ensure(&self.client, false).await;
 
         let mut renewed = false;
 
@@ -191,19 +112,23 @@ impl OpenSkyFeed {
             let response = self.send().await?;
             let status = response.status();
 
-            if status == reqwest::StatusCode::UNAUTHORIZED && self.credentials.is_some() && !renewed
+            if status == reqwest::StatusCode::UNAUTHORIZED
+                && self.tokens.authenticated()
+                && !renewed
             {
-                info!("OpenSky refused our token; renewing it and trying again.");
+                // Once per poll at most, so `debug`: a token that has expired
+                // early is ordinary, and a token the server will never take is
+                // said once by `Tokens::ensure`.
+                debug!("OpenSky refused our token; renewing it and trying again.");
                 renewed = true;
-                self.ensure_token(true).await;
+                self.tokens.ensure(&self.client, true).await;
 
                 continue;
             }
 
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                let delay = retry_after(response.headers(), RETRY_HEADER)
-                    .unwrap_or_else(|| self.state.interval() * 2);
-                self.state.wait_for(delay);
+                self.state
+                    .wait_for(retry_after(response.headers(), RETRY_HEADER));
 
                 return Ok(Vec::new());
             }
@@ -224,8 +149,8 @@ impl OpenSkyFeed {
     async fn send(&self) -> Result<reqwest::Response, Error> {
         let mut request = self.client.get(self.url.clone());
 
-        if let Some(token) = &self.token {
-            request = request.bearer_auth(token.value.expose());
+        if let Some(token) = self.tokens.bearer() {
+            request = request.bearer_auth(token);
         }
 
         request.send().await.wrap_user_err(
@@ -261,48 +186,6 @@ impl OpenSkyFeed {
             .filter_map(|state| track_from_state(state, now))
             .collect())
     }
-}
-
-/// Exchanges a client credential for a bearer token.
-async fn refresh(
-    client: &reqwest::Client,
-    token_url: &reqwest::Url,
-    credentials: &Credentials,
-) -> Result<Token, Error> {
-    let response = client
-        .post(token_url.clone())
-        .form(&[
-            ("grant_type", "client_credentials"),
-            ("client_id", credentials.client_id.as_str()),
-            ("client_secret", credentials.client_secret.expose()),
-        ])
-        .send()
-        .await
-        .wrap_user_err(
-            "We could not reach OpenSky's token endpoint.",
-            ADVICE_CREDENTIAL,
-        )?
-        .error_for_status()
-        .wrap_user_err(
-            "OpenSky would not issue a token for that credential.",
-            ADVICE_CREDENTIAL,
-        )?;
-
-    let token: TokenResponse = response.json().await.wrap_user_err(
-        "OpenSky's token endpoint sent something unexpected.",
-        ADVICE_CREDENTIAL,
-    )?;
-
-    let lifetime = token
-        .expires_in
-        .map_or(TOKEN_DEFAULT_LIFETIME, Duration::from_secs);
-
-    info!(seconds = lifetime.as_secs(), "Renewed the OpenSky token.");
-
-    Ok(Token {
-        value: Secret::new(token.access_token),
-        expires_at: Instant::now() + lifetime,
-    })
 }
 
 /// The box to ask for, as OpenSky's four query parameters.
@@ -432,7 +315,7 @@ mod tests {
 
         feed.url =
             reqwest::Url::parse(&format!("{}/api/states/all", server.uri())).expect("a mock URL");
-        feed.token_url =
+        feed.tokens.url =
             reqwest::Url::parse(&format!("{}/auth/token", server.uri())).expect("a mock token URL");
 
         feed
@@ -535,7 +418,7 @@ mod tests {
         let feed = OpenSkyFeed::open(Area::default(), Some("rustak".to_string()), None, None)
             .expect("it opens");
 
-        assert!(feed.credentials.is_none());
+        assert!(!feed.tokens.authenticated());
         assert_eq!(feed.state().interval(), ANONYMOUS_INTERVAL);
     }
 
@@ -587,7 +470,7 @@ mod tests {
         let mut feed = against(&server, true);
 
         assert_eq!(feed.poll().await.expect("it answers").len(), 2);
-        assert!(feed.token.is_some());
+        assert!(feed.tokens.held());
     }
 
     #[tokio::test]
@@ -664,7 +547,7 @@ mod tests {
             2,
             "a token endpoint having a bad minute is not a dark feed",
         );
-        assert!(feed.token.is_none());
+        assert!(!feed.tokens.held());
     }
 
     #[tokio::test]

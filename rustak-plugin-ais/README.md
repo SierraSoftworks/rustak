@@ -213,6 +213,13 @@ group naming the upstream and how it is doing:
 A `reconnecting` source carries `last_error` as well. No credential ever
 reaches any of it.
 
+**What reaches the log is a state change, not an attempt.** A run of failed
+connections — a service that is down, a key it will not take, a UDP port
+something else is holding — is one warning with the cause, `debug` for every
+attempt after it, one line every five minutes saying how many there have been
+since the last one, and one line when it comes back naming how long it was
+gone. A stream that closes and reopens cleanly says nothing at all.
+
 An administrator may also set an `area` in the service's configuration, which
 wins over the file:
 

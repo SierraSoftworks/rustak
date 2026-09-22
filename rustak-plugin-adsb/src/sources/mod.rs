@@ -16,11 +16,22 @@
 //!   to it, so an operator of the upstream can find out who we are;
 //! - [`SourceState`] puts a floor under the request rate that is independent of
 //!   the sidecar's tick, and backs off when the answer is a failure;
-//! - a `429` is honoured for as long as the response asks, within reason;
+//! - a `429` is honoured for as long as the response asks, within reason, and a
+//!   provider that asks twice inside ten polls has the poll interval raised to
+//!   what it asked for until the process restarts;
 //! - repeated `403`s stop the source rather than hammering a service that has
 //!   said no.
+//!
+//! # And it says so once
+//!
+//! `notice` is the other half of being a guest: an operator who cannot see a
+//! rate limit in a log because the log is nothing but rate limits is no better
+//! off than one who was never told. Every run of the same thing — an outage,
+//! a rate limit, a token that will not renew — is announced once, reminded
+//! about every five minutes with a count, and closed with one line.
 
 pub mod aggregator;
+mod notice;
 pub mod opensky;
 pub mod readsb;
 pub mod replay;
@@ -35,7 +46,7 @@ pub use aggregator::{AggregatorFeed, Provider};
 pub use opensky::OpenSkyFeed;
 pub use readsb::ReadsbFeed;
 pub use replay::ReplayFeed;
-pub use state::{MAX_BACKOFF, SourceState};
+pub use state::{LIMIT_WINDOW, MAX_BACKOFF, SourceState};
 
 /// What this plugin calls itself to every upstream it reaches.
 ///

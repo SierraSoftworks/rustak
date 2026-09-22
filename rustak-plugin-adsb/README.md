@@ -72,21 +72,41 @@ prefer.
 [settings.source]
 kind = "aggregator"
 provider = "adsb_lol"    # adsb_lol | adsb_fi | airplanes_live
-poll = "5s"
+# poll = "10s"           # default: the provider's own, below
 ```
 
 The `[settings.area]` circle becomes the circle the endpoint is asked for (a box
 asks for the circle that encloses it, and the publisher filters the corners back
-out). The radius is capped at the 250 nautical miles these endpoints accept, and
-polling never goes faster than one request a second whatever `poll` says. Three
-consecutive `403`s stop the source, with a log line saying so, rather than
+out). The radius is capped at the 250 nautical miles these endpoints accept.
+Three consecutive `403`s stop the source, with a log line saying so, rather than
 hammering a service that has said no.
+
+**How often it asks.** There is no single default, because the three services
+are not one service: `poll` defaults to `"10s"` for `adsb_lol` and
+`airplanes_live` and to `"5s"` for `adsb_fi`. An explicit `poll` wins and is
+clamped up to a floor of **2 s** — the pools behind all three update about once
+a second, so a second request inside two seconds costs somebody else's bandwidth
+to hear the same aircraft twice — and the clamp is logged at `info` rather than
+applied silently. A deployment that needs a faster picture than this wants a
+receiver of its own, which the `readsb` source above reads for nothing.
+
+**And it adapts.** A `429` is waited out for as long as `Retry-After` asks. A
+provider that asks **twice inside ten polls** is taken at its word: the interval
+becomes what it asked for, for the rest of the process, said once at `info` —
+
+```
+adsb.lol asks for 10s between requests; polling at that rate from now on.
+```
+
+— and never lowered again until a restart. The heartbeat carries
+`source.poll_effective_s` and `source.rate_limited`, so the Services page shows
+the cadence actually in use rather than the one in the file.
 
 | `provider` | Endpoint | Terms and attribution |
 |---|---|---|
-| `adsb_lol` | `api.adsb.lol/v2/point/{lat}/{lon}/{nm}` | Open data, no account. Rate limits are described as dynamic with API keys planned — see <https://adsb.lol>. |
-| `adsb_fi` | `opendata.adsb.fi/api/v2/lat/{lat}/lon/{lon}/dist/{nm}` | **Non-commercial use**, one request a second, and asks to be **cited and linked**: credit "adsb.fi" with a link to <https://adsb.fi> wherever the data is shown. |
-| `airplanes_live` | `api.airplanes.live/v2/point/{lat}/{lon}/{nm}` | One request a second; see <https://airplanes.live/api-guide>. **Experimental** — our probe of the public endpoint was refused (`403`), so this path is implemented against the documented shape and is unverified. |
+| `adsb_lol` | `api.adsb.lol/v2/point/{lat}/{lon}/{nm}` | Open data, no account. Rate limits are described as dynamic with API keys planned — see <https://adsb.lol>. **Observed:** a five-second poll was answered `429`, `Retry-After: 10`, on about every other request, which is where the 10 s default comes from. |
+| `adsb_fi` | `opendata.adsb.fi/api/v2/lat/{lat}/lon/{lon}/dist/{nm}` | **Non-commercial use**; documents a ceiling of one request a second, and asks to be **cited and linked**: credit "adsb.fi" with a link to <https://adsb.fi> wherever the data is shown. |
+| `airplanes_live` | `api.airplanes.live/v2/point/{lat}/{lon}/{nm}` | Documents a ceiling of one request a second; see <https://airplanes.live/api-guide>. **Experimental** — our probe of the public endpoint was refused (`403`), so this path is implemented against the documented shape and is unverified. |
 
 **How to get access:** none of the three needs an account today. All three are
 free services run by volunteers and paid for by people who feed data into them;
@@ -194,11 +214,20 @@ on-ground track with no `hae`.
 
 The sidecar reports its own heartbeat on the Services page: the source's kind
 and name, whether it is connected, reconnecting or has never connected, what
-went wrong last, how many aircraft are tracked, and the feed's counters
+went wrong last, the cadence it is actually polling at
+(`source.poll_effective_s`) and how many times it has been rate-limited
+(`source.rate_limited`), how many aircraft are tracked, and the feed's counters
 (offered, published, suppressed, expired). A source that has been reconnecting
 for more than two poll intervals reports `degraded`; one that has never
 connected reports `unhealthy`, because that is a setting to look at rather than
 an outage to wait out. Nothing secret goes into it.
+
+**What reaches the log is a state change, not an attempt.** An upstream that is
+down, or one that is refusing every other request, is announced once with the
+cause; the polls that keep failing are `debug`; one line every five minutes says
+how many there have been since the last one; and coming back is one line naming
+how long it was gone. Everything else lives on the Services page, which is where
+the *current* state belongs.
 
 An administrator may also set an `area` for the service through
 `PUT /api/v1/services/adsb/config`; the sidecar reads it at start-up and it wins

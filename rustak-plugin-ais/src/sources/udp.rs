@@ -19,6 +19,7 @@
 //! heartbeat's `reconnecting` state are for.
 
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use chrono::Utc;
 use nmea_parser::ais::{CargoType, ShipType, VesselDynamicData, VesselStaticData};
@@ -33,6 +34,7 @@ use crate::mapping::{Dimensions, Position, StaticData};
 use crate::status::{Connection, ConnectionTx};
 use crate::vessels::{Observation, Vessels};
 
+use super::notice::{Repeated, Report, humanised};
 use super::{Backoff, SourceContext};
 
 /// What this source calls itself in a log line and on a heartbeat.
@@ -131,6 +133,11 @@ fn bind(listen: SocketAddr) -> Result<UdpSocket, Error> {
 }
 
 /// Reads the port until the sidecar stops, rebinding it if it ever fails.
+///
+/// A port that is taken by something else stays taken, so the rebind fails
+/// every time the backoff falls due: the run of failures is announced once and
+/// then counted, which is what stops a misconfigured port being a log line a
+/// second for as long as the sidecar runs.
 async fn run(
     socket: UdpSocket,
     listen: SocketAddr,
@@ -140,19 +147,20 @@ async fn run(
 ) {
     let mut backoff = Backoff::default();
     let mut socket = Some(socket);
+    let mut trouble = Repeated::default();
 
     while !shutdown.is_cancelled() {
         let bound = match socket.take() {
             Some(bound) => bound,
             None => match bind(listen) {
                 Ok(bound) => {
-                    info!(source = NAME, %listen, "Listening again.");
+                    listening_again(&mut trouble, listen);
                     connection.send_replace(Connection::connected());
                     backoff.reset();
                     bound
                 }
                 Err(err) => {
-                    warn!(source = NAME, retry_in = ?backoff.next(), "Cannot listen: {err}");
+                    cannot_listen(&mut trouble, &err.to_string(), backoff.next());
                     connection.send_replace(Connection::reconnecting(err.to_string()));
 
                     if !backoff.wait(&shutdown).await {
@@ -167,7 +175,7 @@ async fn run(
         match read(&bound, &sender, &shutdown).await {
             Ok(()) => return,
             Err(reason) => {
-                warn!(source = NAME, "The AIS listener stopped: {reason}");
+                cannot_listen(&mut trouble, &reason, backoff.next());
                 connection.send_replace(Connection::reconnecting(reason));
             }
         }
@@ -175,6 +183,32 @@ async fn run(
         if !backoff.wait(&shutdown).await {
             return;
         }
+    }
+}
+
+/// One attempt at the port that did not work, said once per run.
+fn cannot_listen(trouble: &mut Repeated, reason: &str, retry_in: Duration) {
+    match trouble.happened(Utc::now()) {
+        Report::First => warn!(source = NAME, retry_in = ?retry_in, "Cannot listen: {reason}"),
+        Report::Reminder { count, over } => warn!(
+            source = NAME,
+            "Still cannot listen: {count} attempts failed in the last {}. {reason}",
+            humanised(over),
+        ),
+        _ => debug!(source = NAME, retry_in = ?retry_in, "Still cannot listen: {reason}"),
+    }
+}
+
+/// The port answering again, which is the end of that run.
+fn listening_again(trouble: &mut Repeated, listen: SocketAddr) {
+    match trouble.cleared(Utc::now()) {
+        Report::Recovered { count, over } => info!(
+            source = NAME,
+            %listen,
+            "Listening again after {} and {count} failed attempts.",
+            humanised(over),
+        ),
+        _ => debug!(source = NAME, %listen, "Listening again."),
     }
 }
 

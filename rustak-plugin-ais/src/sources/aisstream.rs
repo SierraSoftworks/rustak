@@ -31,6 +31,7 @@ mod wire;
 
 use std::time::Duration;
 
+use chrono::Utc;
 use futures::{SinkExt, StreamExt};
 use rustak_client::feed::{Feed, Track};
 use rustak_client::sidecar::async_trait;
@@ -43,6 +44,7 @@ use crate::vessels::{Observation, Vessels};
 
 use frames::{Frames, Step};
 
+use super::notice::{Repeated, Report, humanised};
 use super::{Backoff, SourceContext};
 
 /// What this source calls itself in a log line and on a heartbeat.
@@ -145,6 +147,65 @@ impl Feed for AisStream {
     }
 }
 
+/// What has been said about this subscription so far.
+///
+/// A service that is refusing connections is asked again a second later, and a
+/// line per attempt would be the same sentence a hundred times before the
+/// backoff reached its ceiling. One run of trouble is one warning with the
+/// cause, a reminder every five minutes with a count, and one line when it
+/// ends; a stream that closes and reopens cleanly says nothing at all.
+#[derive(Default)]
+struct Announced {
+    /// The run of connections that did not work.
+    trouble: Repeated,
+
+    /// Whether this source has ever subscribed.
+    ever: bool,
+}
+
+impl Announced {
+    /// One connection that failed, before or during the handshake.
+    ///
+    /// `reason` is only ever the endpoint, the transport, or the service's own
+    /// words with the key taken out of them: the subscription payload, which
+    /// holds the key, is never part of it.
+    fn unavailable(&mut self, reason: &str, retry_in: Duration) {
+        match self.trouble.happened(Utc::now()) {
+            Report::First => warn!(
+                source = NAME,
+                retry_in = ?retry_in,
+                "The AIS stream is unavailable: {reason}",
+            ),
+            Report::Reminder { count, over } => warn!(
+                source = NAME,
+                "The AIS stream is still unavailable: {count} attempts failed in the last {}. \
+                 {reason}",
+                humanised(over),
+            ),
+            _ => debug!(
+                source = NAME,
+                retry_in = ?retry_in,
+                "The AIS stream is still unavailable: {reason}",
+            ),
+        }
+    }
+
+    /// One connection that subscribed.
+    fn subscribed(&mut self) {
+        match self.trouble.cleared(Utc::now()) {
+            Report::Recovered { count, over } => info!(
+                source = NAME,
+                "Subscribed to the AIS stream again after {} and {count} failed attempts.",
+                humanised(over),
+            ),
+            _ if !self.ever => info!(source = NAME, "Subscribed to the AIS stream."),
+            _ => debug!(source = NAME, "Subscribed to the AIS stream."),
+        }
+
+        self.ever = true;
+    }
+}
+
 /// Keeps the subscription open until the sidecar stops.
 async fn run(
     subscription: Secret,
@@ -154,37 +215,27 @@ async fn run(
     shutdown: Shutdown,
 ) {
     let mut backoff = Backoff::default();
-    let mut said: Option<String> = None;
+    let mut announced = Announced::default();
 
     while !shutdown.is_cancelled() {
-        match stream(&subscription, &api_key, &sender, &connection, &shutdown).await {
+        match stream(
+            &subscription,
+            &api_key,
+            &sender,
+            &connection,
+            &shutdown,
+            &mut announced,
+        )
+        .await
+        {
             Ok(()) => {
-                info!(source = NAME, "The AIS stream closed; reconnecting.");
+                // A stream that closed after working is not news; the
+                // subscription that follows it says so if it is.
+                debug!(source = NAME, "The AIS stream closed; reconnecting.");
                 backoff.reset();
-                said = None;
             }
             Err(reason) => {
-                // Only ever the endpoint, the transport, or the service's own
-                // words with the key taken out of them: the subscription
-                // payload, which holds the key, is never part of this.
-                //
-                // And only once per reason: a key the service will never
-                // accept would otherwise write the same line every minute for
-                // as long as the sidecar runs. The heartbeat keeps saying it.
-                match said.as_deref() == Some(reason.as_str()) {
-                    true => debug!(
-                        source = NAME,
-                        retry_in = ?backoff.next(),
-                        "The AIS stream is still unavailable: {reason}",
-                    ),
-                    false => warn!(
-                        source = NAME,
-                        retry_in = ?backoff.next(),
-                        "The AIS stream is unavailable: {reason}",
-                    ),
-                }
-
-                said = Some(reason.clone());
+                announced.unavailable(&reason, backoff.next());
                 connection.send_replace(Connection::reconnecting(reason));
             }
         }
@@ -202,6 +253,7 @@ async fn stream(
     sender: &mpsc::Sender<Observation>,
     connection: &ConnectionTx,
     shutdown: &Shutdown,
+    announced: &mut Announced,
 ) -> Result<(), String> {
     let opened = tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(ENDPOINT))
         .await
@@ -218,7 +270,7 @@ async fn stream(
     .map_err(|_| "the subscription could not be sent in time".to_string())?
     .map_err(|err| format!("the subscription could not be sent ({err})"))?;
 
-    info!(source = NAME, "Subscribed to the AIS stream.");
+    announced.subscribed();
     connection.send_replace(Connection::connected());
 
     let mut frames = Frames::new(sender, connection, api_key);

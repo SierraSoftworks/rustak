@@ -30,10 +30,6 @@ pub const MIN_MOVE_M: f64 = 50.0;
 /// it rewrites the file about once a second.
 const READSB_POLL: Duration = Duration::from_secs(1);
 
-/// How often a public aggregator is asked. Never faster by default: these are
-/// free services run by volunteers.
-const AGGREGATOR_POLL: Duration = Duration::from_secs(5);
-
 /// Where this plugin reads observations from.
 ///
 /// `#[serde(tag = "kind")]`, so a settings file names the upstream it means:
@@ -71,10 +67,13 @@ pub enum Source {
         /// Which pool of receivers: `adsb_lol`, `adsb_fi` or `airplanes_live`.
         provider: Provider,
 
-        /// How often to ask. Default: `"5s"`, and never faster than the
-        /// provider documents whatever this says.
-        #[serde(default = "aggregator_poll", with = "duration::humane")]
-        poll: chrono::Duration,
+        /// How often to ask. Default: the provider's own — `"10s"` for
+        /// `adsb_lol` and `airplanes_live`, `"5s"` for `adsb_fi` — and never
+        /// faster than two seconds whatever this says. A provider that answers
+        /// `429` with a `Retry-After` twice inside ten polls raises it for the
+        /// rest of the process.
+        #[serde(default, with = "duration::humane_option")]
+        poll: Option<chrono::Duration>,
     },
 
     /// The OpenSky Network's state vectors, anonymously or with an OAuth2
@@ -118,7 +117,7 @@ impl Source {
             Self::Aggregator { provider, poll } => Ok(Box::new(AggregatorFeed::open(
                 *provider,
                 area,
-                std(*poll, AGGREGATOR_POLL),
+                poll.and_then(|poll| poll.to_std().ok()),
             )?)),
             Self::OpenSky {
                 client_id,
@@ -210,11 +209,6 @@ fn readsb_poll() -> chrono::Duration {
     chrono::Duration::from_std(READSB_POLL).unwrap_or_else(|_| chrono::Duration::seconds(1))
 }
 
-/// The default for [`Source::Aggregator`]'s `poll`.
-fn aggregator_poll() -> chrono::Duration {
-    chrono::Duration::from_std(AGGREGATOR_POLL).unwrap_or_else(|_| chrono::Duration::seconds(5))
-}
-
 /// Reads an optional string into a [`Secret`], which redacts itself when
 /// logged. The same shape `rustak_client::sidecar::config` uses for the service
 /// token, and for the same reason.
@@ -278,11 +272,47 @@ mod tests {
             match &settings.source {
                 Source::Aggregator { provider, poll } => {
                     assert_eq!(*provider, expected);
-                    assert_eq!(*poll, chrono::Duration::seconds(5), "the default");
+                    assert!(
+                        poll.is_none(),
+                        "resolved from the provider, not from a default written here",
+                    );
                 }
                 other => panic!("expected an aggregator, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn an_aggregator_that_names_no_poll_opens_at_the_providers_own_rate() {
+        // The default is the provider's, so the setting has to be resolved
+        // rather than defaulted: a `5s` written here would have put adsb.lol
+        // back on the cadence it refused.
+        for (written, expected) in [("adsb_lol", 10), ("adsb_fi", 5), ("airplanes_live", 10)] {
+            let feed = settings(&format!(
+                "[settings.source]\nkind = \"aggregator\"\nprovider = \"{written}\"\n",
+            ))
+            .source
+            .open(Area::default())
+            .expect("it opens");
+
+            assert_eq!(
+                feed.state().interval(),
+                Duration::from_secs(expected),
+                "{written}",
+            );
+        }
+    }
+
+    #[test]
+    fn an_aggregator_poll_faster_than_the_floor_is_clamped_rather_than_refused() {
+        let feed = settings(
+            "[settings.source]\nkind = \"aggregator\"\nprovider = \"adsb_lol\"\npoll = \"1s\"\n",
+        )
+        .source
+        .open(Area::default())
+        .expect("it opens");
+
+        assert_eq!(feed.state().interval(), Duration::from_secs(2));
     }
 
     #[test]

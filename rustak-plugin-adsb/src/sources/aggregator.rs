@@ -12,11 +12,22 @@
 //! feed data into it. This source is written to be a guest:
 //!
 //! - it identifies itself by name and link in every request;
-//! - it never asks more often than [`Provider::min_interval`], whatever the
-//!   configuration says;
-//! - a `429` is honoured for as long as `Retry-After` asks;
+//! - it asks no more often than [`Provider::default_poll`] unless a
+//!   configuration says otherwise, and never more often than
+//!   [`Provider::min_interval`] whatever a configuration says;
+//! - a `429` is honoured for as long as `Retry-After` asks, and a provider that
+//!   asks twice inside ten polls has the interval raised to what it asked for;
 //! - [`FORBIDDEN_LIMIT`] consecutive `403`s stop the source, with a log line
 //!   saying so, rather than retrying against a service that has said no.
+//!
+//! # The defaults came from a deployment, not from a document
+//!
+//! adsb.lol publishes no number — its limits are "dynamic, API keys planned" —
+//! and the first live deployment found out what that meant: `429`,
+//! `Retry-After: 10`, on about every other request at a five-second poll. So
+//! its default is ten seconds, which is what it asked for; adsb.fi documents
+//! one request a second and gets five, which is a polite margin rather than a
+//! measurement; airplanes.live is unverified and gets the conservative one.
 //!
 //! Each provider's terms and the attribution it asks for are in the crate's
 //! README, and [`Provider::terms`] carries the short version into the log at
@@ -42,6 +53,15 @@ pub const MAX_RADIUS_NM: f64 = 250.0;
 /// minute; three in a row is a service telling us to go away, and continuing to
 /// ask would be the thing that gets an address range blocked.
 pub const FORBIDDEN_LIMIT: u32 = 3;
+
+/// The fastest any of these services is asked, whatever a configuration says.
+///
+/// Two seconds rather than the one they document: the data behind all three is
+/// a pool of receivers that updates about once a second, so a second request
+/// inside two seconds costs somebody else's bandwidth to hear almost the same
+/// aircraft twice. A deployment that needs more than this wants a receiver of
+/// its own, which the `readsb` source reads for nothing.
+pub const POLL_FLOOR: Duration = Duration::from_secs(2);
 
 /// Which pool of receivers to read.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -82,15 +102,34 @@ impl Provider {
         }
     }
 
-    /// The shortest gap between two requests this provider documents.
+    /// How often this provider is asked when a configuration does not say.
+    ///
+    /// Not a published figure in any of the three cases: adsb.lol's is what it
+    /// asked the first live deployment for in a `Retry-After`, and the other
+    /// two are a margin under what they document, because being refused is
+    /// worse for a feed than being a little behind.
+    #[must_use]
+    pub const fn default_poll(self) -> Duration {
+        match self {
+            // Observed: `429`, `Retry-After: 10`, on about every other request
+            // at five seconds.
+            Self::AdsbLol => Duration::from_secs(10),
+            // Documented at one request a second; five is the polite margin.
+            Self::AdsbFi => Duration::from_secs(5),
+            // Unverified — our probe of the endpoint was refused — so the
+            // conservative one until somebody has run it.
+            Self::AirplanesLive => Duration::from_secs(10),
+        }
+    }
+
+    /// The shortest gap between two requests this source will ever leave.
+    ///
+    /// [`POLL_FLOOR`] for all three today. It is a method rather than a
+    /// constant read directly because these are three separate services, and
+    /// the first one to publish a number of its own belongs here.
     #[must_use]
     pub const fn min_interval(self) -> Duration {
-        match self {
-            // "Dynamic, API keys planned" rather than a number, so this is our
-            // own restraint rather than their published figure.
-            Self::AdsbLol => Duration::from_secs(1),
-            Self::AdsbFi | Self::AirplanesLive => Duration::from_secs(1),
-        }
+        POLL_FLOOR
     }
 
     /// The one-line version of what using this data commits an operator to.
@@ -102,7 +141,8 @@ impl Provider {
                 "adsb.fi is for non-commercial use and asks to be cited and linked: https://adsb.fi"
             }
             Self::AirplanesLive => {
-                "airplanes.live allows one request a second; see https://airplanes.live/api-guide"
+                "airplanes.live documents a ceiling of one request a second; \
+                 see https://airplanes.live/api-guide"
             }
         }
     }
@@ -126,18 +166,29 @@ impl AggregatorFeed {
     /// endpoints take; a box therefore asks for the circle that encloses it and
     /// the publisher filters the corners back out.
     ///
+    /// `poll` is what the configuration asked for, or [`None`] for the
+    /// provider's own [`default_poll`](Provider::default_poll). Either way it
+    /// is clamped up to [`min_interval`](Provider::min_interval), and an
+    /// operator who asked for something faster is told which one they got.
+    ///
     /// # Errors
     ///
     /// A [`human_errors::Kind::System`] error when the HTTP client or the URL
     /// this crate built cannot be constructed, neither of which an operator can
     /// do anything about.
-    pub fn open(provider: Provider, area: Area, interval: Duration) -> Result<Self, Error> {
+    pub fn open(provider: Provider, area: Area, poll: Option<Duration>) -> Result<Self, Error> {
         let floor = provider.min_interval();
-        if interval < floor {
-            warn!(
+        let asked = poll.unwrap_or_else(|| provider.default_poll());
+        let interval = asked.max(floor);
+
+        if interval > asked {
+            info!(
                 provider = provider.name(),
+                asked_s = asked.as_secs(),
                 seconds = floor.as_secs(),
-                "The configured poll interval is faster than this provider allows; using theirs.",
+                "The configured poll interval is faster than this source will ask a free service; \
+                 using {}s.",
+                floor.as_secs(),
             );
         }
 
@@ -152,6 +203,7 @@ impl AggregatorFeed {
             lat,
             lon,
             radius_nm = radius,
+            poll_s = interval.as_secs(),
             "Reading aircraft from a public aggregator. {}",
             provider.terms(),
         );
@@ -160,7 +212,7 @@ impl AggregatorFeed {
             provider,
             url,
             client: http_client()?,
-            state: SourceState::new(provider.name(), interval.max(floor)),
+            state: SourceState::new(provider.name(), interval),
             forbidden: 0,
             stopped: false,
         })
@@ -190,9 +242,10 @@ impl AggregatorFeed {
         let status = response.status();
 
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            let delay = retry_after(response.headers(), "retry-after")
-                .unwrap_or_else(|| self.state.interval() * 2);
-            self.state.wait_for(delay);
+            // The header, when there is one, is the provider saying how often
+            // it wants to be asked; the state machine is what remembers that.
+            self.state
+                .wait_for(retry_after(response.headers(), "retry-after"));
 
             return Ok(Vec::new());
         }
@@ -303,12 +356,12 @@ mod tests {
 
     /// The aggregator pointed at a mock rather than at somebody's live service.
     fn against(server: &MockServer, interval: Duration) -> AggregatorFeed {
-        let mut feed =
-            AggregatorFeed::open(Provider::AdsbLol, Area::default(), interval).expect("it opens");
+        let mut feed = AggregatorFeed::open(Provider::AdsbLol, Area::default(), Some(interval))
+            .expect("it opens");
         feed.url = reqwest::Url::parse(&format!("{}/v2/point/51.5/-0.5/25", server.uri()))
             .expect("a mock URL");
-        // `open` clamps the interval up to what the provider documents, which
-        // is right against a live service and pointless against a mock.
+        // `open` clamps the interval up to the floor under a free service,
+        // which is right against a live one and pointless against a mock.
         feed.state = SourceState::new(Provider::AdsbLol.name(), interval);
 
         feed
@@ -427,6 +480,98 @@ mod tests {
             "they answered; they just said later"
         );
         assert!(!feed.state().ready(), "and we are waiting");
+        assert_eq!(feed.state().rate_limited(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_provider_that_asks_twice_for_ten_seconds_gets_ten_seconds() {
+        // The Dublin finding, over the wire: the `Retry-After` header is read,
+        // and the second one inside the window raises the cadence for good.
+        //
+        // `fetch` rather than `poll`, because `poll` honours the wait the first
+        // 429 just asked for — which is the behaviour under test everywhere
+        // else and would make this suite sleep for ten seconds.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "10"))
+            .mount(&server)
+            .await;
+
+        let mut feed = against(&server, Duration::from_secs(5));
+
+        assert!(feed.fetch().await.expect("429 is not an error").is_empty());
+        assert_eq!(
+            feed.state().interval(),
+            Duration::from_secs(5),
+            "one is a bad minute",
+        );
+
+        assert!(feed.fetch().await.expect("429 is not an error").is_empty());
+
+        assert_eq!(
+            feed.state().interval(),
+            Duration::from_secs(10),
+            "two inside the window is adsb.lol saying how often it wants to be asked",
+        );
+        assert_eq!(feed.state().rate_limited(), 2);
+    }
+
+    #[test]
+    fn each_provider_has_a_default_poll_and_none_of_them_is_faster_than_the_floor() {
+        assert_eq!(Provider::AdsbLol.default_poll(), Duration::from_secs(10));
+        assert_eq!(Provider::AdsbFi.default_poll(), Duration::from_secs(5));
+        assert_eq!(
+            Provider::AirplanesLive.default_poll(),
+            Duration::from_secs(10),
+        );
+
+        for provider in [Provider::AdsbLol, Provider::AdsbFi, Provider::AirplanesLive] {
+            assert!(
+                provider.default_poll() >= provider.min_interval(),
+                "{}",
+                provider.name(),
+            );
+        }
+    }
+
+    #[test]
+    fn a_poll_interval_faster_than_the_floor_is_clamped_up_to_it() {
+        let feed = AggregatorFeed::open(
+            Provider::AdsbLol,
+            Area::default(),
+            Some(Duration::from_secs(1)),
+        )
+        .expect("it opens");
+
+        assert_eq!(feed.state().interval(), POLL_FLOOR);
+    }
+
+    #[test]
+    fn a_source_that_names_no_poll_gets_the_provider_its_own() {
+        for (provider, expected) in [
+            (Provider::AdsbLol, Duration::from_secs(10)),
+            (Provider::AdsbFi, Duration::from_secs(5)),
+        ] {
+            let feed = AggregatorFeed::open(provider, Area::default(), None).expect("it opens");
+
+            assert_eq!(feed.state().interval(), expected, "{}", provider.name());
+        }
+    }
+
+    #[test]
+    fn a_poll_interval_slower_than_the_floor_is_the_one_that_is_used() {
+        let feed = AggregatorFeed::open(
+            Provider::AdsbLol,
+            Area::default(),
+            Some(Duration::from_secs(30)),
+        )
+        .expect("it opens");
+
+        assert_eq!(
+            feed.state().interval(),
+            Duration::from_secs(30),
+            "an explicit poll wins; the floor is a floor, not a schedule",
+        );
     }
 
     #[tokio::test]

@@ -183,10 +183,15 @@ impl Sidecar for AdsbSidecar {
                     }
                 }
                 // An upstream that is down, rate-limiting or restarting is an
-                // ordinary Tuesday for an open feed: logged, never a stopped
-                // sidecar. The aircraft it was carrying age out on their own
-                // `stale`, and the health hook says what happened.
-                Err(err) => warn!(source = feed.name(), "The ADS-B feed did not answer: {err}"),
+                // ordinary Tuesday for an open feed: never a stopped sidecar.
+                // The aircraft it was carrying age out on their own `stale`,
+                // and the health hook says what happened.
+                //
+                // `debug`, because the source's own `SourceState` has already
+                // announced this failure once and will remind an operator
+                // every five minutes for as long as it lasts. A `warn` here as
+                // well is the same outage twice, once per tick.
+                Err(err) => debug!(source = feed.name(), "The ADS-B feed did not answer: {err}"),
             }
 
             publisher.tick();

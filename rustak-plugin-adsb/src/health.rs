@@ -21,9 +21,10 @@
 //! # Nothing secret goes in `metrics`
 //!
 //! The admin UI renders it as it arrives. What goes in is the source's kind and
-//! name, its connection state, the counters and the tracked count — and the
-//! last error, which comes from [`SourceState`], whose messages are built from
-//! `human_errors` text rather than from a request that carried a credential.
+//! name, its connection state, its cadence, the counters and the tracked
+//! count — and the last error, which comes from [`SourceState`], whose messages
+//! are built from `human_errors` text rather than from a request that carried a
+//! credential.
 
 use rustak_api::{Heartbeat, ServiceState};
 use rustak_client::feed::FeedCounters;
@@ -51,6 +52,13 @@ pub fn heartbeat(
                 "connection": connection,
                 "since": state.since(),
                 "last_error": state.last_error(),
+                // The cadence *as it stands*, which is not always the one in
+                // the file: a provider that asked twice for more room got it,
+                // and an administrator looking at a feed that is behind should
+                // be able to see that from the Services page rather than from
+                // a log line five hours old.
+                "poll_effective_s": state.interval().as_secs(),
+                "rate_limited": state.rate_limited(),
             },
             "tracked": tracked,
             "feed": counters,
@@ -152,10 +160,29 @@ mod tests {
         assert_eq!(beat.metrics["feed"]["suppressed"], 28);
         assert_eq!(beat.metrics["feed"]["expired"], 3);
         assert!(beat.metrics["source"]["last_error"].is_null());
+        assert_eq!(beat.metrics["source"]["poll_effective_s"], 5);
+        assert_eq!(beat.metrics["source"]["rate_limited"], 0);
         assert!(
             beat.message.expect("a message").contains("137 aircraft"),
             "the number is the point",
         );
+    }
+
+    #[test]
+    fn a_source_that_was_asked_to_slow_down_says_so_on_the_heartbeat() {
+        // The cadence an administrator reads has to be the one being used, not
+        // the one that was configured: the Dublin deployment was polling at
+        // half the rate its file asked for and nothing on the page said so.
+        let mut state = state();
+        state.succeeded();
+        state.wait_for(Some(Duration::from_secs(10)));
+        state.succeeded();
+        state.wait_for(Some(Duration::from_secs(10)));
+
+        let beat = heartbeat("aggregator", &state, counters(), 12);
+
+        assert_eq!(beat.metrics["source"]["poll_effective_s"], 10);
+        assert_eq!(beat.metrics["source"]["rate_limited"], 2);
     }
 
     #[test]
