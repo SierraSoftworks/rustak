@@ -98,7 +98,15 @@ impl Session {
         }
     }
 
-    fn set_track(&mut self, track: Track) {
+    /// Takes the track the server answered with. What the feed said about
+    /// the same thing while the answer was on its way is in the store and
+    /// not in the answer, so the latest of it is added before the track is
+    /// drawn.
+    fn set_track(&mut self, mut track: Track) {
+        if let Some(latest) = self.store.get(track.uid()) {
+            track.extend(latest);
+        }
+
         self.replay = track.span().map(|(start, end)| Replay {
             position: Position::live(start, end),
             track,
@@ -260,4 +268,62 @@ pub fn shown_note(session: &Session) -> Option<String> {
         replay.track.name(),
         at.format("%H:%M:%SZ"),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{DateTime, Duration, Utc};
+    use rustak_api::MapPoint;
+
+    use super::*;
+
+    fn at(time: &str) -> DateTime<Utc> {
+        format!("2026-09-18T{time}Z").parse().unwrap()
+    }
+
+    fn fix(time: &str, lon: f64) -> MapFeature {
+        MapFeature {
+            uid: "A".to_string(),
+            kind: "a-f-G-U-C".to_string(),
+            how: None,
+            callsign: Some("QUINN".to_string()),
+            team: None,
+            role: None,
+            time: at(time),
+            stale: at(time) + Duration::minutes(2),
+            received_at: at(time),
+            point: MapPoint {
+                lat: 51.5,
+                lon,
+                hae: None,
+                ce: None,
+                le: None,
+            },
+            shape: None,
+            course: None,
+            speed: None,
+            battery: None,
+            remarks: None,
+            software: None,
+            sidc: None,
+            groups: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_fix_the_feed_brought_while_the_history_was_read_is_not_lost() {
+        let mut session = Session::default();
+        session.store.upsert(fix("12:02:00", -0.12), at("12:02:01"));
+
+        session.set_track(Track::new("A", vec![fix("12:00:00", -0.10)]));
+
+        let replay = session.replay().expect("a track");
+        assert_eq!(replay.track.len(), 2);
+        assert_eq!(replay.position.end, at("12:02:00"));
+        assert_eq!(
+            session.displayed("A").map(|fix| fix.point.lon),
+            Some(-0.12),
+            "live shows the latest"
+        );
+    }
 }
