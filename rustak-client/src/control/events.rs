@@ -439,10 +439,15 @@ mod tests {
         // every feed at thirty seconds — a reopening every 31s, two sidecars,
         // 74 server log lines in two and a half minutes, nothing wrong.
         //
-        // Asserted in milliseconds rather than in thirty seconds: the numbers
-        // are injected, the behaviour is the same one.
-        let late = std::time::Duration::from_millis(400);
-        let total = std::time::Duration::from_millis(150);
+        // Asserted in a second or two rather than in thirty: the numbers are
+        // injected, the behaviour is the same one.
+        //
+        // The total timeout also bounds *opening* the feed (connect plus the
+        // response headers), so it is a whole second and not a few scheduler
+        // quanta: a loaded CI runner stalls for hundreds of milliseconds, and
+        // what is asserted is the ordering of these two, not their size.
+        let late = std::time::Duration::from_secs(2);
+        let total = std::time::Duration::from_secs(1);
 
         let (base, server) = sse_server(vec![(late, Box::leak(frame(7).into_boxed_str()))]).await;
 
@@ -459,7 +464,7 @@ mod tests {
         assert_eq!(
             arrived.map(|event| event.id),
             Some(7),
-            "an event 400ms in has to survive a client an ordinary call would have cut",
+            "an event later than the total timeout has to survive a client an ordinary call would have cut",
         );
 
         server.abort();
@@ -487,7 +492,12 @@ mod tests {
         // keep-alive comment resets — so a feed that has genuinely stopped
         // speaking is reopened, and an idle one that is still being kept alive
         // is left alone.
-        let idle = std::time::Duration::from_millis(250);
+        //
+        // The read timeout also bounds *opening* the feed (connect plus the
+        // response headers), so it has to outlast a scheduling stall on a
+        // loaded CI runner. What is asserted is that silence ends the stream,
+        // not how quickly, so it only needs to sit well under `SOON`.
+        let idle = std::time::Duration::from_secs(1);
         let (base, server) = sse_server(vec![(
             std::time::Duration::ZERO,
             Box::leak(frame(3).into_boxed_str()),
@@ -526,8 +536,11 @@ mod tests {
         // installation where nothing at all happens for an hour still has a
         // feed, and a client that reopened it every twenty seconds would be
         // the bug this milestone fixed wearing a different number.
-        let idle = std::time::Duration::from_millis(400);
-        let tick = std::time::Duration::from_millis(100);
+        //
+        // The margin a slow host gets is `idle - tick`, and `idle` also bounds
+        // opening the feed, so both are large; the ratio is what matters.
+        let idle = std::time::Duration::from_millis(1600);
+        let tick = std::time::Duration::from_millis(400);
         let (base, server) = sse_server(vec![
             (tick, ": keep-alive\n\n"),
             (tick, ": keep-alive\n\n"),
@@ -544,7 +557,7 @@ mod tests {
             .unwrap();
         let mut stream = feed_over(&base, http).await;
 
-        // 600ms of silence but for the comments, against a 400ms idle timeout.
+        // 2.4s of silence but for the comments, against a 1.6s idle timeout.
         assert_eq!(
             tokio::time::timeout(SOON, stream.next())
                 .await
