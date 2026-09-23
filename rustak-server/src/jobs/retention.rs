@@ -17,6 +17,15 @@
 //! The same pass enforces `[retention] cot_history_max_rows`, the per-device
 //! floor that keeps a busy installation from filling the disk inside the age
 //! window. It is approximate in the same direction and for the same reason.
+//!
+//! # A restart never postpones a sweep
+//!
+//! Enqueueing under the schedule's fixed key *reschedules* the message already
+//! there. Arming a full interval out at every start-up — which is what this
+//! used to do — therefore meant a server restarted more often than the
+//! interval never swept at all. [`setup`](Job::setup) now leaves an armed sweep
+//! where it is, unless it is further out than the interval; see
+//! [`Job::arm_recurring`].
 
 use chrono::TimeDelta;
 
@@ -34,6 +43,14 @@ pub const COT_RETENTION_PARTITION: &str = "housekeeping/cot-retention";
 /// horizon shortened should see the space back the same day. Not configurable —
 /// the horizon is, and that is what an operator has an opinion about.
 pub const SWEEP_INTERVAL: TimeDelta = TimeDelta::hours(6);
+
+/// How long after start-up the first sweep of an installation runs.
+///
+/// Not at once: start-up is when the writer is busiest, and an installation
+/// in a crash loop should not pay for a scan of the index on every lap. Not a
+/// whole interval either, or an installation that came up over its limits
+/// stays over them for as long as the interval is.
+pub const FIRST_SWEEP_DELAY: TimeDelta = TimeDelta::minutes(5);
 
 /// The message this job runs on. The horizon comes from the configuration at
 /// run time, so there is nothing to carry.
@@ -56,17 +73,12 @@ impl Job for CotRetentionJob {
         false
     }
 
-    /// Arms the schedule to run one interval from now.
-    ///
-    /// Not immediately, unlike the audit prune: an installation that has just
-    /// started has nothing past its horizon that a few hours will hurt, and a
-    /// sweep on every restart would be a scan somebody debugging a crash loop
-    /// pays for repeatedly.
+    /// Arms the first sweep, leaving one that is already armed alone.
     async fn setup(&self, services: impl Services + Send + Sync + 'static) -> Result<(), Error> {
-        Self::dispatch_delayed(
+        Self::arm_recurring(
             CotRetentionTask {},
-            Some(COT_RETENTION_PARTITION.into()),
             SWEEP_INTERVAL,
+            FIRST_SWEEP_DELAY,
             &services,
         )
         .await
@@ -111,6 +123,64 @@ impl Job for CotRetentionJob {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use chrono::{DateTime, Utc};
+
+    /// Arms the one scheduled sweep `delay` from now, as an earlier run did.
+    async fn arm(delay: TimeDelta, context: &AppContext) {
+        CotRetentionJob::dispatch_delayed(
+            CotRetentionTask {},
+            Some(COT_RETENTION_PARTITION.into()),
+            delay,
+            context,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// When the one scheduled sweep becomes due.
+    async fn armed_for(context: &AppContext) -> DateTime<Utc> {
+        let armed = context
+            .queue()
+            .peek::<_, CotRetentionTask>(COT_RETENTION_PARTITION, 10)
+            .await
+            .unwrap();
+
+        assert_eq!(armed.len(), 1, "there is only ever one scheduled sweep");
+        armed[0].hidden_until
+    }
+
+    #[tokio::test]
+    async fn the_first_sweep_is_soon_after_start_up_rather_than_an_interval_away() {
+        let context = AppContext::new_mock(|_| {}).await.unwrap();
+
+        Job::setup(&CotRetentionJob, context.clone()).await.unwrap();
+
+        let due = armed_for(&context).await;
+        assert!(due > Utc::now(), "not during start-up itself");
+        assert!(due <= Utc::now() + FIRST_SWEEP_DELAY);
+    }
+
+    #[tokio::test]
+    async fn a_restart_does_not_postpone_a_sweep_that_is_already_armed() {
+        let context = AppContext::new_mock(|_| {}).await.unwrap();
+        arm(TimeDelta::minutes(40), &context).await;
+        let before = armed_for(&context).await;
+
+        Job::setup(&CotRetentionJob, context.clone()).await.unwrap();
+
+        assert_eq!(armed_for(&context).await, before);
+    }
+
+    #[tokio::test]
+    async fn a_sweep_armed_further_out_than_the_interval_is_pulled_in() {
+        let context = AppContext::new_mock(|_| {}).await.unwrap();
+        arm(SWEEP_INTERVAL * 4, &context).await;
+
+        Job::setup(&CotRetentionJob, context.clone()).await.unwrap();
+
+        assert!(armed_for(&context).await <= Utc::now() + FIRST_SWEEP_DELAY);
+    }
 
     #[test]
     fn the_partition_is_the_one_the_registry_dispatches_on() {

@@ -62,10 +62,13 @@ impl Job for TlsFilesJob {
         TimeDelta::minutes(1)
     }
 
-    /// Arms the schedule, the first look one interval out.
+    /// Arms the schedule, the first look one interval out, leaving a look that
+    /// is already armed alone.
     ///
     /// Not immediate: [`web::tls`](crate::web::tls) has just read the pair, or
-    /// just said that it could not.
+    /// just said that it could not. Not a plain enqueue either, which would push
+    /// an armed look a whole interval out at every restart; see
+    /// [`Job::arm_recurring`].
     async fn setup(&self, services: impl Services + Send + Sync + 'static) -> Result<(), Error> {
         let Some(interval) = services.config().web.public.tls.reload_every() else {
             debug!(
@@ -76,13 +79,7 @@ impl Job for TlsFilesJob {
             return Ok(());
         };
 
-        Self::dispatch_delayed(
-            TlsFilesTask::default(),
-            Some(TLS_FILES_PARTITION.into()),
-            interval,
-            &services,
-        )
-        .await
+        Self::arm_recurring(TlsFilesTask::default(), interval, interval, &services).await
     }
 
     async fn handle(
@@ -242,6 +239,33 @@ mod tests {
 
         assert_eq!(armed.len(), 1);
         assert!(armed[0].hidden_until > chrono::Utc::now() + TimeDelta::seconds(20));
+    }
+
+    #[tokio::test]
+    async fn a_restart_does_not_postpone_a_look_that_is_already_armed() {
+        let directory = tempfile::tempdir().unwrap();
+        let context = watching(directory.path()).await;
+        TlsFilesJob::dispatch_delayed(
+            TlsFilesTask::default(),
+            Some(TLS_FILES_PARTITION.into()),
+            TimeDelta::seconds(10),
+            &context,
+        )
+        .await
+        .unwrap();
+        let armed_for = async || {
+            context
+                .queue()
+                .peek::<_, TlsFilesTask>(TLS_FILES_PARTITION, 10)
+                .await
+                .unwrap()[0]
+                .hidden_until
+        };
+        let before = armed_for().await;
+
+        Job::setup(&TlsFilesJob, context.clone()).await.unwrap();
+
+        assert_eq!(armed_for().await, before);
     }
 
     #[tokio::test]
