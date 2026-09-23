@@ -128,21 +128,43 @@ const TICK_SECONDS: i64 = 2;
 /// same circuit and the same walk the feed continues; the rest have only where
 /// they are.
 pub fn map_history(uid: &str, secago: i64) -> Vec<MapFeature> {
-    let span = secago.clamp(0, 10 * 60);
+    let span = secago.clamp(0, HISTORY_SECONDS);
     let fixes = (0..=span / TICK_SECONDS)
         .rev()
         .map(|step| step * TICK_SECONDS);
     let tick = |ago: i64| -(ago as f64) / TICK_SECONDS as f64;
+    // A fix from the past was good for as long as any fix is, from when it
+    // was made — not, as the live fixtures are, from now.
+    let held = |fix: MapFeature| MapFeature {
+        stale: fix.time + Duration::seconds(HELD_SECONDS),
+        ..fix
+    };
 
     match uid {
-        "ICAO-406b2f" => fixes.map(|secs| rescue_at(tick(secs), ago(secs))).collect(),
-        "ANDROID-2f1c9a7b4e0d" => fixes.map(|secs| quinn_at(tick(secs), ago(secs))).collect(),
+        "ICAO-406b2f" => fixes
+            .map(|secs| held(rescue_at(tick(secs), ago(secs))))
+            .collect(),
+        // The walker was out of coverage for a while, so that there is a gap
+        // to see: on the scrub bar, and in the line.
+        "ANDROID-2f1c9a7b4e0d" => fixes
+            .filter(|secs| !ABSENT.contains(secs))
+            .map(|secs| held(quinn_at(tick(secs), ago(secs))))
+            .collect(),
         _ => map_features()
             .into_iter()
             .filter(|feature| feature.uid == uid)
             .collect(),
     }
 }
+
+/// How far back the demo's history goes.
+const HISTORY_SECONDS: i64 = 15 * 60;
+
+/// How long a demo fix from the past was good for.
+const HELD_SECONDS: i64 = 30;
+
+/// When, in seconds ago, the walker was not reporting.
+const ABSENT: std::ops::Range<i64> = 5 * 60..10 * 60;
 
 pub fn map_features() -> Vec<MapFeature> {
     let mut listed = fixtures();

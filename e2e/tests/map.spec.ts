@@ -133,6 +133,26 @@ test("selecting something shows where it has been, and its past can be scrubbed"
   await expect(playback).toContainText(/\d+ fixes over/);
   await expect(playback.getByRole("button", { name: "Live" })).toBeDisabled();
 
+  // Quinn was out of coverage for a while, in the fixtures. The bar says when
+  // there is anything to see, and how often there was not.
+  await expect(
+    playback.getByRole("img", { name: "Tracked for 2 periods, with 1 gap" }),
+  ).toBeVisible();
+  await expect(playback).toContainText("1 gap");
+
+  // The moment under the pointer is said over the bar, as a media player says
+  // a timestamp: with the date, and in the gap, that there is nothing there.
+  const slider = playback.getByRole("slider");
+  const bar = (await slider.boundingBox())!;
+  const tip = playback.getByRole("tooltip");
+  await slider.hover({ position: { x: bar.width / 2, y: bar.height / 2 } });
+  await expect(tip).toContainText(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}Z/);
+  await expect(tip).toContainText("no data");
+  await slider.hover({ position: { x: bar.width - 12, y: bar.height / 2 } });
+  await expect(tip).not.toContainText("no data");
+  await page.mouse.move(0, 0);
+  await expect(tip).toHaveCount(0);
+
   // Scrubbing back to the start shows Quinn where they were then, and
   // nothing else: nothing else's past has been read.
   await playback.getByRole("slider").fill("0");

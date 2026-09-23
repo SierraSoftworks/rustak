@@ -283,6 +283,7 @@ pub fn live_map() -> Html {
             <PlaybackBar
                 name={replay.track.name()}
                 fixes={replay.track.len()}
+                windows={replay.track.windows()}
                 position={replay.position.clone()}
                 {onseek}
                 {ontoggle}

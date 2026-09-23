@@ -3238,13 +3238,18 @@ footer {
       justify-self: start;
     }
 
+    // Stretched to their rows rather than sized by what is in them: when the
+    // list and the panel are both open there is not room for both at full
+    // height, the rows share what there is, and each card scrolls inside its
+    // own instead of being drawn over the other.
     &__objects {
+      align-self: stretch;
       width: min(19rem, 100%);
       max-height: min(18rem, 38vh);
     }
 
     &__properties {
-      align-self: end;
+      align-self: stretch;
       justify-self: end;
       width: min(24rem, 100%);
       max-height: min(22rem, 42vh);
@@ -3723,19 +3728,118 @@ footer {
     }
   }
 
-  &__scrub {
+  // The bar, and what is laid under and over it. The slider is the whole of
+  // the wrapper and transparent but for its thumb; the bands under it say
+  // when the thing was tracked, and the tip over it says what moment the
+  // pointer is on.
+  &__track {
+    position: relative;
     flex: 1;
-    min-width: 6rem;
-    margin: 0;
-    accent-color: $brand;
+    min-width: 8rem;
+    height: 2rem;
+    display: flex;
+    align-items: center;
   }
 
-  &__time {
-    flex: none;
-    min-width: 9.5rem;
+  // Inset by half a thumb at either end, because that is as far as the
+  // thumb's centre, which is what a value is, ever gets. Hatched is "nothing
+  // is known"; a band over it is "tracked".
+  &__bands {
+    position: absolute;
+    top: 50%;
+    right: 8px;
+    left: 8px;
+    height: 0.55rem;
+    transform: translateY(-50%);
+    overflow: hidden;
+    border: 1px solid $border-base;
+    border-radius: 999px;
+    background: repeating-linear-gradient(
+      135deg,
+      $bg-white 0 3px,
+      $border-light 3px 6px
+    );
+    pointer-events: none;
+  }
+
+  // Never thinner than can be seen: a single fix is a window too.
+  &__band {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    min-width: 3px;
+    background: $brand;
+  }
+
+  &__scrub {
+    position: relative;
+    width: 100%;
+    height: 2rem;
+    margin: 0;
+    padding: 0;
+    appearance: none;
+    background: transparent;
+    cursor: pointer;
+
+    &::-webkit-slider-runnable-track {
+      height: 2rem;
+      background: transparent;
+    }
+
+    &::-moz-range-track {
+      height: 2rem;
+      background: transparent;
+    }
+
+    // 16px: `THUMB_PX` in `pages/map/playback.rs`.
+    &::-webkit-slider-thumb {
+      appearance: none;
+      width: 16px;
+      height: 16px;
+      margin-top: calc(1rem - 8px);
+      border: 2px solid $bg-white;
+      border-radius: 50%;
+      background: $text-primary;
+      box-shadow: $shadow-sm;
+    }
+
+    &::-moz-range-thumb {
+      box-sizing: border-box;
+      width: 16px;
+      height: 16px;
+      border: 2px solid $bg-white;
+      border-radius: 50%;
+      background: $text-primary;
+      box-shadow: $shadow-sm;
+    }
+
+    &:focus-visible {
+      outline: 2px solid $brand;
+      outline-offset: 1px;
+      border-radius: $radius-sm;
+    }
+  }
+
+  // The moment under the pointer, as a media player says a timestamp. Kept
+  // inside the bar's own width so that it cannot run off a phone.
+  &__tip {
+    position: absolute;
+    bottom: calc(100% + 0.3rem);
+    z-index: 3;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 0.25rem 0.5rem;
+    border-radius: $radius-sm;
+    background: $text-primary;
+    box-shadow: $shadow-md;
     font-family: $font-mono;
-    font-size: 0.75rem;
+    font-size: 0.7rem;
+    line-height: 1.35;
     white-space: nowrap;
+    color: $bg-white;
+    transform: translateX(-50%);
+    pointer-events: none;
   }
 
   &__speed {
@@ -3761,27 +3865,6 @@ footer {
     &__summary {
       display: none;
     }
-  }
-
-  // On a phone the clock gives way to the slider.
-  @container map (max-width: 30rem) {
-    &__time {
-      min-width: 0;
-      flex: 1;
-      order: 5;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-  }
-}
-
-.map-popover {
-  // Never taller than the shortest the map can be, less the pop-over's own
-  // padding and tip, so that there is always somewhere it fits.
-  &__card {
-    min-width: 15rem;
-    max-height: 19rem;
-    overflow-y: auto;
   }
 
   &__head {

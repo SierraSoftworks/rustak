@@ -244,7 +244,9 @@ pub fn toggle_playing(session: Rc<RefCell<Session>>, redraw: Callback<()>) {
             }
 
             match replay.position.advanced(i64::from(STEP_MS)) {
-                Some(at) => replay.position.at = Some(at),
+                // There is nothing to watch in a gap, and at any speed worth
+                // playing a day at, a gap is minutes of it.
+                Some(at) => replay.position.at = Some(replay.track.resume(at)),
                 None => {
                     replay.position.at = Some(replay.position.end);
                     replay.position.playing = false;
