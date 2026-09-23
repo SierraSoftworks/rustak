@@ -677,6 +677,21 @@ cot_history = "7d"
 # same rounding. 0 means no cap rather than "keep nothing": an installation
 # that wants no history sets [stream.limits] record_history = false.
 cot_history_max_rows = 2000000
+# The most CoT history kept on disk across EVERY device, in megabytes; the
+# oldest sealed segments go first, whoever wrote them. The per-device cap above
+# does nothing about a feed of many short-lived tracks (ADS-B, AIS), where each
+# aircraft or vessel is its own small stream: this is the bound on those.
+# 0 means no cap.
+cot_history_max_mb = 10240
+# How long past its own stale time a contact's last message is kept in the
+# database. It is what a map draws and what a client fetches a missed message
+# from, so it is far shorter than the history: a plugin that publishes a
+# thousand tracks an hour otherwise leaves a week of them in every query's way.
+cot_latest = "1d"
+# How often the CoT garbage collector enforces the limits above. It first runs
+# five minutes after start-up, and a restart never postpones a run already due.
+# At least "1m".
+cot_sweep_interval = "1h"
 
 audit = "90d"
 audit_max_entries = 100000

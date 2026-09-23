@@ -80,7 +80,9 @@ pub use job::{DEFAULT_JOB_TIMEOUT, Job, JobContext};
 pub use mission_expiry::{
     EXPIRY_INTERVAL, MISSION_EXPIRY_PARTITION, MissionExpiryJob, MissionExpiryTask,
 };
-pub use retention::{COT_RETENTION_PARTITION, CotRetentionJob, CotRetentionTask, SWEEP_INTERVAL};
+pub use retention::{
+    COT_RETENTION_PARTITION, CotRetentionJob, CotRetentionTask, FIRST_SWEEP_DELAY,
+};
 pub use runnable::{JobRegistration, JobRunnable};
 pub use service_health::{
     SERVICE_HEALTH_INTERVAL, SERVICE_HEALTH_PARTITION, ServiceHealthJob, ServiceHealthTask,
