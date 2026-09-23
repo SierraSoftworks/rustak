@@ -1,14 +1,17 @@
-//! The map: everything that is reporting, where it says it is, as it changes.
+//! The map: everything that is reporting, where it says it is, as it changes
+//! — and, now, what somebody puts on it.
 //!
-//! The page is three things side by side. [`session`] is the part that talks
-//! to the server and owns what is on the map; [`glue`] is the map itself, in
-//! JavaScript; and this file is the Yew around them — the status line, the
-//! [`roster`], and the pop-over, which is ordinary Yew portalled into an
-//! element the map positions. What the pop-over shows is its [`focus`]: one
-//! feature's [`popover`], or the [`chooser`] when a click landed on several.
-//! Under one feature's pop-over is its [`track`] — where it has been — and
-//! over the bottom of the map the [`playback`] bar that scrubs along it; the
-//! [`history`] module is the part of the session that owns both.
+//! The page is the map with things laid over it. [`session`] is the part that
+//! talks to the server and owns what is on the map; [`glue`] is the map
+//! itself, in JavaScript; and this file is the Yew around them: the
+//! [`toolbar`] over the top, the [`objects`] list over one corner, the
+//! [`properties`] panel over the other, and the [`playback`] bar over the
+//! foot. What the panel shows is the [`focus`]: one feature, with its
+//! [`track`] under it and its [`draft`] in the panel when it may be edited.
+//! A click that landed on several is the [`chooser`], which is ordinary Yew
+//! portalled into an element the map positions, because it belongs where the
+//! click was. The [`history`] and [`editing`] modules are the parts of the
+//! session that read back and write.
 //!
 //! # Yew is not in the hot path
 //!
@@ -21,43 +24,42 @@
 //!
 //! MapLibre builds its canvas inside a `<div>` Yew made, and Yew knows nothing
 //! about what is in there. Yew reconciles un-keyed siblings by position, so a
-//! sibling that comes and goes — a note, the pop-over's portal — shifts every
-//! position beside it, and a shifted `<div>` is a *new* `<div>`: empty, with
-//! the map still drawing into the one that was thrown away. So everything
-//! optional on this page sits inside a wrapper that is always there, and the
-//! children of `.map-page` and `.map-page__body` never change in number.
-//!
-//! # Read-only, and built to stop being
-//!
-//! Nothing here publishes yet. The seams are where that will go: the session
-//! already owns the store a local edit would be applied to first, the glue
-//! already hands geometry across as GeoJSON, and a publish will need exactly
-//! one more piece of page state — the channel or mission it is going to —
-//! which belongs in the bar below beside the status.
+//! sibling that comes and goes — a note, a panel — shifts every position
+//! beside it, and a shifted `<div>` is a *new* `<div>`: empty, with the map
+//! still drawing into the one that was thrown away. So every overlay sits in
+//! a wrapper that is always there, and the children of `.map-page` never
+//! change in number.
 
 mod chooser;
+mod draft;
+mod editing;
+mod facts;
 mod focus;
 mod glue;
 mod history;
+mod objects;
 mod playback;
-mod popover;
+mod properties;
 mod render;
 mod roster;
 mod session;
 mod store;
+mod toolbar;
 mod track;
 
 use yew::prelude::*;
 
 use crate::app::AuthHandle;
-use crate::components::{Alert, AlertKind, Button, StatusPill, StatusTone};
+use crate::components::{Alert, AlertKind, StatusTone};
 
 use chooser::Chooser;
-use focus::Focus;
+use focus::{Focus, Pick};
+use objects::ObjectList;
 use playback::PlaybackBar;
-use popover::Popover;
-use roster::{ROSTER_ROWS, Roster, RosterEntry};
+use properties::Properties;
+use roster::{ROSTER_ROWS, RosterEntry};
 use session::{FeedStatus, Listeners, Session};
+use toolbar::{Tool, Toolbar};
 
 #[function_component(LiveMap)]
 pub fn live_map() -> Html {
@@ -69,24 +71,49 @@ pub fn live_map() -> Html {
     let session = use_mut_ref(Session::default);
 
     let auth = use_context::<AuthHandle>();
+    let username = auth
+        .as_ref()
+        .and_then(|auth| auth.user.as_ref())
+        .map(|me| me.username.clone());
 
     // Re-resolving the session is what turns a refusal into the sign-in
     // prompt: `Protected`, above this page, draws whatever the answer is.
     let on_signed_out = auth.map(|auth| auth.refresh).unwrap_or_default();
 
     // Redraws this component, for the parts of the session that change on
-    // their own time: the feed, a track arriving, a track playing.
+    // their own time: the feed, a track arriving, a write coming back.
     let on_redraw = {
         let redraw = redraw.clone();
         Callback::from(move |()| redraw.force_update())
     };
+    let on_focus = {
+        let focus = focus.clone();
+        Callback::from(move |next: Focus| focus.set(next))
+    };
+
+    // A click on the map: what the tool says it is.
+    let on_pick = {
+        let (session, on_focus, on_redraw) = (session.clone(), on_focus.clone(), on_redraw.clone());
+        Callback::from(move |pick: Pick| {
+            if session.borrow().tool() == Tool::Pin {
+                editing::place(
+                    session.clone(),
+                    pick.at,
+                    on_focus.clone(),
+                    on_redraw.clone(),
+                );
+            } else {
+                on_focus.emit(pick.into());
+            }
+        })
+    };
 
     {
-        let (container, session, status, focus, on_redraw) = (
+        let (container, session, status, on_focus, on_redraw) = (
             container.clone(),
             session.clone(),
             status.clone(),
-            focus.clone(),
+            on_focus.clone(),
             on_redraw.clone(),
         );
 
@@ -96,7 +123,8 @@ pub fn live_map() -> Html {
                 container,
                 Listeners {
                     on_status: Callback::from(move |next| status.set(next)),
-                    on_focus: Callback::from(move |next| focus.set(next)),
+                    on_pick,
+                    on_focus,
                     on_redraw,
                     on_signed_out,
                 },
@@ -106,7 +134,18 @@ pub fn live_map() -> Html {
         });
     }
 
-    // The pop-over follows the focus, and the track follows the pop-over. The
+    // Which channels a placed marker may go into, once the account is known.
+    {
+        let (session, on_redraw) = (session.clone(), on_redraw.clone());
+        use_effect_with(username, move |username| {
+            if let Some(username) = username.clone() {
+                editing::load_channels(session, username, on_redraw);
+            }
+            || ()
+        });
+    }
+
+    // The panel follows the focus, and the track follows the panel. The
     // status is a dependency because the first thing it reports is that there
     // is now a map to open one on.
     {
@@ -117,7 +156,6 @@ pub fn live_map() -> Html {
         });
     }
 
-    // From the roster, which may be naming something off the edge of the view.
     let onselect = {
         let (session, focus) = (session.clone(), focus.clone());
         Callback::from(move |uid: String| {
@@ -125,22 +163,39 @@ pub fn live_map() -> Html {
             focus.set(Focus::Feature(uid));
         })
     };
-    // From the chooser, which is by construction already looking at it.
     let onchoose = {
         let focus = focus.clone();
         Callback::from(move |uid: String| focus.set(Focus::Feature(uid)))
+    };
+    let onclose = {
+        let focus = focus.clone();
+        Callback::from(move |()| focus.set(Focus::Nothing))
     };
     let onsearch = {
         let search = search.clone();
         Callback::from(move |value: String| search.set(value))
     };
-    let fit = {
+    let onfit = {
         let session = session.clone();
-        Callback::from(move |_: MouseEvent| session.borrow().fit_all())
+        Callback::from(move |()| session.borrow().fit_all())
     };
-
-    // The playback bar. Each of these changes the session and then this
-    // component, which draws the bar from what the session now says.
+    let ontool = {
+        let (session, redraw) = (session.clone(), redraw.clone());
+        Callback::from(move |tool: Tool| {
+            session.borrow_mut().set_tool(tool);
+            redraw.force_update();
+        })
+    };
+    let onsave = {
+        let (session, on_redraw) = (session.clone(), on_redraw.clone());
+        Callback::from(move |draft| editing::save(session.clone(), draft, on_redraw.clone()))
+    };
+    let ondelete = {
+        let (session, on_focus, on_redraw) = (session.clone(), on_focus.clone(), on_redraw.clone());
+        Callback::from(move |uid| {
+            editing::delete(session.clone(), uid, on_focus.clone(), on_redraw.clone())
+        })
+    };
     let onseek = {
         let (session, redraw) = (session.clone(), redraw.clone());
         Callback::from(move |offset: i64| {
@@ -172,31 +227,45 @@ pub fn live_map() -> Html {
 
     let held = session.borrow();
     let matching = held.store().roster(&search);
-    let entries: Vec<RosterEntry> = matching
-        .iter()
-        .take(ROSTER_ROWS)
-        .map(|feature| RosterEntry::of(feature))
-        .collect();
+    let groups = objects::group(&matching);
 
-    // Rendered into the element the map positions, so the pop-over is the
-    // map's to place and Yew's to fill. On a feature, it describes the fix at
-    // the moment being shown — which is the live one until somebody scrubs.
-    let content = match &*focus {
-        Focus::Nothing => None,
-        Focus::Feature(uid) => held
-            .displayed(uid)
-            .map(|feature| html! { <Popover feature={feature.clone()} /> }),
+    // Editing is of the live marker, so a moment being shown from its past
+    // is looked at and not written over.
+    let live = held.replay().is_none_or(|replay| replay.position.is_live());
+    let panel = focus
+        .feature()
+        .and_then(|uid| held.displayed(uid))
+        .map(|feature| {
+            html! {
+                <Properties
+                    feature={feature.clone()}
+                    {live}
+                    channels={held.edit().channels.clone()}
+                    problem={held.edit().problem.clone()}
+                    busy={held.edit().busy}
+                    {onclose}
+                    {onsave}
+                    {ondelete}
+                />
+            }
+        });
+
+    // The chooser is rendered into the element the map positions, so it is
+    // the map's to place and Yew's to fill.
+    let chooser = match &*focus {
         Focus::Choosing { uids, .. } => {
             let entries: Vec<RosterEntry> = uids
                 .iter()
                 .filter_map(|uid| held.store().get(uid))
+                .take(ROSTER_ROWS)
                 .map(RosterEntry::of)
                 .collect();
 
             Some(html! { <Chooser {entries} onselect={onchoose} /> })
         }
+        _ => None,
     };
-    let popover = content
+    let chooser = chooser
         .zip(held.popover_element())
         .map(|(content, host)| create_portal(content, host));
 
@@ -214,20 +283,27 @@ pub fn live_map() -> Html {
         }
     });
     let shown = history::shown_note(&held);
-
     let (tone, label, explanation) = status.describe();
 
     html! {
         <div class="map-page">
-            <div class="map-page__bar">
-                <StatusPill {tone} {label} title={explanation.clone()} />
-                <span class="map-page__count">
-                    { match held.store().len() {
-                        1 => "1 thing on the map".to_string(),
-                        count => format!("{count} things on the map"),
-                    } }
-                </span>
-                <Button small=true onclick={fit}>{ "Fit everything" }</Button>
+            <div
+                ref={container}
+                class="map-page__canvas"
+                role="application"
+                aria-label="Map. Everything on it is also listed beside it."
+            />
+
+            <div class="map-page__toolbar">
+                <Toolbar
+                    tool={held.tool()}
+                    {ontool}
+                    {onfit}
+                    {tone}
+                    {label}
+                    title={explanation.clone()}
+                    count={held.store().len()}
+                />
             </div>
 
             <div class="map-page__notes">
@@ -242,26 +318,23 @@ pub fn live_map() -> Html {
                         <p class="map-page__note">{ explanation }</p>
                     }
                 }
+                if held.tool() == Tool::Pin {
+                    <p class="map-page__note">{ "Click the map to place a marker." }</p>
+                }
+                // A placement that failed has no panel to say so in.
+                if focus.feature().is_none() {
+                    if let Some(problem) = &held.edit().problem {
+                        <Alert kind={AlertKind::Error} title="The marker was not placed." message={problem.clone()} />
+                    }
+                }
                 if let Some(shown) = shown {
                     <p class="map-page__note map-page__note--shown">{ shown }</p>
                 }
             </div>
 
-            <div class="map-page__body">
-                // The playback bar is laid over the map, so the two share a
-                // wrapper; its own wrapper is always there, for the reason
-                // above.
-                <div class="map-page__stage">
-                    <div
-                        ref={container}
-                        class="map-page__canvas"
-                        role="application"
-                        aria-label="Map. Everything on it is also listed beside it."
-                    />
-                    <div class="map-page__playback">{ for playback }</div>
-                </div>
-                <Roster
-                    {entries}
+            <div class="map-page__objects">
+                <ObjectList
+                    {groups}
                     matched={matching.len()}
                     search={(*search).clone()}
                     {onsearch}
@@ -270,7 +343,9 @@ pub fn live_map() -> Html {
                 />
             </div>
 
-            <div class="map-page__portal">{ for popover }</div>
+            <div class="map-page__properties">{ for panel }</div>
+            <div class="map-page__playback">{ for playback }</div>
+            <div class="map-page__portal">{ for chooser }</div>
         </div>
     }
 }

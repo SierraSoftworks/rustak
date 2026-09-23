@@ -3077,39 +3077,91 @@ footer {
 // 5.12 Map
 // -----------------------------------------------------------------------------
 
-// The one page that wants every pixel: see `AdminShell`.
-.app-container--wide {
+// Read but not seen: a heading a page keeps for assistive technology when
+// its layout has nowhere to draw one.
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+// The one page that wants every pixel: see `AdminShell`. No title, no
+// footer, no measure — the map is the main area, and everything the page has
+// to say is laid over it.
+.app-container--immersive {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
   max-width: none;
+  min-height: 0;
+  padding: 0;
 }
 
 .map-page {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
+  position: relative;
+  flex: 1;
+  min-height: max(28rem, calc(100vh - 4rem));
+  overflow: hidden;
+  background: $fill-light;
 
-  &__bar {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.75rem;
+  // Nested under the page for specificity: MapLibre's own stylesheet makes
+  // its container `position: relative`, and loads after this one.
+  & &__canvas {
+    position: absolute;
+    inset: 0;
+    font-family: $font-sans;
   }
 
-  &__count {
-    margin-right: auto;
-    font-size: 0.85rem;
-    color: $text-regular;
+  // Every overlay has a wrapper that is always there, so that what comes and
+  // goes inside them never shifts the element the map lives in. See
+  // `pages::map`.
+  &__toolbar,
+  &__notes,
+  &__objects,
+  &__properties,
+  &__playback {
+    position: absolute;
+    z-index: 2;
   }
 
-  // Always present, so that what comes and goes inside them never shifts the
-  // element the map lives in. See `pages::map`.
+  &__portal,
   &__notes:empty,
-  &__portal {
+  &__properties:empty,
+  &__playback:empty {
     display: none;
+  }
+
+  &__toolbar {
+    top: 0.75rem;
+    left: 50%;
+    transform: translateX(-50%);
+  }
+
+  &__notes {
+    top: 4rem;
+    left: 50%;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    width: min(36rem, calc(100% - 2rem));
+    transform: translateX(-50%);
   }
 
   &__note {
     margin: 0;
-    font-size: 0.85rem;
+    padding: 0.4rem 0.75rem;
+    border: 1px solid $border-light;
+    border-radius: $radius;
+    background: rgba(255, 255, 255, 0.94);
+    box-shadow: $shadow-sm;
+    font-size: 0.8rem;
+    text-align: center;
     color: $text-regular;
 
     &--shown {
@@ -3117,46 +3169,30 @@ footer {
     }
   }
 
-  // As tall as the window allows under the bar and the title, and never so
-  // short that the map is a letterbox.
-  &__body {
+  &__objects {
+    top: 0.75rem;
+    left: 0.75rem;
+    width: 19rem;
+    max-width: calc(100% - 1.5rem);
+    max-height: min(65%, calc(100% - 1.5rem));
     display: flex;
-    gap: 1rem;
-    height: max(26rem, calc(100vh - 17.5rem));
   }
 
-  // The map and, laid over its foot, the playback bar.
-  &__stage {
-    position: relative;
-    flex: 1;
-    min-width: 0;
+  &__properties {
+    top: 0.75rem;
+    right: 0.75rem;
+    width: 21rem;
+    max-width: calc(100% - 1.5rem);
+    max-height: calc(100% - 1.5rem);
+    display: flex;
   }
 
-  &__canvas {
-    width: 100%;
-    height: 100%;
-    box-sizing: border-box;
-    border: 1px solid $border-light;
-    border-radius: $radius-lg;
-    overflow: hidden;
-    background: $fill-light;
-    font-family: $font-sans;
-  }
-
-  // Over the map, clear of the scale control in one corner and the
-  // attribution in the other. Always there; empty and hidden when no track
-  // is shown, for the reason `__portal` is.
+  // Over the foot of the map, clear of the scale control in one corner and
+  // the attribution, the zoom control and the properties panel in the other.
   &__playback {
-    position: absolute;
-    left: 50%;
     bottom: 2.25rem;
-    z-index: 2;
-    width: min(46rem, calc(100% - 2rem));
-    transform: translateX(-50%);
-
-    &:empty {
-      display: none;
-    }
+    left: 0.75rem;
+    width: min(46rem, calc(100% - 23.25rem));
   }
 
   // MapLibre's pop-over, brought into line with a card.
@@ -3182,15 +3218,396 @@ footer {
   }
 
   @media (max-width: 900px) {
-    &__body {
-      flex-direction: column;
-      height: auto;
+    &__objects,
+    &__properties {
+      max-height: 45%;
     }
 
-    &__stage {
-      flex: none;
-      height: 60vh;
+    // The panel sits above the playback bar, which keeps the foot of the map.
+    &__properties {
+      top: auto;
+      bottom: 4.75rem;
     }
+
+    &__playback {
+      bottom: 0.75rem;
+      width: calc(100% - 1.5rem);
+    }
+  }
+}
+
+// A card laid over the map: the object list and the properties panel.
+%map-overlay {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  width: 100%;
+  border: 1px solid $border-light;
+  border-radius: $radius-lg;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: $shadow-md;
+  font-family: $font-sans;
+}
+
+// The tools over the top of the map, in the manner of a slicer's toolbar: a
+// strip of icon buttons in groups, the active one lit.
+.map-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem;
+  border: 1px solid $border-light;
+  border-radius: $radius-lg;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: $shadow-md;
+
+  &__group {
+    display: flex;
+    align-items: center;
+    gap: 0.2rem;
+    padding: 0 0.3rem;
+
+    & + & {
+      border-left: 1px solid $border-lighter;
+    }
+  }
+
+  &__tool {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.1rem;
+    height: 2.1rem;
+    border: 1px solid transparent;
+    border-radius: $radius;
+    background: none;
+    color: $text-regular;
+    cursor: pointer;
+    transition: background $transition, color $transition;
+
+    &:hover {
+      background: $fill-light;
+      color: $text-primary;
+    }
+
+    &:focus-visible {
+      outline: 2px solid $brand;
+      outline-offset: 1px;
+    }
+
+    &--active {
+      border-color: $brand-tint-border;
+      background: $brand-tint;
+      color: $brand;
+    }
+  }
+
+  &__status {
+    gap: 0.5rem;
+    padding-right: 0.5rem;
+  }
+
+  &__count {
+    font-size: 0.8rem;
+    white-space: nowrap;
+    color: $text-regular;
+  }
+}
+
+// The object list over the corner of the map: a header that folds the whole
+// thing away, a search box, and the things on the map by kind.
+.map-objects {
+  @extend %map-overlay;
+
+  &__bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.5rem 0.5rem 0.5rem 0.85rem;
+  }
+
+  &__title {
+    margin: 0;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: $text-primary;
+  }
+
+  &__fold,
+  &__head {
+    border: none;
+    background: none;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+
+    &:focus-visible {
+      outline: 2px solid $brand;
+      outline-offset: -2px;
+    }
+  }
+
+  &__fold {
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: $radius-sm;
+    color: $text-secondary;
+
+    &:hover {
+      background: $fill-light;
+      color: $text-primary;
+    }
+  }
+
+  &__body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    min-height: 0;
+    padding: 0 0.6rem 0.6rem;
+    border-top: 1px solid $border-lighter;
+    padding-top: 0.6rem;
+  }
+
+  &--hidden &__body {
+    display: none;
+  }
+
+  &__groups,
+  &__rows {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  &__groups {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    border: 1px solid $border-lighter;
+    border-radius: $radius;
+    background: $bg-white;
+
+    &:empty {
+      display: none;
+    }
+  }
+
+  &__group + &__group {
+    border-top: 1px solid $border-lighter;
+  }
+
+  &__head {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    align-items: center;
+    column-gap: 0.45rem;
+    width: 100%;
+    padding: 0.4rem 0.6rem;
+    background: $fill-lighter;
+    text-align: left;
+    font-size: 0.75rem;
+
+    &:hover {
+      background: $fill-light;
+    }
+  }
+
+  &__chevron {
+    width: 0.8rem;
+    color: $text-secondary;
+  }
+
+  &__key {
+    font-family: $font-mono;
+    font-size: 0.7rem;
+    color: $text-regular;
+
+    &::after {
+      content: " |";
+      color: $text-placeholder;
+    }
+  }
+
+  &__label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+    color: $text-primary;
+  }
+
+  &__count {
+    padding: 0 0.4rem;
+    border-radius: 999px;
+    background: $border-lighter;
+    font-size: 0.7rem;
+    color: $text-regular;
+  }
+
+  &__empty,
+  &__more {
+    margin: 0;
+    font-size: 0.8rem;
+    color: $text-secondary;
+
+    &:empty {
+      display: none;
+    }
+  }
+}
+
+// The properties panel over the other corner: what the thing is, and the
+// fields to change it when a person put it there.
+.map-properties {
+  @extend %map-overlay;
+
+  &__head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.75rem 0.5rem 0.6rem 0.85rem;
+    border-bottom: 1px solid $border-lighter;
+  }
+
+  &__name {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+
+  &__kind {
+    margin: 0.1rem 0 0;
+    font-size: 0.8rem;
+    color: $text-regular;
+
+    code {
+      font-family: $font-mono;
+      font-size: 0.75rem;
+    }
+  }
+
+  &__close {
+    flex: none;
+    width: 1.75rem;
+    height: 1.75rem;
+    border: none;
+    border-radius: $radius-sm;
+    background: none;
+    font-size: 1.1rem;
+    color: $text-secondary;
+    cursor: pointer;
+
+    &:hover {
+      background: $fill-light;
+      color: $text-primary;
+    }
+  }
+
+  &__body {
+    min-height: 0;
+    overflow-y: auto;
+    padding: 0.75rem 0.85rem;
+  }
+
+  &__facts {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.2rem 0.75rem;
+    margin: 0;
+    font-size: 0.8rem;
+
+    dt {
+      color: $text-secondary;
+    }
+
+    dd {
+      margin: 0;
+      overflow-wrap: anywhere;
+    }
+  }
+
+  &__remarks {
+    margin: 0.6rem 0 0;
+    padding-top: 0.5rem;
+    border-top: 1px solid $border-lighter;
+    font-size: 0.8rem;
+    white-space: pre-wrap;
+  }
+
+  &__age {
+    margin: 0.6rem 0 0;
+    font-size: 0.75rem;
+    color: $text-secondary;
+
+    &--stale {
+      color: darken($warning, 15%);
+    }
+  }
+
+  &__hint {
+    margin: 0 0 0.75rem;
+    font-size: 0.8rem;
+    color: darken($warning, 15%);
+  }
+}
+
+// The fields of a marker somebody placed.
+.map-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-bottom: 0.85rem;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid $border-lighter;
+
+  &__field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    min-width: 0;
+    font-size: 0.75rem;
+    color: $text-secondary;
+  }
+
+  &__row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.5rem;
+  }
+
+  &__channels {
+    margin: 0;
+    padding: 0.4rem 0.6rem 0.5rem;
+    border: 1px solid $border-lighter;
+    border-radius: $radius;
+
+    legend {
+      padding: 0 0.25rem;
+      font-size: 0.75rem;
+      color: $text-secondary;
+    }
+  }
+
+  &__channel {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.8rem;
+  }
+
+  &__hint {
+    margin: 0;
+    font-size: 0.75rem;
+    color: $text-secondary;
+  }
+
+  &__actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
   }
 }
 
@@ -3376,26 +3793,9 @@ footer {
   }
 }
 
+// One row of a list of things on the map: the object list's groups and the
+// chooser both draw it.
 .map-roster {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  width: 17rem;
-  min-height: 0;
-
-  &__list {
-    flex: 1;
-    min-height: 0;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-    overflow-y: auto;
-    border: 1px solid $border-lighter;
-    border-radius: $radius;
-    background: $bg-white;
-  }
-
   &__row {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
@@ -3455,26 +3855,4 @@ footer {
     white-space: nowrap;
   }
 
-  &__empty,
-  &__more {
-    margin: 0;
-    font-size: 0.8rem;
-    color: $text-secondary;
-
-    &:empty {
-      display: none;
-    }
-  }
-
-  &__list:empty {
-    display: none;
-  }
-
-  @media (max-width: 900px) {
-    width: 100%;
-
-    &__list {
-      max-height: 40vh;
-    }
-  }
 }

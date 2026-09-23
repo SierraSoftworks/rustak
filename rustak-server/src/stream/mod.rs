@@ -52,6 +52,7 @@ pub mod control;
 pub mod dest;
 pub mod groups;
 pub mod hub;
+pub mod inject;
 pub mod listener_tls;
 pub mod live;
 pub mod liveness;

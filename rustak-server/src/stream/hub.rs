@@ -80,7 +80,7 @@ impl Hub {
     /// Adds a connection.
     pub fn register(&self, subscription: Subscription) -> ConnId {
         let id = subscription.id;
-        let joined = ConnectionSummary::of(&subscription);
+        let joined = (!subscription.ephemeral).then(|| ConnectionSummary::of(&subscription));
 
         {
             let mut registry = self.inner.write();
@@ -89,7 +89,9 @@ impl Hub {
             registry.conns.insert(id, subscription);
         }
 
-        self.announce(&ConnectionChange::Joined(joined));
+        if let Some(joined) = joined {
+            self.announce(&ConnectionChange::Joined(joined));
+        }
 
         id
     }
@@ -106,9 +108,11 @@ impl Hub {
             subscription
         };
 
-        self.announce(&ConnectionChange::Left(ConnectionSummary::of(
-            &subscription,
-        )));
+        if !subscription.ephemeral {
+            self.announce(&ConnectionChange::Left(ConnectionSummary::of(
+                &subscription,
+            )));
+        }
 
         Some(subscription)
     }

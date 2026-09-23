@@ -5,12 +5,13 @@
  * gives: putting a real track on a real stream needs an EUD, and that belongs
  * to the interop suite. What is tested here is the page — that the map
  * libraries load from this server, that what the API returns reaches the map,
- * and that the roster and the pop-over work — and the fixtures are a snapshot
- * and a feed like any other as far as the page can tell.
+ * and that the object list, the properties panel and the tools work — and the
+ * fixtures are a snapshot and a feed like any other as far as the page can
+ * tell.
  *
  * A WebGL canvas has nothing in it for a test to find, so the assertions go
- * through what the page offers anybody who cannot use one either: the roster
- * beside the map, and the count the map publishes on its own element.
+ * through what the page offers anybody who cannot use one either: the object
+ * list over the map, and the count the map publishes on its own element.
  *
  * No test run fetches a tile. OpenStreetMap's tile server is a donated
  * resource with a usage policy, and the map draws everything rustak knows
@@ -32,8 +33,11 @@ test.beforeEach(async ({ page }) => {
 test("the map draws what the server reports, with no base layer to draw it on", async ({ page }) => {
   await gotoApp(page, MAP);
 
-  await expect(page.getByRole("heading", { name: "Map", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "On the map" })).toBeVisible();
   await expect(page.getByText("Live", { exact: true })).toBeVisible();
+  // The map is the page: it is still headed, but nothing is drawn above it.
+  await expect(page.getByRole("heading", { name: "Map", exact: true })).toBeAttached();
+  await expect(page.locator(".page-title")).toHaveCount(0);
 
   // Set by the map itself once the features have reached it, so this is the
   // libraries having loaded from /vendor and the data having crossed into them.
@@ -41,9 +45,11 @@ test("the map draws what the server reports, with no base layer to draw it on", 
   await expect(page.locator(".map-page__canvas canvas")).toBeVisible();
 });
 
-test("picking something from the roster opens its pop-over on the map", async ({ page }) => {
+test("picking something from the list opens its properties beside the map", async ({ page }) => {
   await gotoApp(page, MAP);
 
+  // Grouped by what things are, and the group says so.
+  await expect(page.getByRole("button", { name: /a-f-G.*Friendly · Ground/ })).toBeVisible();
   await page.getByRole("button", { name: /^RAO/ }).click();
 
   const details = page.getByRole("article", { name: "Details for RAO" });
@@ -53,16 +59,64 @@ test("picking something from the roster opens its pop-over on the map", async ({
   // What only the server knows, and the first thing to check when somebody
   // says they cannot see a marker.
   await expect(details.getByText("Blue Team", { exact: false })).toBeVisible();
+  // A device's own report is not something the console edits.
+  await expect(details.getByLabel("Name")).toHaveCount(0);
 
-  // Straight to somebody else, without closing the first: the pop-over moves
-  // rather than shutting, which re-anchoring an open one used to do.
+  // Straight to somebody else, without closing the first.
   await page.getByRole("button", { name: /^OKAFOR/ }).click();
   const other = page.getByRole("article", { name: "Details for OKAFOR" });
   await expect(other).toBeVisible();
   await expect(details).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Close popup" }).click();
+  await other.getByRole("button", { name: "Close", exact: true }).click();
   await expect(other).toHaveCount(0);
+
+  // A group folds away, and back.
+  const ground = page.getByRole("button", { name: /a-f-G.*Friendly · Ground/ });
+  await ground.click();
+  await expect(page.getByRole("button", { name: /^RAO/ })).toHaveCount(0);
+  await ground.click();
+  await expect(page.getByRole("button", { name: /^RAO/ })).toBeVisible();
+});
+
+test("the pin tool places a marker that can be edited and deleted", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await gotoApp(page, MAP);
+  const application = page.getByRole("application");
+  await expect(application).toHaveAttribute("data-features", /^[1-9]\d*$/);
+  const before = Number(await application.getAttribute("data-features"));
+
+  await page.getByRole("button", { name: "Place a marker" }).click();
+  await expect(page.getByText("Click the map to place a marker.")).toBeVisible();
+
+  const canvas = page.locator(".map-page__canvas canvas");
+  const box = (await canvas.boundingBox())!;
+  await canvas.click({ position: { x: box.width * 0.55, y: box.height * 0.62 } });
+
+  // Placed, on the map and in the list, and open for editing.
+  const details = page.getByRole("article", { name: /^Details for Marker \d+$/ });
+  await expect(details).toBeVisible();
+  await expect(application).toHaveAttribute("data-features", String(before + 1));
+  await expect(page.getByRole("button", { name: /b-m-p.*Markers/ })).toBeVisible();
+  // The tool hands back to select.
+  await expect(page.getByRole("button", { name: "Place a marker" })).toHaveAttribute("aria-pressed", "false");
+
+  await details.getByLabel("Name").fill("CCP SOUTH");
+  await details.getByLabel("Type").fill("a-h-G-E-V");
+  await details.getByLabel("Remarks").fill("Two vehicles, stationary.");
+  await details.getByRole("button", { name: "Save" }).click();
+
+  const renamed = page.getByRole("article", { name: "Details for CCP SOUTH" });
+  await expect(renamed).toBeVisible();
+  await expect(renamed.getByText("Hostile · Ground")).toBeVisible();
+  await expect(page.getByRole("button", { name: /^CCP SOUTH/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /a-h-G.*Hostile · Ground/ })).toBeVisible();
+
+  await renamed.getByRole("button", { name: "Delete" }).click();
+  await renamed.getByRole("button", { name: "Delete it" }).click();
+  await expect(renamed).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^CCP SOUTH/ })).toHaveCount(0);
+  await expect(application).toHaveAttribute("data-features", String(before));
 });
 
 test("selecting something shows where it has been, and its past can be scrubbed", async ({ page }) => {
@@ -86,13 +140,16 @@ test("selecting something shows where it has been, and its past can be scrubbed"
   await expect(page.getByText(/^Showing where QUINN was at/)).toBeVisible();
   await expect(page.getByRole("article", { name: "Details for QUINN" })).toBeVisible();
 
+  // Nothing is edited while a moment from the past is shown.
+  await expect(page.getByLabel("Name")).toHaveCount(0);
+
   // Back to live: everything returns.
   await playback.getByRole("button", { name: "Live" }).click();
   await expect(application).toHaveAttribute("data-features", live);
   await expect(page.getByText(/^Showing where QUINN was at/)).toHaveCount(0);
 
-  // Closing the pop-over takes the track away.
-  await page.getByRole("button", { name: "Close popup" }).click();
+  // Closing the panel takes the track away.
+  await page.getByRole("article", { name: "Details for QUINN" }).getByRole("button", { name: "Close", exact: true }).click();
   await expect(playback).toHaveCount(0);
 });
 
@@ -122,11 +179,12 @@ test("a click that lands on several things asks which one was meant", async ({ p
   await gotoApp(page, MAP);
 
   // The casualty collection point is also where the CASEVAC route starts, so
-  // the two are under the same pixel at every zoom. The roster puts that pixel
+  // the two are under the same pixel at every zoom. The list puts that pixel
   // in the middle of the map, which is the one place a test can find it.
   await page.getByRole("button", { name: /^CCP NORTH/ }).click();
-  await expect(page.getByRole("article", { name: "Details for CCP NORTH" })).toBeVisible();
-  await page.getByRole("button", { name: "Close popup" }).click();
+  const details = page.getByRole("article", { name: "Details for CCP NORTH" });
+  await expect(details).toBeVisible();
+  await details.getByRole("button", { name: "Close", exact: true }).click();
   await page.waitForTimeout(1000);
 
   const canvas = page.locator(".map-page__canvas canvas");

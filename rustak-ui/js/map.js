@@ -242,9 +242,11 @@ class MapHandle {
       return id.startsWith("sidc:") ? add(id, symbolImage(ms, id)) : undefined;
     });
 
+    // A tool's cursor, which wins over the pointer shown over a feature.
+    this.cursor = "";
     map.on("click", (event) => this.pick(this.hits(event.point), event.lngLat.toArray()));
     map.on("mousemove", (event) => {
-      map.getCanvas().style.cursor = this.hits(event.point).length > 0 ? "pointer" : "";
+      map.getCanvas().style.cursor = this.cursor || (this.hits(event.point).length > 0 ? "pointer" : "");
     });
   }
 
@@ -318,13 +320,15 @@ class MapHandle {
     // What a test, or somebody with the inspector open, can read without WebGL.
     this.map.getContainer().dataset.features = String(all.length);
 
-    const selected = this.shown().get(this.selected);
-    if (selected) {
-      this.popup.setLngLat(selected.anchor.geometry.coordinates);
-    }
   }
 
-  // Where the pop-over's content is rendered. Rust portals into it.
+  // `cursor` is a CSS cursor name for a tool that is not selection, or empty.
+  setCursor(cursor) {
+    this.cursor = cursor;
+    this.map.getCanvas().style.cursor = cursor;
+  }
+
+  // Where the pop-over's content is rendered. Rust portals the chooser into it.
   popoverElement() {
     return this.content;
   }
@@ -344,17 +348,13 @@ class MapHandle {
     }
   }
 
+  // Marks a feature as the one in focus, or none. What is said about it is
+  // said beside the map, not over it, so the pop-over closes either way.
   select(uid) {
     const feature = this.lookup(uid);
     this.selected = feature ? uid : null;
     this.map.setFilter("selected", ["==", ["get", "uid"], this.selected ?? ""]);
-
-    if (feature) {
-      this.quietly(() => this.popup.setLngLat(feature.anchor.geometry.coordinates).addTo(this.map));
-      this.settle();
-    } else {
-      this.quietly(() => this.popup.remove());
-    }
+    this.quietly(() => this.popup.remove());
   }
 
   // Opens the pop-over on a place rather than on a feature, for the chooser.
@@ -446,7 +446,8 @@ export async function createMap(container, options, onPick) {
     },
   });
   map.touchZoomRotate.disableRotation();
-  map.addControl(new maplibre.NavigationControl({ showCompass: false }), "top-left");
+  // Bottom right, clear of the object list over the top-left corner.
+  map.addControl(new maplibre.NavigationControl({ showCompass: false }), "bottom-right");
   map.addControl(new maplibre.ScaleControl(), "bottom-left");
 
   // The style is inline, so this does not wait on the tile server: a map with
