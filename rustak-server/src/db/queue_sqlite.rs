@@ -20,6 +20,10 @@ use super::{
 const RESERVED_COLUMNS: &str =
     "partition, key, payload, scheduled_at, traceparent, tracestate, idempotency_key, attempts";
 
+/// The columns a peek reads, in the order [`peeked`] expects.
+const PEEKED_COLUMNS: &str = "key, payload, scheduled_at, hidden_until, reserved_by, \
+                              traceparent, tracestate, idempotency_key, attempts";
+
 #[async_trait::async_trait]
 impl Queue for Database {
     #[instrument("db.queue.enqueue", skip_all, fields(otel.kind = ?OpenTelemetrySpanKind::Producer, job.kind = std::any::type_name::<T>()), err(Display))]
@@ -190,27 +194,33 @@ impl Queue for Database {
         let partition = partition.into().into_owned();
 
         self.read(move |c| {
-            let mut statement = c.prepare(
-                "SELECT key, payload, scheduled_at, hidden_until, reserved_by, \
-                        traceparent, tracestate, idempotency_key, attempts \
-                 FROM queues WHERE partition = ?1 ORDER BY scheduled_at ASC LIMIT ?2",
-            )?;
-            let rows =
-                statement.query_map(rusqlite::params![partition, max_items as i64], |row| {
-                    Ok(PeekedMessage {
-                        key: row.get(0)?,
-                        payload: super::row::json_col(row, 1)?,
-                        scheduled_at: ts(row, 2)?,
-                        hidden_until: ts(row, 3)?,
-                        reserved_by: row.get(4)?,
-                        traceparent: row.get(5)?,
-                        tracestate: row.get(6)?,
-                        idempotency_key: row.get(7)?,
-                        attempts: row.get::<_, i64>(8)?.max(0) as u32,
-                    })
-                })?;
+            let mut statement = c.prepare(&format!(
+                "SELECT {PEEKED_COLUMNS} FROM queues \
+                 WHERE partition = ?1 ORDER BY scheduled_at ASC LIMIT ?2"
+            ))?;
 
-            rows.collect()
+            statement
+                .query_map(rusqlite::params![partition, max_items as i64], peeked)?
+                .collect()
+        })
+        .await
+    }
+
+    #[instrument("db.queue.peek_key", skip_all, err(Display))]
+    async fn peek_key<P: Into<Cow<'static, str>> + Send, T: DeserializeOwned + Send + 'static>(
+        &self,
+        partition: P,
+        key: &str,
+    ) -> Result<Option<PeekedMessage<T>>, Error> {
+        let (partition, key) = (partition.into().into_owned(), key.to_owned());
+
+        self.read(move |c| {
+            c.query_row(
+                &format!("SELECT {PEEKED_COLUMNS} FROM queues WHERE partition = ?1 AND key = ?2"),
+                (partition, key),
+                peeked,
+            )
+            .optional()
         })
         .await
     }
@@ -309,6 +319,21 @@ async fn reserve_next(
         Ok(message)
     })
     .await
+}
+
+/// Maps a row of [`PEEKED_COLUMNS`].
+fn peeked<T: DeserializeOwned>(row: &rusqlite::Row<'_>) -> rusqlite::Result<PeekedMessage<T>> {
+    Ok(PeekedMessage {
+        key: row.get(0)?,
+        payload: super::row::json_col(row, 1)?,
+        scheduled_at: ts(row, 2)?,
+        hidden_until: ts(row, 3)?,
+        reserved_by: row.get(4)?,
+        traceparent: row.get(5)?,
+        tracestate: row.get(6)?,
+        idempotency_key: row.get(7)?,
+        attempts: row.get::<_, i64>(8)?.max(0) as u32,
+    })
 }
 
 /// Re-reads a reserved message's payload as the caller's own type.
@@ -424,6 +449,25 @@ mod tests {
         assert_eq!(peeked.len(), 1);
         assert_eq!(peeked[0].payload, Job { step: 2 });
         assert_eq!(peeked[0].idempotency_key.as_deref(), Some("renew-ca"));
+    }
+
+    #[tokio::test]
+    async fn a_message_is_found_by_its_key_whatever_else_is_queued_beside_it() {
+        let db = queue().await;
+        for step in 0..5 {
+            db.enqueue("pki", Job { step }, None, None).await.unwrap();
+        }
+        db.enqueue("pki", Job { step: 9 }, Some("renew-ca".into()), None)
+            .await
+            .unwrap();
+
+        let found = db.peek_key::<_, Job>("pki", "renew-ca").await.unwrap();
+        assert_eq!(found.map(|message| message.payload), Some(Job { step: 9 }));
+
+        for (partition, key) in [("pki", "absent"), ("elsewhere", "renew-ca")] {
+            let found = db.peek_key::<_, Job>(partition, key).await.unwrap();
+            assert!(found.is_none(), "{partition}/{key} holds nothing");
+        }
     }
 
     #[tokio::test]

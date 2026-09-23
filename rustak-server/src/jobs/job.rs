@@ -18,15 +18,6 @@ use crate::{db::Queue, services::Services};
 /// better overrides [`Job::timeout`].
 pub const DEFAULT_JOB_TIMEOUT: TimeDelta = TimeDelta::minutes(5);
 
-/// How many of a partition's messages [`Job::arm_recurring`] reads looking for
-/// the scheduled one.
-///
-/// A recurring job's partition holds its one scheduled message and, at most, a
-/// handful queued by hand beside it. Should the scheduled one ever sit behind
-/// more than this, it is armed again as though it were missing, which is never
-/// later than it was already due.
-const SCHEDULE_PEEK_LIMIT: usize = 64;
-
 /// What a running job knows about the message that started it.
 ///
 /// Beyond the [`Services`], the useful part is
@@ -222,17 +213,23 @@ pub trait Job {
     /// - Nothing armed: the first run is `first_delay` from now, or `interval`
     ///   where that is sooner. Pass `interval` for a job with nothing to do
     ///   sooner than that.
-    /// - Armed and due within `interval`: left alone, overdue or reserved
-    ///   included. A restart costs the schedule nothing.
+    /// - Armed and due within `interval`: left alone, overdue included. A
+    ///   restart costs the schedule nothing.
+    /// - Reserved, however far out: left alone. It is a run that was under way
+    ///   when the last process stopped, or one backing off after a failure, and
+    ///   arming over it would clear the reservation and the attempts that pace
+    ///   its retries.
     /// - Armed further out than `interval`: the interval was shortened since,
     ///   and whoever shortened it is waiting, so it is armed afresh.
     ///
-    /// The queued payload is read as untyped JSON, so that a message left by a
-    /// release whose payload had another shape cannot fail start-up.
+    /// The scheduled message is looked up by its key, so nothing queued beside
+    /// it can hide it, and its payload is read as untyped JSON, so that a
+    /// message left by a release whose payload had another shape cannot fail
+    /// start-up.
     ///
     /// # Errors
     ///
-    /// As [`Queue::peek`] and [`Queue::enqueue`].
+    /// As [`Queue::peek_key`] and [`Queue::enqueue`].
     fn arm_recurring(
         job: Self::JobType,
         interval: TimeDelta,
@@ -240,15 +237,14 @@ pub trait Job {
         services: &(impl Services + Sync),
     ) -> impl std::future::Future<Output = Result<(), Error>> + Send {
         async move {
-            let queued = services
+            let scheduled = services
                 .queue()
-                .peek::<_, serde_json::Value>(Self::partition(), SCHEDULE_PEEK_LIMIT)
+                .peek_key::<_, serde_json::Value>(Self::partition(), Self::partition())
                 .await?;
 
             let latest = Utc::now() + interval;
-            let armed = queued.iter().any(|message| {
-                message.idempotency_key.as_deref() == Some(Self::partition())
-                    && message.hidden_until <= latest
+            let armed = scheduled.is_some_and(|message| {
+                message.reserved_by.is_some() || message.hidden_until <= latest
             });
 
             if armed {
@@ -476,6 +472,65 @@ mod tests {
         .unwrap();
 
         assert_eq!(scheduled_for(&context).await, before);
+    }
+
+    #[tokio::test]
+    async fn arming_again_does_not_postpone_a_run_that_is_overdue() {
+        let context = AppContext::new_mock(|_| {}).await.unwrap();
+        Dispatchable::dispatch_delayed(
+            scheduled(),
+            Some("test/dispatch".into()),
+            TimeDelta::minutes(-5),
+            &context,
+        )
+        .await
+        .unwrap();
+        let before = scheduled_for(&context).await;
+
+        Dispatchable::arm_recurring(
+            scheduled(),
+            TimeDelta::hours(1),
+            TimeDelta::hours(1),
+            &context,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(scheduled_for(&context).await, before);
+    }
+
+    #[tokio::test]
+    async fn a_run_that_is_reserved_is_left_to_whoever_holds_it() {
+        // The TLS look is reserved for a minute and recurs every thirty
+        // seconds, so a reservation can outlast the interval without the
+        // interval having been shortened.
+        let context = AppContext::new_mock(|_| {}).await.unwrap();
+        Dispatchable::dispatch(scheduled(), Some("test/dispatch".into()), &context)
+            .await
+            .unwrap();
+        let held = context
+            .queue()
+            .dequeue::<_, Payload>("test/dispatch", TimeDelta::hours(2))
+            .await
+            .unwrap();
+
+        Dispatchable::arm_recurring(
+            scheduled(),
+            TimeDelta::hours(1),
+            TimeDelta::hours(1),
+            &context,
+        )
+        .await
+        .unwrap();
+
+        let queued = context
+            .queue()
+            .peek_key::<_, Payload>("test/dispatch", "test/dispatch")
+            .await
+            .unwrap()
+            .expect("the reserved run should still be queued");
+        assert_eq!(queued.reserved_by, Some(held.reservation_id));
+        assert_eq!(queued.attempts, held.attempts);
     }
 
     #[tokio::test]
