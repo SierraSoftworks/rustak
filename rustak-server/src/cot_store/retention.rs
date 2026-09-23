@@ -26,10 +26,11 @@
 //! talkative source cannot evict everybody else's history. Like the age
 //! horizon it is approximate in the keeping direction: whole segments are
 //! deleted, so a stream keeps the cap plus the tail of the segment that
-//! straddles it. Deciding which segments are surplus is a window function over
-//! the index ([`StreamSegmentsRepo::over_row_cap`]) rather than a scan in
-//! Rust — the row counts are already a column, and adding them up here would
-//! mean reading every segment of every stream into memory.
+//! straddles it. Deciding which segments are surplus is the index's job
+//! ([`StreamSegmentsRepo::over_row_cap`]): one streaming aggregate says how far
+//! over a stream is, and an ordered walk from its oldest segment stops once
+//! that much has been found — so the sweep costs the same memory whether the
+//! index holds a thousand segments or ten million.
 //!
 //! # Why a per-stream cap is not enough either
 //!

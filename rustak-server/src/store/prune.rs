@@ -20,8 +20,11 @@ use crate::db::{Database, repos::StreamSegmentRow};
 
 /// How many surplus index rows are read, and so held in memory, at once.
 ///
-/// Large rather than small: the cap queries are window functions over the whole
-/// index, so every page costs a scan, and ten thousand rows is a few megabytes.
+/// A few megabytes of rows, and the whole of what a sweep holds: the reads
+/// behind a page walk an index in order rather than sorting it
+/// (`db::repos::stream_segments::retention`), so nothing else grows with the
+/// size of the index. Large rather than small because each cap read opens with
+/// an aggregate over the index, which a page should be worth.
 pub const PRUNE_PAGE: usize = 10_000;
 
 /// How many segments [`AppendLog::remove_indexed`] forgets per transaction.
