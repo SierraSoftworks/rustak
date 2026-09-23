@@ -26,7 +26,7 @@
 //! used to do — therefore meant a server restarted more often than the
 //! interval never swept at all. [`setup`](Job::setup) now leaves an armed sweep
 //! where it is, unless it is further out than the interval the file now asks
-//! for.
+//! for; see [`Job::arm_recurring`], which every job that arms with a delay shares.
 
 use chrono::{TimeDelta, Utc};
 
@@ -83,21 +83,9 @@ impl Job for CotRetentionJob {
     async fn setup(&self, services: impl Services + Send + Sync + 'static) -> Result<(), Error> {
         let interval = services.config().retention.cot_sweep_interval;
 
-        let armed = services
-            .queue()
-            .peek::<_, CotRetentionTask>(COT_RETENTION_PARTITION, 1)
-            .await?;
-
         // Further out than the interval means the interval was shortened since
         // it was armed, and the operator who shortened it is waiting.
-        if armed
-            .first()
-            .is_some_and(|sweep| sweep.hidden_until <= Utc::now() + interval)
-        {
-            return Ok(());
-        }
-
-        Self::arm(interval.min(FIRST_SWEEP_DELAY), &services).await
+        Self::arm_recurring(CotRetentionTask {}, interval, FIRST_SWEEP_DELAY, &services).await
     }
 
     async fn handle(

@@ -199,6 +199,68 @@ pub trait Job {
         .instrument(span)
     }
 
+    /// Arms a recurring job's one scheduled message, leaving a run that is
+    /// already armed where it is.
+    ///
+    /// This is what a recurring job calls from [`setup`](Job::setup), and the
+    /// reason it is not a plain [`dispatch_delayed`](Job::dispatch_delayed):
+    /// enqueueing under a key that is already queued *reschedules* that message,
+    /// so arming a full interval out at every start-up means a server restarted
+    /// more often than the interval never runs the job at all. The message is
+    /// kept under the partition's own name, which is the key a recurring job's
+    /// [`handle`](Job::handle) re-arms itself under.
+    ///
+    /// - Nothing armed: the first run is `first_delay` from now, or `interval`
+    ///   where that is sooner. Pass `interval` for a job with nothing to do
+    ///   sooner than that.
+    /// - Armed and due within `interval`: left alone, overdue included. A
+    ///   restart costs the schedule nothing.
+    /// - Reserved, however far out: left alone. It is a run that was under way
+    ///   when the last process stopped, or one backing off after a failure, and
+    ///   arming over it would clear the reservation and the attempts that pace
+    ///   its retries.
+    /// - Armed further out than `interval`: the interval was shortened since,
+    ///   and whoever shortened it is waiting, so it is armed afresh.
+    ///
+    /// The scheduled message is looked up by its key, so nothing queued beside
+    /// it can hide it, and its payload is read as untyped JSON, so that a
+    /// message left by a release whose payload had another shape cannot fail
+    /// start-up.
+    ///
+    /// # Errors
+    ///
+    /// As [`Queue::peek_key`] and [`Queue::enqueue`].
+    fn arm_recurring(
+        job: Self::JobType,
+        interval: TimeDelta,
+        first_delay: TimeDelta,
+        services: &(impl Services + Sync),
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send {
+        async move {
+            let scheduled = services
+                .queue()
+                .peek_key::<_, serde_json::Value>(Self::partition(), Self::partition())
+                .await?;
+
+            let latest = Utc::now() + interval;
+            let armed = scheduled.is_some_and(|message| {
+                message.reserved_by.is_some() || message.hidden_until <= latest
+            });
+
+            if armed {
+                return Ok(());
+            }
+
+            Self::dispatch_delayed(
+                job,
+                Some(Self::partition().into()),
+                first_delay.min(interval),
+                services,
+            )
+            .await
+        }
+    }
+
     /// Whether the enqueuing trace is this job's parent span, or merely linked
     /// to it.
     ///
@@ -328,6 +390,198 @@ mod tests {
                 .is_none(),
             "a message delayed by an hour should not be handed out now",
         );
+    }
+
+    /// When the scheduled message on the test partition becomes due.
+    async fn scheduled_for(context: &AppContext) -> DateTime<Utc> {
+        let queued = context
+            .queue()
+            .peek::<_, Payload>("test/dispatch", 10)
+            .await
+            .unwrap();
+
+        let scheduled: Vec<_> = queued
+            .iter()
+            .filter(|message| message.idempotency_key.as_deref() == Some("test/dispatch"))
+            .collect();
+
+        assert_eq!(scheduled.len(), 1, "there is only ever one scheduled run");
+        scheduled[0].hidden_until
+    }
+
+    fn scheduled() -> Payload {
+        Payload {
+            value: "scheduled".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_schedule_with_nothing_armed_starts_after_the_first_delay() {
+        let context = AppContext::new_mock(|_| {}).await.unwrap();
+
+        Dispatchable::arm_recurring(
+            scheduled(),
+            TimeDelta::hours(1),
+            TimeDelta::minutes(5),
+            &context,
+        )
+        .await
+        .unwrap();
+
+        let due = scheduled_for(&context).await;
+        assert!(due > Utc::now(), "not at the instant of start-up");
+        assert!(due <= Utc::now() + TimeDelta::minutes(5));
+    }
+
+    #[tokio::test]
+    async fn the_first_delay_is_never_longer_than_the_interval() {
+        let context = AppContext::new_mock(|_| {}).await.unwrap();
+
+        Dispatchable::arm_recurring(
+            scheduled(),
+            TimeDelta::minutes(1),
+            TimeDelta::minutes(5),
+            &context,
+        )
+        .await
+        .unwrap();
+
+        assert!(scheduled_for(&context).await <= Utc::now() + TimeDelta::minutes(1));
+    }
+
+    #[tokio::test]
+    async fn arming_again_does_not_postpone_a_run_that_is_already_armed() {
+        let context = AppContext::new_mock(|_| {}).await.unwrap();
+        Dispatchable::dispatch_delayed(
+            scheduled(),
+            Some("test/dispatch".into()),
+            TimeDelta::minutes(40),
+            &context,
+        )
+        .await
+        .unwrap();
+        let before = scheduled_for(&context).await;
+
+        Dispatchable::arm_recurring(
+            scheduled(),
+            TimeDelta::hours(1),
+            TimeDelta::hours(1),
+            &context,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(scheduled_for(&context).await, before);
+    }
+
+    #[tokio::test]
+    async fn arming_again_does_not_postpone_a_run_that_is_overdue() {
+        let context = AppContext::new_mock(|_| {}).await.unwrap();
+        Dispatchable::dispatch_delayed(
+            scheduled(),
+            Some("test/dispatch".into()),
+            TimeDelta::minutes(-5),
+            &context,
+        )
+        .await
+        .unwrap();
+        let before = scheduled_for(&context).await;
+
+        Dispatchable::arm_recurring(
+            scheduled(),
+            TimeDelta::hours(1),
+            TimeDelta::hours(1),
+            &context,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(scheduled_for(&context).await, before);
+    }
+
+    #[tokio::test]
+    async fn a_run_that_is_reserved_is_left_to_whoever_holds_it() {
+        // The TLS look is reserved for a minute and recurs every thirty
+        // seconds, so a reservation can outlast the interval without the
+        // interval having been shortened.
+        let context = AppContext::new_mock(|_| {}).await.unwrap();
+        Dispatchable::dispatch(scheduled(), Some("test/dispatch".into()), &context)
+            .await
+            .unwrap();
+        let held = context
+            .queue()
+            .dequeue::<_, Payload>("test/dispatch", TimeDelta::hours(2))
+            .await
+            .unwrap();
+
+        Dispatchable::arm_recurring(
+            scheduled(),
+            TimeDelta::hours(1),
+            TimeDelta::hours(1),
+            &context,
+        )
+        .await
+        .unwrap();
+
+        let queued = context
+            .queue()
+            .peek_key::<_, Payload>("test/dispatch", "test/dispatch")
+            .await
+            .unwrap()
+            .expect("the reserved run should still be queued");
+        assert_eq!(queued.reserved_by, Some(held.reservation_id));
+        assert_eq!(queued.attempts, held.attempts);
+    }
+
+    #[tokio::test]
+    async fn a_shortened_interval_pulls_in_a_run_armed_under_the_old_one() {
+        let context = AppContext::new_mock(|_| {}).await.unwrap();
+        Dispatchable::dispatch_delayed(
+            scheduled(),
+            Some("test/dispatch".into()),
+            TimeDelta::hours(6),
+            &context,
+        )
+        .await
+        .unwrap();
+
+        Dispatchable::arm_recurring(
+            scheduled(),
+            TimeDelta::hours(1),
+            TimeDelta::hours(1),
+            &context,
+        )
+        .await
+        .unwrap();
+
+        assert!(scheduled_for(&context).await <= Utc::now() + TimeDelta::hours(1));
+    }
+
+    #[tokio::test]
+    async fn a_message_queued_beside_the_schedule_is_not_mistaken_for_it() {
+        // The TLS reload somebody asked for shares its partition with the
+        // schedule, under a key of its own.
+        let context = AppContext::new_mock(|_| {}).await.unwrap();
+        Dispatchable::dispatch(
+            Payload {
+                value: "by hand".to_string(),
+            },
+            Some("test/dispatch/forced".into()),
+            &context,
+        )
+        .await
+        .unwrap();
+
+        Dispatchable::arm_recurring(
+            scheduled(),
+            TimeDelta::hours(1),
+            TimeDelta::hours(1),
+            &context,
+        )
+        .await
+        .unwrap();
+
+        assert!(scheduled_for(&context).await > Utc::now());
     }
 
     #[tokio::test]

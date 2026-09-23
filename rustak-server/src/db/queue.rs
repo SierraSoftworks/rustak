@@ -138,6 +138,18 @@ pub trait Queue {
         max_items: usize,
     ) -> Result<Vec<PeekedMessage<T>>, Error>;
 
+    /// Reads the one message under `key` without reserving it, whatever else
+    /// the partition holds and however much of it.
+    ///
+    /// `key` is the row's own: the idempotency key a caller enqueued under. This
+    /// is how a recurring job finds its scheduled message, which
+    /// [`peek`](Queue::peek)'s oldest-first page may not reach.
+    async fn peek_key<P: Into<Cow<'static, str>> + Send, T: DeserializeOwned + Send + 'static>(
+        &self,
+        partition: P,
+        key: &str,
+    ) -> Result<Option<PeekedMessage<T>>, Error>;
+
     /// Removes a message by key whether or not it is reserved, for cancelling
     /// queued work by hand.
     async fn purge<P: Into<Cow<'static, str>> + Send, K: Into<Cow<'static, str>> + Send>(

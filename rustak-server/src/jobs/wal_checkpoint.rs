@@ -25,14 +25,15 @@ use crate::{
 /// The queue partition this job owns.
 pub const WAL_CHECKPOINT_PARTITION: &str = "housekeeping/wal-checkpoint";
 
-/// The message this job runs on, and the schedule it re-arms itself with.
+/// The message this job runs on.
 ///
-/// The interval travels in the payload rather than being read from the
-/// configuration at run time so that a change to `[storage]
-/// checkpoint_interval` takes effect on the next run rather than being
-/// permanently baked into a message that was queued at the previous start-up —
-/// [`handle`](WalCheckpointJob::handle) re-reads it and re-arms with what the
-/// file now says.
+/// Empty: the interval is read from the configuration by whoever arms the next
+/// run rather than carried here, so a message queued under an old `[storage]
+/// checkpoint_interval` does not bake it in. The configuration itself is read
+/// once, at start-up — [`Services::config`] hands back what was parsed then,
+/// and nothing reloads it — so an edited interval takes effect at the next
+/// restart, and *at* it: [`setup`](Job::setup) pulls in a checkpoint armed
+/// further out than the new interval, and every run after re-arms with it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WalCheckpointTask {}
 
@@ -58,20 +59,17 @@ impl Job for WalCheckpointJob {
         TimeDelta::minutes(1)
     }
 
-    /// Arms the schedule, the first run one interval out.
+    /// Arms the schedule, the first run one interval out, leaving a checkpoint
+    /// that is already armed alone.
     ///
     /// Not immediate, unlike the audit prune: nothing has been written yet, so
-    /// a checkpoint at start-up would be work with nothing to do.
+    /// a checkpoint at start-up would be work with nothing to do. Not a plain
+    /// enqueue either, which would push an armed checkpoint a whole interval
+    /// out at every restart; see [`Job::arm_recurring`].
     async fn setup(&self, services: impl Services + Send + Sync + 'static) -> Result<(), Error> {
         let interval = services.config().storage.checkpoint_interval;
 
-        Self::dispatch_delayed(
-            WalCheckpointTask {},
-            Some(WAL_CHECKPOINT_PARTITION.into()),
-            interval,
-            &services,
-        )
-        .await
+        Self::arm_recurring(WalCheckpointTask {}, interval, interval, &services).await
     }
 
     async fn handle(
@@ -128,6 +126,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_restart_does_not_postpone_a_checkpoint_that_is_already_armed() {
+        let context = AppContext::new_mock(|config| {
+            config.storage.checkpoint_interval = TimeDelta::minutes(5);
+        })
+        .await
+        .unwrap();
+        WalCheckpointJob::dispatch_delayed(
+            WalCheckpointTask {},
+            Some(WAL_CHECKPOINT_PARTITION.into()),
+            TimeDelta::minutes(2),
+            &context,
+        )
+        .await
+        .unwrap();
+        let armed_for = async || {
+            context
+                .queue()
+                .peek::<_, WalCheckpointTask>(WAL_CHECKPOINT_PARTITION, 10)
+                .await
+                .unwrap()[0]
+                .hidden_until
+        };
+        let before = armed_for().await;
+
+        Job::setup(&WalCheckpointJob, context.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(armed_for().await, before);
+    }
+
+    #[tokio::test]
     async fn a_run_checkpoints_and_re_arms_itself() {
         let context = AppContext::new_mock(|config| {
             config.storage.checkpoint_interval = TimeDelta::minutes(7);
@@ -155,8 +185,8 @@ mod tests {
 
     #[tokio::test]
     async fn re_arming_follows_the_configuration_rather_than_the_message() {
-        // The point of re-reading the interval: an operator who shortens it
-        // should not have to restart the server for it to take effect.
+        // The interval is never baked into the message: a run re-arms with
+        // what the configuration this process started with says.
         let context = AppContext::new_mock(|config| {
             config.storage.checkpoint_interval = TimeDelta::minutes(1);
         })
