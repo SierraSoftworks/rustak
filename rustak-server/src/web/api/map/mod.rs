@@ -4,7 +4,10 @@
 //! [`feed`](feed::feed) is a Server-Sent Events response of what the router
 //! relays from then on. They are separate so that the snapshot stays an
 //! ordinary cacheable-by-nobody `GET` a script can use, and so that a page can
-//! open the feed *first* and lose nothing to the gap between them.
+//! open the feed *first* and lose nothing to the gap between them. A third,
+//! [`history`](history::history), is one uid's past — the same features, read
+//! back out of the history segments — for a page that wants to draw where
+//! something has been.
 //!
 //! # Who sees what
 //!
@@ -14,16 +17,18 @@
 //! that showed less than the reader's own device would be a worse diagnostic
 //! than the list beside it; one that showed more would be a leak.
 //!
-//! # Reading only, for now
+//! # Writing goes through the stream
 //!
-//! Nothing here publishes. When it does, a write will name where it goes — a
-//! channel or a mission — and become a CoT event injected through
-//! [`Router::handle_inbound`](crate::stream::Router::handle_inbound) as though
-//! a client had sent it, so that it is tagged, recorded, fanned out and fed
-//! back to every open map by the path everything else already takes.
+//! [`publish`] is the one write. It names where a marker goes — the channels
+//! it is published into — and becomes a CoT event injected through
+//! [`Router::publish`](crate::stream::Router::publish) as though a client had
+//! sent it, so that it is tagged, recorded, fanned out and fed back to every
+//! open map by the path everything else already takes.
 
 pub mod feature;
 pub mod feed;
+pub mod history;
+pub mod publish;
 pub mod shape;
 
 use actix_web::web;
@@ -58,6 +63,12 @@ const PAGE: u32 = 2_000;
 pub fn routes(config: &mut web::ServiceConfig) {
     config
         .route("/map/features", web::get().to(features))
+        .route(
+            "/map/features/{uid}/history",
+            web::get().to(history::history),
+        )
+        .route("/map/features/{uid}", web::put().to(publish::put))
+        .route("/map/features/{uid}", web::delete().to(publish::remove))
         .route("/map/events", web::get().to(feed::feed));
 }
 

@@ -1,71 +1,15 @@
-//! What the pop-over says about the thing that was clicked.
-//!
-//! Everything a TAK client's own details pane leads with — who, what, where,
-//! how fast, how fresh — and then what only the server knows: which channels
-//! the sender was publishing into, which is the first thing to check when
-//! somebody says they cannot see it. The XML is not here; the Situation page
-//! has it, for the day the summary is not enough.
+//! What is said about the thing in focus: who, what, where, how fast, how
+//! fresh — and then what only the server knows, which channels the sender was
+//! publishing into, the first thing to check when somebody says they cannot
+//! see it. Nothing here touches the browser, so all of it is tested natively.
 
 use rustak_api::MapFeature;
-use yew::prelude::*;
 
-use crate::util::{mgrs, short_relative, sidc};
+use crate::util::mgrs;
 
-#[derive(Properties, PartialEq)]
-pub struct PopoverProps {
-    pub feature: MapFeature,
-}
-
-#[function_component(Popover)]
-pub fn popover(props: &PopoverProps) -> Html {
-    let feature = &props.feature;
-    let name = feature
-        .callsign
-        .clone()
-        .unwrap_or_else(|| feature.uid.clone());
-    let stale = feature.stale < chrono::Utc::now();
-
-    html! {
-        <article class="map-popover__card" aria-label={format!("Details for {name}")}>
-            <header class="map-popover__head">
-                <h3 class="map-popover__name">{ name }</h3>
-                <p class="map-popover__kind">
-                    if let Some(described) = sidc::describe(&feature.kind) {
-                        { described }{ " · " }
-                    }
-                    <code>{ feature.kind.clone() }</code>
-                </p>
-            </header>
-
-            <dl class="map-popover__facts">
-                { for facts(feature).into_iter().map(|(term, value)| html! {
-                    <>
-                        <dt>{ term }</dt>
-                        <dd>{ value }</dd>
-                    </>
-                }) }
-            </dl>
-
-            if let Some(remarks) = &feature.remarks {
-                <p class="map-popover__remarks">{ remarks.clone() }</p>
-            }
-
-            <p class={classes!("map-popover__age", stale.then_some("map-popover__age--stale"))}>
-                { format!("Reported {}", short_relative(feature.time)) }
-                { " · " }
-                { if stale {
-                    format!("stale since {}", short_relative(feature.stale))
-                } else {
-                    format!("stale {}", short_relative(feature.stale))
-                } }
-            </p>
-        </article>
-    }
-}
-
-/// The rows of the pop-over, in the order somebody reads them. A row the
+/// The rows of the panel, in the order somebody reads them. A row the
 /// message said nothing about is left out rather than shown empty.
-fn facts(feature: &MapFeature) -> Vec<(&'static str, String)> {
+pub fn facts(feature: &MapFeature) -> Vec<(&'static str, String)> {
     let point = &feature.point;
     let mut rows = Vec::new();
 

@@ -28,7 +28,7 @@ const LABEL_CHARS: usize = 28;
 
 const ALERT: &str = "#d92d20";
 const DRAWING: &str = "#c2410c";
-const MARKER: &str = "#344054";
+pub(super) const MARKER: &str = "#344054";
 
 /// One feature as `js/map.js` takes it: `{ uid, anchor, shape }`.
 pub fn draw(feature: &MapFeature, now: DateTime<Utc>) -> Value {
@@ -119,6 +119,15 @@ fn color(feature: &MapFeature) -> &'static str {
         None if feature.kind.starts_with("b-a-") => ALERT,
         None if feature.shape.is_some() => DRAWING,
         None => MARKER,
+    }
+}
+
+/// The colour a track is drawn in: the marker's own, except that a white
+/// team's line would vanish into the base map.
+pub(super) fn track_color(feature: &MapFeature) -> &'static str {
+    match color(feature) {
+        "#ffffff" => MARKER,
+        color => color,
     }
 }
 

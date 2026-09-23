@@ -43,7 +43,7 @@ const DEFAULT_SECAGO: i64 = 3600;
 const MAX_HISTORY: usize = 500;
 
 /// A half-open-ended span of time, as both of the reads here narrow by.
-type Window = (DateTime<Utc>, DateTime<Utc>);
+pub type Window = (DateTime<Utc>, DateTime<Utc>);
 
 /// Registers the CoT browser's routes.
 pub fn routes(config: &mut web::ServiceConfig) {
@@ -134,7 +134,7 @@ impl HistoryQuery {
     ///
     /// A `400` when the window runs backwards, which is almost always a client
     /// that has swapped the two parameters.
-    fn window(&self) -> Result<Window, ApiError> {
+    pub fn window(&self) -> Result<Window, ApiError> {
         bounds(self.secago, self.start, self.end, Some(DEFAULT_SECAGO))
     }
 }
@@ -314,7 +314,7 @@ pub async fn remove(
 /// A message that is here but not theirs answers the same `404` as one that is
 /// not here: telling a caller that a uid exists but is out of their channels is
 /// an oracle over everything this server has relayed.
-async fn readable_row(
+pub async fn readable_row(
     context: &web::Data<AppContext>,
     uid: &str,
     caller: &Authenticated,
@@ -340,7 +340,7 @@ fn publishes_into(row: &LatestRow, bitpos: u32) -> bool {
 ///
 /// A bit with no name is a channel deleted since the message was sent; it is
 /// left out rather than rendered as a number nobody can act on.
-fn names(row: &LatestRow, index: &GroupIndex) -> Vec<String> {
+pub fn names(row: &LatestRow, index: &GroupIndex) -> Vec<String> {
     GroupSet::from_bytes(&row.group_bits)
         .map(|sender| {
             sender
@@ -405,7 +405,7 @@ fn from_event(event: &Event, groups: Vec<String>) -> CotSummary {
 
 /// The channel index, which every renderer here needs and none should read
 /// once per row.
-async fn index(context: &web::Data<AppContext>) -> Result<GroupIndex, ApiError> {
+pub async fn index(context: &web::Data<AppContext>) -> Result<GroupIndex, ApiError> {
     context
         .db()
         .groups()

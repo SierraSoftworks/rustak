@@ -8,6 +8,15 @@
 //! [`time`](MapFeature::time), so nothing relayed in between is lost and
 //! nothing older overwrites something newer.
 //!
+//! # Writing is one more shape
+//!
+//! `PUT /api/v1/map/features/{uid}` takes a [`PublishFeature`] — what a page
+//! can say about a marker it placed or edited — and the server makes a CoT
+//! event of it, injected as though a client had sent it: tagged, recorded,
+//! fanned out to devices, and fed back to every open map. `DELETE` on the
+//! same path sends the delete every TAK client understands. The answer to
+//! both is the [`MapFeature`] the map now draws, or no longer does.
+//!
 //! # A feature is a CoT event, flattened
 //!
 //! Everything a marker and its pop-over need, parsed once on the server so the
@@ -155,6 +164,47 @@ pub enum MapShape {
     Polygon(Vec<Vec<[f64; 2]>>),
 }
 
+/// What a page publishes: a marker, as somebody placed or edited it.
+///
+/// Everything a CoT event needs that the page can sensibly decide. The uid is
+/// the page's — minted when a marker is placed and kept when it is edited, so
+/// that a `PUT` replaces rather than duplicates. What is left out — the time,
+/// the flow tag, the sender — is the server's to add.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PublishFeature {
+    /// The CoT type: `a-u-G` for an unknown thing on the ground, `b-m-p-s-m`
+    /// for a spot marker.
+    #[serde(rename = "type")]
+    pub kind: String,
+
+    pub callsign: String,
+
+    pub point: MapPoint,
+
+    /// How the position was produced. `h-g-i-g-o` — placed on a map by a
+    /// person — when the page does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub how: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remarks: Option<String>,
+
+    /// The symbol to draw it with, as [`sidc`] accepts. Left to the type when
+    /// absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidc: Option<String>,
+
+    /// When it stops being current. A day from now when the page does not
+    /// say, which is what a marker somebody placed by hand deserves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale: Option<DateTime<Utc>>,
+
+    /// The channels to publish into, by name. Empty is a broadcast to
+    /// everybody the sender reaches.
+    #[serde(default)]
+    pub groups: Vec<String>,
+}
+
 /// One change to the map, as the feed reports it.
 ///
 /// `#[non_exhaustive]` for the reason [`ServerEventPayload`] is: a page skips a
@@ -268,6 +318,38 @@ mod tests {
 
         assert_eq!(json["type"], "Polygon");
         assert_eq!(json["coordinates"][0][1], serde_json::json!([-0.11, 51.5]));
+    }
+
+    #[test]
+    fn what_a_page_leaves_unsaid_when_publishing_is_an_absent_key() {
+        let json = serde_json::to_value(PublishFeature {
+            kind: "a-u-G".to_string(),
+            callsign: "MARKER 1".to_string(),
+            point: MapPoint {
+                lat: 51.5,
+                lon: -0.12,
+                hae: None,
+                ce: None,
+                le: None,
+            },
+            how: None,
+            remarks: None,
+            sidc: None,
+            stale: None,
+            groups: Vec::new(),
+        })
+        .unwrap();
+
+        assert_eq!(json["type"], "a-u-G");
+        assert!(json.get("how").is_none());
+        assert!(json.get("stale").is_none());
+        assert_eq!(json["groups"], serde_json::json!([]));
+
+        let read: PublishFeature =
+            serde_json::from_str(r#"{"type":"a-u-G","callsign":"M","point":{"lat":1,"lon":2}}"#)
+                .unwrap();
+        assert_eq!(read.point.lon, 2.0);
+        assert!(read.groups.is_empty());
     }
 
     #[test]

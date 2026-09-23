@@ -20,7 +20,8 @@ path = "src/main.rs"
 [dependencies]
 rustak-api = { path = "../rustak-api" }
 # wasm32 has no OS randomness; `js` routes uuid through the browser (rustak-api leaves the choice to the target).
-uuid = { version = "1", features = ["js"] }
+# `v4` is for the uid a marker placed on the map is given.
+uuid = { version = "1", features = ["js", "v4"] }
 
 yew = { version = "0.23", features = ["csr"] }
 yew-router = "0.20"

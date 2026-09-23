@@ -299,6 +299,10 @@ pub struct Subscription {
     pub mode: Mode,
     /// Where to deliver.
     pub handle: ConnHandle,
+    /// Whether this is a stand-in for a sender that has no connection — a
+    /// message published from the admin console — registered for one message
+    /// and gone. Nobody is told it joined or left, because nothing did.
+    pub ephemeral: bool,
 }
 
 impl Subscription {
@@ -332,7 +336,15 @@ impl Subscription {
             mode: Mode::Xml,
             handle: handle.clone(),
             device_id: None,
+            ephemeral: false,
         }
+    }
+
+    /// Marks the subscription as standing in for a sender with no connection.
+    #[must_use]
+    pub fn ephemeral(mut self) -> Self {
+        self.ephemeral = true;
+        self
     }
 
     /// Names the device row this connection's certificate was issued to.

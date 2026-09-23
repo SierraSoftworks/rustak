@@ -1,14 +1,11 @@
-//! Everything on the map, as a list beside it.
+//! One thing on the map, as a row of a list: the object list, or the chooser.
 //!
-//! A map answers "what is near here"; it is bad at "where is RAO". The roster
-//! is the other way in: search by callsign, uid or type, pick a row, and the
-//! map goes there and opens its pop-over. It is also the way in for anybody
-//! who cannot use a WebGL canvas with a pointer, which is reason enough.
+//! The row is reduced to what it shows before it is drawn, so that a redraw
+//! with nothing new in it compares equal and costs nothing.
 
 use rustak_api::MapFeature;
 use yew::prelude::*;
 
-use crate::components::TextInput;
 use crate::util::{short_relative, sidc};
 
 use super::render::team_color;
@@ -19,7 +16,7 @@ pub const ROSTER_ROWS: usize = 150;
 
 /// One row, already reduced to what it shows so that a redraw with nothing new
 /// in it compares equal and costs nothing.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RosterEntry {
     pub uid: String,
     pub name: String,
@@ -62,78 +59,33 @@ fn affiliation_color(kind: &str) -> &'static str {
     }
 }
 
-#[derive(Properties, PartialEq)]
-pub struct RosterProps {
-    pub entries: Vec<RosterEntry>,
-
-    /// How many matched, which is more than `entries` when the list was cut.
-    pub matched: usize,
-
-    pub search: AttrValue,
-    pub onsearch: Callback<String>,
-
-    pub selected: Option<String>,
-    pub onselect: Callback<String>,
-}
-
-#[function_component(Roster)]
-pub fn roster(props: &RosterProps) -> Html {
-    let row = |entry: &RosterEntry| {
-        let selected = props.selected.as_deref() == Some(entry.uid.as_str());
-        let onclick = {
-            let (onselect, uid) = (props.onselect.clone(), entry.uid.clone());
-            Callback::from(move |_: MouseEvent| onselect.emit(uid.clone()))
-        };
-
-        html! {
-            <li key={entry.uid.clone()}>
-                <button
-                    type="button"
-                    class={classes!(
-                        "map-roster__row",
-                        selected.then_some("map-roster__row--selected"),
-                        entry.stale.then_some("map-roster__row--stale"),
-                    )}
-                    aria-pressed={selected.to_string()}
-                    {onclick}
-                >
-                    <span
-                        class="map-roster__swatch"
-                        style={format!("background: {}", entry.swatch)}
-                        aria-hidden="true"
-                    />
-                    <span class="map-roster__name">{ entry.name.clone() }</span>
-                    <span class="map-roster__detail">{ entry.detail.clone() }</span>
-                </button>
-            </li>
-        }
+/// One row of a list of things on the map, wherever the list is.
+pub fn roster_row(entry: &RosterEntry, selected: bool, onselect: &Callback<String>) -> Html {
+    let onclick = {
+        let (onselect, uid) = (onselect.clone(), entry.uid.clone());
+        Callback::from(move |_: MouseEvent| onselect.emit(uid.clone()))
     };
 
-    let empty = match (props.entries.is_empty(), props.search.is_empty()) {
-        (false, _) => "",
-        (true, true) => "Nothing is reporting. Whatever connects will appear here, and on the map.",
-        (true, false) => "Nothing on the map matches.",
-    };
-    let more = match props.matched.saturating_sub(props.entries.len()) {
-        0 => String::new(),
-        more => format!("And {more} more. Search to narrow them down."),
-    };
-
-    // Four children, always: a paragraph with nothing to say is empty and
-    // hidden rather than absent. Yew reconciles un-keyed siblings by position,
-    // so one that came and went would take the search box with it — and the
-    // focus of whoever was typing in it.
     html! {
-        <aside class="map-roster" aria-label="On the map">
-            <TextInput
-                id="map-search"
-                value={props.search.clone()}
-                onchange={props.onsearch.clone()}
-                placeholder="Search callsigns, uids or types"
-            />
-            <ul class="map-roster__list">{ for props.entries.iter().map(row) }</ul>
-            <p class="map-roster__empty">{ empty }</p>
-            <p class="map-roster__more">{ more }</p>
-        </aside>
+        <li key={entry.uid.clone()}>
+            <button
+                type="button"
+                class={classes!(
+                    "map-roster__row",
+                    selected.then_some("map-roster__row--selected"),
+                    entry.stale.then_some("map-roster__row--stale"),
+                )}
+                aria-pressed={selected.to_string()}
+                {onclick}
+            >
+                <span
+                    class="map-roster__swatch"
+                    style={format!("background: {}", entry.swatch)}
+                    aria-hidden="true"
+                />
+                <span class="map-roster__name">{ entry.name.clone() }</span>
+                <span class="map-roster__detail">{ entry.detail.clone() }</span>
+            </button>
+        </li>
     }
 }
