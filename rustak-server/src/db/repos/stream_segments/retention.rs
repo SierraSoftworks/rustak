@@ -36,7 +36,10 @@ use super::{COLUMNS, StreamSegmentRow, StreamSegmentsRepo};
 /// Sealed segments by age; migration 0023.
 const AGE_INDEX: &str = "idx_stream_segments_sealed_age";
 
-/// Segments by stream, then by when each began; migration 0004.
+/// One stream's sealed segments by age; migration 0023.
+const STREAM_AGE_INDEX: &str = "idx_stream_segments_sealed_stream_age";
+
+/// Every segment by stream, open ones included; migration 0004.
 const STREAM_INDEX: &str = "idx_stream_segments_stream";
 
 /// How many bytes a stream kind holds, open segments included.
@@ -69,13 +72,19 @@ fn over_cap_streams_sql() -> String {
 
 /// One stream's sealed segments, oldest first.
 ///
-/// By `first_time`, which is the order the index holds them in. A stream's
-/// segments are written one after another, so that is their age order too.
+/// Oldest by when a segment *ended*, as everywhere else here, and not by when
+/// it began — which the per-stream index of migration 0004 would have given for
+/// free. Nothing promises the two orders agree: the log files a record under
+/// whatever time its caller hands it and tolerates those arriving out of order.
+/// CoT history is filed under this server's clock, which can be stepped
+/// backwards, and later streams need not use a clock of ours at all. A segment
+/// that began before its neighbour and ended after it is the newer history,
+/// and walking by `first_time` would evict it and keep the older.
 fn stream_oldest_sql() -> String {
     format!(
-        "SELECT {COLUMNS} FROM stream_segments INDEXED BY {STREAM_INDEX} \
+        "SELECT {COLUMNS} FROM stream_segments INDEXED BY {STREAM_AGE_INDEX} \
          WHERE stream_kind = ?1 AND stream_key = ?2 AND sealed = 1 \
-         ORDER BY first_time ASC, id ASC LIMIT ?3"
+         ORDER BY last_time ASC, id ASC LIMIT ?3"
     )
 }
 
@@ -240,20 +249,33 @@ mod tests {
 
     /// A sealed segment of `key` holding `records` records, `age` minutes old.
     async fn sealed(db: &Database, key: &str, index: u32, records: u64, age: i64) {
-        let at = Utc::now() - chrono::TimeDelta::minutes(age);
+        sealed_between(db, key, index, records, age, age).await;
+    }
+
+    /// A sealed segment whose first record is `began` minutes old and whose
+    /// newest is `ended` minutes old.
+    async fn sealed_between(
+        db: &Database,
+        key: &str,
+        index: u32,
+        records: u64,
+        began: i64,
+        ended: i64,
+    ) {
+        let minutes_ago = |age: i64| Utc::now() - chrono::TimeDelta::minutes(age);
         let segments = db.stream_segments();
         let row = segments
             .create(NewStreamSegment {
                 stream_kind: "cot".into(),
                 stream_key: key.into(),
                 segment_path: format!("cot/{key}/{index:08}.log"),
-                first_time: at,
+                first_time: minutes_ago(began),
             })
             .await
             .unwrap();
 
         segments
-            .record_append(row.id, at, records, records * 100)
+            .record_append(row.id, minutes_ago(ended), records, records * 100)
             .await
             .unwrap();
         segments.seal(row.id).await.unwrap();
@@ -335,5 +357,26 @@ mod tests {
             paths(&by_bytes),
             ["cot/UID-A/00000000.log", "cot/UID-A/00000001.log"]
         );
+    }
+
+    #[tokio::test]
+    async fn a_stream_loses_the_segment_that_ended_first_not_the_one_that_began_first() {
+        // A clock stepped backwards, or a stream not filed under our clock at
+        // all: the second segment opens with a record dated two hours ago and
+        // closes with one from a minute ago. It began before the first and
+        // ended after it, and it is the newer history.
+        let db = Database::open_in_memory().await.unwrap();
+        sealed_between(&db, "UID-A", 0, 10, 60, 50).await;
+        sealed_between(&db, "UID-A", 1, 10, 120, 1).await;
+
+        // Twenty held, ten promised: exactly one segment of ten can go.
+        let surplus = db
+            .stream_segments()
+            .over_row_cap("cot", 10, 100)
+            .await
+            .unwrap();
+
+        assert_eq!(surplus.len(), 1);
+        assert_eq!(surplus[0].segment_path, "cot/UID-A/00000000.log");
     }
 }
