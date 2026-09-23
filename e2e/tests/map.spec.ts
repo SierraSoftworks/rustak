@@ -102,7 +102,16 @@ test("the pin tool places a marker that can be edited and deleted", async ({ pag
   await expect(page.getByRole("button", { name: "Place a marker" })).toHaveAttribute("aria-pressed", "false");
 
   await details.getByLabel("Name").fill("CCP SOUTH");
-  await details.getByLabel("Type").fill("a-h-G-E-V");
+
+  // What it is, found by a word rather than remembered as a code; then whose,
+  // which a spot marker has none of until it is something that can have one.
+  await expect(details.getByLabel("Affiliation")).toBeDisabled();
+  await details.getByLabel("Type").click();
+  await details.getByRole("combobox", { name: "Search" }).fill("ground vehicle");
+  await details.getByRole("option", { name: /^Ground vehicle/ }).first().click();
+  await details.getByLabel("Affiliation").selectOption({ label: "Hostile" });
+  await expect(details.getByLabel("Type")).toContainText("a-h-G-E-V");
+
   await details.getByLabel("Remarks").fill("Two vehicles, stationary.");
   await details.getByRole("button", { name: "Save" }).click();
 
@@ -216,4 +225,69 @@ test("a symbol code the sender wrote is drawn, whichever edition it is in", asyn
   await expect(page.getByRole("application")).toHaveAttribute("data-features", /^[1-9]\d*$/);
   await page.waitForTimeout(1500);
   expect(warnings).toEqual([]);
+});
+
+test("a type and a symbol are chosen by name, with a picture of each, and never typed as a code", async ({
+  page,
+}) => {
+  await gotoApp(page, MAP);
+
+  await page.getByRole("button", { name: "Place a marker" }).click();
+  const canvas = page.locator(".map-page__canvas canvas");
+  const box = (await canvas.boundingBox())!;
+  await canvas.click({ position: { x: box.width * 0.45, y: box.height * 0.4 } });
+
+  const details = page.getByRole("article", { name: /^Details for Marker \d+$/ });
+  const type = details.getByLabel("Type");
+  const search = details.getByRole("combobox", { name: "Search" });
+  await expect(type).toContainText("Spot marker");
+
+  // It opens where what is chosen lives, with the trail saying where that is
+  // and every step of it a way back up.
+  await type.click();
+  const trail = details.getByRole("navigation", { name: "Where this list is" });
+  await expect(trail).toContainText("Markers");
+  await expect(details.getByRole("option", { name: /^Spot marker/ })).toHaveAttribute("aria-selected", "true");
+
+  // Walked: one level at a time, by the pointer or by the keys.
+  await trail.getByRole("button", { name: "All" }).click();
+  await expect(details.getByRole("option", { name: /^Ground track a-u-G\b/ })).toBeVisible();
+  await details.getByRole("button", { name: "Show what is inside Air track" }).click();
+  await expect(trail).toContainText("Air track");
+  await search.press("ArrowLeft");
+  await expect(details.getByRole("option", { name: /^Markers/ })).toBeVisible();
+
+  // Searched: by a word, from anywhere in the hierarchy, with where it lives
+  // beside it and the symbol it will be drawn as in front of it.
+  await search.fill("mortar heavy");
+  const mortar = details.getByRole("option", { name: /^Mortar heavy/ });
+  await expect(mortar).toContainText("Ground track equipment");
+  await expect(mortar.locator("img")).toHaveAttribute("src", /^data:image\/svg\+xml/);
+  await search.press("Enter");
+
+  // Chosen, the panel is gone and the field says what it holds.
+  await expect(search).toHaveCount(0);
+  await expect(type).toContainText("a-u-G-E-W-O-H");
+
+  // Whose it is redraws every preview, and rewrites a symbol already chosen.
+  await details.getByLabel("Affiliation").selectOption({ label: "Friendly" });
+  await expect(type).toContainText("a-f-G-E-W-O-H");
+
+  const symbol = details.getByLabel("Symbol");
+  await expect(symbol).toContainText("The type's own symbol");
+  await symbol.click();
+  await search.fill("mortar medium");
+  await details.getByRole("option", { name: /^Mortar medium/ }).click();
+  await expect(symbol.locator("code")).toHaveText(/^SF/);
+  await details.getByLabel("Affiliation").selectOption({ label: "Hostile" });
+  await expect(symbol.locator("code")).toHaveText(/^SH/);
+
+  // Something no catalogue lists can still be said, once it is well formed.
+  await type.click();
+  await search.fill("a-h-G-X-Y-Z");
+  await details.getByRole("option", { name: /Use a-h-G-X-Y-Z as typed/ }).click();
+  await expect(type).toContainText("a-h-G-X-Y-Z");
+
+  await details.getByRole("button", { name: "Delete" }).click();
+  await details.getByRole("button", { name: "Delete it" }).click();
 });
