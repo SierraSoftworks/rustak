@@ -22,6 +22,7 @@ mod secret_input;
 mod secret_reveal;
 mod split_button;
 mod status_pill;
+mod tree_select;
 mod xml_view;
 
 pub use admin_shell::{AdminShell, PageActions};
@@ -53,4 +54,5 @@ pub use status_pill::{StatusPill, StatusTone};
 // Its only caller today is the control gallery, which a release build does not
 // contain; the CoT browser that needs it lands with the next brief.
 #[allow(unused_imports)]
+pub use tree_select::{Entry as TreeEntry, Tree, TreeSelect};
 pub use xml_view::XmlView;
