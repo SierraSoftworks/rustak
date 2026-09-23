@@ -81,7 +81,7 @@ pub use mission_expiry::{
     EXPIRY_INTERVAL, MISSION_EXPIRY_PARTITION, MissionExpiryJob, MissionExpiryTask,
 };
 pub use retention::{
-    COT_RETENTION_PARTITION, CotRetentionJob, CotRetentionTask, FIRST_SWEEP_DELAY, SWEEP_INTERVAL,
+    COT_RETENTION_PARTITION, CotRetentionJob, CotRetentionTask, FIRST_SWEEP_DELAY,
 };
 pub use runnable::{JobRegistration, JobRunnable};
 pub use service_health::{

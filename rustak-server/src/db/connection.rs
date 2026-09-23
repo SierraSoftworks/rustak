@@ -261,6 +261,24 @@ impl Database {
             .or_system_err(ADVICE_DB_ERROR)
     }
 
+    /// Lets SQLite refresh the planner statistics it judges out of date.
+    ///
+    /// For a caller that has just deleted a large share of a table, which is
+    /// what leaves the statistics describing rows that are no longer there.
+    /// `PRAGMA optimize` only analyses what has changed enough to matter, so
+    /// calling it after every sweep costs nothing when little was removed.
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::System`] error if SQLite refuses the pragma.
+    #[instrument("db.optimize", skip(self), err(Display))]
+    pub async fn optimize(&self) -> Result<(), Error> {
+        self.writer
+            .call(|c| c.execute_batch("PRAGMA optimize"))
+            .await
+            .or_system_err(ADVICE_DB_ERROR)
+    }
+
     /// Lets SQLite update its statistics, truncates the log, and closes.
     ///
     /// The statistics come **first**. `PRAGMA optimize` runs `ANALYZE`, which is

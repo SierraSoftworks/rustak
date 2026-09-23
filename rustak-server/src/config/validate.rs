@@ -49,6 +49,7 @@ pub(super) fn validate(config: &Config) -> Result<(), Error> {
     // Within one section rather than across two, so the rule lives beside the
     // schema it is about.
     config.stream.limits.validate()?;
+    config.retention.validate()?;
     public_listener(config)?;
     certificate_source(config)?;
     acme(config)?;

@@ -104,7 +104,11 @@ for the full comment on every key.
   switches must agree, and `--check` refuses a file where they do not. See
   **ACME certificates** below.
 - **`[retention]`** — how long CoT history, audit log entries and archived
-  missions are kept, as an age, a row/entry cap, or both.
+  missions are kept, as an age, a row/entry cap, or both. The CoT garbage
+  collector runs every `cot_sweep_interval` and enforces `cot_history` (age),
+  `cot_history_max_rows` (per device), `cot_history_max_mb` (disk, across all
+  devices) and `cot_latest` (stale contacts in the database); tighten the last
+  two when running high-volume feeds such as ADS-B or AIS.
 
 ### Validating and reloading
 

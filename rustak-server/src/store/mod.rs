@@ -24,8 +24,10 @@ pub mod append_log;
 pub mod content;
 pub(crate) mod frame;
 pub mod orphans;
+mod prune;
 mod segment;
 
 pub use append_log::{AppendLog, AppendLogOptions, DEFAULT_SEGMENT_BYTES};
 pub use content::{ContentRef, ContentStore};
+pub use prune::{PRUNE_PAGE, Surplus};
 pub use segment::segments_created;

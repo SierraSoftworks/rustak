@@ -1,10 +1,14 @@
-//! Keeping CoT history inside `[retention]`, on a schedule.
+//! The CoT garbage collector's schedule.
 //!
 //! Registered like every other job, so that it is visible in the queue, can be
 //! run early by hand, and is reasoned about like the audit prune beside it. The
-//! work itself is [`sweep`](crate::cot_store::retention::sweep): whole segment files are
-//! unlinked and their index rows deleted, and `cot_latest` loses the rows whose
-//! messages went stale long ago.
+//! work itself is [`sweep`](crate::cot_store::retention::sweep): whole segment
+//! files are unlinked and their index rows deleted, and `cot_latest` loses the
+//! rows whose messages went stale long ago. Every limit, and the interval, is
+//! `[retention]`'s. The configuration is read once, at start-up, so an edited
+//! file takes effect at the next restart — and *at* it, rather than one sweep
+//! later: nothing is carried in the queued message, and a shortened interval
+//! pulls the armed sweep in (below).
 //!
 //! # Why the horizon is approximate, and documented as such
 //!
@@ -12,11 +16,8 @@
 //! effective horizon is therefore `[retention] cot_history` **plus the tail of
 //! the segment that straddles it** — up to one segment's worth of extra
 //! history. Trimming inside a file would mean rewriting it, which is the cost
-//! the append-only design exists to avoid.
-//!
-//! The same pass enforces `[retention] cot_history_max_rows`, the per-device
-//! floor that keeps a busy installation from filling the disk inside the age
-//! window. It is approximate in the same direction and for the same reason.
+//! the append-only design exists to avoid. Both caps are approximate in the
+//! same direction and for the same reason.
 //!
 //! # A restart never postpones a sweep
 //!
@@ -24,25 +25,17 @@
 //! there. Arming a full interval out at every start-up — which is what this
 //! used to do — therefore meant a server restarted more often than the
 //! interval never swept at all. [`setup`](Job::setup) now leaves an armed sweep
-//! where it is, unless it is further out than the interval; see
-//! [`Job::arm_recurring`].
+//! where it is, unless it is further out than the interval the file now asks
+//! for; see [`Job::arm_recurring`], which every job that arms with a delay shares.
 
-use chrono::TimeDelta;
+use chrono::{TimeDelta, Utc};
 
-use crate::cot_store::retention;
+use crate::cot_store::retention::{self, Limits};
 use crate::prelude::*;
 use crate::register_job;
 
 /// The queue partition this job owns.
 pub const COT_RETENTION_PARTITION: &str = "housekeeping/cot-retention";
-
-/// How often the history is trimmed.
-///
-/// Six hours rather than daily: a segment is eight megabytes and a busy
-/// installation fills them quickly, so an installation that has just had its
-/// horizon shortened should see the space back the same day. Not configurable —
-/// the horizon is, and that is what an operator has an opinion about.
-pub const SWEEP_INTERVAL: TimeDelta = TimeDelta::hours(6);
 
 /// How long after start-up the first sweep of an installation runs.
 ///
@@ -52,15 +45,28 @@ pub const SWEEP_INTERVAL: TimeDelta = TimeDelta::hours(6);
 /// stays over them for as long as the interval is.
 pub const FIRST_SWEEP_DELAY: TimeDelta = TimeDelta::minutes(5);
 
-/// The message this job runs on. The horizon comes from the configuration at
-/// run time, so there is nothing to carry.
+/// The message this job runs on. The limits come from the configuration at run
+/// time, so there is nothing to carry.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CotRetentionTask {}
 
-/// Trims CoT history to `[retention] cot_history`.
+/// Keeps CoT history and `cot_latest` inside `[retention]`.
 pub struct CotRetentionJob;
 
 register_job!(CotRetentionJob);
+
+impl CotRetentionJob {
+    /// Arms (or re-arms) the one scheduled sweep, `delay` from now.
+    async fn arm(delay: TimeDelta, services: &impl Services) -> Result<(), Error> {
+        Self::dispatch_delayed(
+            CotRetentionTask {},
+            Some(COT_RETENTION_PARTITION.into()),
+            delay,
+            services,
+        )
+        .await
+    }
+}
 
 impl Job for CotRetentionJob {
     type JobType = CotRetentionTask;
@@ -75,13 +81,11 @@ impl Job for CotRetentionJob {
 
     /// Arms the first sweep, leaving one that is already armed alone.
     async fn setup(&self, services: impl Services + Send + Sync + 'static) -> Result<(), Error> {
-        Self::arm_recurring(
-            CotRetentionTask {},
-            SWEEP_INTERVAL,
-            FIRST_SWEEP_DELAY,
-            &services,
-        )
-        .await
+        let interval = services.config().retention.cot_sweep_interval;
+
+        // Further out than the interval means the interval was shortened since
+        // it was armed, and the operator who shortened it is waiting.
+        Self::arm_recurring(CotRetentionTask {}, interval, FIRST_SWEEP_DELAY, &services).await
     }
 
     async fn handle(
@@ -90,25 +94,16 @@ impl Job for CotRetentionJob {
         _job: &Self::JobType,
     ) -> Result<(), Error> {
         let services = ctx.services();
+        let config = services.config();
 
         // Re-armed before the work, so a sweep that fails is one missed sweep
         // rather than the end of the schedule.
-        Self::dispatch_delayed(
-            CotRetentionTask {},
-            Some(COT_RETENTION_PARTITION.into()),
-            SWEEP_INTERVAL,
-            &services,
-        )
-        .await?;
-
-        let config = services.config();
-        let before = chrono::Utc::now() - config.retention.cot_history;
+        Self::arm(config.retention.cot_sweep_interval, services).await?;
 
         let swept = retention::sweep(
             services.db(),
             &config.streams_dir(),
-            before,
-            config.retention.cot_history_max_rows,
+            Limits::from_config(&config.retention, Utc::now()),
         )
         .await?;
 
@@ -124,22 +119,23 @@ impl Job for CotRetentionJob {
 mod tests {
     use super::*;
 
-    use chrono::{DateTime, Utc};
+    use crate::cot_store::STREAM_KIND;
+    use crate::store::append_log::{AppendLog, AppendLogOptions};
 
-    /// Arms the one scheduled sweep `delay` from now, as an earlier run did.
-    async fn arm(delay: TimeDelta, context: &AppContext) {
-        CotRetentionJob::dispatch_delayed(
-            CotRetentionTask {},
-            Some(COT_RETENTION_PARTITION.into()),
-            delay,
-            context,
-        )
+    /// A context whose streams live under `directory`, sweeping on `interval`.
+    async fn context(directory: &tempfile::TempDir, interval: TimeDelta) -> AppContext {
+        let path = directory.path().to_path_buf();
+
+        AppContext::new_mock(move |config| {
+            *config = crate::config::Config::testing(path);
+            config.retention.cot_sweep_interval = interval;
+        })
         .await
-        .unwrap();
+        .unwrap()
     }
 
     /// When the one scheduled sweep becomes due.
-    async fn armed_for(context: &AppContext) -> DateTime<Utc> {
+    async fn armed_for(context: &AppContext) -> chrono::DateTime<Utc> {
         let armed = context
             .queue()
             .peek::<_, CotRetentionTask>(COT_RETENTION_PARTITION, 10)
@@ -152,7 +148,8 @@ mod tests {
 
     #[tokio::test]
     async fn the_first_sweep_is_soon_after_start_up_rather_than_an_interval_away() {
-        let context = AppContext::new_mock(|_| {}).await.unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let context = context(&directory, TimeDelta::hours(6)).await;
 
         Job::setup(&CotRetentionJob, context.clone()).await.unwrap();
 
@@ -163,8 +160,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_restart_does_not_postpone_a_sweep_that_is_already_armed() {
-        let context = AppContext::new_mock(|_| {}).await.unwrap();
-        arm(TimeDelta::minutes(40), &context).await;
+        let directory = tempfile::tempdir().unwrap();
+        let context = context(&directory, TimeDelta::hours(1)).await;
+        CotRetentionJob::arm(TimeDelta::minutes(40), &context)
+            .await
+            .unwrap();
         let before = armed_for(&context).await;
 
         Job::setup(&CotRetentionJob, context.clone()).await.unwrap();
@@ -173,42 +173,70 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_sweep_armed_further_out_than_the_interval_is_pulled_in() {
-        let context = AppContext::new_mock(|_| {}).await.unwrap();
-        arm(SWEEP_INTERVAL * 4, &context).await;
+    async fn a_shortened_interval_pulls_in_a_sweep_armed_under_the_old_one() {
+        let directory = tempfile::tempdir().unwrap();
+        let context = context(&directory, TimeDelta::hours(1)).await;
+        CotRetentionJob::arm(TimeDelta::hours(6), &context)
+            .await
+            .unwrap();
 
         Job::setup(&CotRetentionJob, context.clone()).await.unwrap();
 
         assert!(armed_for(&context).await <= Utc::now() + FIRST_SWEEP_DELAY);
     }
 
-    #[test]
-    fn the_partition_is_the_one_the_registry_dispatches_on() {
-        assert_eq!(CotRetentionJob::partition(), COT_RETENTION_PARTITION);
+    #[tokio::test]
+    async fn a_run_removes_expired_history_and_re_arms_on_the_configured_interval() {
+        let directory = tempfile::tempdir().unwrap();
+        let context = context(&directory, TimeDelta::minutes(30)).await;
+        let streams = context.config().streams_dir();
+
+        let mut log = AppendLog::open(
+            context.db(),
+            &streams,
+            STREAM_KIND,
+            "ICAO-GONE",
+            AppendLogOptions::default(),
+        )
+        .await
+        .unwrap();
+        log.append(Utc::now() - TimeDelta::days(30), b"ancient")
+            .await
+            .unwrap();
+        log.seal().await.unwrap();
+
+        Job::handle(
+            &CotRetentionJob,
+            JobContext::new(context.clone(), Utc::now(), None, None),
+            &CotRetentionTask {},
+        )
+        .await
+        .unwrap();
+
+        let kept = context
+            .db()
+            .stream_segments()
+            .expired_before(Utc::now(), 10)
+            .await
+            .unwrap();
+        assert!(kept.is_empty(), "the month-old segment should be gone");
+
+        let due = armed_for(&context).await;
+        assert!(due > Utc::now() + TimeDelta::minutes(29));
+        assert!(due <= Utc::now() + TimeDelta::minutes(30));
     }
 
     #[tokio::test]
     async fn a_sweep_with_nothing_to_remove_is_not_a_failure() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().to_path_buf();
-        let context = AppContext::new_mock(move |config| {
-            *config = crate::config::Config::testing(path);
-        })
-        .await
-        .unwrap();
+        let context = context(&directory, TimeDelta::hours(1)).await;
 
-        let config = context.config();
-        let before = chrono::Utc::now() - config.retention.cot_history;
-
-        let swept = retention::sweep(
-            context.db(),
-            &config.streams_dir(),
-            before,
-            config.retention.cot_history_max_rows,
+        Job::handle(
+            &CotRetentionJob,
+            JobContext::new(context.clone(), Utc::now(), None, None),
+            &CotRetentionTask {},
         )
         .await
         .unwrap();
-
-        assert!(swept.is_empty());
     }
 }
