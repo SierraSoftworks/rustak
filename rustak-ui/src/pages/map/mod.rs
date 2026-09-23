@@ -29,6 +29,15 @@
 //! still drawing into the one that was thrown away. So every overlay sits in
 //! a wrapper that is always there, and the children of `.map-page` never
 //! change in number.
+//!
+//! # The overlays are one grid
+//!
+//! The toolbar, the notes, the list, the panel and the bar are cells of one
+//! grid laid over the map, so that none of them can be drawn over another
+//! whatever the width: three columns where there is room, one stack where
+//! there is not. Which it is depends on the width of the *map*, not of the
+//! window — the navigation beside it comes and goes — so the stylesheet asks
+//! the container rather than the screen.
 
 mod chooser;
 mod draft;
@@ -294,6 +303,7 @@ pub fn live_map() -> Html {
                 aria-label="Map. Everything on it is also listed beside it."
             />
 
+            <div class="map-page__overlay">
             <div class="map-page__toolbar">
                 <Toolbar
                     tool={held.tool()}
@@ -345,6 +355,7 @@ pub fn live_map() -> Html {
 
             <div class="map-page__properties">{ for panel }</div>
             <div class="map-page__playback">{ for playback }</div>
+            </div>
             <div class="map-page__portal">{ for chooser }</div>
         </div>
     }

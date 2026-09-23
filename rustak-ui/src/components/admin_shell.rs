@@ -5,7 +5,11 @@
 //! the session — so a page only mounts, and therefore only fetches, once access
 //! has been granted.
 
+use std::cell::Cell;
+
 use chrono::{Datelike, Utc};
+use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 use yew::prelude::*;
 use yew_router::prelude::*;
 
@@ -13,7 +17,7 @@ use crate::app::Route;
 use crate::components::{AppBar, PageTitle};
 use crate::fixtures;
 use crate::pages::Protected;
-use crate::util::nav_href;
+use crate::util::{narrow_screen, nav_href, window};
 
 #[derive(Properties, PartialEq)]
 pub struct AdminShellProps {
@@ -53,9 +57,13 @@ pub fn admin_shell(props: &AdminShellProps) -> Html {
     };
 
     // Whether the navigation drawer is open. Only meaningful on a narrow
-    // screen, where the sidebar is hidden until asked for; at desktop widths
-    // the stylesheet shows it regardless.
+    // screen, where the sidebar is hidden until asked for.
     let nav_open = use_state(|| false);
+
+    // Whether the sidebar is folded away. Only meaningful on a wide screen,
+    // where it is otherwise always there — and remembered, because somebody
+    // who wants the width for a map wants it next time too.
+    let nav_folded = use_state(stored_fold);
 
     // The shell is shared, so what it is a shell *for* has to come from the
     // route. Hard-coding one page's title here would make every other page claim
@@ -81,10 +89,49 @@ pub fn admin_shell(props: &AdminShellProps) -> Html {
         });
     }
 
+    // Which of the two the navigation is depends on the width, and the width
+    // changes under a page that is already drawn: a tablet is turned, a
+    // window is halved. Crossing the line draws the shell again, so the
+    // button says what it will do, and shuts a drawer that would otherwise
+    // be left open over a page that no longer has one.
+    {
+        let (nav_open, redraw) = (nav_open.clone(), use_force_update());
+        use_effect_with((), move |_| {
+            let was_narrow = Cell::new(narrow_screen());
+            let on_resize = Closure::<dyn Fn()>::new(move || {
+                let narrow = narrow_screen();
+                if was_narrow.replace(narrow) != narrow {
+                    nav_open.set(false);
+                    redraw.force_update();
+                }
+            });
+            let _ = window()
+                .add_event_listener_with_callback("resize", on_resize.as_ref().unchecked_ref());
+
+            move || {
+                let _ = window().remove_event_listener_with_callback(
+                    "resize",
+                    on_resize.as_ref().unchecked_ref(),
+                );
+            }
+        });
+    }
+
+    // One button, and what it does depends on what the navigation is at this
+    // width: a drawer to open, or a column to fold.
     let toggle_nav = {
-        let nav_open = nav_open.clone();
-        Callback::from(move |_| nav_open.set(!*nav_open))
+        let (nav_open, nav_folded) = (nav_open.clone(), nav_folded.clone());
+        Callback::from(move |_| {
+            if narrow_screen() {
+                nav_open.set(!*nav_open);
+            } else {
+                store_fold(!*nav_folded);
+                nav_folded.set(!*nav_folded);
+            }
+        })
     };
+    let drawer = narrow_screen();
+    let nav_shown = if drawer { *nav_open } else { !*nav_folded };
     let close_nav = {
         let nav_open = nav_open.clone();
         Callback::from(move |_| nav_open.set(false))
@@ -92,9 +139,9 @@ pub fn admin_shell(props: &AdminShellProps) -> Html {
 
     html! {
         <div class="app-shell">
-            <AppBar menu_open={*nav_open} on_menu={toggle_nav} />
+            <AppBar menu_open={nav_shown} {drawer} on_menu={toggle_nav} />
             <div class="app-body">
-                <AdminNav open={*nav_open} on_close={close_nav} />
+                <AdminNav open={*nav_open} folded={*nav_folded} on_close={close_nav} />
                 <main class="app-main">
                     <div class={classes!("app-container", immersive.then_some("app-container--immersive"))}>
                         <ContextProvider<PageActions> context={(*page_actions).clone()}>
@@ -120,6 +167,28 @@ pub fn admin_shell(props: &AdminShellProps) -> Html {
                 </main>
             </div>
         </div>
+    }
+}
+
+/// Where the fold is remembered between visits.
+const FOLD_KEY: &str = "rustak.admin.nav_folded";
+
+fn stored_fold() -> bool {
+    window()
+        .local_storage()
+        .ok()
+        .flatten()
+        .and_then(|storage| storage.get_item(FOLD_KEY).ok().flatten())
+        .is_some_and(|value| value == "1")
+}
+
+fn store_fold(folded: bool) {
+    if let Some(storage) = window().local_storage().ok().flatten() {
+        // A browser that refuses storage still folds; it only forgets.
+        let _ = match folded {
+            true => storage.set_item(FOLD_KEY, "1"),
+            false => storage.remove_item(FOLD_KEY),
+        };
     }
 }
 
@@ -173,6 +242,8 @@ const NAV: &[NavGroup] = &[
 struct AdminNavProps {
     /// Whether the drawer is slid in, on a screen narrow enough to have one.
     open: bool,
+    /// Whether the column is folded away, on a screen wide enough to have one.
+    folded: bool,
     on_close: Callback<()>,
 }
 
@@ -233,7 +304,11 @@ fn admin_nav(props: &AdminNavProps) -> Html {
             }
             <aside
                 id="admin-nav"
-                class={classes!("sidebar", props.open.then_some("sidebar--open"))}
+                class={classes!(
+                    "sidebar",
+                    props.open.then_some("sidebar--open"),
+                    props.folded.then_some("sidebar--folded"),
+                )}
             >
                 <div class="sidebar__inner">
                     <nav class="admin-nav" aria-label="Admin sections">

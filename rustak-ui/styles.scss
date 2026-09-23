@@ -888,11 +888,10 @@ pre {
     gap: 1rem;
   }
 
-  // Opens the navigation on a phone. Present in the markup at every width so
-  // the sidebar it controls always has something to be controlled by; shown
-  // only where the sidebar is hidden.
+  // Shows and hides the navigation: slides the drawer in on a phone, folds
+  // the column away beside the page anywhere wider.
   &__menu {
-    display: none;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
     width: 38px;
@@ -964,6 +963,14 @@ pre {
 
   &__backdrop {
     display: none;
+  }
+
+  // Folded away on demand, where it is a column. Where it is a drawer the
+  // fold means nothing: the drawer is already out of the way.
+  @media (min-width: 861px) {
+    &--folded {
+      display: none;
+    }
   }
 }
 
@@ -3118,16 +3125,38 @@ footer {
     font-family: $font-sans;
   }
 
-  // Every overlay has a wrapper that is always there, so that what comes and
-  // goes inside them never shifts the element the map lives in. See
-  // `pages::map`.
-  &__toolbar,
-  &__notes,
-  &__objects,
-  &__properties,
-  &__playback {
+  // The width that matters is the map's, not the window's: the navigation
+  // beside it can be folded away at any width. So the layout below asks this
+  // container, not the screen.
+  container: map / inline-size;
+
+  // Every overlay is a cell of one grid laid over the map, so that none of
+  // them can be drawn over another whatever the width. The grid itself lets
+  // clicks through to the map; only what is in its cells takes them. Each
+  // cell is a wrapper that is always there, so that what comes and goes
+  // inside them never shifts the element the map lives in. See `pages::map`.
+  //
+  // The foot is kept clear of the scale control and the attribution.
+  &__overlay {
     position: absolute;
+    inset: 0.75rem 0.75rem 2.25rem;
     z-index: 2;
+    display: grid;
+    grid-template-columns: 19rem minmax(0, 1fr) 21rem;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "objects toolbar properties"
+      "objects notes properties"
+      "objects . properties"
+      "playback playback properties";
+    gap: 0.5rem 0.75rem;
+    pointer-events: none;
+
+    > * {
+      min-width: 0;
+      min-height: 0;
+      pointer-events: auto;
+    }
   }
 
   &__portal,
@@ -3138,19 +3167,18 @@ footer {
   }
 
   &__toolbar {
-    top: 0.75rem;
-    left: 50%;
-    transform: translateX(-50%);
+    grid-area: toolbar;
+    justify-self: center;
+    max-width: 100%;
   }
 
   &__notes {
-    top: 4rem;
-    left: 50%;
+    grid-area: notes;
+    justify-self: center;
     display: flex;
     flex-direction: column;
     gap: 0.35rem;
-    width: min(36rem, calc(100% - 2rem));
-    transform: translateX(-50%);
+    width: min(36rem, 100%);
   }
 
   &__note {
@@ -3170,29 +3198,67 @@ footer {
   }
 
   &__objects {
-    top: 0.75rem;
-    left: 0.75rem;
-    width: 19rem;
-    max-width: calc(100% - 1.5rem);
-    max-height: min(65%, calc(100% - 1.5rem));
+    grid-area: objects;
+    align-self: start;
     display: flex;
+    max-height: 100%;
   }
 
   &__properties {
-    top: 0.75rem;
-    right: 0.75rem;
-    width: 21rem;
-    max-width: calc(100% - 1.5rem);
-    max-height: calc(100% - 1.5rem);
+    grid-area: properties;
+    align-self: start;
     display: flex;
+    max-height: 100%;
   }
 
-  // Over the foot of the map, clear of the scale control in one corner and
-  // the attribution, the zoom control and the properties panel in the other.
   &__playback {
-    bottom: 2.25rem;
-    left: 0.75rem;
-    width: min(46rem, calc(100% - 23.25rem));
+    grid-area: playback;
+    width: min(46rem, 100%);
+  }
+
+  // Where three columns do not fit, one stack: the tools, what the page has
+  // to say, and the list down from the top; the panel and the bar up from
+  // the foot; and the map, with nothing over it, between them.
+  @container map (max-width: 62rem) {
+    &__overlay {
+      inset: 0.5rem 0.5rem 2rem;
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+      grid-template-areas:
+        "toolbar"
+        "notes"
+        "objects"
+        "."
+        "properties"
+        "playback";
+    }
+
+    &__toolbar,
+    &__objects {
+      justify-self: start;
+    }
+
+    &__objects {
+      width: min(19rem, 100%);
+      max-height: min(18rem, 38vh);
+    }
+
+    &__properties {
+      align-self: end;
+      justify-self: end;
+      width: min(24rem, 100%);
+      max-height: min(22rem, 42vh);
+    }
+
+    &__playback {
+      width: 100%;
+    }
+
+    // The zoom buttons sit in the corner the panel and the bar now fill, and
+    // a screen this narrow is one that is pinched or scrolled.
+    .maplibregl-ctrl-bottom-right .maplibregl-ctrl-group {
+      display: none;
+    }
   }
 
   // MapLibre's pop-over, brought into line with a card.
@@ -3214,24 +3280,6 @@ footer {
     &:hover {
       background: $fill-light;
       color: $text-primary;
-    }
-  }
-
-  @media (max-width: 900px) {
-    &__objects,
-    &__properties {
-      max-height: 45%;
-    }
-
-    // The panel sits above the playback bar, which keeps the foot of the map.
-    &__properties {
-      top: auto;
-      bottom: 4.75rem;
-    }
-
-    &__playback {
-      bottom: 0.75rem;
-      width: calc(100% - 1.5rem);
     }
   }
 }
@@ -3311,6 +3359,12 @@ footer {
     font-size: 0.8rem;
     white-space: nowrap;
     color: $text-regular;
+  }
+
+  @container map (max-width: 24rem) {
+    &__count {
+      display: none;
+    }
   }
 }
 
@@ -3487,6 +3541,16 @@ footer {
       font-family: $font-mono;
       font-size: 0.75rem;
     }
+  }
+
+  &__buttons {
+    flex: none;
+    display: flex;
+    gap: 0.15rem;
+  }
+
+  &__body--folded {
+    display: none;
   }
 
   &__close {
@@ -3691,11 +3755,22 @@ footer {
     white-space: nowrap;
   }
 
-  @media (max-width: 900px) {
+  @container map (max-width: 62rem) {
     flex-wrap: wrap;
 
     &__summary {
       display: none;
+    }
+  }
+
+  // On a phone the clock gives way to the slider.
+  @container map (max-width: 30rem) {
+    &__time {
+      min-width: 0;
+      flex: 1;
+      order: 5;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
   }
 }

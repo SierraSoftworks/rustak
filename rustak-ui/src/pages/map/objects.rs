@@ -81,6 +81,19 @@ fn label(key: &str) -> String {
     sidc::describe(key).unwrap_or_else(|| "Other".to_string())
 }
 
+/// The width, in CSS pixels, at and under which the stylesheet stacks the
+/// overlays: `62rem`, in `.map-page`'s container query.
+const STACKED_WIDTH: i32 = 992;
+
+/// Whether the map is narrow enough that its overlays are stacked.
+fn narrow_map() -> bool {
+    gloo_utils::document()
+        .query_selector(".map-page")
+        .ok()
+        .flatten()
+        .is_some_and(|map| map.client_width() <= STACKED_WIDTH)
+}
+
 #[derive(Properties, PartialEq)]
 pub struct ObjectListProps {
     pub groups: Vec<ObjectGroup>,
@@ -98,7 +111,30 @@ pub struct ObjectListProps {
 #[function_component(ObjectList)]
 pub fn object_list(props: &ObjectListProps) -> Html {
     let folded = use_state(HashSet::<String>::new);
+    // Where the map is narrow the list is most of it, so it starts folded and
+    // folds again once it has been used. Narrow is the *map's* width, the same
+    // line the stylesheet's layout draws: a tablet with the navigation open
+    // has a wide window and a narrow map. It can only be asked once there is
+    // a map to measure, which is after the first draw.
     let hidden = use_state(|| false);
+    {
+        let hidden = hidden.clone();
+        use_effect_with((), move |_| {
+            if narrow_map() {
+                hidden.set(true);
+            }
+            || ()
+        });
+    }
+    let onselect = {
+        let (onselect, hidden) = (props.onselect.clone(), hidden.clone());
+        Callback::from(move |uid: String| {
+            if narrow_map() {
+                hidden.set(true);
+            }
+            onselect.emit(uid);
+        })
+    };
 
     let toggle_panel = {
         let hidden = hidden.clone();
@@ -148,7 +184,7 @@ pub fn object_list(props: &ObjectListProps) -> Html {
                     <ul class="map-objects__rows">
                         { for group.entries.iter().map(|entry| {
                             let selected = props.selected.as_deref() == Some(entry.uid.as_str());
-                            roster_row(entry, selected, &props.onselect)
+                            roster_row(entry, selected, &onselect)
                         }) }
                     </ul>
                 }
