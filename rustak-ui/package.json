@@ -1,10 +1,11 @@
 {
   "name": "rustak-ui-vendor",
   "private": true,
-  "description": "The JavaScript the map page loads at run time. Copied into dist/vendor by scripts/vendor.mjs, which Trunk runs as a build hook; nothing here is bundled or transpiled.",
+  "description": "What the map page loads at run time: MapLibre GL and milsymbol, copied into dist/vendor as published, and the MIL-STD-2525 symbol catalogues, derived from mil-std-2525's tables. scripts/vendor.mjs does both, as a Trunk build hook; nothing here is bundled or transpiled.",
   "license": "MIT",
   "dependencies": {
     "maplibre-gl": "6.10.0",
+    "mil-std-2525": "0.2.8",
     "milsymbol": "3.0.4"
   }
 }

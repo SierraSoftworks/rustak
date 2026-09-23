@@ -562,6 +562,30 @@ class MapHandle {
   }
 }
 
+// A symbol as the address of an SVG of it, for the pickers' previews. Drawn by
+// the same library as the map, so what somebody picks is what they get. Every
+// row of a list asks on every render, so an address made once is kept.
+const previews = new Map();
+
+export function symbolUrl(code, size) {
+  const ms = globalThis.ms;
+  if (!ms || !code) {
+    return "";
+  }
+
+  const key = `${size}:${code}`;
+  if (!previews.has(key)) {
+    let symbol = new ms.Symbol(code, { size });
+    if (!symbol.isValid() && /^[A-Za-z]/.test(code)) {
+      // No icon for the function: the frame still says whose and where.
+      symbol = new ms.Symbol(code.slice(0, 4).padEnd(15, "-"), { size });
+    }
+    previews.set(key, symbol.isValid() ? `data:image/svg+xml;utf8,${encodeURIComponent(symbol.asSVG())}` : "");
+  }
+
+  return previews.get(key);
+}
+
 // `options` is JSON: `{ tiles: [url], attribution, maxZoom, center: [lon, lat], zoom }`.
 // `onPick` is called with JSON, `{ uids: [uid], at: [lon, lat] }`, for every
 // click on the map: the uids of everything under it, topmost first. It is also

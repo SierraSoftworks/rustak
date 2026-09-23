@@ -57,6 +57,7 @@ mod roster;
 mod session;
 mod sketch;
 mod store;
+mod symbols;
 mod toolbar;
 mod track;
 

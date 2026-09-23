@@ -3689,6 +3689,180 @@ footer {
 }
 
 // The fields of a marker somebody placed.
+// A picker for one thing out of a large hierarchy: see `components::tree_select`.
+// The panel opens in the flow of the form rather than floating over it, so it
+// is never clipped by a panel that scrolls and never off the edge of a phone.
+.tree-select {
+  position: relative;
+  min-width: 0;
+
+  &--open {
+    z-index: 31;
+  }
+
+  &__trigger,
+  &__row {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    min-width: 0;
+    text-align: left;
+  }
+
+  &__trigger {
+    width: 100%;
+    cursor: pointer;
+
+    &:disabled {
+      cursor: not-allowed;
+    }
+  }
+
+  &__icon {
+    flex: 0 0 1.75rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 1.75rem;
+
+    img {
+      max-width: 100%;
+      max-height: 100%;
+    }
+  }
+
+  &__label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: $text-primary;
+
+    small {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-size: 0.7rem;
+      color: $text-secondary;
+    }
+  }
+
+  &__detail {
+    flex: 0 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: $font-mono;
+    font-size: 0.68rem;
+    color: $text-secondary;
+  }
+
+  &__chevron {
+    flex: 0 0 auto;
+    color: $text-placeholder;
+  }
+
+  // Catches the click that means "somewhere else", under the panel and over
+  // everything else.
+  &__backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+  }
+
+  &__panel {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin-top: 0.3rem;
+    padding: 0.4rem;
+    background: $bg-white;
+    border: 1px solid $border-base;
+    border-radius: $radius;
+    box-shadow: $shadow-md;
+  }
+
+  &__trail {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.15rem 0.1rem;
+    font-size: 0.72rem;
+
+    button {
+      padding: 0.1rem 0.25rem;
+      color: $brand;
+      background: none;
+      border: 0;
+      border-radius: $radius-sm;
+      cursor: pointer;
+
+      &:hover {
+        background: $brand-tint;
+      }
+
+      &:not(:last-child)::after {
+        content: "›";
+        margin-left: 0.35rem;
+        color: $text-placeholder;
+      }
+
+      // Where the list already is: a name, not a way to get there.
+      &:last-child {
+        color: $text-regular;
+        pointer-events: none;
+      }
+    }
+  }
+
+  &__list {
+    max-height: 15rem;
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    list-style: none;
+  }
+
+  &__row {
+    padding: 0.2rem 0.3rem;
+    font-size: 0.8rem;
+    border-radius: $radius-sm;
+    cursor: pointer;
+
+    &:hover,
+    &--active {
+      background: $brand-tint;
+    }
+
+    &[aria-selected="true"] .tree-select__label {
+      font-weight: 600;
+      color: $brand-dark;
+    }
+  }
+
+  &__inside {
+    flex: 0 0 auto;
+    width: 1.6rem;
+    height: 1.6rem;
+    color: $text-regular;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: $radius-sm;
+    cursor: pointer;
+
+    &:hover {
+      background: $bg-white;
+      border-color: $brand-tint-border;
+    }
+  }
+
+  &__none {
+    padding: 0.4rem 0.3rem;
+    font-size: 0.78rem;
+    color: $text-secondary;
+  }
+}
+
 .map-editor {
   display: flex;
   flex-direction: column;

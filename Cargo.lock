@@ -4337,6 +4337,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustak-plugin-example"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "human-errors",
+ "rustak-client",
+ "rustak-core",
+ "rustak-cot",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "rustak-plugin-firms"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "human-errors",
+ "reqwest 0.13.5",
+ "rustak-api",
+ "rustak-client",
+ "rustak-core",
+ "rustak-cot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
 name = "rustak-server"
 version = "0.1.0"
 dependencies = [

@@ -107,7 +107,8 @@ deduplicate ──┬─ version ───────────────�
 
   Both builds run `rustak-ui/scripts/vendor.mjs` as a Trunk hook, which copies
   the map page's JavaScript (MapLibre GL and milsymbol) into
-  `dist/vendor` from
+  `dist/vendor`, and derives the two symbol catalogues its pickers search
+  (`dist/vendor/symbology/`, from `mil-std-2525`), all from
   the versions locked in `rustak-ui/package-lock.json` — `npm ci` on a cold
   runner, a file copy after that. It uses the Node the runner image ships;
   those two pins *are* dependabot's to bump (`npm`, `/rustak-ui`).
