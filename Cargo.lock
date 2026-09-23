@@ -49,7 +49,7 @@ dependencies = [
  "mime",
  "percent-encoding",
  "pin-project-lite",
- "rand 0.10.2",
+ "rand 0.10.3",
  "sha1",
  "smallvec",
  "tokio",
@@ -85,7 +85,7 @@ dependencies = [
  "log",
  "memchr",
  "mime",
- "rand 0.10.2",
+ "rand 0.10.3",
  "serde",
  "serde_json",
  "serde_plain",
@@ -3163,7 +3163,7 @@ dependencies = [
  "pkcs12",
  "pkcs5",
  "pkcs8 0.11.0",
- "rand 0.10.2",
+ "rand 0.10.3",
  "rc2",
  "sha1",
  "sha2 0.11.0",
@@ -3722,7 +3722,7 @@ dependencies = [
  "bytes",
  "getrandom 0.4.3",
  "lru-slab",
- "rand 0.10.2",
+ "rand 0.10.3",
  "rand_pcg",
  "ring",
  "rustc-hash",
@@ -3804,9 +3804,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.10.2"
+version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7f5fa3a058cd35567ef9bfa5e75732bee0f9e4c55fa90477bef2dfcdbc4be80"
+checksum = "65c9fb96cbc91e3478eaae79a69fcd3f1ae4ad052e471fe6732fff548984b4af"
 dependencies = [
  "chacha20",
  "getrandom 0.4.3",
@@ -4234,7 +4234,7 @@ dependencies = [
  "chrono",
  "dotenvy",
  "human-errors",
- "rand 0.10.2",
+ "rand 0.10.3",
  "rstest",
  "rustak-api",
  "serde",
@@ -4337,41 +4337,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustak-plugin-example"
-version = "0.1.0"
-dependencies = [
- "clap",
- "human-errors",
- "rustak-client",
- "rustak-core",
- "rustak-cot",
- "schemars",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "rustak-plugin-firms"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "human-errors",
- "reqwest 0.13.5",
- "rustak-api",
- "rustak-client",
- "rustak-core",
- "rustak-cot",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "wiremock",
-]
-
-[[package]]
 name = "rustak-server"
 version = "0.1.0"
 dependencies = [
@@ -4410,7 +4375,7 @@ dependencies = [
  "pretty_assertions",
  "proptest",
  "quick-xml",
- "rand 0.10.2",
+ "rand 0.10.3",
  "rcgen",
  "reqwest 0.13.5",
  "rsa",
@@ -5189,7 +5154,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -5580,7 +5545,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "radix_fmt",
- "rand 0.10.2",
+ "rand 0.10.3",
  "reqwest 0.12.28",
  "sentry",
  "serde",
@@ -5674,7 +5639,7 @@ dependencies = [
  "http 1.5.0",
  "httparse",
  "log",
- "rand 0.10.2",
+ "rand 0.10.3",
  "rustls",
  "rustls-pki-types",
  "sha1",
