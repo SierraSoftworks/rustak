@@ -102,6 +102,8 @@ for (const width of [1280, 1024, 768, 390]) {
 
     const { toolbar, list } = overlays(page);
     await expect(toolbar).toBeVisible();
+    // Drawn, and so past the point where the list decides how to start.
+    await expect(page.getByRole("application")).toHaveAttribute("data-features", /^[1-9]\d*$/);
 
     // Open, which is the state with the most to overlap. Folded is how it
     // starts where the screen is narrow.
@@ -121,6 +123,21 @@ for (const width of [1280, 1024, 768, 390]) {
     }
   });
 }
+
+test("a wide window with a narrow map folds the list as a phone does", async ({ page }) => {
+  // 1024px across with the navigation open leaves the map under its stacking
+  // width: it is the map's width that decides, not the window's.
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await gotoApp(page, MAP);
+
+  const show = page.getByRole("button", { name: "Show the list" });
+  await expect(show).toBeVisible();
+  await show.click();
+  await page.getByRole("button", { name: /^RAO/ }).click();
+
+  await expect(page.getByRole("article", { name: "Details for RAO" })).toBeVisible();
+  await expect(show).toBeVisible();
+});
 
 test("on a phone a track is watched with the details folded away, and nothing deselected", async ({
   page,
