@@ -138,16 +138,20 @@ fn label(feature: &MapFeature) -> Option<String> {
 }
 
 fn color(feature: &MapFeature) -> &str {
+    // What its author drew it in comes before whose team they are on: a
+    // device's drawing carries its sender's `<__group>` like anything else.
     let drawn = feature
         .style
         .as_ref()
+        .filter(|_| feature.shape.is_some())
         .and_then(|style| style.stroke.as_deref());
 
-    match &feature.team {
-        Some(team) => team_color(team),
-        None if feature.kind.starts_with("b-a-") => ALERT,
-        None if feature.shape.is_some() => drawn.unwrap_or(DRAWING),
-        None => MARKER,
+    match (drawn, &feature.team) {
+        (Some(drawn), _) => drawn,
+        (None, Some(team)) => team_color(team),
+        (None, None) if feature.kind.starts_with("b-a-") => ALERT,
+        (None, None) if feature.shape.is_some() => DRAWING,
+        (None, None) => MARKER,
     }
 }
 
@@ -328,5 +332,43 @@ pub(super) mod tests {
 
         assert_eq!(drawn["shape"]["geometry"]["type"], "LineString");
         assert_eq!(drawn["shape"]["properties"]["uid"], "UID-1");
+    }
+
+    #[test]
+    fn a_drawing_is_drawn_as_its_author_styled_it_whatever_team_they_are_on() {
+        let styled = MapFeature {
+            shape: Some(MapShape::Polygon(vec![vec![
+                [-0.12, 51.5],
+                [-0.11, 51.5],
+                [-0.11, 51.51],
+                [-0.12, 51.5],
+            ]])),
+            team: Some("Cyan".to_string()),
+            style: Some(rustak_api::MapStyle {
+                stroke: Some("#ff0000".to_string()),
+                weight: Some(4.0),
+                fill: Some("#00ff00".to_string()),
+                fill_opacity: Some(0.5),
+            }),
+            ..feature("u-d-f")
+        };
+
+        let drawn = draw(&styled, now());
+        let outline = &drawn["shape"]["properties"];
+        assert_eq!(outline["color"], "#ff0000");
+        assert_eq!(outline["fill"], "#00ff00");
+        assert_eq!(outline["fillOpacity"], 0.5);
+        assert_eq!(outline["width"], 3.0);
+
+        // With nothing said, the team's colour is as good a guess as any.
+        let unstyled = draw(
+            &MapFeature {
+                style: None,
+                ..styled
+            },
+            now(),
+        );
+        assert_eq!(unstyled["shape"]["properties"]["color"], team_color("Cyan"));
+        assert!(unstyled["shape"]["properties"].get("fill").is_none());
     }
 }

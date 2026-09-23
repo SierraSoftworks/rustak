@@ -237,7 +237,8 @@ impl Draft {
 ///
 /// Not what a device measured, which would only be overwritten by the
 /// device's next report. Not a drawing of a kind the console does not make,
-/// whose outline a save would throw away. And not a route made elsewhere: a
+/// or one whose outline did not arrive or could not be read: a save would
+/// throw the outline away, or publish a drawing's type with none. And not a route made elsewhere: a
 /// device's route names its checkpoints and carries its navigation cues, and
 /// a save from here would write it again without them.
 pub fn editable(feature: &MapFeature) -> bool {
@@ -247,10 +248,18 @@ pub fn editable(feature: &MapFeature) -> bool {
         .is_none_or(|how| how.starts_with("h-"));
     let carried = match Geometry::of(feature) {
         Some(geometry) => geometry.form != Form::Route || feature.uid.starts_with(PLACED_PREFIX),
-        None => feature.shape.is_none(),
+        None => feature.shape.is_none() && !drawing_kind(&feature.kind),
     };
 
     by_hand && carried
+}
+
+/// Whether a CoT type is a drawing's, a route's or a range and bearing
+/// line's: something that is an outline, whether or not one was read.
+fn drawing_kind(kind: &str) -> bool {
+    ["u-d", "u-r", "b-m-r"]
+        .iter()
+        .any(|family| kind == *family || kind.starts_with(&format!("{family}-")))
 }
 
 /// Metres as somebody would type them: to the centimetre, without the zeros
@@ -399,6 +408,15 @@ mod tests {
         let mut drawn = feature(Some("h-e"));
         drawn.shape = Some(MapShape::LineString(Vec::new()));
         assert!(!editable(&drawn), "an outline this form would throw away");
+
+        // A drawing whose outline never arrived is still not a marker.
+        for kind in ["u-d-r", "u-d-c-c", "u-d-f-m", "b-m-r", "u-r-b-c-c"] {
+            let unread = MapFeature {
+                kind: kind.to_string(),
+                ..feature(Some("h-e"))
+            };
+            assert!(!editable(&unread), "{kind} with no outline");
+        }
 
         // A drawing of a kind made here is carried whole, wherever it was
         // made — except a route, which a device says more about than this.
