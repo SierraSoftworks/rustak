@@ -161,6 +161,14 @@ test("on a phone a track is watched with the details folded away, and nothing de
     expect(apart(open, await box(other))).toBe(true);
   }
 
+  // The list brought back while the details are open: there is not room for
+  // both at full height, and they share it rather than overlap.
+  await page.getByRole("button", { name: "Show the list" }).click();
+  await expect(page.getByRole("button", { name: /^RAO/ })).toBeVisible();
+  expect(apart(await box(list), await box(details))).toBe(true);
+  expect(apart(await box(details), await box(playback))).toBe(true);
+  await page.getByRole("button", { name: "Hide the list" }).click();
+
   // Folded to its heading: still says who, and the track is still there.
   await details.getByRole("button", { name: "Hide the details" }).click();
   await expect(details.getByRole("heading", { name: "QUINN" })).toBeVisible();

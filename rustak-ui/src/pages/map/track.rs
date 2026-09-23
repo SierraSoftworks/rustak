@@ -3,8 +3,17 @@
 //! A track is the history read back for whatever the pop-over is open on — the
 //! same features the map draws live, oldest first. It answers the two
 //! questions the page asks of it: which fix was current at a moment, and what
-//! the line looks like with that moment on it. Nothing here touches the
+//! the line looks like with that moment on it.
+//!
+//! A thing is not always there to be tracked: it drives out of coverage, it
+//! is switched off, it lands. Each fix says how long it may be held to be
+//! true — its stale time — and a fix that arrives after the one before it
+//! had gone stale starts a new *window*. Between windows nothing is known,
+//! so nothing is drawn: a line across the gap would say the thing travelled
+//! between two places it was merely seen at. Nothing here touches the
 //! browser, so all of it is tested natively.
+
+use std::ops::Range;
 
 use chrono::{DateTime, Utc};
 use rustak_api::MapFeature;
@@ -50,6 +59,48 @@ impl Track {
         Some((self.fixes.first()?.time, self.fixes.last()?.time))
     }
 
+    /// The stretches over which the thing was tracked, oldest first: from the
+    /// first fix of each until its last went stale, because a fix is held to
+    /// be true until then. The gaps between them are the times a fix had gone
+    /// stale before the next arrived.
+    pub fn windows(&self) -> Vec<(DateTime<Utc>, DateTime<Utc>)> {
+        self.runs()
+            .into_iter()
+            .map(|run| {
+                let (first, last) = (&self.fixes[run.start], &self.fixes[run.end - 1]);
+                (first.time, last.stale.max(last.time))
+            })
+            .collect()
+    }
+
+    /// Where playback that has reached `when` carries on from: `when` itself,
+    /// or the start of the next window when it falls in a gap, because there
+    /// is nothing to watch in one.
+    pub fn resume(&self, when: DateTime<Utc>) -> DateTime<Utc> {
+        self.windows()
+            .windows(2)
+            .find(|pair| when > pair[0].1 && when < pair[1].0)
+            .map_or(when, |pair| pair[1].0)
+    }
+
+    /// The fixes of each window, as ranges into `fixes`.
+    fn runs(&self) -> Vec<Range<usize>> {
+        let mut runs = Vec::new();
+        let mut start = 0;
+
+        for next in 1..self.fixes.len() {
+            if self.fixes[next].time > self.fixes[next - 1].stale {
+                runs.push(start..next);
+                start = next;
+            }
+        }
+        if !self.fixes.is_empty() {
+            runs.push(start..self.fixes.len());
+        }
+
+        runs
+    }
+
     /// Takes a fix off the live feed: kept when it is this track's and newer
     /// than anything it has. Answers whether it was.
     pub fn extend(&mut self, feature: &MapFeature) -> bool {
@@ -76,7 +127,8 @@ impl Track {
 
     /// The line, as `js/map.js` draws it: the part travelled by `until`, the
     /// part still to come, and every fix along it. With no `until`, all of it
-    /// has been travelled.
+    /// has been travelled. Each window is its own line, so a gap in the
+    /// tracking is a gap in the drawing.
     pub fn draw(&self, until: Option<DateTime<Utc>>, color: &str) -> Value {
         let position = |fix: &MapFeature| json!([fix.point.lon, fix.point.lat]);
         let line = |part: &str, fixes: &[MapFeature]| {
@@ -100,8 +152,15 @@ impl Track {
         let split = travelled.max(1).min(self.fixes.len());
 
         let mut features: Vec<Value> = Vec::new();
-        features.extend(line("past", &self.fixes[..split]));
-        features.extend(line("future", &self.fixes[split.saturating_sub(1)..]));
+        let runs = self.runs();
+        for run in &runs {
+            let past = run.start..run.end.min(split);
+            features.extend(line("past", self.fixes.get(past).unwrap_or_default()));
+        }
+        for run in &runs {
+            let future = run.start.max(split.saturating_sub(1))..run.end;
+            features.extend(line("future", self.fixes.get(future).unwrap_or_default()));
+        }
         features.push(json!({
             "type": "Feature",
             "geometry": {
@@ -238,5 +297,82 @@ mod tests {
             parts(Track::new("A", vec![fix("A", "12:00:00", -0.1)]).draw(None, "#000")),
             ["fix"]
         );
+    }
+
+    /// Seen for two minutes, gone for an hour, seen again for one.
+    fn interrupted() -> Track {
+        Track::new(
+            "A",
+            vec![
+                fix("A", "12:00:00", -0.10),
+                fix("A", "12:01:00", -0.11),
+                fix("A", "12:02:00", -0.12),
+                fix("A", "13:00:00", -0.50),
+                fix("A", "13:01:00", -0.51),
+            ],
+        )
+    }
+
+    #[test]
+    fn a_fix_that_arrives_after_the_last_went_stale_starts_a_new_window() {
+        assert_eq!(
+            interrupted().windows(),
+            [
+                (at("12:00:00"), at("12:04:00")),
+                (at("13:00:00"), at("13:03:00")),
+            ],
+            "each lasts until its last fix went stale"
+        );
+        assert_eq!(track().windows(), [(at("12:00:00"), at("12:04:00"))]);
+        assert!(Track::new("A", Vec::new()).windows().is_empty());
+    }
+
+    #[test]
+    fn no_line_is_drawn_across_a_gap_in_the_tracking() {
+        let lines = |until: Option<&str>| -> Vec<(String, usize)> {
+            interrupted().draw(until.map(at), "#000")["features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|feature| feature["geometry"]["type"] == "LineString")
+                .map(|feature| {
+                    (
+                        feature["properties"]["part"].as_str().unwrap().to_owned(),
+                        feature["geometry"]["coordinates"].as_array().unwrap().len(),
+                    )
+                })
+                .collect()
+        };
+        let named = |parts: &[(&str, usize)]| -> Vec<(String, usize)> {
+            parts
+                .iter()
+                .map(|(part, n)| ((*part).to_owned(), *n))
+                .collect()
+        };
+
+        // Live: two lines, and nothing joining 12:02 to 13:00.
+        assert_eq!(lines(None), named(&[("past", 3), ("past", 2)]));
+        // Shown in the gap: the first window travelled, the second to come.
+        assert_eq!(
+            lines(Some("12:30:00")),
+            named(&[("past", 3), ("future", 2)])
+        );
+        // Shown mid-window: that window is split, the other is whole.
+        assert_eq!(
+            lines(Some("12:01:00")),
+            named(&[("past", 2), ("future", 2), ("future", 2)])
+        );
+    }
+
+    #[test]
+    fn playback_that_reaches_a_gap_carries_on_from_the_next_window() {
+        let track = interrupted();
+
+        assert_eq!(track.resume(at("12:30:00")), at("13:00:00"));
+        assert_eq!(track.resume(at("12:01:30")), at("12:01:30"));
+        assert_eq!(track.resume(at("12:02:00")), at("12:02:00"));
+        // The last fix of a window is still held to be true.
+        assert_eq!(track.resume(at("12:03:00")), at("12:03:00"));
+        assert_eq!(track.resume(at("14:00:00")), at("14:00:00"));
     }
 }
