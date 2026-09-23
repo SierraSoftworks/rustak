@@ -272,19 +272,56 @@ pub async fn current(
     .await
 }
 
+/// How many rows one transaction of [`prune_stale`] forgets.
+///
+/// A sweep after `[retention] cot_latest` is shortened — or the first one after
+/// an upgrade that shortened it — can have a week of a feed's contacts to
+/// forget. As one statement that was measured, on half a million rows and a
+/// fast disk, at seven seconds holding the only writer: longer than `[storage]
+/// busy_timeout`, so long enough for other writes to fail, with a write-ahead
+/// log as large as everything deleted. In batches other writers get their turn
+/// between commits and the log stays small. A thousand rather than more because
+/// the hold that matters is the one on a micro-server's storage, not on the
+/// machine this was measured on.
+const PRUNE_BATCH: usize = 1_000;
+
 /// Forgets the rows whose messages went stale before `before`.
 ///
 /// # Errors
 ///
 /// A [`human_errors::Kind::System`] error carrying whatever SQLite reported.
 pub async fn prune_stale(db: &Database, before: DateTime<Utc>) -> Result<usize, Error> {
-    db.write(move |transaction| {
-        transaction.execute(
-            "DELETE FROM cot_latest WHERE stale < ?1",
-            params![Timestamp::from(before)],
-        )
-    })
-    .await
+    prune_stale_in(db, before, PRUNE_BATCH).await
+}
+
+/// [`prune_stale`], `batch` rows to a transaction.
+async fn prune_stale_in(
+    db: &Database,
+    before: DateTime<Utc>,
+    batch: usize,
+) -> Result<usize, Error> {
+    let limit = i64::try_from(batch).unwrap_or(i64::MAX);
+    let mut removed = 0;
+
+    loop {
+        // The inner read is the `stale` index in order, so picking a batch
+        // costs what the batch does and nothing is sorted to find it.
+        let gone = db
+            .write(move |transaction| {
+                transaction.execute(
+                    "DELETE FROM cot_latest WHERE uid IN \
+                       (SELECT uid FROM cot_latest WHERE stale < ?1 LIMIT ?2)",
+                    params![Timestamp::from(before), limit],
+                )
+            })
+            .await?;
+
+        removed += gone;
+
+        if gone < batch {
+            return Ok(removed);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -458,6 +495,26 @@ mod tests {
 
         assert_eq!(removed, 1);
         assert!(latest_event(&db, "UID-OLD").await.unwrap().is_none());
+        assert!(latest_event(&db, "UID-NEW").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn more_stale_rows_than_one_transaction_takes_all_go() {
+        let db = db().await;
+        let mut records: Vec<CotRecord> = (0..5)
+            .map(|index| record(&format!("UID-OLD-{index}"), Utc::now(), &[]))
+            .collect();
+        for old in &mut records {
+            old.stale = Utc::now() - chrono::Duration::days(30);
+        }
+        records.push(record("UID-NEW", Utc::now(), &[]));
+        upsert_batch(&db, records).await.unwrap();
+
+        let removed = prune_stale_in(&db, Utc::now() - chrono::Duration::days(7), 2)
+            .await
+            .unwrap();
+
+        assert_eq!(removed, 5);
         assert!(latest_event(&db, "UID-NEW").await.unwrap().is_some());
     }
 

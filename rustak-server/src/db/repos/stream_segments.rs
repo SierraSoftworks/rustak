@@ -12,6 +12,8 @@
 //! segments whose range overlaps the query here, then seeking in the files;
 //! retention means deleting whole segments, which is one unlink and one row.
 
+mod retention;
+
 use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension as _;
 use rustak_core::prelude::*;
@@ -24,17 +26,6 @@ use crate::db::{
 /// The columns [`StreamSegmentRow::from_row`] expects, in order.
 const COLUMNS: &str = "id, stream_kind, stream_key, segment_path, first_time, last_time, \
                        record_count, byte_length, sealed, created_at";
-
-/// A page size as SQLite binds it.
-///
-/// The three retention queries below all take one: what they find is about to
-/// be deleted, a first sweep can find millions, and the caller asks again
-/// until a page comes back short ([`AppendLog::remove_paged`]).
-///
-/// [`AppendLog::remove_paged`]: crate::store::AppendLog::remove_paged
-fn page_limit(limit: usize) -> i64 {
-    i64::try_from(limit).unwrap_or(i64::MAX)
-}
 
 /// One row of `stream_segments`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,126 +229,6 @@ impl<'a> StreamSegmentsRepo<'a> {
                 )?;
 
                 rows.collect()
-            })
-            .await
-    }
-
-    /// Every sealed segment whose last record is older than `before`, for the
-    /// retention sweep to unlink.
-    ///
-    /// Only sealed segments: a file still being appended to is by definition
-    /// not finished with, whatever its oldest record says.
-    ///
-    /// # Errors
-    ///
-    /// A [`human_errors::Kind::System`] error if the read fails.
-    pub async fn expired_before(
-        &self,
-        before: DateTime<Utc>,
-        limit: usize,
-    ) -> Result<Vec<StreamSegmentRow>, Error> {
-        let before = Timestamp::from(before);
-        let limit = page_limit(limit);
-
-        self.db
-            .read(move |c| {
-                let mut statement = c.prepare(&format!(
-                    "SELECT {COLUMNS} FROM stream_segments \
-                     WHERE sealed = 1 AND last_time < ?1 ORDER BY last_time ASC LIMIT ?2"
-                ))?;
-
-                statement
-                    .query_map(rusqlite::params![before, limit], StreamSegmentRow::from_row)?
-                    .collect()
-            })
-            .await
-    }
-
-    /// Every sealed segment a stream keeps only because nothing has evicted it,
-    /// once the newer segments alone already hold `max_rows` records.
-    ///
-    /// The cap is per stream key — per device, for CoT — so that one talkative
-    /// source cannot evict everybody else's history. The arithmetic is done
-    /// here rather than in Rust because it is a window function over an index,
-    /// and reading every segment row of every stream into memory to add up a
-    /// column is the kind of thing that is fine until an installation has been
-    /// running for a year.
-    ///
-    /// A segment is returned when the records in the segments *newer* than it
-    /// already reach the cap: it is therefore entirely surplus, and the
-    /// effective floor is `max_rows` plus the tail of the segment that
-    /// straddles it — the same approximation the age horizon makes, and for the
-    /// same reason. Only sealed segments: the one the writer is still appending
-    /// to is the present, whatever the count says.
-    ///
-    /// # Errors
-    ///
-    /// A [`human_errors::Kind::System`] error if the read fails.
-    pub async fn over_row_cap(
-        &self,
-        stream_kind: &str,
-        max_rows: u64,
-        limit: usize,
-    ) -> Result<Vec<StreamSegmentRow>, Error> {
-        let stream_kind = stream_kind.to_owned();
-        let limit = page_limit(limit);
-        let cap = i64::try_from(max_rows).unwrap_or(i64::MAX);
-
-        self.db
-            .read(move |c| {
-                let mut statement = c.prepare(&format!(
-                    "SELECT {COLUMNS} FROM (                        SELECT s.*, SUM(s.record_count) OVER (                          PARTITION BY s.stream_key                          ORDER BY s.last_time DESC, s.id DESC                          ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING                        ) AS newer                        FROM stream_segments s WHERE s.stream_kind = ?1                      ) WHERE sealed = 1 AND COALESCE(newer, 0) >= ?2                      ORDER BY stream_key ASC, last_time ASC LIMIT ?3"
-                ))?;
-
-                statement
-                    .query_map(rusqlite::params![stream_kind, cap, limit], StreamSegmentRow::from_row)?
-                    .collect()
-            })
-            .await
-    }
-
-    /// Every sealed segment that is surplus once the newer segments of
-    /// `stream_kind`, across **every** stream key, already hold `max_bytes`.
-    ///
-    /// The per-key row cap says nothing about a feed of many short-lived
-    /// streams — an aircraft is a uid that reports for twenty minutes and never
-    /// again — so this is the bound on the disk as a whole. Oldest first,
-    /// whoever wrote it, and approximate in the keeping direction exactly as
-    /// [`over_row_cap`](Self::over_row_cap) is. Open segments count towards the
-    /// total and are never returned.
-    ///
-    /// # Errors
-    ///
-    /// A [`human_errors::Kind::System`] error if the read fails.
-    pub async fn over_byte_cap(
-        &self,
-        stream_kind: &str,
-        max_bytes: u64,
-        limit: usize,
-    ) -> Result<Vec<StreamSegmentRow>, Error> {
-        let stream_kind = stream_kind.to_owned();
-        let limit = page_limit(limit);
-        let cap = i64::try_from(max_bytes).unwrap_or(i64::MAX);
-
-        self.db
-            .read(move |c| {
-                let mut statement = c.prepare(&format!(
-                    "SELECT {COLUMNS} FROM ( \
-                       SELECT s.*, SUM(s.byte_length) OVER ( \
-                         ORDER BY s.last_time DESC, s.id DESC \
-                         ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING \
-                       ) AS newer \
-                       FROM stream_segments s WHERE s.stream_kind = ?1 \
-                     ) WHERE sealed = 1 AND COALESCE(newer, 0) >= ?2 \
-                     ORDER BY last_time ASC LIMIT ?3"
-                ))?;
-
-                statement
-                    .query_map(
-                        rusqlite::params![stream_kind, cap, limit],
-                        StreamSegmentRow::from_row,
-                    )?
-                    .collect()
             })
             .await
     }
