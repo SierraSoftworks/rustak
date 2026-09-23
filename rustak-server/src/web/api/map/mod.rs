@@ -25,6 +25,7 @@
 //! sent it, so that it is tagged, recorded, fanned out and fed back to every
 //! open map by the path everything else already takes.
 
+pub mod drawing;
 pub mod feature;
 pub mod feed;
 pub mod history;

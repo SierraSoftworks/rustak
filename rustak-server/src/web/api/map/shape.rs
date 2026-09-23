@@ -6,8 +6,13 @@
 //! event's own point. Both are written here from the elements as clients are
 //! observed to send them, and both come out as GeoJSON — so `[lon, lat]`, and a
 //! polygon whose ring repeats its first position.
+//!
+//! How it is drawn is beside it: `<strokeColor>`, `<strokeWeight>` and
+//! `<fillColor>`, the colours as signed 32-bit ARGB. A route says the same in
+//! its `<link_attr color stroke>`. Writing all of this is
+//! [`drawing`](super::drawing)'s.
 
-use rustak_api::MapShape;
+use rustak_api::{MapEllipse, MapShape, MapStyle};
 use rustak_cot::Event;
 use rustak_cot::detail::Element;
 
@@ -19,15 +24,74 @@ const METRES_PER_DEGREE: f64 = 111_320.0;
 
 /// The shape an event draws, if it draws one.
 pub fn of(event: &Event) -> Option<MapShape> {
-    let ellipse = event
-        .detail
-        .find("shape")
-        .and_then(|shape| shape.child("ellipse"));
-
-    match ellipse {
-        Some(ellipse) => self::ellipse(event.point.lat, event.point.lon, ellipse),
+    match ellipse(event) {
+        Some(ellipse) => Some(ring(event.point.lat, event.point.lon, &ellipse)),
         None => linked(event),
     }
+}
+
+/// The circle or ellipse an event draws around its point, if that is what it
+/// draws: semi-axes that are lengths, and a bearing that is north when it is
+/// not said.
+pub fn ellipse(event: &Event) -> Option<MapEllipse> {
+    let ellipse = event.detail.find("shape")?.child("ellipse")?;
+    let read = |name: &str| number(ellipse, name);
+    let (major, minor) = (read("major")?, read("minor")?);
+
+    (major > 0.0 && minor > 0.0).then(|| MapEllipse {
+        major,
+        minor,
+        angle: read("angle").unwrap_or(0.0),
+    })
+}
+
+/// How the sender asked for its outline to be drawn, if it said anything.
+pub fn style(event: &Event) -> Option<MapStyle> {
+    let value = |name: &str| {
+        event
+            .detail
+            .find(name)
+            .and_then(|element| element.get("value"))
+    };
+    let route = event.detail.find("link_attr");
+
+    let stroke = value("strokeColor")
+        .or_else(|| route?.get("color"))
+        .and_then(argb);
+    let fill = value("fillColor").and_then(argb);
+    let weight = value("strokeWeight")
+        .or_else(|| route?.get("stroke"))
+        .and_then(|weight| weight.parse::<f64>().ok())
+        .filter(|weight| weight.is_finite() && *weight > 0.0);
+
+    let style = MapStyle {
+        stroke: stroke.map(|(color, _)| color),
+        weight,
+        fill_opacity: fill.as_ref().map(|(_, alpha)| *alpha),
+        fill: fill.map(|(color, _)| color),
+    };
+
+    (style != MapStyle::default()).then_some(style)
+}
+
+/// A finite number from an attribute.
+fn number(element: &Element, name: &str) -> Option<f64> {
+    element
+        .get(name)?
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite())
+}
+
+/// A CoT colour — ARGB as a signed 32-bit integer, `-1` being opaque white —
+/// as `#rrggbb` and an opacity.
+fn argb(value: &str) -> Option<(String, f64)> {
+    let [alpha, red, green, blue] = (value.trim().parse::<i64>().ok()? as u32).to_be_bytes();
+
+    Some((
+        format!("#{red:02x}{green:02x}{blue:02x}"),
+        f64::from(alpha) / 255.0,
+    ))
 }
 
 /// A line or a polygon from a run of `<link point>`.
@@ -68,19 +132,9 @@ fn position(point: &str) -> Option<[f64; 2]> {
 
 /// An ellipse as a polygon: semi-axes in metres, `angle` the major axis's
 /// bearing in degrees clockwise from north.
-fn ellipse(lat: f64, lon: f64, ellipse: &Element) -> Option<MapShape> {
-    let read = |name: &str| {
-        ellipse
-            .get(name)
-            .and_then(|value| value.parse::<f64>().ok())
-    };
-    let (major, minor) = (read("major")?, read("minor")?);
-    let bearing = read("angle").unwrap_or(0.0).to_radians();
-
-    if !(major.is_finite() && minor.is_finite() && major > 0.0 && minor > 0.0) {
-        return None;
-    }
-
+fn ring(lat: f64, lon: f64, ellipse: &MapEllipse) -> MapShape {
+    let (major, minor) = (ellipse.major, ellipse.minor);
+    let bearing = ellipse.angle.to_radians();
     let metres_per_degree_lon = METRES_PER_DEGREE * lat.to_radians().cos().abs().max(1e-6);
 
     let mut ring: Vec<[f64; 2]> = (0..ELLIPSE_STEPS)
@@ -98,7 +152,7 @@ fn ellipse(lat: f64, lon: f64, ellipse: &Element) -> Option<MapShape> {
         .collect();
     ring.push(ring[0]);
 
-    Some(MapShape::Polygon(vec![ring]))
+    MapShape::Polygon(vec![ring])
 }
 
 #[cfg(test)]
@@ -185,6 +239,38 @@ mod tests {
 
             assert_eq!(of(&event), None, "major={major} minor={minor}");
         }
+    }
+
+    #[test]
+    fn a_drawing_says_how_it_is_drawn_in_colours_a_page_can_use() {
+        let shape = drawing("u-d-f", &["51.5,-0.12", "51.6,-0.13"]);
+        let mut styled = shape.clone();
+        for (name, value) in [
+            ("strokeColor", "-65536"),
+            ("strokeWeight", "4.0"),
+            ("fillColor", "-1761673216"),
+        ] {
+            styled.detail.push(Element::new(name).attr("value", value));
+        }
+
+        let style = style(&styled).expect("it said how");
+        assert_eq!(style.stroke.as_deref(), Some("#ff0000"));
+        assert_eq!(style.weight, Some(4.0));
+        assert_eq!(style.fill.as_deref(), Some("#ff0000"));
+        assert!((style.fill_opacity.unwrap() - 150.0 / 255.0).abs() < 1e-9);
+
+        assert_eq!(super::style(&shape), None, "nothing said is nothing kept");
+
+        // A route says it in its own element.
+        let mut route = drawing("b-m-r", &["51.5,-0.12", "51.6,-0.13"]);
+        route.detail.push(
+            Element::new("link_attr")
+                .attr("color", "-16776961")
+                .attr("stroke", "3"),
+        );
+        let style = super::style(&route).expect("it said how");
+        assert_eq!(style.stroke.as_deref(), Some("#0000ff"));
+        assert_eq!(style.weight, Some(3.0));
     }
 
     #[test]

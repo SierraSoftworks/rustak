@@ -106,6 +106,11 @@ pub struct ObjectListProps {
 
     pub selected: Option<String>,
     pub onselect: Callback<String>,
+
+    /// Whether a tool that works on the map is in hand. Where the map is
+    /// narrow the list folds out of its way.
+    #[prop_or_default]
+    pub yielding: bool,
 }
 
 #[function_component(ObjectList)]
@@ -121,6 +126,15 @@ pub fn object_list(props: &ObjectListProps) -> Html {
         let hidden = hidden.clone();
         use_effect_with((), move |_| {
             if narrow_map() {
+                hidden.set(true);
+            }
+            || ()
+        });
+    }
+    {
+        let hidden = hidden.clone();
+        use_effect_with(props.yielding, move |yielding| {
+            if *yielding && narrow_map() {
                 hidden.set(true);
             }
             || ()
@@ -247,6 +261,8 @@ mod tests {
                 le: None,
             },
             shape: None,
+            ellipse: None,
+            style: None,
             course: None,
             speed: None,
             battery: None,

@@ -45,6 +45,8 @@ fn feature(uid: &str, kind: &str, callsign: &str, lat: f64, lon: f64) -> MapFeat
             le: None,
         },
         shape: None,
+        ellipse: None,
+        style: None,
         course: None,
         speed: None,
         battery: None,
@@ -192,7 +194,14 @@ pub fn map_publish(uid: &str, draft: &PublishFeature) -> MapFeature {
         stale: draft.stale.unwrap_or_else(|| ago(-86_400)),
         received_at: Utc::now(),
         point: draft.point,
-        shape: None,
+        // A circle comes back from the server as the ring it draws.
+        shape: draft.shape.clone().or_else(|| {
+            draft
+                .ellipse
+                .map(|ellipse| ring(&draft.point, ellipse.major))
+        }),
+        ellipse: draft.ellipse,
+        style: draft.style.clone(),
         course: None,
         speed: None,
         battery: None,
@@ -209,6 +218,25 @@ pub fn map_publish(uid: &str, draft: &PublishFeature) -> MapFeature {
     });
 
     published
+}
+
+/// A circle as the polygon the server would draw for it.
+fn ring(centre: &MapPoint, radius: f64) -> MapShape {
+    const METRES_PER_DEGREE: f64 = 111_320.0;
+    let across = METRES_PER_DEGREE * centre.lat.to_radians().cos().abs().max(1e-6);
+
+    let mut ring: Vec<[f64; 2]> = (0..64)
+        .map(|step| {
+            let around = std::f64::consts::TAU * f64::from(step) / 64.0;
+            [
+                centre.lon + radius * around.sin() / across,
+                centre.lat + radius * around.cos() / METRES_PER_DEGREE,
+            ]
+        })
+        .collect();
+    ring.push(ring[0]);
+
+    MapShape::Polygon(vec![ring])
 }
 
 /// Forgets a marker the demo published, or refuses as the server would for

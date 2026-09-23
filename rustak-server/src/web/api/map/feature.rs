@@ -67,6 +67,7 @@ pub fn from_row(row: &LatestRow, index: &GroupIndex) -> Option<MapFeature> {
 pub fn from_event(event: &Event, received_at: DateTime<Utc>, groups: Vec<String>) -> MapFeature {
     let group = event.group();
     let track = event.detail.get::<Track>();
+    let shape = shape::of(event);
 
     MapFeature {
         uid: event.uid.clone(),
@@ -79,7 +80,10 @@ pub fn from_event(event: &Event, received_at: DateTime<Utc>, groups: Vec<String>
         stale: event.stale.to_datetime().unwrap_or(received_at),
         received_at,
         point: point(&event.point),
-        shape: shape::of(event),
+        ellipse: shape::ellipse(event),
+        // How an outline is drawn is nothing to say about a point.
+        style: shape.as_ref().and_then(|_| shape::style(event)),
+        shape,
         course: track.as_ref().and_then(|track| known(track.course)),
         speed: track.as_ref().and_then(|track| known(track.speed)),
         battery: event.detail.get::<Status>().map(|status| status.battery),

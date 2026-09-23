@@ -219,6 +219,8 @@ mod tests {
                 le: None,
             },
             shape: None,
+            ellipse: None,
+            style: None,
             course: None,
             speed: None,
             battery: None,

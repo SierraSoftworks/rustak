@@ -1,5 +1,6 @@
 //! `PUT` and `DELETE /api/v1/map/features/{uid}`: a marker placed, moved,
-//! renamed or removed from the admin console.
+//! renamed or removed from the admin console — or a line, an area or a route
+//! drawn there, whose outline is [`drawing`]'s to write.
 //!
 //! Neither writes to the store directly. A marker is a CoT event, and the one
 //! thing that makes a CoT event real on this server is being relayed: tagged
@@ -36,7 +37,7 @@ use crate::prelude::*;
 use crate::stream::Disposition;
 use crate::stream::dest::DropReason;
 
-use super::feature;
+use super::{drawing, feature};
 use crate::web::api::cot::readable_row;
 use crate::web::api::error::{ApiError, ApiResult, json_ok};
 use crate::web::api::extract::Authenticated;
@@ -50,8 +51,8 @@ const DEFAULT_LIFETIME: Duration = Duration::hours(24);
 ///
 /// # Errors
 ///
-/// A `400` for a uid, type or position that is not one, or a type a map does
-/// not draw;
+/// A `400` for a uid, type or position that is not one, a type a map does
+/// not draw, or an outline that does not belong to its type;
 /// a `403` for a channel the caller may not publish into; a `404` for a
 /// channel that does not exist; a `503` when there is no stream to publish
 /// through.
@@ -87,6 +88,8 @@ pub async fn put(
             "That is not a position: latitude is between -90 and 90, and longitude between -180 and 180.",
         ));
     }
+
+    drawing::check(&draft).map_err(ApiError::bad_request)?;
 
     let event = event_from(&uid, &draft);
     let relayed = relay(&context, &caller, event.clone()).await?;
@@ -224,6 +227,9 @@ fn event_from(uid: &str, draft: &PublishFeature) -> Event {
     if let Some(sidc) = draft.sidc.as_deref().and_then(rustak_api::map::sidc) {
         builder = builder.push(Element::new("__milicon").attr("id", sidc));
     }
+    for element in drawing::elements(uid, draft) {
+        builder = builder.push(element);
+    }
     if !draft.groups.is_empty() {
         let dests: Vec<Dest> = draft.groups.iter().map(Dest::group).collect();
         builder = builder.push(marti_element(&dests));
@@ -267,6 +273,9 @@ mod tests {
             sidc: Some("10031000001211000000".to_string()),
             stale: None,
             groups: vec!["Blue".to_string()],
+            shape: None,
+            ellipse: None,
+            style: None,
         }
     }
 

@@ -9,6 +9,7 @@ use wasm_bindgen::prelude::*;
 use web_sys::{Element, HtmlElement};
 
 use super::focus::Pick;
+use super::sketch::Pointer;
 
 #[wasm_bindgen(module = "/js/map.js")]
 extern "C" {
@@ -19,6 +20,7 @@ extern "C" {
         container: &HtmlElement,
         options: &str,
         on_pick: &Closure<dyn Fn(String)>,
+        on_sketch: &Closure<dyn Fn(String)>,
     ) -> Result<JsValue, JsValue>;
 
     #[wasm_bindgen(method)]
@@ -44,6 +46,9 @@ extern "C" {
 
     #[wasm_bindgen(method)]
     fn freeze(this: &MapHandle, upserts: Option<String>);
+
+    #[wasm_bindgen(method, js_name = showSketch)]
+    fn show_sketch(this: &MapHandle, geojson: Option<String>, mode: &str);
 
     #[wasm_bindgen(method, js_name = setCursor)]
     fn set_cursor(this: &MapHandle, cursor: &str);
@@ -87,8 +92,18 @@ impl Default for Basemap {
 pub struct Map {
     handle: MapHandle,
 
-    /// Held because the JavaScript calls it for as long as the map exists.
+    /// Held because the JavaScript calls them for as long as the map exists.
     _on_pick: Closure<dyn Fn(String)>,
+    _on_sketch: Closure<dyn Fn(String)>,
+}
+
+/// What the pointer does to a sketch on the map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SketchMode {
+    /// Clicks add to it.
+    Draw,
+    /// Its handles may be dragged.
+    Edit,
 }
 
 impl Map {
@@ -103,6 +118,7 @@ impl Map {
         container: &HtmlElement,
         basemap: &Basemap,
         on_pick: impl Fn(Pick) + 'static,
+        on_sketch: impl Fn(Pointer) + 'static,
     ) -> Result<Self, String> {
         // A click the glue described in a way this build cannot read is a
         // click on nothing, which closes the pop-over rather than guessing.
@@ -110,11 +126,18 @@ impl Map {
             on_pick(serde_json::from_str(&described).unwrap_or(Pick {
                 uids: Vec::new(),
                 at: [0.0, 0.0],
+                near: None,
             }));
+        });
+        // What cannot be read about the pointer is not acted on.
+        let on_sketch = Closure::<dyn Fn(String)>::new(move |described: String| {
+            if let Ok(pointer) = serde_json::from_str(&described) {
+                on_sketch(pointer);
+            }
         });
         let options = serde_json::to_string(basemap).map_err(|err| err.to_string())?;
 
-        let handle = create_map(container, &options, &on_pick)
+        let handle = create_map(container, &options, &on_pick, &on_sketch)
             .await
             .map_err(|err| {
                 js_sys::Reflect::get(&err, &JsValue::from_str("message"))
@@ -126,6 +149,7 @@ impl Map {
         Ok(Self {
             handle: handle.unchecked_into(),
             _on_pick: on_pick,
+            _on_sketch: on_sketch,
         })
     }
 
@@ -176,6 +200,20 @@ impl Map {
     /// cursor name, or empty for whatever the map would show.
     pub fn set_cursor(&self, cursor: &str) {
         self.handle.set_cursor(cursor);
+    }
+
+    /// Draws what is being drawn or reshaped — what
+    /// [`Sketch::draw`](super::sketch::Sketch::draw) or
+    /// [`Outline::draw`](super::sketch::Outline::draw) produced — over the
+    /// map, or takes it away.
+    pub fn show_sketch(&self, sketch: Option<(&serde_json::Value, SketchMode)>) {
+        let mode = match sketch {
+            Some((_, SketchMode::Edit)) => "edit",
+            _ => "draw",
+        };
+
+        self.handle
+            .show_sketch(sketch.map(|(drawn, _)| drawn.to_string()), mode);
     }
 
     /// Draws only `features` — a moment in the past — instead of what is

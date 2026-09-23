@@ -4,10 +4,12 @@
 // (`src/pages/map`), which hands this file GeoJSON that is ready to draw.
 //
 // That split is deliberate. This file knows about pixels and nothing about
-// CoT, so the day the map becomes editable it grows a drawing tool (terra-draw
-// speaks MapLibre) that hands finished geometry *back* across the same seam,
-// and the questions that matter — which channel or mission a new feature is
-// published to, and as what — stay with the code that can answer them.
+// CoT. Drawing keeps to it: Rust decides what the clicks so far add up to and
+// hands back a sketch to draw (`showSketch`), and this file says only what
+// the pointer did — where it clicked and whether that was on one of the
+// sketch's handles, where it is hovering, which handle it dragged where. The
+// questions that matter — what a drawing is, which channel it is published
+// to, and as what — stay with the code that can answer them.
 //
 // Both libraries are served by rustak from /vendor (see scripts/vendor.mjs)
 // and are fetched the first time a map is opened, not with the console.
@@ -18,6 +20,11 @@ const VENDOR = "/vendor";
 // callsign is as wide as several markers, so a label that could be clicked
 // would take the clicks meant for whatever it happens to be drawn across.
 const HIT_LAYERS = ["symbols", "dots", "shape-lines", "shape-fills"];
+
+// How close to a handle, in pixels, counts as on it: a fingertip's worth.
+const HANDLE_REACH = 9;
+
+const SKETCH = "#14664f";
 
 const LABEL_FONT = '600 12px system-ui, -apple-system, "Segoe UI", sans-serif';
 
@@ -125,13 +132,17 @@ function addLayers(map) {
     type: "fill",
     source: "shapes",
     filter: ["==", ["geometry-type"], "Polygon"],
-    paint: { "fill-color": ["get", "color"], "fill-opacity": 0.15 },
+    paint: {
+      "fill-color": ["coalesce", ["get", "fill"], ["get", "color"]],
+      "fill-opacity": ["*", ["coalesce", ["get", "fillOpacity"], 0.15], fade],
+    },
   });
   map.addLayer({
     id: "shape-lines",
     type: "line",
     source: "shapes",
-    paint: { "line-color": ["get", "color"], "line-width": 2.5, "line-opacity": fade },
+    layout: { "line-join": "round" },
+    paint: { "line-color": ["get", "color"], "line-width": ["coalesce", ["get", "width"], 2.5], "line-opacity": fade },
   });
   // Where the selected thing has been: the part travelled by the moment
   // shown, the part still to come, and the fixes along both. Under the
@@ -212,11 +223,49 @@ function addLayers(map) {
     },
     paint: { "icon-opacity": fade },
   });
+
+  // What is being drawn or reshaped, over everything: the line so far, the
+  // area it would enclose, and a handle on each vertex.
+  map.addSource("sketch", { type: "geojson", data: empty });
+  map.addLayer({
+    id: "sketch-fill",
+    type: "fill",
+    source: "sketch",
+    filter: part("fill"),
+    paint: { "fill-color": SKETCH, "fill-opacity": 0.12 },
+  });
+  map.addLayer({
+    id: "sketch-line",
+    type: "line",
+    source: "sketch",
+    filter: part("line"),
+    layout: { "line-join": "round", "line-cap": "round" },
+    paint: { "line-color": SKETCH, "line-width": 2.5, "line-dasharray": [2, 1.5] },
+  });
+  map.addLayer({
+    id: "sketch-handles",
+    type: "circle",
+    source: "sketch",
+    filter: part("handle"),
+    paint: {
+      "circle-radius": 6,
+      "circle-color": "#ffffff",
+      "circle-stroke-color": SKETCH,
+      "circle-stroke-width": 2.5,
+    },
+  });
 }
 
 class MapHandle {
-  constructor(maplibre, ms, map, onPick) {
-    Object.assign(this, { maplibre, ms, map, onPick });
+  constructor(maplibre, ms, map, onPick, onSketch) {
+    Object.assign(this, { maplibre, ms, map, onPick, onSketch });
+    // "draw" while clicks add to a sketch, "edit" while its handles may be
+    // dragged, and empty otherwise. See `showSketch`.
+    this.sketching = "";
+    // The handle being dragged, and what is waiting to be said about the
+    // pointer on the next frame.
+    this.dragging = null;
+    this.report = null;
     this.features = new Map();
     // What is drawn instead of `features` while a moment in the past is
     // shown, or null for the live map. See `freeze`.
@@ -244,10 +293,80 @@ class MapHandle {
 
     // A tool's cursor, which wins over the pointer shown over a feature.
     this.cursor = "";
-    map.on("click", (event) => this.pick(this.hits(event.point), event.lngLat.toArray()));
-    map.on("mousemove", (event) => {
-      map.getCanvas().style.cursor = this.cursor || (this.hits(event.point).length > 0 ? "pointer" : "");
+    map.on("click", (event) => {
+      // A click while drawing is a vertex, whatever happens to be under it.
+      const drawing = this.sketching === "draw";
+      const uids = drawing ? [] : this.hits(event.point);
+      this.pick(uids, event.lngLat.toArray(), drawing ? this.handleAt(event.point)?.role : undefined);
     });
+    map.on("mousemove", (event) => {
+      const over = this.sketching === "edit" && this.handleAt(event.point) ? "move" : "";
+      map.getCanvas().style.cursor = this.cursor || over || (this.hits(event.point).length > 0 ? "pointer" : "");
+
+      if (this.sketching === "draw") {
+        this.say({ hover: event.lngLat.toArray() });
+      }
+    });
+
+    // Dragging a handle. Refusing the event's default is what keeps the map
+    // from panning under it.
+    const grab = (event) => {
+      const handle = this.sketching === "edit" && !(event.points?.length > 1) && this.handleAt(event.point);
+      if (handle) {
+        event.preventDefault();
+        this.dragging = { index: handle.index, at: event.lngLat.toArray() };
+      }
+    };
+    const drag = (event) => {
+      if (this.dragging) {
+        this.dragging.at = event.lngLat.toArray();
+        this.say({ drag: { ...this.dragging, done: false } });
+      }
+    };
+    // Let go anywhere, the map or not: a drag that ends over a panel has
+    // still ended.
+    this.drop = () => {
+      if (this.dragging) {
+        this.say({ drag: { ...this.dragging, done: true } }, true);
+        this.dragging = null;
+      }
+    };
+    map.on("mousedown", grab);
+    map.on("touchstart", grab);
+    map.on("mousemove", drag);
+    map.on("touchmove", drag);
+    for (const released of ["mouseup", "touchend", "touchcancel"]) {
+      globalThis.addEventListener(released, this.drop);
+    }
+  }
+
+  // The sketch's handle under a point, as `{ index, role }`, the last one
+  // drawn first: finishing is what a second click on it means.
+  handleAt({ x, y }) {
+    const box = [[x - HANDLE_REACH, y - HANDLE_REACH], [x + HANDLE_REACH, y + HANDLE_REACH]];
+    const found = this.map.queryRenderedFeatures(box, { layers: ["sketch-handles"] }).map((handle) => handle.properties);
+    return found.find((handle) => handle.role === "last") ?? found[0];
+  }
+
+  // Says what the pointer did over a sketch, once a frame at most — or at
+  // once, for the last word on a drag, which must not be dropped.
+  say(report, now = false) {
+    this.report = report;
+    const send = () => {
+      this.telling = null;
+      const said = this.report;
+      this.report = null;
+      if (said) {
+        this.onSketch(JSON.stringify(said));
+      }
+    };
+
+    if (now) {
+      cancelAnimationFrame(this.telling);
+      send();
+    } else {
+      this.telling ??= requestAnimationFrame(send);
+    }
   }
 
   // Every uid under a point, topmost first, with a few pixels' grace for a
@@ -262,8 +381,8 @@ class MapHandle {
   // Says what was clicked, and where. None is a click on the bare map; one is
   // a selection; several is a question only the person clicking can answer,
   // and Rust asks it with `choose`.
-  pick(uids, at) {
-    this.onPick(JSON.stringify({ uids, at }));
+  pick(uids, at, near) {
+    this.onPick(JSON.stringify({ uids, at, near: near === "between" ? undefined : near }));
   }
 
   // What is on the map right now: the live features, or the moment frozen
@@ -319,7 +438,24 @@ class MapHandle {
 
     // What a test, or somebody with the inspector open, can read without WebGL.
     this.map.getContainer().dataset.features = String(all.length);
+    this.map.getContainer().dataset.shapes = String(all.filter((feature) => feature.shape).length);
+  }
 
+  // Draws what is being drawn or reshaped — a FeatureCollection of parts, a
+  // "line", a "fill" and a "handle" for each vertex — or takes it away for
+  // null. `mode` is "draw" while clicks add to it and "edit" while its
+  // handles may be dragged.
+  showSketch(geojson, mode) {
+    const collection = geojson ? JSON.parse(geojson) : { type: "FeatureCollection", features: [] };
+    this.map.getSource("sketch")?.setData(collection);
+    this.sketching = geojson ? mode : "";
+
+    // The second click of a double click finishes a drawing; it should not
+    // also zoom the map.
+    this.map.doubleClickZoom[this.sketching === "draw" ? "disable" : "enable"]();
+
+    const handles = collection.features.filter((feature) => feature.properties.part === "handle");
+    this.map.getContainer().dataset.sketch = geojson ? String(handles.length) : "";
   }
 
   // `cursor` is a CSS cursor name for a tool that is not selection, or empty.
@@ -416,6 +552,10 @@ class MapHandle {
   }
 
   destroy() {
+    for (const released of ["mouseup", "touchend", "touchcancel"]) {
+      globalThis.removeEventListener(released, this.drop);
+    }
+    cancelAnimationFrame(this.telling);
     cancelAnimationFrame(this.frame);
     this.quietly(() => this.popup.remove());
     this.map.remove();
@@ -425,8 +565,13 @@ class MapHandle {
 // `options` is JSON: `{ tiles: [url], attribution, maxZoom, center: [lon, lat], zoom }`.
 // `onPick` is called with JSON, `{ uids: [uid], at: [lon, lat] }`, for every
 // click on the map: the uids of everything under it, topmost first. It is also
-// called with no uids when the pop-over is closed.
-export async function createMap(container, options, onPick) {
+// called with no uids when the pop-over is closed. While something is being
+// drawn the uids are empty and `near` says whether the click was on the
+// sketch's "first" or "last" handle.
+// `onSketch` is called with JSON for what the pointer does over a sketch:
+// `{ hover: [lon, lat] }` while drawing, and `{ drag: { index, at, done } }`
+// while a handle is dragged.
+export async function createMap(container, options, onPick, onSketch) {
   const { maplibre, ms } = await load();
   const { tiles, attribution, maxZoom, center, zoom } = JSON.parse(options);
 
@@ -457,5 +602,5 @@ export async function createMap(container, options, onPick) {
   }
   addLayers(map);
 
-  return new MapHandle(maplibre, ms, map, onPick);
+  return new MapHandle(maplibre, ms, map, onPick, onSketch);
 }
