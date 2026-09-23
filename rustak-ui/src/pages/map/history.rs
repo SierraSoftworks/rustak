@@ -15,12 +15,12 @@ use std::rc::Rc;
 use gloo_timers::future::TimeoutFuture;
 use rustak_api::MapFeature;
 use wasm_bindgen_futures::spawn_local;
-use yew::Callback;
+use yew::{Callback, Html, html};
 
 use crate::api;
 
 use super::focus::Focus;
-use super::playback::Position;
+use super::playback::{PlaybackBar, Position};
 use super::render;
 use super::session::Session;
 use super::track::Track;
@@ -122,8 +122,13 @@ impl Session {
     }
 
     /// Draws the track and, when a moment is being shown, freezes the map on
-    /// that moment.
-    fn draw_history(&self) {
+    /// that moment — which is also when a drawing stops being reshaped.
+    fn draw_history(&mut self) {
+        self.draw_track();
+        self.reshape();
+    }
+
+    fn draw_track(&self) {
         let Some(map) = &self.map else {
             return;
         };
@@ -260,6 +265,43 @@ pub fn toggle_playing(session: Rc<RefCell<Session>>, redraw: Callback<()>) {
     });
 }
 
+/// The playback bar for the track in hand, with what its controls do.
+pub fn bar(session: &Rc<RefCell<Session>>, replay: &Replay, redraw: &Callback<()>) -> Html {
+    // Whatever a control changes, the page then has something new to draw.
+    fn then_redraw<T: 'static>(
+        session: &Rc<RefCell<Session>>,
+        redraw: &Callback<()>,
+        change: impl Fn(&mut Session, T) + 'static,
+    ) -> Callback<T> {
+        let (session, redraw) = (session.clone(), redraw.clone());
+        Callback::from(move |value: T| {
+            change(&mut session.borrow_mut(), value);
+            redraw.emit(());
+        })
+    }
+
+    let ontoggle = {
+        let (session, redraw) = (session.clone(), redraw.clone());
+        Callback::from(move |()| {
+            toggle_playing(session.clone(), redraw.clone());
+            redraw.emit(());
+        })
+    };
+
+    html! {
+        <PlaybackBar
+            name={replay.track.name()}
+            fixes={replay.track.len()}
+            windows={replay.track.windows()}
+            position={replay.position.clone()}
+            onseek={then_redraw(session, redraw, Session::seek)}
+            {ontoggle}
+            onspeed={then_redraw(session, redraw, Session::set_speed)}
+            onlive={then_redraw(session, redraw, |session: &mut Session, ()| session.go_live())}
+        />
+    }
+}
+
 /// What to say while a moment is being shown, rather than the live map.
 pub fn shown_note(session: &Session) -> Option<String> {
     let replay = session.replay()?;
@@ -302,6 +344,8 @@ mod tests {
                 le: None,
             },
             shape: None,
+            ellipse: None,
+            style: None,
             course: None,
             speed: None,
             battery: None,

@@ -11,7 +11,7 @@
 //! # Writing is one more shape
 //!
 //! `PUT /api/v1/map/features/{uid}` takes a [`PublishFeature`] — what a page
-//! can say about a marker it placed or edited — and the server makes a CoT
+//! can say about a marker it placed or a drawing it made — and the server makes a CoT
 //! event of it, injected as though a client had sent it: tagged, recorded,
 //! fanned out to devices, and fed back to every open map. `DELETE` on the
 //! same path sends the delete every TAK client understands. The answer to
@@ -75,6 +75,16 @@ pub struct MapFeature {
     /// The outline, for a drawing. [`None`] for everything that is only a point.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape: Option<MapShape>,
+
+    /// What the outline was drawn from, when that was a circle or an ellipse
+    /// around the point: the [`shape`](Self::shape) is then the ring a map
+    /// draws, and this is what an editor changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ellipse: Option<MapEllipse>,
+
+    /// How the sender asked for the outline to be drawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<MapStyle>,
 
     /// Degrees clockwise from true north.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -164,7 +174,56 @@ pub enum MapShape {
     Polygon(Vec<Vec<[f64; 2]>>),
 }
 
-/// What a page publishes: a marker, as somebody placed or edited it.
+/// A circle or an ellipse around a feature's point, as TAK clients write one
+/// in `<shape><ellipse>`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MapEllipse {
+    /// The semi-major axis, in metres: a circle's radius.
+    pub major: f64,
+
+    /// The semi-minor axis, in metres: a circle's radius again.
+    pub minor: f64,
+
+    /// The major axis's bearing, in degrees clockwise from north.
+    #[serde(default)]
+    pub angle: f64,
+}
+
+/// How a drawing is drawn, from the elements TAK clients write beside an
+/// outline: `<strokeColor>`, `<strokeWeight>` and `<fillColor>`.
+///
+/// Colours are `#rrggbb`. CoT spells them as signed 32-bit ARGB integers,
+/// which is nothing a page should have to know; the alpha of a fill is its
+/// [`fill_opacity`](Self::fill_opacity), and the alpha of a line is not kept.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MapStyle {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke: Option<String>,
+
+    /// The line's width as TAK clients count it, where 4 is what ATAK draws a
+    /// new shape with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<f64>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<String>,
+
+    /// From 0, which is no fill, to 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill_opacity: Option<f64>,
+}
+
+/// `#rrggbb` as its red, green and blue, or [`None`] for text that is not a
+/// colour written that way.
+#[must_use]
+pub fn rgb(color: &str) -> Option<[u8; 3]> {
+    let digits = color.strip_prefix('#').filter(|digits| digits.len() == 6)?;
+    let value = u32::from_str_radix(digits, 16).ok()?;
+
+    Some([(value >> 16) as u8, (value >> 8) as u8, value as u8])
+}
+
+/// What a page publishes: a marker or a drawing, as somebody made or edited it.
 ///
 /// Everything a CoT event needs that the page can sensibly decide. The uid is
 /// the page's — minted when a marker is placed and kept when it is edited, so
@@ -203,6 +262,24 @@ pub struct PublishFeature {
     /// everybody the sender reaches.
     #[serde(default)]
     pub groups: Vec<String>,
+
+    /// The outline of a drawing, and only of one. The type says what it is an
+    /// outline *of*, in the types ATAK's own drawing tools write: a
+    /// [`LineString`](MapShape::LineString) is a line under `u-d-f` and a
+    /// route under `b-m-r`; a [`Polygon`](MapShape::Polygon) of one ring is a
+    /// polygon under `u-d-f` and, with four corners, a rectangle under
+    /// `u-d-r`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<MapShape>,
+
+    /// A circle around [`point`](Self::point), under `u-d-c-c`, in place of a
+    /// [`shape`](Self::shape).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ellipse: Option<MapEllipse>,
+
+    /// How a drawing is drawn. Left to whoever draws it when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<MapStyle>,
 }
 
 /// One change to the map, as the feed reports it.
@@ -260,6 +337,8 @@ mod tests {
                 le: None,
             },
             shape: None,
+            ellipse: None,
+            style: None,
             course: Some(90.0),
             speed: Some(1.5),
             battery: None,
@@ -337,6 +416,9 @@ mod tests {
             sidc: None,
             stale: None,
             groups: Vec::new(),
+            shape: None,
+            ellipse: None,
+            style: None,
         })
         .unwrap();
 

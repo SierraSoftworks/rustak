@@ -9,12 +9,17 @@
 
 use serde::Deserialize;
 
+use super::sketch::Near;
+
 /// One click, as `js/map.js` reports it: everything under it, topmost first,
 /// and where it was as `[lon, lat]`.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Pick {
     pub uids: Vec<String>,
     pub at: [f64; 2],
+    /// While something is being drawn: the end of it the click landed on.
+    #[serde(default)]
+    pub near: Option<Near>,
 }
 
 /// What the pop-over is showing.
@@ -33,7 +38,7 @@ pub enum Focus {
 
 impl From<Pick> for Focus {
     fn from(pick: Pick) -> Self {
-        let Pick { mut uids, at } = pick;
+        let Pick { mut uids, at, .. } = pick;
 
         match uids.len() {
             0 => Self::Nothing,
@@ -90,6 +95,7 @@ mod tests {
         Pick {
             uids: uids.iter().map(|uid| (*uid).to_string()).collect(),
             at: [-0.12, 51.5],
+            near: None,
         }
     }
 

@@ -7,6 +7,8 @@ use rustak_api::MapFeature;
 
 use crate::util::mgrs;
 
+use super::geometry::{Form, Geometry};
+
 /// The rows of the panel, in the order somebody reads them. A row the
 /// message said nothing about is left out rather than shown empty.
 pub fn facts(feature: &MapFeature) -> Vec<(&'static str, String)> {
@@ -33,6 +35,14 @@ pub fn facts(feature: &MapFeature) -> Vec<(&'static str, String)> {
     if let Some(ce) = point.ce {
         rows.push(("Accuracy", format!("± {ce:.0} m")));
     }
+    if let Some(geometry) = Geometry::of(feature) {
+        let (what, length) = match geometry.form {
+            Form::Circle => ("Radius", geometry.radius),
+            form if form.closed() => ("Perimeter", geometry.length()),
+            _ => ("Length", geometry.length()),
+        };
+        rows.push((what, metres(length)));
+    }
     if let Some(moving) = movement(feature) {
         rows.push(("Moving", moving));
     }
@@ -53,6 +63,14 @@ pub fn facts(feature: &MapFeature) -> Vec<(&'static str, String)> {
     }
 
     rows
+}
+
+/// A distance as somebody reads one: metres until there are thousands.
+fn metres(length: f64) -> String {
+    match length >= 1_000.0 {
+        true => format!("{:.2} km", length / 1_000.0),
+        false => format!("{length:.0} m"),
+    }
 }
 
 /// `084° at 5 km/h`, from whichever half of `<track>` was sent.
@@ -113,6 +131,8 @@ mod tests {
                 le: None,
             },
             shape: None,
+            ellipse: None,
+            style: None,
             course: None,
             speed: None,
             battery: None,

@@ -30,6 +30,7 @@ use super::editing::Edit;
 use super::focus::{Focus, Pick};
 use super::glue::{Basemap, Map};
 use super::history::Replay;
+use super::sketch::{Outline, Sketch};
 use super::store::{Changes, Store};
 use super::toolbar::Tool;
 
@@ -88,6 +89,10 @@ pub struct Session {
     /// [`editing`](super::editing).
     pub(super) tool: Tool,
     pub(super) edit: Edit,
+    /// What is being drawn, and the drawing being reshaped. See
+    /// [`drawing`](super::drawing).
+    pub(super) sketch: Option<Sketch>,
+    pub(super) outline: Option<Outline>,
     feed: Option<Canceller>,
     /// Whether anything has changed since the page last drew itself.
     pub(super) dirty: bool,
@@ -115,6 +120,7 @@ impl Session {
             }
         }
         self.focus = focus;
+        self.reshape();
     }
 
     pub fn fly_to(&self, uid: &str) {
@@ -193,8 +199,21 @@ impl Running {
         };
 
         let on_pick = self.on_pick.clone();
+        // The pointer over a sketch is the session's business and not the
+        // page's, until a drag ends and there is something to save.
+        let (session, on_redraw) = (self.session.clone(), self.on_redraw.clone());
+        let on_sketch = move |pointer| {
+            if session.borrow_mut().pointer(pointer) {
+                on_redraw.emit(());
+            }
+        };
         let basemap = Basemap::default();
-        let created = Map::create(&element, &basemap, move |pick| on_pick.emit(pick));
+        let created = Map::create(
+            &element,
+            &basemap,
+            move |pick| on_pick.emit(pick),
+            on_sketch,
+        );
 
         match created.await {
             // The page went away while the libraries were loading.
@@ -315,6 +334,8 @@ impl Running {
             map.apply(&changes.upserts, &changes.removes);
         }
         session.dirty = true;
+        // Somebody else may have redrawn what is in focus.
+        session.reshape();
 
         let refocus = session.focus.without(&changes.removes);
         drop(session);

@@ -10,8 +10,9 @@
 //! [`track`] under it and its [`draft`] in the panel when it may be edited.
 //! A click that landed on several is the [`chooser`], which is ordinary Yew
 //! portalled into an element the map positions, because it belongs where the
-//! click was. The [`history`] and [`editing`] modules are the parts of the
-//! session that read back and write.
+//! click was. The [`history`], [`editing`] and [`drawing`] modules are the
+//! parts of the session that read back, write, and draw: a [`sketch`] of one
+//! of the [`geometry`]'s forms while a drawing tool is in hand.
 //!
 //! # Yew is not in the hot path
 //!
@@ -41,9 +42,11 @@
 
 mod chooser;
 mod draft;
+mod drawing;
 mod editing;
 mod facts;
 mod focus;
+mod geometry;
 mod glue;
 mod history;
 mod objects;
@@ -52,6 +55,7 @@ mod properties;
 mod render;
 mod roster;
 mod session;
+mod sketch;
 mod store;
 mod symbols;
 mod toolbar;
@@ -65,11 +69,10 @@ use crate::components::{Alert, AlertKind, StatusTone};
 use chooser::Chooser;
 use focus::{Focus, Pick};
 use objects::ObjectList;
-use playback::PlaybackBar;
 use properties::Properties;
 use roster::{ROSTER_ROWS, RosterEntry};
 use session::{FeedStatus, Listeners, Session};
-use toolbar::{Tool, Toolbar};
+use toolbar::{SketchBar, Tool, Toolbar};
 
 #[function_component(LiveMap)]
 pub fn live_map() -> Html {
@@ -105,15 +108,14 @@ pub fn live_map() -> Html {
     let on_pick = {
         let (session, on_focus, on_redraw) = (session.clone(), on_focus.clone(), on_redraw.clone());
         Callback::from(move |pick: Pick| {
-            if session.borrow().tool() == Tool::Pin {
-                editing::place(
-                    session.clone(),
-                    pick.at,
-                    on_focus.clone(),
-                    on_redraw.clone(),
-                );
-            } else {
-                on_focus.emit(pick.into());
+            let (session, on_focus, on_redraw) =
+                (session.clone(), on_focus.clone(), on_redraw.clone());
+            let tool = session.borrow().tool();
+
+            match tool {
+                Tool::Pin => editing::place(session, pick.at, on_focus, on_redraw),
+                Tool::Draw(_) => drawing::click(session, &pick, on_focus, on_redraw),
+                Tool::Select => on_focus.emit(pick.into()),
             }
         })
     };
@@ -190,9 +192,14 @@ pub fn live_map() -> Html {
         Callback::from(move |()| session.borrow().fit_all())
     };
     let ontool = {
-        let (session, redraw) = (session.clone(), redraw.clone());
+        let (session, focus, redraw) = (session.clone(), focus.clone(), redraw.clone());
         Callback::from(move |tool: Tool| {
             session.borrow_mut().set_tool(tool);
+            // Taking up a tool is looking away from whatever was open, and
+            // its panel would be over the map the next clicks are for.
+            if tool != Tool::Select {
+                focus.set(Focus::Nothing);
+            }
             redraw.force_update();
         })
     };
@@ -206,34 +213,24 @@ pub fn live_map() -> Html {
             editing::delete(session.clone(), uid, on_focus.clone(), on_redraw.clone())
         })
     };
-    let onseek = {
-        let (session, redraw) = (session.clone(), redraw.clone());
-        Callback::from(move |offset: i64| {
-            session.borrow_mut().seek(offset);
-            redraw.force_update();
-        })
-    };
-    let onspeed = {
-        let (session, redraw) = (session.clone(), redraw.clone());
-        Callback::from(move |speed: u32| {
-            session.borrow_mut().set_speed(speed);
-            redraw.force_update();
-        })
-    };
-    let onlive = {
+    let onundo = {
         let (session, redraw) = (session.clone(), redraw.clone());
         Callback::from(move |()| {
-            session.borrow_mut().go_live();
+            session.borrow_mut().undo_sketch();
             redraw.force_update();
         })
     };
-    let ontoggle = {
-        let (session, on_redraw) = (session.clone(), on_redraw.clone());
+    let onfinish = {
+        let (session, on_focus, on_redraw) = (session.clone(), on_focus.clone(), on_redraw.clone());
         Callback::from(move |()| {
-            history::toggle_playing(session.clone(), on_redraw.clone());
-            on_redraw.emit(());
+            drawing::finish(session.clone(), on_focus.clone(), on_redraw.clone())
         })
     };
+    let oncancel = ontool.reform(|()| Tool::Select);
+    drawing::use_keys(
+        session.borrow().sketch().is_some(),
+        [onundo.clone(), onfinish.clone(), oncancel.clone()],
+    );
 
     let held = session.borrow();
     let matching = held.store().roster(&search);
@@ -253,6 +250,7 @@ pub fn live_map() -> Html {
                     channels={held.edit().channels.clone()}
                     problem={held.edit().problem.clone()}
                     busy={held.edit().busy}
+                    moved={held.outline_moved()}
                     {onclose}
                     {onsave}
                     {ondelete}
@@ -279,17 +277,18 @@ pub fn live_map() -> Html {
         .zip(held.popover_element())
         .map(|(content, host)| create_portal(content, host));
 
-    let playback = held.replay().map(|replay| {
+    let playback = held
+        .replay()
+        .map(|replay| history::bar(&session, replay, &on_redraw));
+    let sketching = held.sketch().map(|sketch| {
         html! {
-            <PlaybackBar
-                name={replay.track.name()}
-                fixes={replay.track.len()}
-                windows={replay.track.windows()}
-                position={replay.position.clone()}
-                {onseek}
-                {ontoggle}
-                {onspeed}
-                {onlive}
+            <SketchBar
+                hint={sketch.hint()}
+                can_undo={sketch.can_undo()}
+                can_finish={sketch.finish().is_some()}
+                {onundo}
+                {onfinish}
+                {oncancel}
             />
         }
     });
@@ -333,10 +332,11 @@ pub fn live_map() -> Html {
                 if held.tool() == Tool::Pin {
                     <p class="map-page__note">{ "Click the map to place a marker." }</p>
                 }
+                { for sketching }
                 // A placement that failed has no panel to say so in.
                 if focus.feature().is_none() {
                     if let Some(problem) = &held.edit().problem {
-                        <Alert kind={AlertKind::Error} title="The marker was not placed." message={problem.clone()} />
+                        <Alert kind={AlertKind::Error} title="That was not put on the map." message={problem.clone()} />
                     }
                 }
                 if let Some(shown) = shown {
@@ -352,6 +352,7 @@ pub fn live_map() -> Html {
                     {onsearch}
                     selected={focus.feature().map(str::to_owned)}
                     {onselect}
+                    yielding={held.tool() != Tool::Select}
                 />
             </div>
 

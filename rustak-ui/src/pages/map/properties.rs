@@ -6,7 +6,9 @@
 //! sender was publishing into, which is the first thing to check when
 //! somebody says they cannot see it. A marker somebody placed is a form on
 //! top of that: the name, the type, the symbol, where it is, what it is for,
-//! and where it goes.
+//! and where it goes. A drawing is the same form with what a drawing has
+//! instead — a colour, and for a circle its radius — and its outline is
+//! changed where it is drawn, on the map.
 
 use rustak_api::MapFeature;
 use yew::prelude::*;
@@ -14,8 +16,9 @@ use yew::prelude::*;
 use crate::components::{Alert, AlertKind, Button, ButtonKind, ConfirmButton, TextArea, TextInput};
 use crate::util::{short_relative, sidc};
 
-use super::draft::{Draft, editable};
+use super::draft::{COLORS, Draft, editable};
 use super::facts::facts;
+use super::geometry::Form;
 use super::symbols::Identity;
 
 #[derive(Properties, PartialEq)]
@@ -31,6 +34,9 @@ pub struct PropertiesProps {
     pub problem: Option<String>,
     #[prop_or_default]
     pub busy: bool,
+    /// Whether the outline has been dragged on the map since it was saved.
+    #[prop_or_default]
+    pub moved: bool,
 
     pub onclose: Callback<()>,
     pub onsave: Callback<Draft>,
@@ -106,6 +112,7 @@ pub fn properties(props: &PropertiesProps) -> Html {
                         channels={props.channels.clone()}
                         problem={props.problem.clone()}
                         busy={props.busy}
+                        moved={props.moved}
                         onsave={props.onsave.clone()}
                         ondelete={props.ondelete.clone()}
                     />
@@ -146,11 +153,12 @@ struct EditorProps {
     channels: Vec<String>,
     problem: Option<String>,
     busy: bool,
+    moved: bool,
     onsave: Callback<Draft>,
     ondelete: Callback<String>,
 }
 
-/// The fields of a marker a person placed.
+/// The fields of a marker a person placed, or of something they drew.
 ///
 /// The draft is this component's own until it is saved, and starts again from
 /// the feature whenever a *different* feature arrives — so an edit in
@@ -178,6 +186,15 @@ fn editor(props: &EditorProps) -> Html {
             draft.set(next);
         })
     };
+    let recolor = |color: &'static str| {
+        let draft = draft.clone();
+        Callback::from(move |_: Event| {
+            let mut next = (*draft).clone();
+            next.color = color.to_string();
+            draft.set(next);
+        })
+    };
+    let form = draft.geometry.as_ref().map(|geometry| geometry.form);
     // Whose it is, what it is and what it is drawn as are one decision: see
     // `symbols::fields`.
     let identity = {
@@ -218,25 +235,58 @@ fn editor(props: &EditorProps) -> Html {
                 <span>{ "Name" }</span>
                 <TextInput id="marker-name" value={draft.callsign.clone()} onchange={field(|d, v| d.callsign = v)} />
             </label>
-            <Identity
-                kind={draft.kind.clone()}
-                sidc={draft.sidc.clone()}
-                onchange={identity}
-            />
-            <div class="map-editor__row">
-                <label class="map-editor__field">
-                    <span>{ "Latitude" }</span>
-                    <TextInput id="marker-lat" value={draft.lat.clone()} onchange={field(|d, v| d.lat = v)} />
-                </label>
-                <label class="map-editor__field">
-                    <span>{ "Longitude" }</span>
-                    <TextInput id="marker-lon" value={draft.lon.clone()} onchange={field(|d, v| d.lon = v)} />
-                </label>
-                <label class="map-editor__field">
-                    <span>{ "Altitude (m HAE)" }</span>
-                    <TextInput id="marker-hae" value={draft.hae.clone()} onchange={field(|d, v| d.hae = v)} placeholder="Unknown" />
-                </label>
-            </div>
+            if form.is_none() {
+                <Identity
+                    kind={draft.kind.clone()}
+                    sidc={draft.sidc.clone()}
+                    onchange={identity}
+                />
+            } else {
+                <fieldset class="map-editor__colors">
+                    <legend>{ "Colour" }</legend>
+                    { for COLORS.iter().map(|(color, name)| html! {
+                        <label key={*color} class="map-editor__color" title={*name}>
+                            <input
+                                type="radio"
+                                name="drawing-color"
+                                aria-label={*name}
+                                checked={draft.color == *color}
+                                onchange={recolor(color)}
+                            />
+                            <span class="map-editor__swatch" style={format!("background: {color}")} />
+                        </label>
+                    }) }
+                </fieldset>
+            }
+            // A marker and a circle are where their fields say. Anything else
+            // drawn is where its outline is, and that is moved on the map.
+            if matches!(form, None | Some(Form::Circle)) {
+                <div class="map-editor__row">
+                    <label class="map-editor__field">
+                        <span>{ "Latitude" }</span>
+                        <TextInput id="marker-lat" value={draft.lat.clone()} onchange={field(|d, v| d.lat = v)} />
+                    </label>
+                    <label class="map-editor__field">
+                        <span>{ "Longitude" }</span>
+                        <TextInput id="marker-lon" value={draft.lon.clone()} onchange={field(|d, v| d.lon = v)} />
+                    </label>
+                    if form.is_none() {
+                        <label class="map-editor__field">
+                            <span>{ "Altitude (m HAE)" }</span>
+                            <TextInput id="marker-hae" value={draft.hae.clone()} onchange={field(|d, v| d.hae = v)} placeholder="Unknown" />
+                        </label>
+                    } else {
+                        <label class="map-editor__field">
+                            <span>{ "Radius (m)" }</span>
+                            <TextInput id="drawing-radius" value={draft.radius.clone()} onchange={field(|d, v| d.radius = v)} />
+                        </label>
+                    }
+                </div>
+            } else if props.moved {
+                <p class="map-editor__hint map-editor__hint--moved">{ "The outline has been moved. Save to publish it." }</p>
+            } else {
+                <p class="map-editor__hint">{ "Drag a point on the map to move it." }</p>
+            }
             <label class="map-editor__field">
                 <span>{ "Remarks" }</span>
                 <TextArea id="marker-remarks" value={draft.remarks.clone()} onchange={field(|d, v| d.remarks = v)} rows={3} />
@@ -266,7 +316,7 @@ fn editor(props: &EditorProps) -> Html {
                 <Button kind={ButtonKind::Primary} small=true busy={props.busy} onclick={onsave}>{ "Save" }</Button>
                 <ConfirmButton
                     label="Delete"
-                    question="Delete this marker from every map and device?"
+                    question="Delete this from every map and device?"
                     confirm_label="Delete it"
                     disabled={props.busy}
                     onconfirm={ondelete}

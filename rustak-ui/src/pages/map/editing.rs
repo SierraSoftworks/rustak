@@ -18,14 +18,10 @@ use yew::Callback;
 
 use crate::api;
 
-use super::draft::Draft;
+use super::draft::{Draft, PLACED_PREFIX};
 use super::focus::Focus;
 use super::session::Session;
 use super::toolbar::Tool;
-
-/// What the uid of a marker placed here begins with, so that the next one can
-/// be numbered after the ones before it.
-const PLACED_PREFIX: &str = "rustak-console-";
 
 /// What the properties panel needs to know about writing.
 #[derive(Debug, Default)]
@@ -48,9 +44,20 @@ impl Session {
         if let Some(map) = &self.map {
             map.set_cursor(match tool {
                 Tool::Select => "",
-                Tool::Pin => "crosshair",
+                Tool::Pin | Tool::Draw(_) => "crosshair",
             });
         }
+        self.sketch_for(tool);
+    }
+
+    /// How many of the things on the map were made here, which is what the
+    /// next one is numbered after.
+    pub(super) fn made_here(&self) -> usize {
+        self.store
+            .roster("")
+            .iter()
+            .filter(|feature| feature.uid.starts_with(PLACED_PREFIX))
+            .count()
     }
 
     pub fn edit(&self) -> &Edit {
@@ -58,7 +65,7 @@ impl Session {
     }
 
     /// Puts a feature the server has just relayed on the map.
-    fn take(&mut self, feature: MapFeature) {
+    pub(super) fn take(&mut self, feature: MapFeature) {
         let changes = self.store.upsert(feature, Utc::now());
         if let Some(map) = &self.map {
             map.apply(&changes.upserts, &changes.removes);
@@ -90,13 +97,8 @@ pub fn place(
         held.edit.problem = None;
 
         let uid = format!("{PLACED_PREFIX}{}", uuid::Uuid::new_v4());
-        let placed = held
-            .store
-            .roster("")
-            .iter()
-            .filter(|feature| feature.uid.starts_with(PLACED_PREFIX))
-            .count();
-        Draft::placed(uid, at, placed + 1, held.edit.channels.clone())
+        let made = held.made_here();
+        Draft::placed(uid, at, made + 1, held.edit.channels.clone())
     };
     redraw.emit(());
 
@@ -123,8 +125,10 @@ pub fn place(
     });
 }
 
-/// Saves what was typed about a marker.
+/// Saves what was typed about a marker or a drawing, and wherever the
+/// drawing's handles were dragged to.
 pub fn save(session: Rc<RefCell<Session>>, draft: Draft, redraw: Callback<()>) {
+    let draft = session.borrow().outlined(draft);
     let feature = match draft.publish() {
         Ok(feature) => feature,
         Err(problem) => {
@@ -146,7 +150,10 @@ pub fn save(session: Rc<RefCell<Session>>, draft: Draft, redraw: Callback<()>) {
         let mut held = session.borrow_mut();
         held.edit.busy = false;
         match published {
-            Ok(feature) => held.take(feature),
+            Ok(feature) => {
+                held.take(feature);
+                held.settle_outline();
+            }
             Err(err) => held.edit.problem = Some(err.to_string()),
         }
         drop(held);

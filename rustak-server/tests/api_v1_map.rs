@@ -18,7 +18,7 @@ use actix_web::body::MessageBody;
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
 use chrono::{DateTime, Duration, Utc};
-use rustak_api::{MapFeature, MapPoint, PublishFeature};
+use rustak_api::{MapFeature, MapPoint, MapShape, MapStyle, PublishFeature};
 use rustak_cot::codec::EncodedEvent;
 use rustak_cot::detail::{Chat, Contact, Element, Group};
 use rustak_cot::{CotTime, Event};
@@ -390,6 +390,9 @@ fn marker(callsign: &str, groups: &[&str]) -> PublishFeature {
         sidc: None,
         stale: None,
         groups: groups.iter().map(|group| (*group).to_string()).collect(),
+        shape: None,
+        ellipse: None,
+        style: None,
     }
 }
 
@@ -473,6 +476,71 @@ async fn a_marker_published_from_the_console_is_relayed_recorded_and_can_be_forg
         StatusCode::NOT_FOUND,
         "nothing is held any more"
     );
+}
+
+#[actix_web::test]
+async fn a_drawing_is_relayed_as_the_shape_a_tak_client_draws() {
+    let server = TestServer::start().await;
+    let (_, admin) = server.signed_in("grace", true).await;
+    let router = streaming(&server).await;
+    let app = app!(server);
+    let mut seen = router.tap().subscribe();
+
+    let ring = vec![[-0.12, 51.5], [-0.11, 51.5], [-0.11, 51.51], [-0.12, 51.5]];
+    let cordon = PublishFeature {
+        kind: "u-d-f".to_string(),
+        how: Some("h-e".to_string()),
+        shape: Some(MapShape::Polygon(vec![ring.clone()])),
+        style: Some(MapStyle {
+            stroke: Some("#ff0000".to_string()),
+            weight: Some(4.0),
+            fill: Some("#ff0000".to_string()),
+            fill_opacity: Some(0.5),
+        }),
+        ..marker("CORDON", &[])
+    };
+    let put = |uid: &str, draft: &PublishFeature| {
+        test::TestRequest::put()
+            .uri(&format!("/api/v1/map/features/{uid}"))
+            .insert_header(("authorization", bearer(&admin)))
+            .set_json(draft)
+            .to_request()
+    };
+
+    let drawn: MapFeature = test::call_and_read_body_json(&app, put("SHAPE-1", &cordon)).await;
+
+    assert_eq!(drawn.kind, "u-d-f");
+    assert_eq!(drawn.shape, Some(MapShape::Polygon(vec![ring])));
+    let style = drawn.style.expect("the colours came back");
+    assert_eq!(style.stroke.as_deref(), Some("#ff0000"));
+    assert!((style.fill_opacity.unwrap() - 0.5).abs() < 0.01);
+
+    // A device is sent the elements ATAK's own drawing tools write.
+    let relayed = seen.try_recv().expect("the tap saw the drawing");
+    let xml = String::from_utf8_lossy(relayed.encoded.xml());
+    assert!(xml.contains("<link point=\"51.5,-0.12\""), "{xml}");
+    assert!(xml.contains("<strokeColor value=\"-65536\""), "{xml}");
+
+    // An outline belongs to a drawing, and a drawing has one.
+    for (why, draft) in [
+        (
+            "a marker with an outline",
+            PublishFeature {
+                kind: "a-u-G".to_string(),
+                ..cordon.clone()
+            },
+        ),
+        (
+            "a drawing without one",
+            PublishFeature {
+                shape: None,
+                ..cordon.clone()
+            },
+        ),
+    ] {
+        let refused = test::call_service(&app, put("SHAPE-2", &draft)).await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST, "{why}");
+    }
 }
 
 #[actix_web::test]

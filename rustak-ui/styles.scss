@@ -3371,6 +3371,71 @@ footer {
       display: none;
     }
   }
+
+  // Seven tools, a fit and a status are wider than a phone: the groups wrap
+  // rather than run off it, and a wrapped group has no neighbour to be ruled
+  // off from.
+  @container map (max-width: 30rem) {
+    flex-wrap: wrap;
+    justify-content: center;
+    row-gap: 0.2rem;
+
+    &__group + &__group {
+      border-left: 0;
+    }
+  }
+}
+
+// What is said while something is being drawn, and what a finger has instead
+// of a double click: a note, with its buttons beside it.
+.map-sketch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.75rem;
+  padding: 0.35rem 0.5rem 0.35rem 0.75rem;
+  border: 1px solid $brand-tint-border;
+  border-radius: $radius;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: $shadow-sm;
+
+  &__hint {
+    flex: 1 1 12rem;
+    margin: 0;
+    font-size: 0.8rem;
+    color: $text-regular;
+  }
+
+  &__actions {
+    display: flex;
+    gap: 0.3rem;
+  }
+
+  &__action {
+    padding: 0.25rem 0.6rem;
+    border: 1px solid $border-base;
+    border-radius: $radius;
+    background: $bg-white;
+    font: inherit;
+    font-size: 0.78rem;
+    color: $text-primary;
+    cursor: pointer;
+
+    &:hover:not(:disabled) {
+      background: $fill-light;
+    }
+
+    &:focus-visible {
+      outline: 2px solid $brand;
+      outline-offset: 1px;
+    }
+
+    &:disabled {
+      color: $text-placeholder;
+      cursor: default;
+    }
+  }
 }
 
 // The object list over the corner of the map: a header that folds the whole
@@ -3845,6 +3910,59 @@ footer {
     margin: 0;
     font-size: 0.75rem;
     color: $text-secondary;
+
+    &--moved {
+      color: darken($warning, 15%);
+    }
+  }
+
+  // A drawing's colour: a row of swatches, each a radio button under its
+  // colour so that the keyboard and a screen reader have the real thing.
+  &__colors {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin: 0;
+    padding: 0.4rem 0.6rem 0.5rem;
+    border: 1px solid $border-lighter;
+    border-radius: $radius;
+
+    legend {
+      padding: 0 0.25rem;
+      font-size: 0.75rem;
+      color: $text-secondary;
+    }
+  }
+
+  &__color {
+    position: relative;
+    display: inline-flex;
+    cursor: pointer;
+
+    input {
+      position: absolute;
+      inset: 0;
+      margin: 0;
+      opacity: 0;
+      cursor: pointer;
+    }
+  }
+
+  &__swatch {
+    width: 1.5rem;
+    height: 1.5rem;
+    border: 2px solid $bg-white;
+    border-radius: 50%;
+    box-shadow: 0 0 0 1px $border-base;
+
+    input:checked + & {
+      box-shadow: 0 0 0 2px $brand;
+    }
+
+    input:focus-visible + & {
+      outline: 2px solid $brand;
+      outline-offset: 3px;
+    }
   }
 
   &__actions {

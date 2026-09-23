@@ -4,7 +4,7 @@
 //! device reports a team, and is a dot in that team's colour. Any other atom
 //! is its MIL-STD-2525 symbol, with an arrow when it is moving. Everything
 //! else — a spot marker, an alert, the anchor of a drawing — is a plain dot,
-//! and a drawing brings its outline with it.
+//! and a drawing brings its outline with it, in the colours its author chose.
 //!
 //! The output is GeoJSON with a handful of properties `js/map.js` styles from.
 //! Nothing here touches the browser, so all of it is tested natively.
@@ -22,6 +22,9 @@ const MOVING: f64 = 0.5;
 /// Arrows are drawn to the nearest this many degrees, so that an aircraft in a
 /// turn costs the map a few images rather than three hundred and sixty.
 const DIRECTION_STEP: f64 = 15.0;
+
+/// A TAK client's line weight as pixels here: ATAK's 4 is a line of 3.
+const WEIGHT_PIXELS: f64 = 0.75;
 
 /// The longest label drawn. A callsign is short; a remark pasted into one is not.
 const LABEL_CHARS: usize = 28;
@@ -57,9 +60,30 @@ pub fn draw(feature: &MapFeature, now: DateTime<Utc>) -> Value {
         "shape": feature.shape.as_ref().map(|shape| json!({
             "type": "Feature",
             "geometry": shape,
-            "properties": { "uid": feature.uid, "stale": stale, "color": color },
+            "properties": outline(feature, stale, color),
         })),
     })
+}
+
+/// How an outline is drawn: as its author asked, where they said, and as any
+/// drawing is where they did not. A key that is absent is `js/map.js`'s to
+/// fill in.
+fn outline(feature: &MapFeature, stale: bool, color: &str) -> Value {
+    let mut properties = json!({ "uid": feature.uid, "stale": stale, "color": color });
+
+    if let Some(style) = &feature.style {
+        if let Some(fill) = &style.fill {
+            properties["fill"] = json!(fill);
+        }
+        if let Some(opacity) = style.fill_opacity {
+            properties["fillOpacity"] = json!(opacity.clamp(0.0, 1.0));
+        }
+        if let Some(weight) = style.weight {
+            properties["width"] = json!((weight * WEIGHT_PIXELS).clamp(1.5, 8.0));
+        }
+    }
+
+    properties
 }
 
 /// The image a symbol is drawn with: `sidc:<code>[:<direction>[:<fallback>]]`.
@@ -113,18 +137,27 @@ fn label(feature: &MapFeature) -> Option<String> {
     (!callsign.is_empty()).then(|| callsign.chars().take(LABEL_CHARS).collect())
 }
 
-fn color(feature: &MapFeature) -> &'static str {
-    match &feature.team {
-        Some(team) => team_color(team),
-        None if feature.kind.starts_with("b-a-") => ALERT,
-        None if feature.shape.is_some() => DRAWING,
-        None => MARKER,
+fn color(feature: &MapFeature) -> &str {
+    // What its author drew it in comes before whose team they are on: a
+    // device's drawing carries its sender's `<__group>` like anything else.
+    let drawn = feature
+        .style
+        .as_ref()
+        .filter(|_| feature.shape.is_some())
+        .and_then(|style| style.stroke.as_deref());
+
+    match (drawn, &feature.team) {
+        (Some(drawn), _) => drawn,
+        (None, Some(team)) => team_color(team),
+        (None, None) if feature.kind.starts_with("b-a-") => ALERT,
+        (None, None) if feature.shape.is_some() => DRAWING,
+        (None, None) => MARKER,
     }
 }
 
 /// The colour a track is drawn in: the marker's own, except that a white
 /// team's line would vanish into the base map.
-pub(super) fn track_color(feature: &MapFeature) -> &'static str {
+pub(super) fn track_color(feature: &MapFeature) -> &str {
     match color(feature) {
         "#ffffff" => MARKER,
         color => color,
@@ -154,7 +187,7 @@ pub fn team_color(team: &str) -> &'static str {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use rustak_api::{MapPoint, MapShape};
 
     use super::*;
@@ -178,6 +211,8 @@ mod tests {
                 le: None,
             },
             shape: None,
+            ellipse: None,
+            style: None,
             course: None,
             speed: None,
             battery: None,
@@ -297,5 +332,43 @@ mod tests {
 
         assert_eq!(drawn["shape"]["geometry"]["type"], "LineString");
         assert_eq!(drawn["shape"]["properties"]["uid"], "UID-1");
+    }
+
+    #[test]
+    fn a_drawing_is_drawn_as_its_author_styled_it_whatever_team_they_are_on() {
+        let styled = MapFeature {
+            shape: Some(MapShape::Polygon(vec![vec![
+                [-0.12, 51.5],
+                [-0.11, 51.5],
+                [-0.11, 51.51],
+                [-0.12, 51.5],
+            ]])),
+            team: Some("Cyan".to_string()),
+            style: Some(rustak_api::MapStyle {
+                stroke: Some("#ff0000".to_string()),
+                weight: Some(4.0),
+                fill: Some("#00ff00".to_string()),
+                fill_opacity: Some(0.5),
+            }),
+            ..feature("u-d-f")
+        };
+
+        let drawn = draw(&styled, now());
+        let outline = &drawn["shape"]["properties"];
+        assert_eq!(outline["color"], "#ff0000");
+        assert_eq!(outline["fill"], "#00ff00");
+        assert_eq!(outline["fillOpacity"], 0.5);
+        assert_eq!(outline["width"], 3.0);
+
+        // With nothing said, the team's colour is as good a guess as any.
+        let unstyled = draw(
+            &MapFeature {
+                style: None,
+                ..styled
+            },
+            now(),
+        );
+        assert_eq!(unstyled["shape"]["properties"]["color"], team_color("Cyan"));
+        assert!(unstyled["shape"]["properties"].get("fill").is_none());
     }
 }
