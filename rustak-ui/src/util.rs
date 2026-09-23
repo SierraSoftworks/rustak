@@ -123,6 +123,18 @@ pub async fn copy_to_clipboard(value: &str) -> Result<(), String> {
     }
 }
 
+/// Whether the window is narrow enough that the stylesheet has turned the
+/// navigation into a drawer: a phone, or a tablet held upright. The same
+/// width as the stylesheet's own breakpoint, asked at the moment it matters
+/// rather than tracked, since what it decides is a default.
+pub fn narrow_screen() -> bool {
+    window()
+        .inner_width()
+        .ok()
+        .and_then(|width| width.as_f64())
+        .is_some_and(|width| width <= 860.0)
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::Duration;

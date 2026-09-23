@@ -50,6 +50,16 @@ pub fn properties(props: &PropertiesProps) -> Html {
         Callback::from(move |_: MouseEvent| onclose.emit(()))
     };
 
+    // Folded away to its heading, the panel still says what is in focus —
+    // and the focus, with its track and its playback, is untouched. On a
+    // phone the panel is a third of the map, and watching something move is
+    // the one time it is in the way.
+    let folded = use_state(|| false);
+    let onfold = {
+        let folded = folded.clone();
+        Callback::from(move |_: MouseEvent| folded.set(!*folded))
+    };
+
     html! {
         <article class="map-properties" aria-label={format!("Details for {name}")}>
             <header class="map-properties__head">
@@ -62,17 +72,30 @@ pub fn properties(props: &PropertiesProps) -> Html {
                         <code>{ feature.kind.clone() }</code>
                     </p>
                 </div>
-                <button
-                    type="button"
-                    class="map-properties__close"
-                    aria-label="Close"
-                    onclick={onclose}
-                >
-                    { "×" }
-                </button>
+                <div class="map-properties__buttons">
+                    <button
+                        type="button"
+                        class="map-properties__close"
+                        aria-label={if *folded { "Show the details" } else { "Hide the details" }}
+                        aria-expanded={(!*folded).to_string()}
+                        onclick={onfold}
+                    >
+                        { if *folded { "▸" } else { "▾" } }
+                    </button>
+                    <button
+                        type="button"
+                        class="map-properties__close"
+                        aria-label="Close"
+                        onclick={onclose}
+                    >
+                        { "×" }
+                    </button>
+                </div>
             </header>
 
-            <div class="map-properties__body">
+            // Hidden rather than unmounted, so that what was being typed is
+            // still there when it comes back.
+            <div class={classes!("map-properties__body", folded.then_some("map-properties__body--folded"))}>
                 if editable(feature) && !props.live {
                     <p class="map-properties__hint">{ "Return to live to edit this marker." }</p>
                 }

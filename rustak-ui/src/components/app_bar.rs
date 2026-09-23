@@ -1,6 +1,6 @@
 //! The persistent bar across the top of every admin view: the brand, who is
-//! signed in, and — on a screen too narrow for the sidebar — the button that
-//! opens the navigation.
+//! signed in, and the button that shows and hides the navigation — a drawer
+//! over the page on a narrow screen, a column beside it on a wide one.
 //!
 //! The navigation itself is not here. There are thirteen destinations and a
 //! top bar has room for about five, so the links live in a sidebar beside the
@@ -17,6 +17,12 @@ pub struct AppBarProps {
     /// to say so.
     #[prop_or_default]
     pub menu_open: bool,
+
+    /// Whether that button is closing a drawer laid over the page, and so
+    /// draws a cross. Beside the page, the navigation is folded away and
+    /// brought back by the same three lines.
+    #[prop_or_default]
+    pub drawer: bool,
 
     /// Asked to open or close the navigation drawer.
     #[prop_or_default]
@@ -74,7 +80,7 @@ pub fn app_bar(props: &AppBarProps) -> Html {
                     <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
                         aria-hidden="true">
-                        if props.menu_open {
+                        if props.menu_open && props.drawer {
                             <line x1="6" y1="6" x2="18" y2="18" />
                             <line x1="18" y1="6" x2="6" y2="18" />
                         } else {

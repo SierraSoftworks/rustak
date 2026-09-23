@@ -13,7 +13,7 @@ use rustak_api::MapFeature;
 use yew::prelude::*;
 
 use crate::components::TextInput;
-use crate::util::sidc;
+use crate::util::{narrow_screen, sidc};
 
 use super::roster::{ROSTER_ROWS, RosterEntry, roster_row};
 
@@ -98,7 +98,18 @@ pub struct ObjectListProps {
 #[function_component(ObjectList)]
 pub fn object_list(props: &ObjectListProps) -> Html {
     let folded = use_state(HashSet::<String>::new);
-    let hidden = use_state(|| false);
+    // On a phone the list is most of the map, so it starts folded and folds
+    // again once it has been used.
+    let hidden = use_state(narrow_screen);
+    let onselect = {
+        let (onselect, hidden) = (props.onselect.clone(), hidden.clone());
+        Callback::from(move |uid: String| {
+            if narrow_screen() {
+                hidden.set(true);
+            }
+            onselect.emit(uid);
+        })
+    };
 
     let toggle_panel = {
         let hidden = hidden.clone();
@@ -148,7 +159,7 @@ pub fn object_list(props: &ObjectListProps) -> Html {
                     <ul class="map-objects__rows">
                         { for group.entries.iter().map(|entry| {
                             let selected = props.selected.as_deref() == Some(entry.uid.as_str());
-                            roster_row(entry, selected, &props.onselect)
+                            roster_row(entry, selected, &onselect)
                         }) }
                     </ul>
                 }
