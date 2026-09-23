@@ -53,6 +53,7 @@ mod render;
 mod roster;
 mod session;
 mod store;
+mod symbols;
 mod toolbar;
 mod track;
 

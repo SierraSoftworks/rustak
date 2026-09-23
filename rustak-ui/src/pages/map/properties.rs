@@ -14,8 +14,9 @@ use yew::prelude::*;
 use crate::components::{Alert, AlertKind, Button, ButtonKind, ConfirmButton, TextArea, TextInput};
 use crate::util::{short_relative, sidc};
 
-use super::draft::{Draft, TYPES, editable};
+use super::draft::{Draft, editable};
 use super::facts::facts;
+use super::symbols::Identity;
 
 #[derive(Properties, PartialEq)]
 pub struct PropertiesProps {
@@ -177,6 +178,16 @@ fn editor(props: &EditorProps) -> Html {
             draft.set(next);
         })
     };
+    // Whose it is, what it is and what it is drawn as are one decision: see
+    // `symbols::fields`.
+    let identity = {
+        let draft = draft.clone();
+        Callback::from(move |(kind, sidc): (String, String)| {
+            let mut next = (*draft).clone();
+            (next.kind, next.sidc) = (kind, sidc);
+            draft.set(next);
+        })
+    };
     let toggle_channel = |channel: String| {
         let draft = draft.clone();
         Callback::from(move |_: Event| {
@@ -207,30 +218,11 @@ fn editor(props: &EditorProps) -> Html {
                 <span>{ "Name" }</span>
                 <TextInput id="marker-name" value={draft.callsign.clone()} onchange={field(|d, v| d.callsign = v)} />
             </label>
-            <label class="map-editor__field">
-                <span>{ "Type" }</span>
-                <TextInput
-                    id="marker-type"
-                    value={draft.kind.clone()}
-                    onchange={field(|d, v| d.kind = v)}
-                    list="marker-types"
-                    placeholder="a-u-G"
-                />
-                <datalist id="marker-types">
-                    { for TYPES.iter().map(|(kind, label)| html! {
-                        <option value={*kind} label={*label} />
-                    }) }
-                </datalist>
-            </label>
-            <label class="map-editor__field">
-                <span>{ "Symbol" }</span>
-                <TextInput
-                    id="marker-sidc"
-                    value={draft.sidc.clone()}
-                    onchange={field(|d, v| d.sidc = v)}
-                    placeholder="MIL-STD-2525 code, or leave to the type"
-                />
-            </label>
+            <Identity
+                kind={draft.kind.clone()}
+                sidc={draft.sidc.clone()}
+                onchange={identity}
+            />
             <div class="map-editor__row">
                 <label class="map-editor__field">
                     <span>{ "Latitude" }</span>

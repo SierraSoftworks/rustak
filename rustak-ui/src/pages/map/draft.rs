@@ -8,29 +8,6 @@
 
 use rustak_api::{MapFeature, MapPoint, PublishFeature};
 
-/// The types worth offering somebody placing a marker, and what to call them.
-/// A suggestion, not a constraint: any well-formed type is accepted.
-pub const TYPES: &[(&str, &str)] = &[
-    ("b-m-p-s-m", "Spot marker"),
-    ("b-m-p-w", "Waypoint"),
-    ("a-u-G", "Unknown · ground"),
-    ("a-u-A", "Unknown · air"),
-    ("a-u-S", "Unknown · sea surface"),
-    ("a-f-G", "Friendly · ground"),
-    ("a-f-G-U-C", "Friendly · ground unit"),
-    ("a-f-G-E-V", "Friendly · vehicle"),
-    ("a-f-A", "Friendly · air"),
-    ("a-f-S", "Friendly · sea surface"),
-    ("a-n-G", "Neutral · ground"),
-    ("a-n-S", "Neutral · sea surface"),
-    ("a-h-G", "Hostile · ground"),
-    ("a-h-G-E-V", "Hostile · vehicle"),
-    ("a-h-A", "Hostile · air"),
-    ("a-h-S", "Hostile · sea surface"),
-    ("b-a-o-tbl", "Alert · troops in contact"),
-    ("b-a-o-can", "Alert · cancel"),
-];
-
 /// The type a marker is placed as, until somebody says otherwise.
 pub const PLACED_TYPE: &str = "b-m-p-s-m";
 
@@ -173,7 +150,7 @@ fn number(text: &str, what: &str) -> Result<Option<f64>, String> {
 
 /// Whether text is shaped like a CoT type: dash-separated alphanumeric
 /// segments, the first one lower-case letter.
-fn well_formed_type(kind: &str) -> bool {
+pub(super) fn well_formed_type(kind: &str) -> bool {
     let mut segments = kind.split('-');
 
     matches!(segments.next(), Some(first) if first.len() == 1 && first.chars().all(|c| c.is_ascii_lowercase()))

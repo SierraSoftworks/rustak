@@ -14,6 +14,9 @@ use super::focus::Pick;
 extern "C" {
     type MapHandle;
 
+    #[wasm_bindgen(js_name = symbolUrl)]
+    fn symbol_url_js(code: &str, size: u32) -> String;
+
     #[wasm_bindgen(catch, js_name = createMap)]
     async fn create_map(
         container: &HtmlElement,
@@ -190,4 +193,13 @@ impl Drop for Map {
     fn drop(&mut self) {
         self.handle.destroy();
     }
+}
+
+/// A symbol as the address of an image of it, for a preview beside a row.
+///
+/// Empty for a code the drawing library cannot draw, and before the map has
+/// loaded the library at all — which is never while a marker is being edited,
+/// because the editor is part of the map.
+pub fn symbol_url(code: &str, size: u32) -> String {
+    symbol_url_js(code, size)
 }
