@@ -3866,6 +3866,16 @@ footer {
       display: none;
     }
   }
+}
+
+.map-popover {
+  // Never taller than the shortest the map can be, less the pop-over's own
+  // padding and tip, so that there is always somewhere it fits.
+  &__card {
+    min-width: 15rem;
+    max-height: 19rem;
+    overflow-y: auto;
+  }
 
   &__head {
     margin-bottom: 0.6rem;

@@ -124,9 +124,10 @@ const TICK_SECONDS: i64 = 2;
 
 /// Where a demo feature has been over the last `secago` seconds, oldest first.
 ///
-/// The two things that move have ten minutes of past, a fix every tick, on the
-/// same circuit and the same walk the feed continues; the rest have only where
-/// they are.
+/// The two things that move have fifteen minutes of past, a fix every tick,
+/// on the same circuit and the same walk the feed continues, less the five
+/// minutes the walker was out of coverage for; the rest have only where they
+/// are.
 pub fn map_history(uid: &str, secago: i64) -> Vec<MapFeature> {
     let span = secago.clamp(0, HISTORY_SECONDS);
     let fixes = (0..=span / TICK_SECONDS)

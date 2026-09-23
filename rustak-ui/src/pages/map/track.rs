@@ -60,12 +60,16 @@ impl Track {
     }
 
     /// The stretches over which the thing was tracked, oldest first: from the
-    /// first fix of each to the last, with the gaps between them being the
-    /// times a fix had gone stale before the next arrived.
+    /// first fix of each until its last went stale, because a fix is held to
+    /// be true until then. The gaps between them are the times a fix had gone
+    /// stale before the next arrived.
     pub fn windows(&self) -> Vec<(DateTime<Utc>, DateTime<Utc>)> {
         self.runs()
             .into_iter()
-            .map(|run| (self.fixes[run.start].time, self.fixes[run.end - 1].time))
+            .map(|run| {
+                let (first, last) = (&self.fixes[run.start], &self.fixes[run.end - 1]);
+                (first.time, last.stale.max(last.time))
+            })
             .collect()
     }
 
@@ -314,11 +318,12 @@ mod tests {
         assert_eq!(
             interrupted().windows(),
             [
-                (at("12:00:00"), at("12:02:00")),
-                (at("13:00:00"), at("13:01:00")),
-            ]
+                (at("12:00:00"), at("12:04:00")),
+                (at("13:00:00"), at("13:03:00")),
+            ],
+            "each lasts until its last fix went stale"
         );
-        assert_eq!(track().windows(), [(at("12:00:00"), at("12:02:00"))]);
+        assert_eq!(track().windows(), [(at("12:00:00"), at("12:04:00"))]);
         assert!(Track::new("A", Vec::new()).windows().is_empty());
     }
 
@@ -366,6 +371,8 @@ mod tests {
         assert_eq!(track.resume(at("12:30:00")), at("13:00:00"));
         assert_eq!(track.resume(at("12:01:30")), at("12:01:30"));
         assert_eq!(track.resume(at("12:02:00")), at("12:02:00"));
+        // The last fix of a window is still held to be true.
+        assert_eq!(track.resume(at("12:03:00")), at("12:03:00"));
         assert_eq!(track.resume(at("14:00:00")), at("14:00:00"));
     }
 }
