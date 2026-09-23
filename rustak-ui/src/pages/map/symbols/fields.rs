@@ -95,10 +95,14 @@ pub fn identity(props: &IdentityProps) -> Html {
                 <label for="marker-affiliation">{ "Affiliation" }</label>
                 <Select
                     id="marker-affiliation"
-                    value={codes::is_atom(&kind).then(|| AttrValue::from(whose.cot))}
+                    value={codes::frame_of(&kind).map(|named| AttrValue::from(named.cot))}
                     {options}
                     onchange={on_whose}
-                    placeholder="Not something that has one"
+                    placeholder={match codes::is_atom(&kind) {
+                        // `a-o` and `a-x`: an atom, drawn as unknown, that names nobody.
+                        true => "None specified",
+                        false => "Not something that has one",
+                    }}
                     disabled={!codes::is_atom(&kind)}
                 />
             </div>

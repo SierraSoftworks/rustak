@@ -53,18 +53,22 @@ pub const AFFILIATIONS: [Affiliation; 9] = [
 /// What a marker is until somebody says whose it is.
 pub const UNKNOWN: Affiliation = AFFILIATIONS[1];
 
-/// The affiliation a CoT type names, and unknown for anything else — a spot
-/// marker, or CoT's own "none specified" and "other", which have no frame.
-pub fn affiliation_of(kind: &str) -> Affiliation {
+/// The affiliation a CoT type names in so many words. [`None`] for anything
+/// that is not an atom, and for CoT's own "none specified" (`a-o`) and "other"
+/// (`a-x`), which are atoms that say nothing about whose they are.
+pub fn frame_of(kind: &str) -> Option<Affiliation> {
     let mut parts = kind.split('-');
 
     match (parts.next(), parts.next()) {
-        (Some("a"), Some(cot)) => AFFILIATIONS
-            .into_iter()
-            .find(|known| known.cot == cot)
-            .unwrap_or(UNKNOWN),
-        _ => UNKNOWN,
+        (Some("a"), Some(cot)) => AFFILIATIONS.into_iter().find(|known| known.cot == cot),
+        _ => None,
     }
+}
+
+/// The affiliation something is *drawn* as: the one its type names, and
+/// unknown for a type that names none, which is the frame 2525 gives it.
+pub fn affiliation_of(kind: &str) -> Affiliation {
+    frame_of(kind).unwrap_or(UNKNOWN)
 }
 
 /// Whether a type is an atom, which is the only kind that has an affiliation.
@@ -110,7 +114,11 @@ pub fn sidc(edition: Symbology, whose: Affiliation, row: &str) -> String {
 }
 
 /// The same symbol as somebody else's, in whichever edition it is written.
-/// Anything that is neither is left as it is.
+/// Anything that is not a code is left as it is.
+///
+/// 2525E's thirty digits open with the same ten as 2525D's twenty — version,
+/// context, standard identity — so a code in either keeps step with the type
+/// even though only 2525D has a catalogue here.
 pub fn resided(code: &str, whose: Affiliation) -> String {
     let replaced = |at: usize, with: char| {
         code.chars()
@@ -118,15 +126,18 @@ pub fn resided(code: &str, whose: Affiliation) -> String {
             .map(|(index, column)| if index == at { with } else { column })
             .collect()
     };
+    let digits = code.chars().all(|digit| digit.is_ascii_digit());
 
-    match edition_of(code) {
-        Some(Symbology::Milstd2525C) => replaced(1, whose.letter),
-        Some(Symbology::Milstd2525D) => replaced(3, whose.identity),
-        None => code.to_string(),
+    match code.len() {
+        15 if code.is_ascii() => replaced(1, whose.letter),
+        20 | 30 if digits => replaced(3, whose.identity),
+        _ => code.to_string(),
     }
 }
 
-/// Which edition a code is written in, going by its shape.
+/// Which edition's catalogue a code belongs in, going by its shape. [`None`]
+/// for a 2525E code as much as for nonsense: it is a code, and is kept and
+/// drawn as one, but there is no list here to find it in.
 pub fn edition_of(code: &str) -> Option<Symbology> {
     match code.len() {
         15 if code.is_ascii() => Some(Symbology::Milstd2525C),
@@ -185,6 +196,11 @@ mod tests {
         for (code, expected) in [
             ("SFGPUCI--------", "SHGPUCI--------"),
             ("10031000001211000000", "10061000001211000000"),
+            // 2525E: no catalogue here, and still somebody's.
+            (
+                "130310000012110000000000000000",
+                "130610000012110000000000000000",
+            ),
             ("not a code", "not a code"),
         ] {
             assert_eq!(resided(code, HOSTILE), expected);
@@ -205,5 +221,11 @@ mod tests {
         }
 
         assert!(is_atom("a-u-G") && !is_atom("b-m-p-w"));
+
+        // An atom that names nobody is drawn as unknown without claiming to be.
+        assert_eq!(frame_of("a-h-G"), Some(HOSTILE));
+        assert_eq!(frame_of("a-o-G"), None);
+        assert_eq!(frame_of("b-m-p-s-m"), None);
+        assert_eq!(edition_of("130310000012110000000000000000"), None);
     }
 }
