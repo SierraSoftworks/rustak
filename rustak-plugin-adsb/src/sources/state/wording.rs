@@ -105,9 +105,25 @@ pub fn changed(name: &str, change: Change, floor: Duration) -> String {
             humanised(interval),
             humanised(floor),
         ),
-        Change::Eased { interval, after } => format!(
-            "Back to polling {name} every {} after {after} clean polls.",
+        Change::Eased {
+            interval,
+            after,
+            over,
+        } => format!(
+            "Back to polling {name} every {} after {after} clean polls ({}).",
             humanised(interval),
+            humanised(over),
+        ),
+        Change::ProbeRefused {
+            interval,
+            rung,
+            retry_after,
+        } => format!(
+            "Polling {name} every {} again: {} was refused (429). It will be tried again after \
+             {retry_after} clean polls (about {}).",
+            humanised(interval),
+            humanised(rung),
+            humanised(interval.saturating_mul(u32::try_from(retry_after).unwrap_or(u32::MAX))),
         ),
     }
 }
@@ -194,10 +210,24 @@ mod tests {
                 Change::Eased {
                     interval: seconds(10),
                     after: 60,
+                    over: seconds(900),
                 },
                 seconds(10),
             ),
-            "Back to polling adsb.lol every 10s after 60 clean polls.",
+            "Back to polling adsb.lol every 10s after 60 clean polls (15m00s).",
+        );
+        assert_eq!(
+            changed(
+                "adsb.lol",
+                Change::ProbeRefused {
+                    interval: seconds(35),
+                    rung: seconds(23),
+                    retry_after: 120,
+                },
+                seconds(10),
+            ),
+            "Polling adsb.lol every 35s again: 23s was refused (429). It will be tried again \
+             after 120 clean polls (about 1h10m).",
         );
     }
 }

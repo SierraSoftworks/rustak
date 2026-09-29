@@ -27,6 +27,10 @@
 //!   as much again, up to [`MAX_ADAPTED`], and [`CLEAN_RUN`] polls in a row
 //!   that nobody refused earn one step back down.
 //!
+//! A step down that the provider refuses is remembered, and the clean run before
+//! that rung is tried again doubles each time (`probe`), so a provider with a
+//! real limit between two rungs is not asked the same question every hour.
+//!
 //! The second rule is reversible because the number in it is our own guess,
 //! and a guess made permanent is how a feed slows itself to a crawl over a week
 //! of flaky minutes.
@@ -37,6 +41,7 @@
 //! writes "asked us to wait" about a delay the provider did not state.
 
 mod cadence;
+mod probe;
 mod wording;
 
 use std::time::Duration;
@@ -755,6 +760,60 @@ mod tests {
             "it never runs away upwards, and never goes back to 10s against this provider",
         );
         assert_eq!(refusals(settling), 3);
+    }
+
+    /// Polls until the simulated clock reaches `until` seconds after `at(0)`.
+    fn drive_until(state: &mut SourceState, provider: &mut Grudging, until: i64) -> Vec<Outcome> {
+        let mut outcomes = Vec::new();
+
+        while state.next_attempt < at(until) {
+            outcomes.extend(drive(state, provider, 1));
+        }
+
+        outcomes
+    }
+
+    #[test]
+    fn a_provider_whose_budget_is_30s_settles_at_35s_and_is_refused_rarely_over_a_day() {
+        // Before M10-05 the probe to 23s came every sixty clean polls for ever:
+        // about 2.4 refusals an hour. Now each refused probe doubles the wait.
+        let mut provider = Grudging::tolerating(30);
+        let mut state = polling_every(10);
+
+        let outcomes = drive_until(&mut state, &mut provider, 24 * 3600);
+
+        assert!(
+            refusals(&outcomes) < 24,
+            "{} refusals in a day is one an hour or more",
+            refusals(&outcomes),
+        );
+        assert!(
+            outcomes.iter().filter(|(_, i)| i.as_secs() == 35).count() * 10 > outcomes.len() * 9,
+            "it rests at 35s nearly all of the day",
+        );
+        assert!(
+            outcomes.iter().all(|(_, i)| i.as_secs() >= 10),
+            "never below the floor",
+        );
+        assert!(state.interval() >= provider.tolerates);
+    }
+
+    #[test]
+    fn a_provider_that_relaxes_its_limit_is_followed_down_within_the_cap() {
+        let mut provider = Grudging::tolerating(30);
+        let mut state = polling_every(10);
+
+        drive_until(&mut state, &mut provider, 8 * 3600);
+        assert_eq!(state.interval(), Duration::from_secs(35));
+
+        provider.tolerates = Duration::from_secs(5);
+
+        // The longest wait to the next probe is the cap (three hours at 35s),
+        // and each rung after it needs one ordinary clean run: 23s, 15s, 10s.
+        let outcomes = drive_until(&mut state, &mut provider, 8 * 3600 + 3 * 3600 + 3 * 3600);
+
+        assert_eq!(state.interval(), Duration::from_secs(10));
+        assert_eq!(refusals(&outcomes), 0, "nothing refused once it relaxed");
     }
 
     #[test]

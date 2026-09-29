@@ -118,14 +118,18 @@ So a flaky minute costs a quarter of an hour of polling slightly slower, and a
 provider that keeps refusing settles at the rate it will actually tolerate —
 which, for adsb.lol, is the number nobody publishes. Every sixty clean polls the
 source tries one step faster; if that is refused twice it steps back, which is
-the price of noticing when a limit has gone away.
+the price of noticing when a limit has gone away. A step the provider refused is
+remembered, and each time it refuses the same one the clean run before it is
+tried again doubles (60 polls, 120, 240 …, about three hours at most); a step
+that holds forgets, and a restart or a changed `poll` starts afresh.
 
 What reaches the log, each of them once per change rather than once per `429`:
 
 ```
 The ADS-B source refused a request (429) without naming a delay; waiting 20s before the next one.
 Polling adsb.lol every 15s after repeated rate limits (429) that named no delay; this eases back towards 10s after 60 clean polls.
-Back to polling adsb.lol every 10s after 60 clean polls.
+Back to polling adsb.lol every 10s after 60 clean polls (10m00s).
+Polling adsb.lol every 35s again: 23s was refused (429). It will be tried again after 120 clean polls (about 1h10m).
 ```
 
 and, from a provider that does say how long:

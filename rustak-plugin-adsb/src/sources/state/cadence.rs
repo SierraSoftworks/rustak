@@ -35,11 +35,22 @@
 //! a provider that keeps refusing settles at the rate it will actually tolerate
 //! — which is the number nobody published.
 //!
+//! # And it does not keep asking a question it has had answered
+//!
+//! The step down after a clean run is an experiment. When the provider refuses
+//! it, the rung is remembered (see `probe`) and the next clean run required
+//! before trying it again doubles, every time, up to about three hours at the
+//! resting interval. A provider whose real limit sits between two rungs is
+//! therefore probed less and less often instead of every [`CLEAN_RUN`] polls for
+//! ever.
+//!
 //! An operator's `poll` is the **floor** of all this, not a pin: it is where a
 //! source starts and the fastest it will ever come back to, and server
 //! behaviour may put the effective cadence above it.
 
 use std::time::Duration;
+
+use super::probe::Probes;
 
 /// How many polls apart two refusals may be and still be one rate limit
 /// rather than two bad minutes.
@@ -92,6 +103,20 @@ pub enum Change {
         interval: Duration,
         /// How many clean polls in a row earned it.
         after: u64,
+        /// How long those polls took, at the interval they were made at.
+        over: Duration,
+    },
+
+    /// The step down was refused within a few polls, so the source is back
+    /// where it was, and knows not to try that rung again for a while.
+    ProbeRefused {
+        /// The interval now in use, which is the one before the probe.
+        interval: Duration,
+        /// The rung the provider refused.
+        rung: Duration,
+        /// How many clean polls at [`Self::ProbeRefused::interval`] must pass
+        /// before that rung is tried again.
+        retry_after: u64,
     },
 }
 
@@ -100,9 +125,10 @@ impl Change {
     #[must_use]
     pub const fn interval(self) -> Duration {
         match self {
-            Self::Stated(interval) | Self::Raised(interval) | Self::Eased { interval, .. } => {
-                interval
-            }
+            Self::Stated(interval)
+            | Self::Raised(interval)
+            | Self::Eased { interval, .. }
+            | Self::ProbeRefused { interval, .. } => interval,
         }
     }
 }
@@ -131,6 +157,9 @@ pub struct Cadence {
 
     /// The last [`RECENT_POLLS`] outcomes, one bit each, refusals set.
     recent: u32,
+
+    /// The step down being tried, and the rung that last refused one.
+    probes: Probes,
 }
 
 impl Cadence {
@@ -145,6 +174,7 @@ impl Cadence {
             limited_at: None,
             clean: 0,
             recent: 0,
+            probes: Probes::new(),
         }
     }
 
@@ -182,22 +212,39 @@ impl Cadence {
         self.record(false);
         self.clean = self.clean.saturating_add(1);
 
-        if self.clean < CLEAN_RUN {
+        // A full run at the rung being probed is the provider tolerating it.
+        if self.clean >= CLEAN_RUN {
+            self.probes.held();
+        }
+
+        let eased = eased(self.effective).max(self.floor());
+        let required = if eased < self.effective {
+            self.probes.required(eased, self.effective)
+        } else {
+            CLEAN_RUN
+        };
+
+        if self.clean < required {
             return None;
         }
 
         let after = std::mem::replace(&mut self.clean, 0);
-        let eased = eased(self.effective).max(self.floor());
 
         if eased >= self.effective {
             return None;
         }
 
+        let over = self
+            .effective
+            .saturating_mul(u32::try_from(after).unwrap_or(u32::MAX));
+
         self.effective = eased;
+        self.probes.began(eased);
 
         Some(Change::Eased {
             interval: eased,
             after,
+            over,
         })
     }
 
@@ -273,6 +320,7 @@ impl Cadence {
         }
 
         self.effective = stated;
+        self.probes.forget();
 
         Some(Change::Stated(stated))
     }
@@ -287,7 +335,16 @@ impl Cadence {
 
         self.effective = raised;
 
-        Some(Change::Raised(raised))
+        // Raised while a step down was still on trial: that is the provider
+        // refusing the probe, and the rung is not to be tried again soon.
+        Some(match self.probes.refused(raised) {
+            Some((rung, retry_after)) => Change::ProbeRefused {
+                interval: raised,
+                rung,
+                retry_after,
+            },
+            None => Change::Raised(raised),
+        })
     }
 
     /// Counts one poll, and remembers whether it was refused.
@@ -319,6 +376,7 @@ fn eased(from: Duration) -> Duration {
 
 #[cfg(test)]
 mod tests {
+    use super::super::probe::MAX_WAIT;
     use super::*;
 
     fn cadence() -> Cadence {
@@ -410,7 +468,7 @@ mod tests {
 
         assert_eq!(cadence.effective(), Duration::from_secs(23));
 
-        for expected in [15, 10] {
+        for (expected, from) in [(15, 23), (10, 15)] {
             let change = (0..CLEAN_RUN).find_map(|_| cadence.succeeded());
 
             assert_eq!(
@@ -418,6 +476,7 @@ mod tests {
                 Some(Change::Eased {
                     interval: Duration::from_secs(expected),
                     after: CLEAN_RUN,
+                    over: Duration::from_secs(from * CLEAN_RUN),
                 }),
             );
         }
@@ -488,6 +547,7 @@ mod tests {
             Some(Change::Eased {
                 interval: Duration::from_secs(20),
                 after: CLEAN_RUN,
+                over: Duration::from_secs(30 * CLEAN_RUN),
             }),
         );
         assert_eq!(
@@ -634,5 +694,179 @@ mod tests {
             Duration::from_secs(15),
             "an upstream we could not reach says nothing about its rate limit",
         );
+    }
+    /// A cadence that climbed to 35s against a provider whose limit is 30s.
+    fn resting_at_35() -> Cadence {
+        let mut cadence = cadence();
+
+        refused_twice(&mut cadence, None);
+
+        for _ in 0..2 {
+            cadence.refused(None);
+        }
+
+        assert_eq!(cadence.effective(), Duration::from_secs(35));
+
+        cadence
+    }
+
+    /// Cleanly polls until the cadence eases, answering how many polls that took.
+    fn clean_until_eased(cadence: &mut Cadence) -> (u64, Duration) {
+        for polls in 1..=100_000 {
+            if let Some(change) = cadence.succeeded() {
+                return (polls, change.interval());
+            }
+        }
+
+        panic!("never eased");
+    }
+
+    /// The probe is refused: two refusals, which is what raises the cadence.
+    fn refuse_the_probe(cadence: &mut Cadence) -> Option<Change> {
+        assert_eq!(cadence.refused(None), None);
+        cadence.refused(None)
+    }
+
+    #[test]
+    fn each_consecutive_refused_probe_of_a_rung_doubles_the_clean_run_before_it_is_tried_again() {
+        let mut cadence = resting_at_35();
+
+        assert_eq!(
+            clean_until_eased(&mut cadence),
+            (CLEAN_RUN, Duration::from_secs(23)),
+            "the first probe is exactly as M9-12 specified",
+        );
+
+        for expected in [120, 240] {
+            assert_eq!(
+                refuse_the_probe(&mut cadence),
+                Some(Change::ProbeRefused {
+                    interval: Duration::from_secs(35),
+                    rung: Duration::from_secs(23),
+                    retry_after: expected,
+                }),
+            );
+            assert_eq!(
+                clean_until_eased(&mut cadence),
+                (expected, Duration::from_secs(23)),
+            );
+        }
+    }
+
+    #[test]
+    fn the_wait_is_capped_at_a_few_hours_at_the_resting_interval() {
+        let mut cadence = resting_at_35();
+
+        for _ in 0..12 {
+            clean_until_eased(&mut cadence);
+            refuse_the_probe(&mut cadence);
+        }
+
+        let (polls, _) = clean_until_eased(&mut cadence);
+
+        assert_eq!(polls, MAX_WAIT.as_secs() / 35, "three hours of 35s polls");
+    }
+
+    #[test]
+    fn a_probe_that_holds_forgets_the_refusals_before_it() {
+        let mut cadence = resting_at_35();
+
+        clean_until_eased(&mut cadence);
+        refuse_the_probe(&mut cadence);
+        assert_eq!(clean_until_eased(&mut cadence).0, 120);
+
+        // This time the provider tolerates 23s: a full clean run holds it, and
+        // the next step down (15s) is an ordinary probe.
+        assert_eq!(
+            clean_until_eased(&mut cadence),
+            (CLEAN_RUN, Duration::from_secs(15)),
+        );
+
+        // Refused there, gets back to 23s and, having held it, eases at 60.
+        assert_eq!(
+            refuse_the_probe(&mut cadence),
+            Some(Change::ProbeRefused {
+                interval: Duration::from_secs(23),
+                rung: Duration::from_secs(15),
+                retry_after: 120,
+            }),
+        );
+        assert_eq!(clean_until_eased(&mut cadence).0, 120);
+        assert_eq!(clean_until_eased(&mut cadence).0, CLEAN_RUN);
+    }
+
+    #[test]
+    fn a_refusal_while_resting_is_not_a_refused_probe() {
+        let mut cadence = resting_at_35();
+
+        // Not on a probe: an ordinary climb, and the ordinary way back down.
+        assert_eq!(
+            cadence.refused(None),
+            Some(Change::Raised(Duration::from_secs(53))),
+        );
+        assert_eq!(
+            clean_until_eased(&mut cadence),
+            (CLEAN_RUN, Duration::from_secs(35)),
+        );
+    }
+
+    #[test]
+    fn a_different_rung_being_refused_starts_its_own_count() {
+        let mut cadence = resting_at_35();
+
+        clean_until_eased(&mut cadence);
+        refuse_the_probe(&mut cadence);
+        assert_eq!(clean_until_eased(&mut cadence).0, 120);
+        assert_eq!(clean_until_eased(&mut cadence).0, CLEAN_RUN);
+
+        assert_eq!(
+            refuse_the_probe(&mut cadence).map(Change::interval),
+            Some(Duration::from_secs(23)),
+        );
+    }
+
+    #[test]
+    fn a_refused_probe_never_takes_the_cadence_below_the_floor_or_a_stated_delay() {
+        let mut cadence = resting_at_35();
+
+        // The provider now says how long, twice: 40s. Everything learnt about
+        // rungs is beside the point, and 40s is where it stays.
+        cadence.refused(Some(Duration::from_secs(40)));
+        cadence.refused(Some(Duration::from_secs(40)));
+
+        for _ in 0..(CLEAN_RUN * 20) {
+            assert_eq!(cadence.succeeded(), None);
+        }
+
+        assert_eq!(cadence.effective(), Duration::from_secs(40));
+        assert_eq!(cadence.floor(), Duration::from_secs(40));
+    }
+
+    #[test]
+    fn a_stated_delay_during_a_probe_is_honoured_as_before() {
+        let mut cadence = resting_at_35();
+
+        clean_until_eased(&mut cadence);
+        cadence.refused(Some(Duration::from_secs(30)));
+
+        assert_eq!(
+            cadence.refused(Some(Duration::from_secs(30))),
+            Some(Change::Stated(Duration::from_secs(30))),
+        );
+        assert_eq!(cadence.effective(), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn the_ceiling_is_unchanged_by_refused_probes() {
+        let mut cadence = Cadence::new(Duration::from_secs(80));
+
+        refused_twice(&mut cadence, None);
+        assert_eq!(cadence.effective(), Duration::from_secs(120));
+
+        for _ in 0..5 {
+            clean_until_eased(&mut cadence);
+            refuse_the_probe(&mut cadence);
+            assert!(cadence.effective() <= MAX_ADAPTED);
+        }
     }
 }
