@@ -1,0 +1,9 @@
+# M10-10 — Two small follow-ups: certificate refusals at the right level, and the harness counters in the plugin guide
+
+**Read first:** `M10-00-wave-rules.md`; status for M9-07 (the bearer path's demotion) and M9-13; `rustak-server/src/auth/{cert,bearer}.rs` (or wherever `auth.resolve.bearer` lives) and `AuthFailure`; `docs/plugins.md`; the rustdoc of `SidecarContext::stream_stats` and `with_first_connect_hold` in `rustak-client`.
+
+**Deliver.**
+1. **`auth.resolve.cert` logs by cause** (`rustak-server/src/auth/cert.rs:48`, `#[instrument(…, err(Debug))]` logs every failure at ERROR). A routine refusal — an unknown, expired or revoked certificate presented at the HTTP layer — is not an error in the server; a failed read (`AuthFailure::Unavailable`) and a mismatch an operator has to look at (the case the function's rustdoc describes) are. Follow the way M9-07 treated `auth.resolve.bearer`: enumerate `AuthFailure`'s variants, give each a level (`debug` for routine refusals, `warn` for the mismatch, `error` for unavailable), log once per failure with the fingerprint and no certificate material, and drop `err(Debug)` so nothing is logged twice. Unit-test the level per variant if the existing tests have a way to capture events (`tracing-batteries`' `testing` feature is enabled); otherwise test the mapping function.
+2. **`docs/plugins.md`, one paragraph under the harness section** describing `SidecarContext::stream_stats()` (`published`, `discarded`, `discarded_before_first_connection`: what each counts and when a plugin author would read them) and `with_first_connect_hold` (what the hold is for, the production default, why a test sets it). Take the facts from the rustdoc and the code, not from this brief.
+
+**Files you own:** `rustak-server/src/auth/cert.rs` and its tests, `docs/plugins.md` (the harness section only — M10-01 and M10-03 edit other sections of the same file), your status note.

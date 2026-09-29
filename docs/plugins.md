@@ -397,6 +397,23 @@ a server, if you point the sidecar's `[server] stream` at a listener of your
 own. That is how `rustak-client`'s own harness test proves connect → receive →
 publish → drop → reconnect.
 
+The harness counts what became of the events your sidecar returned, and
+`SidecarContext::stream_stats()` hands you those counts (shared with the running
+harness, so a clone taken before `drive` reads the live values). `published` is
+the events handed to a CoT stream connection that was up, counted before the
+batch is flushed, so anything a peer has received is already in it. `discarded`
+is the events dropped because there was no connection to write them on, and
+`discarded_before_first_connection` is the part of that dropped before the
+stream had connected even once. It is zero on a clean start, because the harness
+holds the first tick until the first connection is up (or the hold runs out).
+Read them from `health` to report a feed that is producing but not reaching
+anyone, and in a test to assert *what happened* to a batch instead of how long
+it took. `with_first_connect_hold(Duration)` sets how long that first tick waits;
+production uses ten seconds and a deployment has no reason to change it, which is
+why it is not a configuration key. A test sets it generously (the server's own
+feed tests use two minutes) so that a slow host cannot make the handshake miss
+the hold and turn a clean start into discarded events.
+
 ## Registering with the server
 
 Set `[server] control` and the harness does three things for you:

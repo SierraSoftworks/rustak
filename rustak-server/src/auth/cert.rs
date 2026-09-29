@@ -45,8 +45,33 @@ use super::resolve::{AuthFailure, Resolved};
 /// the common name claims, which is a mismatch an operator has to look at
 /// rather than something a client can fix by reconnecting;
 /// [`AuthFailure::Unavailable`] when a read fails.
-#[instrument("auth.resolve.cert", skip_all, fields(fingerprint = %peer.fingerprint), err(Debug))]
+// No `err(Debug)`: it logged every refusal a second time at `error`, and most
+// are routine (an unknown, expired or revoked certificate). Each refusal is
+// logged once, where it is decided and at the level its cause deserves;
+// `log_unsaid` covers the failures no site below has words for.
+#[instrument("auth.resolve.cert", skip_all, fields(fingerprint = %peer.fingerprint))]
 pub async fn client_cert<S: Services>(
+    services: &S,
+    peer: &PeerCertificate,
+) -> Result<Resolved, AuthFailure> {
+    resolve(services, peer).await.inspect_err(log_unsaid)
+}
+
+/// Logs the failures that are not announced where they are decided: a read of
+/// ours that failed is an error, and a rate limit is routine.
+fn log_unsaid(failure: &AuthFailure) {
+    match failure {
+        AuthFailure::Unavailable(err) => {
+            error!(error = ?err, "Could not resolve a client certificate.");
+        }
+        AuthFailure::RateLimited(retry_after) => {
+            debug!(%retry_after, "Refused a client certificate: rate limited.");
+        }
+        AuthFailure::Rejected | AuthFailure::Forbidden(_) => {}
+    }
+}
+
+async fn resolve<S: Services>(
     services: &S,
     peer: &PeerCertificate,
 ) -> Result<Resolved, AuthFailure> {
