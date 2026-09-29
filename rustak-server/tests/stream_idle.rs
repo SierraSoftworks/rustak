@@ -26,7 +26,7 @@ use rustak_server::pki::RevokeReason;
 use rustak_server::prelude::Services as _;
 use rustak_server::stream::{LeaveReason, StreamMetrics};
 
-use stream_support::{EXPECT, Harness};
+use stream_support::{EXPECT, Harness, expect_closed};
 
 const BOTH: Direction = Direction::Both;
 
@@ -154,11 +154,9 @@ async fn a_client_that_neither_sends_nor_receives_is_reclaimed_as_idle() {
         .await;
     await_connections(&harness, 1).await;
 
-    let ended = alpha.expect(|_| true, SETTLE).await;
-    assert!(
-        ended.is_err(),
-        "the connection should be reclaimed, not carry on: {ended:?}",
-    );
+    // Reclaimed, not carrying on — and seen to end, rather than a wait that
+    // ran out of time counting as an error like any other.
+    expect_closed(&mut alpha).await;
 
     await_count(harness.live.metrics(), LeaveReason::Idle, 1).await;
     await_connections(&harness, 0).await;

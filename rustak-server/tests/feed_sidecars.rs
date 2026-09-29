@@ -327,6 +327,16 @@ async fn one_vessel_reported_ten_times_in_a_second_is_published_once() {
 
     assert_eq!(published.callsign(), Some("ZEEBRUGGE"));
 
+    // A count, not a silence: the link counts each event as it is fed, and
+    // flushes only after the whole batch, so by the time the first of a batch
+    // reaches the device every one of them has been counted. Nine repeats let
+    // through would read ten here on any host.
+    assert_eq!(
+        feed.stream.published(),
+        1,
+        "the first tick's batch carried the vessel once",
+    );
+
     // `min_interval` is five seconds and the sidecar ticks every second, so
     // nothing more is due for several ticks yet.
     feed.eud
@@ -342,9 +352,16 @@ async fn a_feed_publishes_nothing_for_a_track_outside_its_area() {
     // The area is what the source subscribes with *and* what the publisher
     // re-checks, because an upstream that widens its box is not a reason for a
     // channel to fill up with the Atlantic.
+    //
+    // The outsider goes *first* in the fixture. A replay offers the whole file
+    // on every tick, in order; the publisher keeps that order and the link
+    // writes a batch down one connection in it. So had it been let through, it
+    // would reach the device ahead of the vessels inside the box, and a device
+    // that has read all five of those without seeing it has seen it refused —
+    // an ordering, which a slow host cannot fake, rather than 400 ms of
+    // silence, which it can.
     let directory = tempfile::tempdir().expect("a directory for the fixture");
-    let mut tracks = vessels();
-    tracks.push(
+    let mut tracks = vec![
         Track::new(
             "AIS-999000111",
             TrackKind::Vessel(VesselClass::Merchant),
@@ -352,7 +369,8 @@ async fn a_feed_publishes_nothing_for_a_track_outside_its_area() {
             Utc::now(),
         )
         .with_callsign("GIBRALTAR"),
-    );
+    ];
+    tracks.extend(vessels());
     let (_, source) = replay_settings(&directory, &tracks);
     let settings = format!(
         "{source}\n[settings.area]\nkind = \"bbox\"\nsouth = 51.7\nwest = 3.6\nnorth = 52.3\neast = 4.7\n",
@@ -360,20 +378,21 @@ async fn a_feed_publishes_nothing_for_a_track_outside_its_area() {
 
     let mut feed = RunningFeed::start::<AisSidecar>("ais", &settings).await;
 
-    feed.eud
-        .expect_uid("AIS-244660000", EXPECT)
-        .await
-        .expect("a vessel inside the box arrives");
+    let mut inside: Vec<String> = vessels().into_iter().map(|track| track.id).collect();
 
-    let outsider = feed
-        .eud
-        .expect(
-            |event| event.uid == "AIS-999000111",
-            Duration::from_millis(400),
-        )
-        .await;
+    while !inside.is_empty() {
+        let vessel = feed
+            .eud
+            .expect(|event| event.uid.starts_with("AIS-"), EXPECT)
+            .await
+            .expect("the vessels inside the box arrive");
 
-    assert!(outsider.is_err(), "the Strait of Gibraltar is not the Maas");
+        assert_ne!(
+            vessel.uid, "AIS-999000111",
+            "the Strait of Gibraltar is not the Maas",
+        );
+        inside.retain(|uid| *uid != vessel.uid);
+    }
 
     feed.stop().await;
 }
@@ -454,18 +473,21 @@ async fn the_ais_sidecar_publishes_what_a_receiver_sends_it_over_udp() {
     // and connects first — and a datagram sent into an unbound port lands
     // nowhere, so the first two are repeated until one is heard. Repeating them
     // costs nothing: a vessel that has not moved is suppressed.
+    //
+    // Until a deadline, not for a number of rounds: forty rounds of 250 ms was
+    // ten seconds for the sidecar to enrol, connect and bind, which is a bet on
+    // the host. The 250 ms is only how often to resend: a position that reaches
+    // the device after it is read on the next round.
+    let deadline = tokio::time::Instant::now() + EXPECT;
     let mut first = None;
-    for _ in 0..40 {
+    while first.is_none() && tokio::time::Instant::now() < deadline {
         transmit(&sender, listen, &[aivdm::POSITION, aivdm::CLASS_B]).await;
 
-        if let Ok(event) = feed
+        first = feed
             .eud
             .expect_uid("AIS-244660000", Duration::from_millis(250))
             .await
-        {
-            first = Some(event);
-            break;
-        }
+            .ok();
     }
 
     let first = first.expect("the class A position arrives");

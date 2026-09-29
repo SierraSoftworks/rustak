@@ -353,220 +353,424 @@ mod tests {
         assert!(opened.is_ok());
     }
 
-    /// How long a test is prepared to wait for something that should be
-    /// immediate, before calling it a failure.
-    const SOON: std::time::Duration = std::time::Duration::from_secs(5);
+    /// The feed's timeouts, on a clock the test holds.
+    ///
+    /// What is under test here is time — a feed that goes silent is ended, one
+    /// kept alive by comments is not, nothing cuts a feed for being old, and a
+    /// server that never answers is given up on — so these used to run on real
+    /// timers against a real socket, and a scheduling stall as long as the
+    /// shortest of them failed them (M9-13, then `36f22293`, which widened the
+    /// margins without removing the cause).
+    ///
+    /// Now the clock is tokio's paused one, and **it never moves on its own**.
+    /// A paused clock normally jumps to the next timer whenever the runtime has
+    /// nothing to do — which, with real loopback I/O in flight, can fire a
+    /// timeout before bytes already on their way are read. So nothing here is
+    /// simply `.await`ed: [`frozen`] polls a future and yields between polls,
+    /// and a runtime with a task to yield to never idles, so it never advances
+    /// the clock. The only thing that moves it is `tokio::time::advance`,
+    /// called by the test. `reqwest`'s own connect, read and total timeouts are
+    /// `tokio::time` sleeps (checked in its source, 0.13.5), so they run on
+    /// this clock too.
+    ///
+    /// Real time is still spent waiting for loopback I/O, and a slow host
+    /// spends more of it — but no timer can fire while it does, so how long it
+    /// takes cannot change what the test sees. [`HUNG`] is the only real-time
+    /// bound, and it is there to fail a hung test, not to measure one.
+    ///
+    /// Every client here is built by the production constructors
+    /// ([`ControlClient::new`], [`http::client`]), so the numbers asserted are
+    /// the shipped ones — [`FEED_IDLE_TIMEOUT`], [`CONNECT_TIMEOUT`] and
+    /// [`DEFAULT_TIMEOUT`] — at no cost in wall time.
+    mod timeouts {
+        use std::future::Future;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::task::Poll;
+        use std::time::Duration;
 
-    /// An SSE server that writes what it is told, when it is told to.
-    ///
-    /// `wiremock` answers a body in one go, and what is under test here is a
-    /// response that is written over time and then not written to at all — so
-    /// this is HTTP by hand, on a plain socket. The body has no length and no
-    /// chunking: an HTTP/1.1 response with neither runs until the connection
-    /// closes, which is exactly what a feed is.
-    ///
-    /// The connection is **never closed** by this server, so the only thing
-    /// that can end a stream reading from it is the client's own timeout.
-    async fn sse_server(
-        script: Vec<(std::time::Duration, &'static str)>,
-    ) -> (String, tokio::task::JoinHandle<()>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::time::{Instant, advance};
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("an ephemeral port");
-        let address = listener.local_addr().expect("the bound address");
+        use super::*;
+        use crate::http::{self, CONNECT_TIMEOUT, DEFAULT_TIMEOUT, FEED_IDLE_TIMEOUT, Trust};
 
-        let handle = tokio::spawn(async move {
-            let Ok((mut socket, _)) = listener.accept().await else {
-                return;
-            };
+        /// How much *real* time a frozen wait gets before the test is called
+        /// hung. Nothing is compared against it.
+        const HUNG: Duration = Duration::from_secs(60);
 
-            // Enough of the request to know it arrived; the path is the only
-            // one this server serves.
-            let mut request = [0u8; 1024];
-            let _ = socket.read(&mut request).await;
+        /// How often the server writes its keep-alive comment into an idle
+        /// feed (`KEEPALIVE`, in the server's `web::api::events`).
+        const KEEPALIVE: Duration = Duration::from_secs(20);
 
-            if socket
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n\r\n",
-                )
-                .await
-                .is_err()
-            {
-                return;
+        /// The comment itself.
+        const COMMENT: &str = ": keep-alive\n\n";
+
+        /// The distance either side of a deadline.
+        const TICK: Duration = Duration::from_millis(1);
+
+        /// Drives `future` to completion without letting the clock move.
+        ///
+        /// Asserts that it did not: a clock that moved here would be exactly
+        /// the auto-advance these tests are built to rule out.
+        async fn frozen<F: Future>(future: F) -> F::Output {
+            let mut future = std::pin::pin!(future);
+            let at = Instant::now();
+            let deadline = std::time::Instant::now() + HUNG;
+
+            loop {
+                if let Poll::Ready(output) = futures::poll!(future.as_mut()) {
+                    assert_eq!(Instant::now(), at, "the clock moved on its own");
+
+                    return output;
+                }
+
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "nothing happened for {HUNG:?} of real time: the test is hung",
+                );
+                tokio::task::yield_now().await;
+            }
+        }
+
+        /// The service identity every client here runs as.
+        fn identity() -> ServiceIdentity {
+            ServiceIdentity::new(ServiceName::parse("weather").unwrap())
+        }
+
+        /// A control client built exactly as a sidecar builds one.
+        fn production(base: &str) -> ControlClient {
+            ControlClient::new(base, &identity()).expect("a production control client")
+        }
+
+        /// A feed, and a count of the body bytes that have reached it.
+        ///
+        /// The count is what lets a test know a keep-alive comment has been
+        /// *read* — the stream skips comments, so nothing else shows it — and
+        /// it is taken outside `reqwest`'s body, so a byte counted here is one
+        /// that has already reset the read timeout.
+        struct Feed {
+            stream: EventStream,
+            received: Arc<AtomicUsize>,
+        }
+
+        impl Feed {
+            /// Opens the feed through `control`, with the clock held.
+            async fn open(control: &ControlClient) -> Self {
+                let mut stream = frozen(control.events(None)).await.expect("the feed opens");
+                let received = Arc::new(AtomicUsize::new(0));
+                let counted = Arc::clone(&received);
+
+                let body = std::mem::replace(&mut stream.body, Box::pin(futures::stream::empty()));
+                stream.body = Box::pin(body.inspect(move |chunk| {
+                    if let Ok(bytes) = chunk {
+                        counted.fetch_add(bytes.len(), Ordering::SeqCst);
+                    }
+                }));
+
+                Self { stream, received }
             }
 
-            for (after, body) in script {
-                tokio::time::sleep(after).await;
+            /// The next event's id, with the clock held.
+            async fn next(&mut self) -> Option<u64> {
+                frozen(self.stream.next()).await.map(|event| event.id)
+            }
 
-                if socket.write_all(body.as_bytes()).await.is_err() {
+            /// Reads until `bytes` of body have arrived in all, insisting that
+            /// the stream neither ends nor yields an event meanwhile.
+            async fn read_through(&mut self, bytes: usize) {
+                let at = Instant::now();
+                let deadline = std::time::Instant::now() + HUNG;
+
+                while self.received.load(Ordering::SeqCst) < bytes {
+                    if let Poll::Ready(item) = futures::poll!(self.stream.next()) {
+                        panic!(
+                            "the feed should have stayed open and quiet, and it yielded {:?}",
+                            item.map(|event| event.id),
+                        );
+                    }
+
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the server's bytes never arrived: the test is hung",
+                    );
+                    tokio::task::yield_now().await;
+                }
+
+                assert_eq!(Instant::now(), at, "the clock moved on its own");
+            }
+
+            /// Whether the feed is still open, having given everything already
+            /// due — a timer the clock has passed, most of all — the chance to
+            /// happen.
+            ///
+            /// A timer fires in the runtime's own bookkeeping as soon as the
+            /// clock is past it, not when some I/O completes, so a feed that
+            /// should have been cut is seen to be cut here however slow the
+            /// host: this is not a race against anything.
+            async fn is_open(&mut self) -> bool {
+                for _ in 0..16 {
+                    if let Poll::Ready(item) = futures::poll!(self.stream.next()) {
+                        assert!(item.is_none(), "an event nobody sent");
+
+                        return false;
+                    }
+
+                    tokio::task::yield_now().await;
+                }
+
+                true
+            }
+        }
+
+        /// An SSE server that writes what it is told, when it is told to.
+        ///
+        /// `wiremock` answers a body in one go, and what is under test here is
+        /// a response written over time and then not written to at all — so
+        /// this is HTTP by hand, on a plain socket. The body has no length and
+        /// no chunking: an HTTP/1.1 response with neither runs until the
+        /// connection closes, which is exactly what a feed is.
+        ///
+        /// Each delay is a `tokio::time` sleep, so the script runs on the
+        /// test's clock: nothing is written until the test advances it. The
+        /// connection is **never closed**, so the only thing that can end a
+        /// stream reading from it is the client's own timeout.
+        async fn sse_server(
+            script: Vec<(Duration, String)>,
+        ) -> (String, tokio::task::JoinHandle<()>) {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("an ephemeral port");
+            let address = listener.local_addr().expect("the bound address");
+
+            let handle = tokio::spawn(async move {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+
+                // Enough of the request to know it arrived; the path is the
+                // only one this server serves.
+                let mut request = [0u8; 1024];
+                let _ = socket.read(&mut request).await;
+
+                if socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n\r\n",
+                    )
+                    .await
+                    .is_err()
+                {
                     return;
                 }
-                let _ = socket.flush().await;
+
+                for (after, body) in script {
+                    tokio::time::sleep(after).await;
+
+                    if socket.write_all(body.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    let _ = socket.flush().await;
+                }
+
+                // Held open, and silent: the client decides when this is over.
+                std::future::pending::<()>().await;
+            });
+
+            (format!("http://{address}"), handle)
+        }
+
+        /// One event, in the SSE wire format.
+        fn frame(id: u64) -> String {
+            format!(
+                "id: {id}\nevent: channel.changed\ndata: {{\"id\":{id},\"at\":\"2026-09-22T00:00:00.000Z\",\"type\":\"channel.changed\",\"username\":\"ada\"}}\n\n",
+            )
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_feed_that_goes_silent_is_ended_at_the_idle_timeout_and_not_before() {
+            // Something has to notice a connection that is up and dead, since
+            // nothing bounds the feed's total length. That is the read timeout:
+            // no byte at all — not even a keep-alive comment — for
+            // `FEED_IDLE_TIMEOUT`, and the stream ends so the caller reopens.
+            let (base, server) = sse_server(vec![(Duration::ZERO, frame(3))]).await;
+            let mut feed = Feed::open(&production(&base)).await;
+
+            assert_eq!(feed.next().await, Some(3));
+
+            advance(FEED_IDLE_TIMEOUT - TICK).await;
+            assert!(
+                feed.is_open().await,
+                "a feed is not dead until the whole idle timeout has passed",
+            );
+
+            advance(TICK).await;
+            assert!(
+                !feed.is_open().await,
+                "no byte for the idle timeout is a dead feed",
+            );
+
+            server.abort();
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn keepalive_comments_hold_a_silent_feed_open_past_the_idle_timeout() {
+            // The reason the idle timeout is three keep-alives and not one: an
+            // installation where nothing happens for an hour still has a feed,
+            // and a client that reopened it every twenty seconds would be the
+            // bug the feed client fixed, wearing a different number.
+            let mut script = vec![(KEEPALIVE, COMMENT.to_string()); 5];
+            script.push((KEEPALIVE, frame(9)));
+            let (base, server) = sse_server(script).await;
+            let mut feed = Feed::open(&production(&base)).await;
+            let opened = Instant::now();
+
+            for sent in 1..=5 {
+                advance(KEEPALIVE).await;
+                feed.read_through(sent * COMMENT.len()).await;
             }
 
-            // Held open, and silent: the client decides when this is over.
-            std::future::pending::<()>().await;
-        });
+            assert!(
+                Instant::now() - opened > FEED_IDLE_TIMEOUT,
+                "the comments alone have to outlast the idle timeout for this to prove anything",
+            );
 
-        (format!("http://{address}"), handle)
-    }
+            advance(KEEPALIVE).await;
+            assert_eq!(
+                feed.next().await,
+                Some(9),
+                "the feed stays open across two minutes of nothing but comments",
+            );
 
-    /// A feed against `base`, read through `http`.
-    async fn feed_over(base: &str, http: reqwest::Client) -> EventStream {
-        let identity = ServiceIdentity::new(ServiceName::parse("weather").unwrap());
+            server.abort();
+        }
 
-        ControlClient::with_http(base, reqwest::Client::new(), &identity)
-            .unwrap()
-            .with_feed_http(http)
-            .events(None)
-            .await
-            .unwrap()
-    }
+        #[tokio::test(start_paused = true)]
+        async fn a_feed_has_no_total_timeout_where_an_ordinary_call_would_be_cut() {
+            // The production finding. `reqwest`'s `timeout` is a deadline on the
+            // whole exchange, body included, so the client the heartbeat uses
+            // cut every feed at thirty seconds — a reopening every 31s, two
+            // sidecars, 74 server log lines in two and a half minutes, nothing
+            // wrong.
+            //
+            // First the feed a sidecar opens: an hour of keep-alives and then
+            // an event, which nothing along the way may have cut.
+            let hour = 180;
+            let mut script = vec![(KEEPALIVE, COMMENT.to_string()); hour];
+            script.push((KEEPALIVE, frame(7)));
+            let (base, server) = sse_server(script).await;
+            let mut feed = Feed::open(&production(&base)).await;
 
-    /// One event, `id` seconds into the SSE wire format.
-    fn frame(id: u64) -> String {
-        format!(
-            "id: {id}\nevent: channel.changed\ndata: {{\"id\":{id},\"at\":\"2026-09-22T00:00:00.000Z\",\"type\":\"channel.changed\",\"username\":\"ada\"}}\n\n",
-        )
-    }
+            for sent in 1..=hour {
+                advance(KEEPALIVE).await;
+                feed.read_through(sent * COMMENT.len()).await;
+            }
 
-    #[tokio::test]
-    async fn a_feed_outlives_the_total_timeout_an_ordinary_call_carries() {
-        // The production finding. `reqwest`'s `timeout` is a deadline on the
-        // whole exchange, body included, so the client the heartbeat uses cut
-        // every feed at thirty seconds — a reopening every 31s, two sidecars,
-        // 74 server log lines in two and a half minutes, nothing wrong.
-        //
-        // Asserted in a second or two rather than in thirty: the numbers are
-        // injected, the behaviour is the same one.
-        //
-        // The total timeout also bounds *opening* the feed (connect plus the
-        // response headers), so it is a whole second and not a few scheduler
-        // quanta: a loaded CI runner stalls for hundreds of milliseconds, and
-        // what is asserted is the ordering of these two, not their size.
-        let late = std::time::Duration::from_secs(2);
-        let total = std::time::Duration::from_secs(1);
+            advance(KEEPALIVE).await;
+            assert_eq!(
+                feed.next().await,
+                Some(7),
+                "an hour-old feed is still a feed"
+            );
 
-        let (base, server) = sse_server(vec![(late, Box::leak(frame(7).into_boxed_str()))]).await;
+            server.abort();
 
-        let feed = reqwest::Client::builder()
-            .read_timeout(std::time::Duration::from_secs(5))
-            .build()
-            .unwrap();
-        let mut stream = feed_over(&base, feed).await;
+            // And the other half, so that the first proves something: the same
+            // kind of feed read through the ordinary client — which is what a
+            // `ControlClient` with no feed client of its own falls back to — is
+            // cut at `DEFAULT_TIMEOUT`, although a byte arrived ten seconds
+            // before and that client has no read timeout to trip.
+            let (base, server) = sse_server(vec![
+                (KEEPALIVE, COMMENT.to_string()),
+                (KEEPALIVE, frame(7)),
+            ])
+            .await;
+            let ordinary = http::client(&identity(), Trust::Public, DEFAULT_TIMEOUT)
+                .expect("the ordinary client");
+            let control = ControlClient::with_http(&base, ordinary, &identity()).unwrap();
+            let mut feed = Feed::open(&control).await;
 
-        let arrived = tokio::time::timeout(SOON, stream.next())
-            .await
-            .expect("the feed should still be open");
+            advance(KEEPALIVE).await;
+            feed.read_through(COMMENT.len()).await;
 
-        assert_eq!(
-            arrived.map(|event| event.id),
-            Some(7),
-            "an event later than the total timeout has to survive a client an ordinary call would have cut",
-        );
+            advance(DEFAULT_TIMEOUT - KEEPALIVE - TICK).await;
+            assert!(feed.is_open().await, "not cut before the total timeout");
 
-        server.abort();
+            advance(TICK).await;
+            assert!(!feed.is_open().await, "a total timeout cuts the body");
 
-        // And the other half: the same feed read through a client carrying a
-        // total timeout is cut before the event arrives, which is what this
-        // stopped doing.
-        let (base, server) = sse_server(vec![(late, Box::leak(frame(7).into_boxed_str()))]).await;
-        let ordinary = reqwest::Client::builder().timeout(total).build().unwrap();
-        let mut stream = feed_over(&base, ordinary).await;
+            server.abort();
+        }
 
-        let cut = tokio::time::timeout(SOON, stream.next())
-            .await
-            .expect("the timeout should end the stream rather than hang it");
-
-        assert!(cut.is_none(), "a total timeout cuts the body");
-
-        server.abort();
-    }
-
-    #[tokio::test]
-    async fn a_feed_that_stops_sending_keepalives_is_ended_rather_than_held_open() {
-        // The other half of having no total deadline: something has to notice a
-        // connection that is up and dead. That is the read timeout, which every
-        // keep-alive comment resets — so a feed that has genuinely stopped
-        // speaking is reopened, and an idle one that is still being kept alive
-        // is left alone.
-        //
-        // The read timeout also bounds *opening* the feed (connect plus the
-        // response headers), so it has to outlast a scheduling stall on a
-        // loaded CI runner. What is asserted is that silence ends the stream,
-        // not how quickly, so it only needs to sit well under `SOON`.
-        let idle = std::time::Duration::from_secs(1);
-        let (base, server) = sse_server(vec![(
-            std::time::Duration::ZERO,
-            Box::leak(frame(3).into_boxed_str()),
-        )])
-        .await;
-
-        let http = reqwest::Client::builder()
-            .read_timeout(idle)
-            .build()
-            .unwrap();
-        let mut stream = feed_over(&base, http).await;
-
-        assert_eq!(
-            tokio::time::timeout(SOON, stream.next())
+        #[tokio::test(start_paused = true)]
+        async fn opening_a_feed_is_bounded_by_the_connect_timeout() {
+            // With no total deadline, the connect timeout is what stands between
+            // a sidecar and a server that takes the connection and never
+            // answers: here, one that accepts TCP and never says a word of TLS.
+            // It has to be given up on at `CONNECT_TIMEOUT` — not at the idle
+            // timeout, which is longer, and not never.
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
                 .await
-                .expect("the first event arrives")
-                .map(|event| event.id),
-            Some(3),
-        );
+                .expect("an ephemeral port");
+            let address = listener.local_addr().expect("the bound address");
+            let (accepted, mut taken) = tokio::sync::oneshot::channel();
 
-        let ended = tokio::time::timeout(SOON, stream.next())
-            .await
-            .expect("silence has to end the stream, not hang it");
+            let server = tokio::spawn(async move {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let _ = accepted.send(());
 
-        assert!(
-            ended.is_none(),
-            "no byte for the idle timeout is a dead feed"
-        );
+                // Reads the ClientHello and whatever follows, and answers none
+                // of it.
+                let mut sink = [0u8; 4096];
+                while matches!(socket.read(&mut sink).await, Ok(read) if read > 0) {}
+                std::future::pending::<()>().await;
+            });
 
-        server.abort();
-    }
+            let control = production(&format!("https://{address}"));
+            let started = Instant::now();
+            let mut opening = std::pin::pin!(control.events(None));
 
-    #[tokio::test]
-    async fn a_keepalive_comment_keeps_a_silent_feed_open() {
-        // The reason the idle timeout is three keep-alives and not one: an
-        // installation where nothing at all happens for an hour still has a
-        // feed, and a client that reopened it every twenty seconds would be
-        // the bug this milestone fixed wearing a different number.
-        //
-        // The margin a slow host gets is `idle - tick`, and `idle` also bounds
-        // opening the feed, so both are large; the ratio is what matters.
-        let idle = std::time::Duration::from_millis(1600);
-        let tick = std::time::Duration::from_millis(400);
-        let (base, server) = sse_server(vec![
-            (tick, ": keep-alive\n\n"),
-            (tick, ": keep-alive\n\n"),
-            (tick, ": keep-alive\n\n"),
-            (tick, ": keep-alive\n\n"),
-            (tick, ": keep-alive\n\n"),
-            (tick, Box::leak(frame(9).into_boxed_str())),
-        ])
-        .await;
+            // Until the connection has been taken, so that the connect timer is
+            // certainly running from the instant the test holds.
+            frozen(async {
+                loop {
+                    assert!(
+                        futures::poll!(opening.as_mut()).is_pending(),
+                        "the open ended before the server had even accepted",
+                    );
 
-        let http = reqwest::Client::builder()
-            .read_timeout(idle)
-            .build()
-            .unwrap();
-        let mut stream = feed_over(&base, http).await;
+                    if taken.try_recv().is_ok() {
+                        return;
+                    }
 
-        // 2.4s of silence but for the comments, against a 1.6s idle timeout.
-        assert_eq!(
-            tokio::time::timeout(SOON, stream.next())
-                .await
-                .expect("the feed stays open across the comments")
-                .map(|event| event.id),
-            Some(9),
-        );
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await;
 
-        server.abort();
+            advance(CONNECT_TIMEOUT - TICK).await;
+            for _ in 0..16 {
+                assert!(
+                    futures::poll!(opening.as_mut()).is_pending(),
+                    "given up on before the connect timeout",
+                );
+                tokio::task::yield_now().await;
+            }
+
+            advance(TICK).await;
+            let refused = frozen(opening).await;
+
+            assert!(refused.is_err(), "a server that never answers is an error");
+            assert_eq!(
+                Instant::now() - started,
+                CONNECT_TIMEOUT,
+                "and the connect timeout is what ended it, well before the idle timeout",
+            );
+            assert!(CONNECT_TIMEOUT < FEED_IDLE_TIMEOUT);
+
+            server.abort();
+        }
     }
 
     #[tokio::test]

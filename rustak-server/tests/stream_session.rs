@@ -16,7 +16,7 @@ use rustak_cot::types::cot_type;
 use rustak_server::pki::RevokeReason;
 use rustak_server::prelude::Services as _;
 
-use stream_support::{EXPECT, Harness, SETTLE, settle};
+use stream_support::{EXPECT, Harness, SETTLE, expect_closed, settle};
 
 const BOTH: Direction = Direction::Both;
 
@@ -305,12 +305,9 @@ async fn revoking_a_certificate_ends_the_session_it_bought() {
         .await
         .expect("the certificate is taken back");
 
-    let ended = alpha.expect(|_| true, EXPECT).await;
-
-    assert!(
-        ended.is_err(),
-        "the connection should end, not carry on: {ended:?}",
-    );
+    // The connection has to *end*: a wait that merely timed out used to pass
+    // this as readily as a closed socket did.
+    expect_closed(&mut alpha).await;
 
     harness.stop().await;
 }
@@ -356,11 +353,15 @@ async fn a_certificate_from_another_authority_never_reaches_the_application() {
         .await
         .expect("the TCP connection is made; the handshake is what fails");
 
-    assert!(
-        stream.expect(|_| true, SETTLE).await.is_err(),
+    // Refused, and seen to be: a wait that ran out of time counted as an error
+    // too, so this passed against a server that let the certificate in and
+    // then simply sent nothing.
+    expect_closed(&mut stream).await;
+    assert_eq!(
+        harness.live.connected(),
+        0,
         "a certificate from another authority must never become a subscription",
     );
-    assert_eq!(harness.live.connected(), 0);
 
     harness.stop().await;
 }
@@ -407,12 +408,8 @@ async fn switching_an_account_off_ends_the_session_it_already_had() {
 
     assert_eq!(closed, 1, "the open connection is what had to be closed");
 
-    let ended = alpha.expect(|_| true, EXPECT).await;
-
-    assert!(
-        ended.is_err(),
-        "a disabled account's connection should end, not carry on: {ended:?}",
-    );
+    // A disabled account's connection has to end, not carry on.
+    expect_closed(&mut alpha).await;
     assert_eq!(harness.live.connected(), 0);
 
     harness.stop().await;

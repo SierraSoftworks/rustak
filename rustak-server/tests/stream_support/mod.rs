@@ -16,6 +16,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::StreamExt;
 use rustak_api::identity::{Direction, GroupName, Username};
 use rustak_api::{MembershipSource, UserKind};
 use rustak_client::stream::testing::Eud;
@@ -27,13 +28,27 @@ use rustak_server::pki::{Enrollment, IssuedVia, Pki, pem_certificate};
 use rustak_server::prelude::*;
 use rustak_server::stream::{LiveState, StreamRuntime, mission_hook};
 
-/// How long a test waits for a message it expects.
-pub const EXPECT: Duration = Duration::from_secs(5);
+/// How long a test waits for something that is coming before calling it hung.
+///
+/// A hung-wait, not a measurement: a passing test returns the moment the thing
+/// arrives, so this costs nothing when green, and it is long enough that no
+/// healthy host reaches it. It used to be five seconds, and in `feed_sidecars`
+/// that was measured from a sidecar's spawn across its registration, its
+/// handshake and its first tick — the next thing to fail as CI runners slowed
+/// (M9-13, M10-08). Nothing may compare an elapsed time against it, and nothing
+/// may treat reaching it as a pass: a wait for a connection to *end* goes
+/// through [`expect_closed`], which fails on a timeout rather than counting it
+/// as an error like any other.
+pub const EXPECT: Duration = Duration::from_secs(60);
 
 /// How long a test waits to be sure a message is *not* coming.
 ///
 /// Short on purpose: every negative assertion pays it, and the positive path it
-/// is racing against is a loopback socket and a hash-map lookup.
+/// is racing against is a loopback socket and a hash-map lookup. It is only
+/// ever a negative: a slow host can make a leak arrive after it, and so pass a
+/// test it should have failed, but never fail one that should pass. Waiting
+/// for something that *will* come — the protocol negotiation [`settle`] pumps,
+/// most of all — takes [`EXPECT`].
 pub const SETTLE: Duration = Duration::from_millis(400);
 
 /// A running stream listener and everything needed to connect to it.
@@ -312,9 +327,16 @@ impl Harness {
         Eud::connect(&config, callsign).await
     }
 
-    /// Waits until `count` clients are registered, or gives up.
+    /// Waits until `count` clients are registered, or gives up after
+    /// [`EXPECT`].
+    ///
+    /// Bounded by a deadline rather than a number of polls: two hundred polls
+    /// of ten milliseconds was two seconds on a quick host and a bet on a slow
+    /// one.
     pub async fn await_connected(&self, count: usize) {
-        for _ in 0..200 {
+        let deadline = tokio::time::Instant::now() + EXPECT;
+
+        while tokio::time::Instant::now() < deadline {
             if self.live.connected() >= count {
                 return;
             }
@@ -328,9 +350,11 @@ impl Harness {
         );
     }
 
-    /// Waits until the hub has seen a callsign, or gives up.
+    /// Waits until the hub has seen a callsign, or gives up after [`EXPECT`].
     pub async fn await_callsign(&self, callsign: &str) {
-        for _ in 0..200 {
+        let deadline = tokio::time::Instant::now() + EXPECT;
+
+        while tokio::time::Instant::now() < deadline {
             if self
                 .live
                 .snapshot()
@@ -369,10 +393,69 @@ impl Identity {
 /// and `Eud::send` polls the write half. Nothing drives the *read* half until a
 /// test asks for a message, which is why the negotiation a test wants to assert
 /// on has to be pumped explicitly rather than assumed.
+///
+/// Pumped until the encoding is **settled** — the server offers on every
+/// connection, and the client either takes protobuf or stays on XML — and only
+/// then for [`SETTLE`] of quiet. It used to be the quiet alone, which made
+/// [`SETTLE`] an upper bound on the negotiation: a host slow enough to answer
+/// the offer after 400 ms left the mode assertion that follows reading `Xml`.
 pub async fn settle(eud: &mut Eud) {
+    let deadline = tokio::time::Instant::now() + EXPECT;
+
+    while !eud.stream().negotiation().is_settled() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{} never settled its encoding: still {:?}",
+            eud.callsign(),
+            eud.stream().negotiation(),
+        );
+
+        // Polled in short slices, because settling yields nothing: the offer
+        // and the answer are control traffic the stream consumes, so the only
+        // sign of them is the state checked above.
+        match tokio::time::timeout(Duration::from_millis(20), eud.stream_mut().next()).await {
+            Err(_) => {}
+            Ok(None) => panic!("{}'s connection closed while settling", eud.callsign()),
+            Ok(Some(Err(err))) => panic!(
+                "{}'s connection failed while settling: {err}",
+                eud.callsign()
+            ),
+            Ok(Some(Ok(event))) => panic!(
+                "nothing but control traffic while settling, and {} was sent a '{}' from {}",
+                eud.callsign(),
+                event.r#type,
+                event.uid,
+            ),
+        }
+    }
+
     eud.expect_none(SETTLE)
         .await
         .expect("nothing but control traffic while settling");
+}
+
+/// Waits for the server to end `eud`'s connection, and answers how it ended.
+///
+/// Fails if anything arrives first, and — unlike asserting `is_err()` on an
+/// [`Eud::expect`] — fails if nothing happens at all: a timeout is an error
+/// too, so that assertion passed, after however long the wait was, against a
+/// server that never closed the connection.
+pub async fn expect_closed(eud: &mut Eud) -> rustak_client::stream::StreamError {
+    use rustak_client::stream::StreamError;
+
+    match eud.expect(|_| true, EXPECT).await {
+        Ok(event) => panic!(
+            "{}'s connection should have ended, and it was sent a '{}' from {}",
+            eud.callsign(),
+            event.r#type,
+            event.uid,
+        ),
+        Err(err @ (StreamError::Timeout(_) | StreamError::RxTimeout)) => panic!(
+            "{}'s connection should have ended, and was still open: {err}",
+            eud.callsign(),
+        ),
+        Err(ended) => ended,
+    }
 }
 
 /// A telemetry session that records into memory.
