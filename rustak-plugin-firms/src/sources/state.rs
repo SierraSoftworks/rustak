@@ -6,16 +6,24 @@
 //! happened to tell an administrator whether the feed is fine, struggling or
 //! has never worked at all.
 //!
-//! This is the only place in the crate that logs a **state change**: the first
-//! failure of a run at `warn`, the recovery at `info`, and everything between
-//! at `debug`. FIRMS is polled every few minutes, so that is already quiet; the
-//! reminder machinery the ADS-B and AIS plugins carry for second-by-second
-//! feeds would be weight without a purpose here.
+//! This is the only place in the crate that logs a **state change**. Each of
+//! the two things that go on for a while — FIRMS not answering, and FIRMS
+//! saying "not so fast" — is a [`Repeated`] run, the same as in the ADS-B and
+//! AIS plugins: one line when it starts, one every [`REMIND_EVERY`] at most
+//! while it lasts, one when it is over, and `debug` for every attempt between.
+//!
+//! # `poll` is a floor, not a pin
+//!
+//! The interval is the fastest FIRMS is asked. A `Retry-After` it states is
+//! honoured above it, up to [`MAX_BACKOFF`]; a `429` that states none is waited
+//! out on twice the interval, and said to be our own guess.
 
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use rustak_core::prelude::*;
+
+use super::notice::{REMIND_EVERY, Repeated, Report, humanised};
 
 /// The longest the source waits between attempts, however many have failed.
 ///
@@ -39,6 +47,13 @@ pub struct SourceState {
     last_error: Option<String>,
     next_attempt: DateTime<Utc>,
     rate_limited: u64,
+
+    /// The run of failures, so an outage is announced once.
+    outage: Repeated,
+
+    /// The run of `429`s. It settles over three polls rather than ending on
+    /// the next answer, so a key refused every other poll is one run.
+    limit: Repeated,
 }
 
 impl SourceState {
@@ -61,6 +76,8 @@ impl SourceState {
             last_error: None,
             next_attempt: now,
             rate_limited: 0,
+            outage: Repeated::new(Duration::ZERO),
+            limit: Repeated::new(REMIND_EVERY.max(interval.saturating_mul(3))),
         }
     }
 
@@ -70,7 +87,7 @@ impl SourceState {
         &self.name
     }
 
-    /// How often this source reaches its upstream.
+    /// How often this source reaches its upstream, at the fastest.
     #[must_use]
     pub const fn interval(&self) -> Duration {
         self.interval
@@ -101,21 +118,23 @@ impl SourceState {
     }
 
     /// [`succeeded`](Self::succeeded), at an instant of the caller's choosing.
-    pub fn succeeded_at(&mut self, now: DateTime<Utc>) {
-        if !self.connected {
+    /// Answers what was said about the outage run and the rate-limit run, in
+    /// that order, for the tests.
+    pub fn succeeded_at(&mut self, now: DateTime<Utc>) -> (Report, Report) {
+        let outage = self.answered(now);
+        let limit = self.limit.cleared(now);
+
+        if let Report::Recovered { count, over } = limit {
             info!(
                 source = %self.name,
-                failed_attempts = self.failures,
-                "The FIRMS source answered; the feed is connected.",
+                "The FIRMS source has stopped refusing requests; it refused {count} over {}.",
+                humanised(over),
             );
-            self.since = now;
         }
 
-        self.connected = true;
-        self.ever_connected = true;
-        self.failures = 0;
-        self.last_error = None;
         self.next_attempt = now + self.interval;
+
+        (outage, limit)
     }
 
     /// Records a failure, and backs off.
@@ -127,23 +146,34 @@ impl SourceState {
     }
 
     /// [`failed`](Self::failed), at an instant of the caller's choosing.
-    pub fn failed_at(&mut self, error: impl Into<String>, now: DateTime<Utc>) {
+    /// Answers what was said about it, for the tests.
+    pub fn failed_at(&mut self, error: impl Into<String>, now: DateTime<Utc>) -> Report {
         let error = error.into();
+        let report = self.outage.happened(now);
 
-        if self.connected || self.failures == 0 {
-            self.since = now;
-            warn!(
+        match report {
+            Report::First => {
+                self.since = now;
+                warn!(
+                    source = %self.name,
+                    "The FIRMS source stopped answering; retrying with backoff. {error}",
+                );
+            }
+            Report::Reminder { count, over } => warn!(
                 source = %self.name,
-                "The FIRMS source stopped answering; retrying with backoff. {error}",
-            );
-        } else {
-            debug!(source = %self.name, "The FIRMS source is still not answering. {error}");
+                "The FIRMS source has not answered for {}; {count} attempts failed in the last {}. {error}",
+                humanised(elapsed(self.since, now)),
+                humanised(over),
+            ),
+            _ => debug!(source = %self.name, "The FIRMS source is still not answering. {error}"),
         }
 
         self.connected = false;
         self.failures = self.failures.saturating_add(1);
         self.last_error = Some(error);
         self.next_attempt = now + self.backoff();
+
+        report
     }
 
     /// Holds off because the upstream said "not so fast".
@@ -154,19 +184,65 @@ impl SourceState {
     /// has never worked, which would send an administrator looking for a wrong
     /// setting that is not there.
     ///
-    /// A stated delay is honoured up to [`MAX_BACKOFF`] and no further, which is
-    /// the ceiling the ADS-B plugin puts on `Retry-After` too: FIRMS' quota is a
-    /// ten-minute window, so a longer wait is a mistake somewhere, and a mistake
-    /// must not silence a fire feed for a day.
+    /// A stated delay is honoured above the interval and up to [`MAX_BACKOFF`]
+    /// and no further, which is the ceiling the ADS-B plugin puts on
+    /// `Retry-After` too: FIRMS' quota is a ten-minute window, so a longer wait
+    /// is a mistake somewhere, and a mistake must not silence a fire feed for a
+    /// day.
     pub fn wait_for(&mut self, asked: Option<Duration>) {
         self.wait_for_at(asked, Utc::now());
     }
 
     /// [`wait_for`](Self::wait_for), at an instant of the caller's choosing.
-    pub fn wait_for_at(&mut self, asked: Option<Duration>, now: DateTime<Utc>) {
+    /// Answers what was said about the rate-limit run, for the tests.
+    pub fn wait_for_at(&mut self, asked: Option<Duration>, now: DateTime<Utc>) -> Report {
         let delay = asked
             .unwrap_or(self.interval * 2)
             .clamp(self.interval, MAX_BACKOFF.max(self.interval));
+        let (seconds, stated) = (delay.as_secs(), asked.is_some());
+
+        self.answered(now);
+        self.rate_limited = self.rate_limited.saturating_add(1);
+        self.next_attempt = now + delay;
+
+        let report = self.limit.happened(now);
+
+        // Said as what happened: a wait FIRMS named is FIRMS', and one it did
+        // not name is our own guess and must not be attributed to it.
+        match (report, stated) {
+            (Report::First, true) => {
+                info!(source = %self.name, seconds, stated, "The FIRMS source asked us to wait {seconds}s before the next request.")
+            }
+            (Report::First, false) => {
+                info!(source = %self.name, seconds, stated, "The FIRMS source refused a request (429) without naming a delay; waiting {seconds}s.")
+            }
+            (Report::Reminder { count, over }, _) => {
+                info!(source = %self.name, seconds, stated, "The FIRMS source is still refusing requests: {count} in the last {}; waiting {seconds}s.", humanised(over))
+            }
+            _ => {
+                debug!(source = %self.name, seconds, stated, "The FIRMS source refused a request again; waiting {seconds}s.")
+            }
+        }
+
+        report
+    }
+
+    /// Records that the upstream answered at all, which ends an outage.
+    fn answered(&mut self, now: DateTime<Utc>) -> Report {
+        let report = self.outage.cleared(now);
+
+        match report {
+            Report::Recovered { count, over } => info!(
+                source = %self.name,
+                "The FIRMS source answered again after {} and {count} failed attempts; the feed is connected.",
+                humanised(over),
+            ),
+            _ if !self.ever_connected => info!(
+                source = %self.name,
+                "The FIRMS source answered; the feed is connected.",
+            ),
+            _ => {}
+        }
 
         if !self.connected {
             self.since = now;
@@ -176,14 +252,8 @@ impl SourceState {
         self.ever_connected = true;
         self.failures = 0;
         self.last_error = None;
-        self.rate_limited = self.rate_limited.saturating_add(1);
-        self.next_attempt = now + delay;
 
-        info!(
-            source = %self.name,
-            seconds = delay.as_secs(),
-            "The FIRMS source asked us to wait before the next request.",
-        );
+        report
     }
 
     /// Whether the last attempt worked.
@@ -229,6 +299,11 @@ impl SourceState {
     }
 }
 
+/// `now - before`, never negative.
+fn elapsed(before: DateTime<Utc>, now: DateTime<Utc>) -> Duration {
+    (now - before).to_std().unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,6 +314,10 @@ mod tests {
         "2026-09-22T14:00:00Z".parse().expect("an instant")
     }
 
+    fn after(minutes: i64) -> DateTime<Utc> {
+        now() + chrono::Duration::minutes(minutes)
+    }
+
     #[test]
     fn a_source_is_asked_once_an_interval_whatever_the_tick_is() {
         let mut state = SourceState::new_at("FIRMS", TEN_MINUTES, now());
@@ -247,8 +326,8 @@ mod tests {
 
         state.succeeded_at(now());
 
-        assert!(!state.ready_at(now() + chrono::Duration::minutes(9)));
-        assert!(state.ready_at(now() + chrono::Duration::minutes(10)));
+        assert!(!state.ready_at(after(9)));
+        assert!(state.ready_at(after(10)));
         assert!(state.is_connected() && state.ever_connected());
     }
 
@@ -292,12 +371,72 @@ mod tests {
 
         assert!(state.is_connected());
         assert_eq!(state.rate_limited(), 1);
-        assert!(!state.ready_at(now() + chrono::Duration::minutes(29)));
-        assert!(state.ready_at(now() + chrono::Duration::minutes(30)));
+        assert!(!state.ready_at(after(29)));
+        assert!(state.ready_at(after(30)));
 
         // A delay shorter than the interval never speeds the source up.
         state.wait_for_at(Some(Duration::from_secs(5)), now());
 
-        assert!(!state.ready_at(now() + chrono::Duration::minutes(9)));
+        assert!(!state.ready_at(after(9)));
+    }
+
+    #[test]
+    fn an_explicit_poll_is_a_floor_a_stated_retry_after_raises() {
+        // `poll = "1m"`, and FIRMS says fifteen minutes: fifteen it is, and the
+        // operator's minute is the interval again once FIRMS answers.
+        let mut state = SourceState::new_at("FIRMS", Duration::from_secs(60), now());
+
+        state.wait_for_at(Some(Duration::from_secs(900)), now());
+
+        assert!(!state.ready_at(after(14)), "not at the operator's minute");
+        assert!(state.ready_at(after(15)));
+
+        state.succeeded_at(after(15));
+
+        assert!(!state.ready_at(after(15)));
+        assert!(state.ready_at(after(16)), "the floor is where it was");
+    }
+
+    #[test]
+    fn an_outage_is_said_once_when_it_starts_and_once_when_it_ends() {
+        let mut state = SourceState::new_at("FIRMS", Duration::from_secs(60), now());
+        state.succeeded_at(now());
+
+        let said: Vec<Report> = (1..=4)
+            .map(|minute| state.failed_at("timed out", after(minute)))
+            .collect();
+
+        assert_eq!(said[0], Report::First);
+        assert!(
+            said[1..].iter().all(|report| *report == Report::Quiet),
+            "{said:?}"
+        );
+        assert!(matches!(
+            state.succeeded_at(after(5)).0,
+            Report::Recovered { count: 4, .. }
+        ));
+        assert_eq!(
+            state.succeeded_at(after(6)).0,
+            Report::Quiet,
+            "and only once"
+        );
+    }
+
+    #[test]
+    fn a_refusal_is_said_once_when_it_starts_and_once_when_it_is_over() {
+        let mut state = SourceState::new_at("FIRMS", TEN_MINUTES, now());
+        state.succeeded_at(now());
+
+        assert_eq!(state.wait_for_at(None, after(10)), Report::First);
+
+        // Answered twenty minutes later, as asked: the run has not settled,
+        // so a key refused every other poll is one run, not a line a poll.
+        assert_eq!(state.succeeded_at(after(30)).1, Report::Quiet);
+
+        assert!(matches!(
+            state.succeeded_at(after(40)).1,
+            Report::Recovered { count: 1, .. }
+        ));
+        assert_eq!(state.succeeded_at(after(50)).1, Report::Quiet, "once");
     }
 }

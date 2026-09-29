@@ -5,6 +5,7 @@
 //! own cadence, backoff and memory, answers **everything currently listed** on
 //! every poll, and says how its upstream is doing for the heartbeat.
 
+mod notice;
 pub mod powercheck;
 pub mod replay;
 mod state;
@@ -16,7 +17,9 @@ use rustak_client::sidecar::async_trait;
 use rustak_core::prelude::*;
 
 use crate::outage::Outage;
+use crate::scope::Scope;
 
+pub use notice::{REMIND_EVERY, Report};
 pub use powercheck::PowerCheckFeed;
 pub use replay::ReplayFeed;
 pub use state::{MAX_BACKOFF, MAX_RETRY_AFTER, SourceState};
@@ -47,6 +50,14 @@ pub trait OutageFeed: Send {
     /// Whatever went wrong upstream, for the plugin to log. Never a reason to
     /// stop the sidecar, and never a reason to clear the map.
     async fn poll(&mut self) -> Result<Vec<Outage>, Error>;
+
+    /// Moves the feed onto a new area without opening it again, so that an
+    /// administrator moving the area keeps the schedule, the backoff and any
+    /// `Retry-After` ESB asked for. A source that does not filter by area
+    /// has nothing to do.
+    fn rescope(&mut self, scope: Scope) {
+        let _ = scope;
+    }
 
     /// How the upstream is doing.
     fn state(&self) -> &SourceState;

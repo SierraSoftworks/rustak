@@ -32,9 +32,10 @@ pub mod settings;
 pub mod sources;
 pub mod wire;
 
+use chrono::{DateTime, Utc};
 use rustak_api::{Heartbeat, ServiceState};
 use rustak_client::feed::Area;
-use rustak_client::sidecar::{Sidecar, SidecarContext, SidecarEvent, async_trait};
+use rustak_client::sidecar::{ServiceSettings, Sidecar, SidecarContext, SidecarEvent, async_trait};
 use rustak_core::prelude::*;
 use rustak_cot::Event;
 
@@ -49,9 +50,34 @@ pub struct FirmsSidecar {
     feed: Option<Box<dyn HotspotFeed>>,
     /// Which kind of source is open, for the heartbeat.
     kind: &'static str,
+
+    /// The harness's context, kept so that the area an administrator sets can
+    /// be picked up after start-up as well as during it.
+    context: Option<SidecarContext<Settings>>,
+
+    /// The server's copy of this service's configuration, and when it is next
+    /// worth reading.
+    configured: ServiceSettings,
+
+    /// The area in effect right now, and where it came from.
+    area: Area,
+    area_from: &'static str,
 }
 
+/// What [`FirmsSidecar::area`] says for each of the two places an area comes
+/// from.
+pub const FROM_FILE: &str = "the configuration file";
+/// See [`FROM_FILE`].
+pub const FROM_SERVER: &str = "an administrator, through the control API";
+
 impl FirmsSidecar {
+    /// The area in effect, and where it came from: [`FROM_FILE`] or
+    /// [`FROM_SERVER`].
+    #[must_use]
+    pub const fn area(&self) -> (Area, &'static str) {
+        (self.area, self.area_from)
+    }
+
     /// What this feed has offered, published, republished, suppressed and
     /// expired.
     #[must_use]
@@ -89,81 +115,74 @@ impl FirmsSidecar {
             hotspots.pending(),
         ))
     }
-}
 
-/// The area an administrator set for this service, when there is one.
-///
-/// `GET /api/v1/services/<name>/config` is a JSON object an administrator
-/// writes, so a deployment can move its area of interest from the admin UI —
-/// which for a fire season is the setting that changes. Only `area` is
-/// honoured, and only at start-up.
-///
-/// Every failure here is a [`None`]: a sidecar starts with the file's area
-/// rather than refusing to start because a server could not be reached.
-async fn configured_area(context: &SidecarContext<Settings>) -> Option<Area> {
-    let document = match context.control()?.config().await {
-        Ok(document) => document,
-        Err(err) => {
-            debug!("No server-side configuration for this service: {err}");
+    /// The area an administrator set for this service, when the server holds
+    /// a document this has not applied yet, and where that area comes from.
+    ///
+    /// `GET /api/v1/services/<name>/config` is a JSON object an administrator
+    /// writes, so a deployment can move its area of interest from the admin UI
+    /// — which for a fire season is the setting that changes. Only `area` is
+    /// honoured. It is read at start-up and **again after it**, because the
+    /// read at start-up is the one most likely to fail: the control link may
+    /// not hold a credential yet. [`ServiceSettings`] owns the cadence.
+    ///
+    /// A document that names no `area` gives the choice back to the file; one
+    /// that names an unreadable one is a warning and what is already in effect.
+    async fn configured_area(&mut self, now: DateTime<Utc>) -> Option<(Area, &'static str)> {
+        let context = self.context.clone()?;
+        let document = self.configured.refresh_at(&context, now).await?;
 
-            return None;
+        let Some(area) = document.get("area").filter(|area| !area.is_null()) else {
+            return Some((context.settings().area, FROM_FILE));
+        };
+
+        match serde_json::from_value::<Area>(area.clone()) {
+            Ok(area) => Some((area, FROM_SERVER)),
+            Err(err) => {
+                warn!(
+                    "The `area` an administrator set for this service is not one we can read ({err}); \
+                     the one already in effect stays in effect.",
+                );
+
+                None
+            }
         }
-    };
+    }
 
-    match serde_json::from_value::<Area>(document.get("area")?.clone()) {
-        Ok(area) => {
+    /// Moves the source and the map onto `area`, keeping the source's
+    /// schedule: FIRMS is not asked again early because the area moved.
+    fn apply_area(&mut self, area: Area, from: &'static str) {
+        if let Some(feed) = &mut self.feed {
+            feed.set_area(area);
+        }
+        if let Some(hotspots) = &mut self.hotspots {
+            hotspots.set_area(area);
+        }
+
+        if area != self.area {
             info!(
                 ?area,
-                "Using the area an administrator set for this service; it wins over the file.",
+                area_from = from,
+                "The area this service watches has changed; FIRMS is asked about it from the next poll.",
             );
-
-            Some(area)
         }
-        Err(err) => {
-            warn!(
-                "The `area` an administrator set for this service is not one we can read ({err}); \
-                 using the one in the configuration file.",
-            );
 
-            None
-        }
-    }
-}
-
-#[async_trait]
-impl Sidecar for FirmsSidecar {
-    const NAME: &'static str = env!("CARGO_PKG_NAME");
-    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
-
-    type Settings = Settings;
-
-    async fn start(&mut self, ctx: SidecarContext<Self::Settings>) -> Result<(), Error> {
-        let settings = ctx.settings();
-        let area = configured_area(&ctx).await.unwrap_or(settings.area);
-
-        // A source that cannot be opened is a setting the operator got wrong,
-        // and the one thing `start` should refuse over.
-        self.kind = settings.source.kind();
-        self.feed = Some(settings.source.open(area)?);
-        self.hotspots = Some(Hotspots::new(
-            area,
-            settings.filter,
-            settings.display.clone(),
-            settings.publish,
-        ));
-
-        info!(
-            uid = %ctx.identity().uid(),
-            source = self.kind,
-            ?area,
-            shape = ?settings.display.shape,
-            "The FIRMS sidecar is watching for fires.",
-        );
-
-        Ok(())
+        (self.area, self.area_from) = (area, from);
     }
 
-    async fn tick(&mut self) -> Result<Vec<Event>, Error> {
+    /// [`Sidecar::tick`], at an instant of the caller's choosing: what the
+    /// server-side configuration and the counters line are timed against.
+    ///
+    /// # Errors
+    ///
+    /// None today: an upstream that fails is a quiet tick, never a stop.
+    pub async fn tick_at(&mut self, now: DateTime<Utc>) -> Result<Vec<Event>, Error> {
+        if let Some((area, from)) = self.configured_area(now).await
+            && (area, from) != (self.area, self.area_from)
+        {
+            self.apply_area(area, from);
+        }
+
         let (Some(feed), Some(hotspots)) = (&mut self.feed, &mut self.hotspots) else {
             return Ok(Vec::new());
         };
@@ -176,13 +195,59 @@ impl Sidecar for FirmsSidecar {
             }
             // An upstream that is down or refusing is never a stopped sidecar:
             // what is on the map ages out on its own `stale`. `debug`, because
-            // the source's own state has already announced the failure once.
+            // the source's own state has already announced the failure once
+            // and reminds an operator every five minutes while it lasts.
             Err(err) => debug!(source = feed.name(), "The FIRMS feed did not answer: {err}"),
         }
 
         hotspots.tick();
+        hotspots.report_at(now);
 
         Ok(hotspots.drain())
+    }
+}
+
+#[async_trait]
+impl Sidecar for FirmsSidecar {
+    const NAME: &'static str = env!("CARGO_PKG_NAME");
+    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+
+    type Settings = Settings;
+
+    async fn start(&mut self, ctx: SidecarContext<Self::Settings>) -> Result<(), Error> {
+        self.context = Some(ctx.clone());
+        let settings = ctx.settings();
+        let (area, from) = self
+            .configured_area(Utc::now())
+            .await
+            .unwrap_or((settings.area, FROM_FILE));
+
+        // A source that cannot be opened is a setting the operator got wrong,
+        // and the one thing `start` should refuse over.
+        self.kind = settings.source.kind();
+        self.feed = Some(settings.source.open(area)?);
+        self.hotspots = Some(Hotspots::new(
+            area,
+            settings.filter,
+            settings.display.clone(),
+            settings.publish,
+        ));
+        (self.area, self.area_from) = (area, from);
+
+        info!(
+            uid = %ctx.identity().uid(),
+            source = self.kind,
+            ?area,
+            area_from = from,
+            shape = ?settings.display.shape,
+            "The FIRMS sidecar is watching for fires.",
+        );
+
+        Ok(())
+    }
+
+    async fn tick(&mut self) -> Result<Vec<Event>, Error> {
+        self.tick_at(Utc::now()).await
     }
 
     /// The harness asks after every tick, and reports exactly this.
@@ -315,6 +380,106 @@ mod tests {
 
         assert!(at_once.is_empty(), "the next tick carries them");
         assert_eq!(sidecar.tick().await.unwrap().len(), first);
+    }
+
+    /// Starts the plugin over the fixture, with a control API whose first
+    /// answer about this service's configuration is `first` and every one
+    /// after it `then`.
+    async fn started_with_control(
+        first: wiremock::ResponseTemplate,
+        then: wiremock::ResponseTemplate,
+    ) -> (FirmsSidecar, wiremock::MockServer) {
+        use wiremock::matchers::{method, path};
+
+        let control = wiremock::MockServer::start().await;
+        for (priority, response, once) in [(1, first, true), (2, then, false)] {
+            let mock = wiremock::Mock::given(method("GET"))
+                .and(path("/api/v1/services/firms/config"))
+                .respond_with(response)
+                .with_priority(priority);
+            match once {
+                true => mock.up_to_n_times(1).mount(&control).await,
+                false => mock.mount(&control).await,
+            }
+        }
+
+        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/hotspots.example.csv");
+        let config: SidecarConfig<Settings> = rustak_core::config::load_str(&format!(
+            "[service]\nname = \"firms\"\ntoken = \"rsk_a_service_token\"\n\n\
+             [server]\ncontrol = \"{}\"\n\n\
+             [settings.area]\nkind = \"circle\"\nlat = 40.0\nlon = -8.0\nradius_km = 100.0\n\n\
+             [settings.source]\nkind = \"replay\"\npath = \"{fixture}\"\n",
+            control.uri(),
+        ))
+        .expect("the configuration loads");
+
+        let mut sidecar = FirmsSidecar::default();
+        sidecar
+            .start(
+                SidecarContext::from_config(config, FirmsSidecar::VERSION, Shutdown::new())
+                    .expect("a usable identity"),
+            )
+            .await
+            .expect("the replay file opens");
+
+        (sidecar, control)
+    }
+
+    /// Five kilometres around the fixture's cluster of four.
+    fn around_the_cluster() -> serde_json::Value {
+        serde_json::json!({
+            "area": { "kind": "circle", "lat": 40.10234, "lon": -7.91456, "radius_km": 5.0 },
+        })
+    }
+
+    #[tokio::test]
+    async fn an_area_whose_first_read_failed_is_applied_when_the_read_works() {
+        // The production finding: the read at start-up failed, and an
+        // administrator's area was not in effect for the life of the process.
+        let (mut sidecar, control) = started_with_control(
+            wiremock::ResponseTemplate::new(503),
+            wiremock::ResponseTemplate::new(200).set_body_json(around_the_cluster()),
+        )
+        .await;
+
+        assert_eq!(
+            sidecar.area().1,
+            FROM_FILE,
+            "the file's area until the server's can be read",
+        );
+
+        let _ = sidecar
+            .tick_at(Utc::now() + chrono::Duration::seconds(31))
+            .await
+            .expect("a tick");
+
+        let (area, from) = sidecar.area();
+        assert_eq!(from, FROM_SERVER);
+        assert!(area.contains(40.10234, -7.91456) && !area.contains(40.31277, -8.20918));
+        assert_eq!(sidecar.tracked(), 4, "only the cluster is on the map");
+        assert_eq!(
+            control.received_requests().await.map(|all| all.len()),
+            Some(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_area_the_administrator_takes_away_gives_the_choice_back_to_the_file() {
+        let (mut sidecar, _control) = started_with_control(
+            wiremock::ResponseTemplate::new(200).set_body_json(around_the_cluster()),
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({})),
+        )
+        .await;
+
+        assert_eq!(sidecar.area().1, FROM_SERVER, "read at start-up");
+
+        let _ = sidecar
+            .tick_at(Utc::now() + chrono::Duration::minutes(6))
+            .await
+            .expect("a tick");
+
+        assert_eq!(sidecar.area().1, FROM_FILE);
+        assert!(sidecar.area().0.contains(40.31277, -8.20918));
     }
 
     #[tokio::test]

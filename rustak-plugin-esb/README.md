@@ -22,12 +22,13 @@ and it is busiest exactly when it matters most, so the plugin is a careful guest
   it as `api_key`, from the environment. ESB can rotate it: three refusals in a
   row stop the source, and the Services page says why.
 - **Cadence.** The list of outages is asked for every `poll` (default `5m`,
-  floor `1m`). Details cost one request per outage, so they are fetched
-  `details_per_tick` at a time (default 10 per `10s` tick), refreshed every 30
-  minutes, and never for an outage outside `[settings.area]` or one that is
-  restored and final. A `429` to either request holds both back for as long
-  as it asks, up to an hour, and a detail that fails holds the rest back for a
-  minute.
+  floor `1m`) at the fastest: `poll` is a floor, not a pin. Details cost one
+  request per outage, so they are fetched `details_per_tick` at a time
+  (default 10 per `10s` tick), refreshed every 30 minutes, and never for an
+  outage outside `[settings.area]` or one that is restored and final. A `429`
+  to either request holds both back for as long as its `Retry-After` asks, up
+  to an hour, even when that is longer than `poll` (twice `poll` when it names
+  no delay), and a detail that fails holds the rest back for a minute.
 - **Outages of the API.** A failed poll keeps the last known outages on the map
   for up to two hours rather than clearing it.
 
@@ -69,7 +70,24 @@ The heartbeat reports `healthy`, `degraded` (failing for two poll intervals) or
 | `feed` | `offered`, `published`, `suppressed`, `expired` |
 
 An `area` in the service's configuration document (admin UI) overrides
-`[settings.area]` at start-up.
+`[settings.area]`. It is read at start-up and every five minutes after (every
+30 seconds until the first read works, so an override still applies when the
+control link was not up yet), and a changed one is applied while running
+without asking ESB early. Removing it hands the choice back to the file. The
+`The ESB outage sidecar is watching.` line and the change line carry
+`area_from`: the configuration file, or an administrator.
+
+## What it logs
+
+Changes of state, not attempts. PowerCheck not answering is one `warn` when it
+starts, a reminder with a count at most every five minutes while it lasts, and
+one `info` when it answers again. Being rate-limited is the same shape at
+`info`, and says whether the wait was ESB's `Retry-After` or our own guess;
+it is over once ESB has not refused for three `poll` intervals. Every five minutes, one
+`The outage feed is publishing.` line gives `outages`, `fault`, `planned`,
+`restored`, `customers`, `offered`, `published`, `suppressed` and `expired` —
+the same cadence and shape as the other feed plugins' `The feed is
+publishing.` line.
 
 ## Docker
 

@@ -27,7 +27,7 @@
 //! empty map.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use reqwest::StatusCode;
@@ -38,7 +38,9 @@ use rustak_core::prelude::*;
 use super::{OutageFeed, SourceState, http_client, retry_after};
 use crate::outage::Outage;
 use crate::scope::Scope;
-use crate::wire::{Detail, Listing};
+use crate::wire::Listing;
+
+mod details;
 
 /// Where the API lives unless a settings file says otherwise.
 pub const DEFAULT_BASE_URL: &str = "https://api.esb.ie/esbn/powercheck/v1.0";
@@ -145,7 +147,8 @@ impl PowerCheckFeed {
         info!(
             poll_s = interval.as_secs(),
             details_per_tick,
-            "Reading outages from ESB Networks' PowerCheck, an unofficial API: be a good guest.",
+            "Reading outages from ESB Networks' PowerCheck, an unofficial API: be a good guest. \
+             `poll` is the fastest it is asked; a Retry-After it states is waited out above that.",
         );
 
         Ok(Self {
@@ -196,7 +199,7 @@ impl PowerCheckFeed {
     }
 
     /// Asks for the list, and folds it into what is already known.
-    async fn list(&mut self) -> Result<(), Error> {
+    async fn list(&mut self, now: DateTime<Utc>) -> Result<(), Error> {
         match self.get(format!("{}/outages", self.base)).await? {
             Fetched::Body(body) => {
                 let listing: Listing = serde_json::from_str(&body).wrap_user_err(
@@ -206,14 +209,14 @@ impl PowerCheckFeed {
 
                 self.merge(listing.into_outages());
                 self.denied = 0;
-                self.state.succeeded();
+                self.state.succeeded_at(now);
             }
             Fetched::Limited(asked) => {
                 // "Not so fast" is about the key, not about one endpoint.
-                let wait = self.state.wait_for(asked);
-                self.hold_details(Utc::now(), wait);
+                let (wait, _) = self.state.wait_for_at(asked, now);
+                self.hold_details(now, wait);
             }
-            Fetched::Denied(status) => self.refused(status),
+            Fetched::Denied(status) => self.refused(status, now),
             Fetched::Missing => {
                 return Err(human_errors::user(
                     format!("{NAME} has no list of outages at '{}'.", self.base),
@@ -253,107 +256,13 @@ impl PowerCheckFeed {
         self.entries = entries;
     }
 
-    /// The outages worth a detail request, most urgent first: never fetched,
-    /// then longest since fetched. Final ones are never asked about again.
-    fn wanting_detail(&self, now: DateTime<Utc>) -> Vec<String> {
-        let refresh = chrono::Duration::from_std(DETAIL_REFRESH).unwrap_or_default();
-        let mut wanting: Vec<_> = self
-            .entries
-            .values()
-            .filter(|entry| !entry.outage.is_final())
-            .filter(|entry| entry.detailed_at.is_none_or(|at| now - at >= refresh))
-            .map(|entry| (entry.detailed_at, entry.outage.id.clone()))
-            .collect();
-
-        wanting.sort();
-        wanting
-            .into_iter()
-            .map(|(_, id)| id)
-            .take(self.details_per_tick)
-            .collect()
-    }
-
-    /// One tick's worth of detail requests.
-    async fn details(&mut self, now: DateTime<Utc>) {
-        let started = Instant::now();
-
-        for id in self.wanting_detail(now) {
-            let remaining = DETAIL_BUDGET.saturating_sub(started.elapsed());
-
-            if now < self.details_after || self.stopped || remaining.is_zero() {
-                break;
-            }
-
-            // The budget bounds the request as well as the batch: one detail
-            // that hangs must not hold the tick for the client's own timeout.
-            let request = self.get(format!("{}/outages/{id}/", self.base));
-            let Ok(fetched) = tokio::time::timeout(remaining, request).await else {
-                debug!(id, "A PowerCheck detail outlasted this tick's budget.");
-                self.hold_details(now, DETAIL_COOLDOWN);
-                break;
-            };
-
-            match fetched {
-                Ok(Fetched::Body(body)) => match serde_json::from_str::<Detail>(&body) {
-                    Ok(detail) => self.detailed(&id, now, Some(detail)),
-                    Err(err) => {
-                        debug!(id, "A PowerCheck detail was not one we could read: {err}");
-                        self.detailed(&id, now, None);
-                    }
-                },
-                // Purged between the list and now; the next list drops it.
-                Ok(Fetched::Missing) => self.detailed(&id, now, None),
-                Ok(Fetched::Limited(asked)) => {
-                    let wait =
-                        asked.map_or(DETAIL_COOLDOWN, |stated| stated.min(super::MAX_RETRY_AFTER));
-                    debug!(
-                        seconds = wait.as_secs(),
-                        stated = asked.is_some(),
-                        "PowerCheck rate-limited a detail request; holding details back."
-                    );
-                    self.hold_details(now, wait);
-                }
-                Ok(Fetched::Denied(status)) => {
-                    // A key refused once is not worth a second request this tick.
-                    self.refused(status);
-                    break;
-                }
-                Err(err) => {
-                    // Without this, the same outage is asked about every tick
-                    // for as long as the upstream is struggling.
-                    debug!(id, "A PowerCheck detail did not arrive: {err}");
-                    self.hold_details(now, DETAIL_COOLDOWN);
-                }
-            }
-        }
-    }
-
-    /// Leaves the detail endpoint alone for a while; the top of the batch
-    /// loop is what honours it.
-    fn hold_details(&mut self, now: DateTime<Utc>, wait: Duration) {
-        self.details_after = self.details_after.max(now + wait);
-    }
-
-    /// Records an answer about one outage, which is also the key being
-    /// accepted: refusals only count when they are consecutive.
-    fn detailed(&mut self, id: &str, now: DateTime<Utc>, detail: Option<Detail>) {
-        self.denied = 0;
-
-        if let Some(entry) = self.entries.get_mut(id) {
-            entry.detailed_at = Some(now);
-
-            if let Some(detail) = detail {
-                detail.apply(&mut entry.outage);
-            }
-        }
-    }
-
     /// Counts a refusal, and stops asking once there have been enough.
-    fn refused(&mut self, status: StatusCode) {
+    fn refused(&mut self, status: StatusCode, now: DateTime<Utc>) {
         self.denied = self.denied.saturating_add(1);
-        self.state.failed(format!(
-            "{NAME} refused the subscription key ({status}); ESB may have rotated it.",
-        ));
+        self.state.failed_at(
+            format!("{NAME} refused the subscription key ({status}); ESB may have rotated it."),
+            now,
+        );
 
         if self.denied >= DENIED_LIMIT {
             self.stopped = true;
@@ -379,22 +288,20 @@ impl PowerCheckFeed {
             self.entries.clear();
         }
     }
-}
 
-#[async_trait]
-impl OutageFeed for PowerCheckFeed {
-    fn name(&self) -> &str {
-        NAME
-    }
-
-    async fn poll(&mut self) -> Result<Vec<Outage>, Error> {
-        let now = Utc::now();
-
+    /// [`OutageFeed::poll`], at an instant of the caller's choosing: what
+    /// decides whether the list is due, and what every schedule is kept
+    /// against. The requests themselves still take as long as they take.
+    ///
+    /// # Errors
+    ///
+    /// The list request's failure, already recorded in the state.
+    pub async fn poll_at(&mut self, now: DateTime<Utc>) -> Result<Vec<Outage>, Error> {
         if !self.stopped
-            && self.state.ready()
-            && let Err(err) = self.list().await
+            && self.state.ready_at(now)
+            && let Err(err) = self.list(now).await
         {
-            self.state.failed(err.to_string());
+            self.state.failed_at(err.to_string(), now);
 
             return Err(err);
         }
@@ -410,6 +317,25 @@ impl OutageFeed for PowerCheckFeed {
             .values()
             .map(|entry| entry.outage.clone())
             .collect())
+    }
+}
+
+#[async_trait]
+impl OutageFeed for PowerCheckFeed {
+    fn name(&self) -> &str {
+        NAME
+    }
+
+    async fn poll(&mut self) -> Result<Vec<Outage>, Error> {
+        self.poll_at(Utc::now()).await
+    }
+
+    fn rescope(&mut self, scope: Scope) {
+        // What falls outside the new area stops being asked about at once;
+        // what is newly inside it arrives with the next list, on the schedule
+        // ESB is already being asked on.
+        self.entries.retain(|_, entry| scope.admits(&entry.outage));
+        self.scope = scope;
     }
 
     fn state(&self) -> &SourceState {

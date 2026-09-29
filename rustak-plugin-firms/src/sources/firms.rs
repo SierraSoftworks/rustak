@@ -25,6 +25,7 @@
 
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use rustak_client::feed::Area;
 use rustak_client::sidecar::async_trait;
 use rustak_core::prelude::*;
@@ -174,7 +175,7 @@ impl FirmsFeed {
             days = clamped_days,
             poll_s = interval.as_secs(),
             requests_per_poll = sensors.len() * areas.len(),
-            "Reading active-fire detections from NASA FIRMS. FIRMS asks that its data be acknowledged: https://www.earthdata.nasa.gov/data/tools/firms",
+            "Reading active-fire detections from NASA FIRMS; `poll` is the fastest it is asked, and a Retry-After it states is waited out above that. FIRMS asks that its data be acknowledged: https://www.earthdata.nasa.gov/data/tools/firms",
         );
 
         Ok(Self {
@@ -203,6 +204,38 @@ impl FirmsFeed {
             sensor.source_id(),
             self.days,
         )
+    }
+
+    /// [`HotspotFeed::poll`], at an instant of the caller's choosing: what
+    /// decides whether a request is due, and what the schedule is kept
+    /// against. The requests themselves still take as long as they take.
+    ///
+    /// # Errors
+    ///
+    /// Whatever went wrong, already recorded in [`HotspotFeed::state`].
+    pub async fn poll_at(&mut self, now: DateTime<Utc>) -> Result<Vec<Detection>, Error> {
+        if !self.state.ready_at(now) {
+            return Ok(Vec::new());
+        }
+
+        match self.gather().await {
+            Ok((detections, None)) => {
+                self.state.succeeded_at(now);
+
+                Ok(detections)
+            }
+            Ok((detections, Some(Reply::Wait(asked)))) => {
+                self.state.wait_for_at(asked, now);
+
+                Ok(detections)
+            }
+            Ok((detections, Some(Reply::Detections(_)))) => Ok(detections),
+            Err(err) => {
+                self.state.failed_at(err.to_string(), now);
+
+                Err(err)
+            }
+        }
     }
 
     /// Every sensor over every box, stopping at the first `429`.
@@ -308,32 +341,15 @@ impl HotspotFeed for FirmsFeed {
     }
 
     async fn poll(&mut self) -> Result<Vec<Detection>, Error> {
-        if !self.state.ready() {
-            return Ok(Vec::new());
-        }
-
-        match self.gather().await {
-            Ok((detections, None)) => {
-                self.state.succeeded();
-
-                Ok(detections)
-            }
-            Ok((detections, Some(Reply::Wait(asked)))) => {
-                self.state.wait_for(asked);
-
-                Ok(detections)
-            }
-            Ok((detections, Some(Reply::Detections(_)))) => Ok(detections),
-            Err(err) => {
-                self.state.failed(err.to_string());
-
-                Err(err)
-            }
-        }
+        self.poll_at(Utc::now()).await
     }
 
     fn state(&self) -> &SourceState {
         &self.state
+    }
+
+    fn set_area(&mut self, area: Area) {
+        self.areas = area_segments(area);
     }
 }
 
@@ -443,6 +459,55 @@ mod tests {
             assert!(err.to_string().contains("base_url"), "{err}");
             assert!(!err.to_string().contains("hunter2"), "{err}");
         }
+    }
+
+    #[tokio::test]
+    async fn an_explicit_poll_is_a_floor_that_a_stated_retry_after_raises() {
+        // `poll = "1m"`, and FIRMS says fifteen minutes: the operator's minute
+        // is the fastest FIRMS is asked, never a promise to ask that often.
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(429).insert_header("retry-after", "900"))
+            .mount(&server)
+            .await;
+        let mut feed = FirmsFeed::open(
+            Secret::new(KEY),
+            &[Sensor::ViirsNoaa20],
+            1,
+            Some(POLL_FLOOR),
+            Some(&server.uri()),
+            Area::default(),
+        )
+        .expect("it opens");
+        let requests = async || server.received_requests().await.map(|all| all.len());
+        let start = Utc::now();
+
+        for seconds in [0, 60, 120, 899] {
+            feed.poll_at(start + chrono::Duration::seconds(seconds))
+                .await
+                .expect("a 429 is not an error");
+        }
+
+        assert_eq!(requests().await, Some(1), "not once a minute");
+
+        let _ = feed.poll_at(start + chrono::Duration::seconds(900)).await;
+
+        assert_eq!(requests().await, Some(2), "and at once when FIRMS said");
+        assert_eq!(feed.state().rate_limited(), 2);
+    }
+
+    #[test]
+    fn a_new_area_is_what_the_next_request_asks_for() {
+        let mut feed = open(KEY, 1, None).expect("it opens");
+
+        feed.set_area(Area::Bbox {
+            south: 36.0,
+            west: -9.5,
+            north: 43.8,
+            east: 3.3,
+        });
+
+        assert_eq!(feed.areas, ["-9.5000,36.0000,3.3000,43.8000"]);
     }
 
     #[test]

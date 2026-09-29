@@ -10,6 +10,7 @@
 //! `Track`s, and a detection is not one: see [`crate::hotspots`].
 
 pub mod firms;
+mod notice;
 pub mod replay;
 mod state;
 
@@ -19,8 +20,11 @@ use rustak_client::sidecar::async_trait;
 use rustak_core::prelude::*;
 
 pub use firms::{FirmsFeed, Sensor};
+pub use notice::{REMIND_EVERY, Report};
 pub use replay::ReplayFeed;
 pub use state::{MAX_BACKOFF, SourceState};
+
+use rustak_client::feed::Area;
 
 use crate::wire::Detection;
 
@@ -63,6 +67,14 @@ pub trait HotspotFeed: Send {
 
     /// How the upstream is doing, for the heartbeat and for the logs.
     fn state(&self) -> &SourceState;
+
+    /// Asks about a new area from the next request on, without opening the
+    /// feed again: an administrator moving the area keeps the schedule, the
+    /// backoff and any `Retry-After` FIRMS asked for. A source that does not
+    /// ask by area has nothing to do.
+    fn set_area(&mut self, area: Area) {
+        let _ = area;
+    }
 }
 
 /// Builds the HTTP client the live source reaches FIRMS with. Public roots:

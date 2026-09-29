@@ -155,7 +155,11 @@ refresh = "5m"
 # Where this sidecar is looking. Outages outside it are never published, and
 # ESB is never asked for their details. Default: the whole world, which for
 # this source is the Republic of Ireland. An administrator can override it from
-# the admin UI: an `area` in the service's configuration document wins.
+# the admin UI: an `area` in the service's configuration document wins. It is
+# read at start-up and every five minutes after (every 30s until the first read
+# works), applied while running, and a document with no `area` hands the choice
+# back to this file. The `… is watching` line says which is in effect
+# (`area_from`).
 #
 # Either a box:
 [settings.area]
@@ -192,7 +196,9 @@ east = -5.9
 #
 # How often the list of outages is asked for. Default: "5m", and never faster
 # than "1m" whatever this says — an outage lasts hours, and this API is at its
-# busiest exactly when it matters most.
+# busiest exactly when it matters most. This is a floor, not a pin: a 429 whose
+# Retry-After asks for longer is waited out for as long as it asks (up to an
+# hour), and one that names no delay is waited out on twice this.
 # poll = "5m"
 #
 # How many outages have their details (place, customers, times, status) fetched

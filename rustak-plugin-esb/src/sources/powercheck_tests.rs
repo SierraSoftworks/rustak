@@ -437,6 +437,41 @@ async fn being_rate_limited_is_waited_out_and_is_not_a_failure() {
     assert!(!feed.state().ready(), "ESB asked for ten minutes");
 }
 
+#[tokio::test]
+async fn an_explicit_poll_is_a_floor_that_a_stated_retry_after_raises() {
+    // `poll = "1m"`, and ESB says ten minutes: the operator's minute is the
+    // fastest ESB is asked, never a promise to ask that often.
+    let server = MockServer::start().await;
+    serve(
+        &server,
+        "/outages",
+        ResponseTemplate::new(429).insert_header("retry-after", "600"),
+    )
+    .await;
+    let mut feed = PowerCheckFeed::open(
+        &server.uri(),
+        &Secret::new("test-key"),
+        Scope::default(),
+        POLL_FLOOR,
+        10,
+    )
+    .expect("it opens");
+    let requests = async || server.received_requests().await.map(|all| all.len());
+    let start = Utc::now();
+
+    for seconds in [0, 60, 120, 599] {
+        feed.poll_at(start + chrono::Duration::seconds(seconds))
+            .await
+            .expect("a 429 is not an error");
+    }
+
+    assert_eq!(requests().await, Some(1), "not once a minute");
+
+    let _ = feed.poll_at(start + chrono::Duration::seconds(600)).await;
+
+    assert_eq!(requests().await, Some(2), "and at once when ESB said");
+}
+
 #[rstest]
 #[case::empty(" ")]
 #[case::not_a_header("two\nlines")]

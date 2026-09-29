@@ -19,7 +19,7 @@ cd rustak-plugin-firms && cargo run -p rustak-plugin-firms -- --config config.ex
 
 - **Key.** A free [MAP_KEY](https://firms.modaps.eosdis.nasa.gov/api/map_key/), written as `map_key = "${{ env.FIRMS_MAP_KEY }}"`. FIRMS puts it in the request URL; this plugin never logs that URL and redacts the key from anything FIRMS sends back.
 - **Requests.** One per sensor per poll (two for a box across the anti-meridian): `viirs_noaa20`, `viirs_noaa21`, `viirs_snpp` (375 m, the default), `modis` (1 km), `landsat` (30 m, US and Canada only).
-- **Cadence.** `poll = "10m"`, never faster than `"1m"`; a `429` is waited out. `days = 2`, because FIRMS' days are UTC calendar days and `1` is nearly empty after midnight.
+- **Cadence.** `poll = "10m"`, never faster than `"1m"`. `poll` is a floor, not a pin: a `429` is waited out for as long as its `Retry-After` asks (up to an hour), even when that is longer than `poll`, and on twice `poll` when it names no delay. `days = 2`, because FIRMS' days are UTC calendar days and `1` is nearly empty after midnight.
 
 ### `replay`: a CSV file
 
@@ -64,6 +64,16 @@ The uid is `FIRMS-<satellite>-<yyyymmddHHMM>-<lat>-<lon>`: the same detection re
 ### Rate
 
 Each detection is published once, then every `republish` (10 m) for devices that joined since. At most `max_per_tick` (500, or 0 for no cap) leave per tick, newest first. A row FIRMS revises replaces what was held and is published again at once.
+
+## Operating it
+
+### The area, from the admin UI
+
+An `area` in the service's configuration document (admin UI) overrides `[settings.area]`. It is read at start-up and every five minutes after (every 30 seconds until the first read works, so an override still applies when the control link was not up yet), and a changed one is applied while running: detections outside it are forgotten, and FIRMS is asked about the new one from the next poll rather than early. Removing it hands the choice back to the file. The `The FIRMS sidecar is watching for fires.` line and the change line carry `area_from`: the configuration file, or an administrator.
+
+### What it logs
+
+Changes of state, not attempts. FIRMS not answering is one `warn` when it starts, a reminder with a count at most every five minutes while it lasts, and one `info` when it answers again. Being rate-limited is the same shape at `info`, says whether the wait was FIRMS' `Retry-After` or our own guess, and is over once FIRMS has not refused for three `poll` intervals. Every five minutes, one `The fire feed is publishing.` line gives `tracked`, `pending`, `offered`, `published`, `republished`, `suppressed` and `expired` — the same cadence and shape as the other feed plugins' `The feed is publishing.` line.
 
 ## Terms
 

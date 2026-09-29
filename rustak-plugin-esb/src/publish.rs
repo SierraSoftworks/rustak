@@ -56,7 +56,13 @@ pub struct OutagePublisher {
     held: HashMap<String, Held>,
     outbox: Vec<Event>,
     counters: FeedCounters,
+    /// When the counters were last logged.
+    reported_at: Option<DateTime<Utc>>,
 }
+
+/// How often the counters are logged at `info`: the cadence of
+/// `rustak_client::feed::FeedPublisher`'s `The feed is publishing.` line.
+pub const REPORT_EVERY: Duration = Duration::from_secs(300);
 
 impl OutagePublisher {
     /// A publisher whose markers live for `stale` and are republished every
@@ -82,6 +88,7 @@ impl OutagePublisher {
             held: HashMap::new(),
             outbox: Vec::new(),
             counters: FeedCounters::default(),
+            reported_at: None,
         }
     }
 
@@ -172,6 +179,47 @@ impl OutagePublisher {
         }
 
         summary
+    }
+
+    /// Puts a new area, or new kinds, into effect for everything offered from
+    /// here on. A marker the new scope does not admit is not refreshed again
+    /// and leaves every map on its own `stale`, the same as one ESB stops
+    /// listing: no delete is ever sent.
+    pub fn set_scope(&mut self, scope: Scope) {
+        self.scope = scope;
+    }
+
+    /// Logs what is on the map and what has gone out, no more often than
+    /// [`REPORT_EVERY`] — the same line, at the same cadence, as the feed
+    /// plugins that publish through `rustak_client::feed::FeedPublisher`.
+    ///
+    /// Answers whether it logged, for the tests.
+    pub fn report_at(&mut self, now: DateTime<Utc>) -> bool {
+        let due = self
+            .reported_at
+            .is_none_or(|last| (now - last).to_std().unwrap_or_default() >= REPORT_EVERY);
+
+        if !due {
+            return false;
+        }
+
+        self.reported_at = Some(now);
+        let summary = self.summary();
+
+        info!(
+            outages = summary.total(),
+            fault = summary.fault,
+            planned = summary.planned,
+            restored = summary.restored,
+            customers = summary.customers,
+            offered = self.counters.offered,
+            published = self.counters.published,
+            suppressed = self.counters.suppressed,
+            expired = self.counters.expired,
+            "The outage feed is publishing.",
+        );
+
+        true
     }
 }
 
@@ -295,6 +343,41 @@ mod tests {
         publisher.offer_at(vec![cork()], at(STALE.as_secs() as i64 / 2));
 
         assert_eq!(publisher.drain().len(), 1);
+    }
+
+    #[test]
+    fn the_counters_are_logged_at_once_and_then_every_five_minutes() {
+        let mut publisher = publisher();
+
+        assert!(
+            publisher.report_at(at(0)),
+            "the first tick says where it is"
+        );
+        assert!(!publisher.report_at(at(1)));
+        assert!(!publisher.report_at(at(299)), "not every tick");
+        assert!(publisher.report_at(at(300)));
+        assert!(!publisher.report_at(at(599)));
+        assert!(publisher.report_at(at(600)));
+    }
+
+    #[test]
+    fn a_new_scope_is_what_the_next_offer_is_judged_by() {
+        let mut publisher = publisher();
+        publisher.offer_at(vec![cork(), galway()], at(0));
+        let _ = publisher.drain();
+
+        publisher.set_scope(Scope::new(
+            Area::Circle {
+                lat: 51.9,
+                lon: -8.47,
+                radius_km: 50.0,
+            },
+            OutageKind::ALL.to_vec(),
+        ));
+        publisher.offer_at(vec![cork(), galway()], at(10));
+
+        assert_eq!(publisher.summary().total(), 1, "Galway is no longer held");
+        assert!(publisher.drain().is_empty(), "and nothing is deleted");
     }
 
     #[test]

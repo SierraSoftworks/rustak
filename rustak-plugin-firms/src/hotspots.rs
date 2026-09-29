@@ -140,7 +140,13 @@ pub struct Hotspots {
     publish: Publish,
     known: HashMap<String, Known>,
     counters: Counters,
+    /// When the counters were last logged.
+    reported_at: Option<DateTime<Utc>>,
 }
+
+/// How often the counters are logged at `info`: the cadence of
+/// `rustak_client::feed::FeedPublisher`'s `The feed is publishing.` line.
+pub const REPORT_EVERY: Duration = Duration::from_secs(300);
 
 impl Hotspots {
     /// An empty map.
@@ -153,7 +159,19 @@ impl Hotspots {
             publish,
             known: HashMap::new(),
             counters: Counters::default(),
+            reported_at: None,
         }
+    }
+
+    /// Puts a new area into effect. A detection outside it is forgotten now
+    /// and leaves every map on its own `stale`: no delete is ever sent.
+    pub fn set_area(&mut self, area: Area) {
+        let before = self.known.len();
+
+        self.area = area;
+        self.known
+            .retain(|_, known| area.contains(known.detection.lat, known.detection.lon));
+        self.counters.expired += (before - self.known.len()) as u64;
     }
 
     /// Takes a detection, and answers whether it was new and wanted.
@@ -330,6 +348,35 @@ impl Hotspots {
             .filter(|known| known.published_at.is_none())
             .count()
     }
+
+    /// Logs what is on the map and what has gone out, no more often than
+    /// [`REPORT_EVERY`] — the same line, at the same cadence, as the feed
+    /// plugins that publish through `rustak_client::feed::FeedPublisher`.
+    ///
+    /// Answers whether it logged, for the tests.
+    pub fn report_at(&mut self, now: DateTime<Utc>) -> bool {
+        let due = self
+            .reported_at
+            .is_none_or(|last| (now - last).to_std().unwrap_or_default() >= REPORT_EVERY);
+
+        if !due {
+            return false;
+        }
+
+        self.reported_at = Some(now);
+        info!(
+            tracked = self.tracked(),
+            pending = self.pending(),
+            offered = self.counters.offered,
+            published = self.counters.published,
+            republished = self.counters.republished,
+            suppressed = self.counters.suppressed,
+            expired = self.counters.expired,
+            "The fire feed is publishing.",
+        );
+
+        true
+    }
 }
 
 /// [`CLOCK_SKEW`] as chrono spells it.
@@ -366,6 +413,35 @@ mod tests {
         };
 
         Hotspots::new(area, filter, Display::default(), publish)
+    }
+
+    #[test]
+    fn the_counters_are_logged_at_once_and_then_every_five_minutes() {
+        let mut map = hotspots(Filter::default(), Publish::default());
+
+        assert!(map.report_at(now()), "the first tick says where it is");
+        assert!(!map.report_at(now() + chrono::Duration::seconds(299)));
+        assert!(map.report_at(now() + minutes(5)));
+        assert!(!map.report_at(now() + minutes(9)));
+        assert!(map.report_at(now() + minutes(10)));
+    }
+
+    #[test]
+    fn a_new_area_forgets_what_is_outside_it() {
+        let mut map = hotspots(Filter::default(), Publish::default());
+        map.offer_at(detection(0, 10), now());
+        map.offer_at(detection(50, 10), now());
+        let _ = map.drain_at(now());
+
+        map.set_area(Area::Circle {
+            lat: 40.0,
+            lon: -8.0,
+            radius_km: 10.0,
+        });
+
+        assert_eq!(map.tracked(), 1, "half a degree north is outside it");
+        assert_eq!(map.counters().expired, 1);
+        assert!(!map.offer_at(detection(50, 10), now()), "and stays out");
     }
 
     #[test]
