@@ -56,12 +56,13 @@ pub(crate) const RETRY_MAX: Duration = Duration::from_secs(60);
 /// How often a run of failures that is still going is mentioned again.
 pub(crate) const REMIND_EVERY: Duration = Duration::from_secs(300);
 
-/// How many clean closes of the server-event feed within [`REMIND_EVERY`] stop
+/// How many closes of a healthy server-event feed within [`REMIND_EVERY`] stop
 /// being ordinary and start being something an operator should look at.
 ///
 /// A feed that a proxy, a load balancer or an idle timer is cutting reopens
 /// cleanly every time, so nothing here fails and nothing would ever be said —
-/// which is exactly the shape of the bug this milestone fixed.
+/// which is exactly the shape of the bug this milestone fixed. An outage is not
+/// that shape, and is not counted: see [`Reopenings`].
 const CHURN_CLOSES: usize = 5;
 
 /// What a failed call says about the link as a whole.
@@ -93,6 +94,16 @@ pub(crate) enum Report {
     Recovered { failing_for: Duration },
 }
 
+/// A snapshot of the link, for judging whether a feed's close was the link.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Link {
+    /// Whether the server is out of reach right now.
+    pub(crate) down: bool,
+
+    /// How many outages the link has had. Two snapshots that differ span one.
+    pub(crate) outages: u64,
+}
+
 /// The pure half: an outage as it looks over time.
 ///
 /// Every method takes the instant to judge against, so the tests move the clock
@@ -112,6 +123,9 @@ struct State {
     /// How many unreachable attempts in a row, for the backoff.
     failures: u32,
 
+    /// How many outages this link has had, counted as each one starts.
+    outages: u64,
+
     /// The earliest instant another attempt is worth making.
     retry_at: Option<DateTime<Utc>>,
 }
@@ -129,6 +143,10 @@ impl State {
     fn failed(&mut self, failure: Failure, now: DateTime<Utc>) -> Report {
         match failure {
             Failure::Unreachable => {
+                if !self.unreachable {
+                    self.outages = self.outages.wrapping_add(1);
+                }
+
                 self.unreachable = true;
                 self.failures = self.failures.saturating_add(1);
                 self.retry_at = Some(now + backoff(self.failures));
@@ -236,6 +254,14 @@ impl LinkHealth {
         self.with(|state| state.unreachable)
     }
 
+    /// The link's state as the feed's [`Reopenings`] needs to judge a close by.
+    pub(crate) fn link(&self) -> Link {
+        self.with(|state| Link {
+            down: state.unreachable,
+            outages: state.outages,
+        })
+    }
+
     /// How long to wait before the next attempt, for a caller that sleeps.
     pub(crate) fn backoff(&self) -> Duration {
         self.with(|state| backoff(state.failures))
@@ -294,18 +320,42 @@ pub(crate) enum Opened {
     Churning { closes: usize, within: Duration },
 }
 
-/// How often the server-event feed has closed cleanly and been reopened.
+/// How often the server-event feed, open and healthy, has been cut.
 ///
 /// Owned by the feed task rather than shared, because it is the feed task's
 /// own history: [`LinkHealth`] is the *link*, which a heartbeat moves as well.
 /// Every method takes the instant to judge against, so the tests move the clock
 /// by hand and nothing here waits.
+///
+/// # Only a healthy feed's close counts
+///
+/// The warning this feeds means "something between this sidecar and the server
+/// is cutting an otherwise healthy feed". It fired on 2026-09-22 while the
+/// server was being redeployed — an outage [`LinkHealth`] had already
+/// reported — because every *failed* reopening was counted as a close. So:
+///
+/// - a failed opening is never a close;
+/// - a close while the link is down, or followed by the link going down before
+///   the feed is open again, is the outage and not the feed being cut — the
+///   feed's own failed reopening is what marks the link down when the feed's
+///   transport is what went;
+/// - and an outage empties the window, so the closes that led up to one are not
+///   counted towards the next warning either.
+///
+/// A close is therefore held *pending* until the feed is open again: only then
+/// is it known which of the two it was.
 #[derive(Debug, Default)]
 pub(crate) struct Reopenings {
     /// Whether a feed has ever been open, so the first one is announced.
     opened_once: bool,
 
-    /// When each recent clean close happened, oldest first, pruned to
+    /// The outage count this history was last judged against.
+    outages: u64,
+
+    /// When a healthy feed last closed, until the reopening says it counts.
+    pending: Option<DateTime<Utc>>,
+
+    /// When each counted close happened, oldest first, pruned to
     /// [`REMIND_EVERY`].
     closes: VecDeque<DateTime<Utc>>,
 
@@ -319,10 +369,26 @@ impl Reopenings {
         Self::default()
     }
 
-    /// Records a clean close — the server ended the response, or it went idle.
-    pub(crate) fn closed(&mut self, now: DateTime<Utc>) {
-        self.closes.push_back(now);
-        self.prune(now);
+    /// Records that an open feed ended — the server ended the response, it
+    /// went idle, or the connection under it went.
+    pub(crate) fn closed(&mut self, link: Link, now: DateTime<Utc>) {
+        if self.outage(link) || link.down {
+            self.forget();
+
+            return;
+        }
+
+        self.pending = Some(now);
+    }
+
+    /// Records that an attempt to open the feed failed.
+    ///
+    /// Never a close. An unreachable server has marked `link` down by now,
+    /// which is what tells a pending close it was the outage.
+    pub(crate) fn failed(&mut self, link: Link) {
+        if self.outage(link) || link.down {
+            self.forget();
+        }
     }
 
     /// Records a successful opening and answers what to say about it.
@@ -330,20 +396,32 @@ impl Reopenings {
     /// `recovered` is whether [`LinkHealth`] has just reported the link back
     /// from an outage: that is a change worth announcing, and the reopening is
     /// the line that says the feed came back with it.
-    pub(crate) fn opened(&mut self, recovered: bool, now: DateTime<Utc>) -> Opened {
-        self.prune(now);
+    pub(crate) fn opened(&mut self, recovered: bool, link: Link, now: DateTime<Utc>) -> Opened {
+        let outage = self.outage(link);
 
         if !self.opened_once {
             self.opened_once = true;
             // A first open is not a reopen, whatever happened while trying.
-            self.closes.clear();
+            self.forget();
 
             return Opened::Announce;
         }
 
-        if recovered {
-            return Opened::Announce;
+        if recovered || outage {
+            self.forget();
+
+            // An outage the heartbeat saw end has had its line already.
+            return match recovered {
+                true => Opened::Announce,
+                false => Opened::Quiet,
+            };
         }
+
+        if let Some(at) = self.pending.take() {
+            self.closes.push_back(at);
+        }
+
+        self.prune(now);
 
         let quiet_for = self.warned_at.map_or(REMIND_EVERY, |at| elapsed(at, now));
 
@@ -357,6 +435,20 @@ impl Reopenings {
         }
 
         Opened::Quiet
+    }
+
+    /// Whether the link has had an outage since this history last looked.
+    fn outage(&mut self, link: Link) -> bool {
+        let changed = link.outages != self.outages;
+        self.outages = link.outages;
+
+        changed
+    }
+
+    /// Empties the window: what led up to an outage is the outage's.
+    fn forget(&mut self) {
+        self.pending = None;
+        self.closes.clear();
     }
 
     /// Forgets the closes that are older than the window they are counted over.
@@ -635,11 +727,17 @@ mod tests {
         );
     }
 
+    /// A link that is up and has never been down.
+    const UP: Link = Link {
+        down: false,
+        outages: 0,
+    };
+
     #[test]
     fn the_first_opening_of_the_feed_is_the_one_that_is_announced() {
         let mut feed = Reopenings::new();
 
-        assert_eq!(feed.opened(false, at(0)), Opened::Announce);
+        assert_eq!(feed.opened(false, UP, at(0)), Opened::Announce);
     }
 
     #[test]
@@ -649,13 +747,13 @@ mod tests {
         // fault. A close that is followed by a successful open is not news.
         let mut feed = Reopenings::new();
 
-        feed.opened(false, at(0));
+        feed.opened(false, UP, at(0));
 
         for second in [31, 62, 93] {
-            feed.closed(at(second - 1));
+            feed.closed(UP, at(second - 1));
 
             assert_eq!(
-                feed.opened(false, at(second)),
+                feed.opened(false, UP, at(second)),
                 Opened::Quiet,
                 "the reopening at {second}s must be quiet",
             );
@@ -663,23 +761,23 @@ mod tests {
     }
 
     #[test]
-    fn a_feed_that_keeps_being_cut_is_mentioned_once_with_a_count() {
-        // Quiet is not the same as silent: something that closes a feed six
-        // times in five minutes is a proxy or an idle timer, and an operator
-        // should be told once rather than never.
+    fn a_healthy_feed_that_keeps_being_cut_is_mentioned_once_with_a_count() {
+        // Quiet is not the same as silent: something that closes a healthy
+        // feed six times in five minutes is a proxy or an idle timer, and an
+        // operator should be told once rather than never.
         let mut feed = Reopenings::new();
 
-        feed.opened(false, at(0));
+        feed.opened(false, UP, at(0));
 
         for nth in 1..=5 {
-            feed.closed(at(nth * 10));
-            assert_eq!(feed.opened(false, at(nth * 10 + 1)), Opened::Quiet);
+            feed.closed(UP, at(nth * 10));
+            assert_eq!(feed.opened(false, UP, at(nth * 10 + 1)), Opened::Quiet);
         }
 
-        feed.closed(at(60));
+        feed.closed(UP, at(60));
 
         assert_eq!(
-            feed.opened(false, at(61)),
+            feed.opened(false, UP, at(61)),
             Opened::Churning {
                 closes: 6,
                 within: REMIND_EVERY,
@@ -687,8 +785,10 @@ mod tests {
         );
 
         // And then it is quiet again until the next window.
-        feed.closed(at(70));
-        assert_eq!(feed.opened(false, at(71)), Opened::Quiet);
+        for nth in 7..=12 {
+            feed.closed(UP, at(nth * 10));
+            assert_eq!(feed.opened(false, UP, at(nth * 10 + 1)), Opened::Quiet);
+        }
     }
 
     #[test]
@@ -696,11 +796,11 @@ mod tests {
         // A feed reopened once an hour for six hours is a healthy feed.
         let mut feed = Reopenings::new();
 
-        feed.opened(false, at(0));
+        feed.opened(false, UP, at(0));
 
         for nth in 1..=8 {
-            feed.closed(at(nth * 3_600));
-            assert_eq!(feed.opened(false, at(nth * 3_600 + 1)), Opened::Quiet);
+            feed.closed(UP, at(nth * 3_600));
+            assert_eq!(feed.opened(false, UP, at(nth * 3_600 + 1)), Opened::Quiet);
         }
     }
 
@@ -710,10 +810,10 @@ mod tests {
         // `LinkHealth` said so, and this is the other half of that sentence.
         let mut feed = Reopenings::new();
 
-        feed.opened(false, at(0));
-        feed.closed(at(10));
+        feed.opened(false, UP, at(0));
+        feed.closed(UP, at(10));
 
-        assert_eq!(feed.opened(true, at(40)), Opened::Announce);
+        assert_eq!(feed.opened(true, UP, at(40)), Opened::Announce);
     }
 
     #[test]
@@ -722,13 +822,151 @@ mod tests {
         // opens: that first success is a first connection, not a reconnection.
         let mut feed = Reopenings::new();
 
-        feed.closed(at(0));
-        feed.closed(at(1));
+        feed.failed(UP);
+        feed.failed(UP);
 
-        assert_eq!(feed.opened(false, at(2)), Opened::Announce);
+        assert_eq!(feed.opened(false, UP, at(2)), Opened::Announce);
 
-        feed.closed(at(3));
-        assert_eq!(feed.opened(false, at(4)), Opened::Quiet);
+        feed.closed(UP, at(3));
+        assert_eq!(feed.opened(false, UP, at(4)), Opened::Quiet);
+    }
+
+    /// One pass of the feed task's loop against a server that is not there:
+    /// the opening fails, `LinkHealth` hears about it, and so does the feed.
+    fn failed_reopening(health: &LinkHealth, feed: &mut Reopenings, seconds: i64) -> Report {
+        let report = gone(health, seconds);
+        feed.failed(health.link());
+
+        report
+    }
+
+    #[test]
+    fn a_server_restart_is_one_outage_notice_and_no_churn_warning() {
+        // 2026-09-22 08:06:50Z, during a redeploy: "closed and reopened 6
+        // times in the last 5m00s; something … is cutting it". Nothing was:
+        // the server was restarting, which `LinkHealth` had already said.
+        let health = LinkHealth::new();
+        let mut feed = Reopenings::new();
+
+        feed.opened(false, health.link(), at(0));
+        feed.closed(health.link(), at(10));
+
+        let reports: Vec<_> = (0..6)
+            .map(|nth| failed_reopening(&health, &mut feed, 11 + nth * 2))
+            .collect();
+
+        assert_eq!(
+            reports.iter().filter(|r| **r == Report::First).count(),
+            1,
+            "one outage notice: {reports:?}",
+        );
+        assert!(
+            reports[1..].iter().all(|r| *r == Report::Quiet),
+            "{reports:?}"
+        );
+
+        let recovered = health.succeeded_at(at(30));
+        assert!(matches!(recovered, Report::Recovered { .. }));
+        assert_eq!(
+            feed.opened(true, health.link(), at(30)),
+            Opened::Announce,
+            "the feed coming back is announced once, and is not churn",
+        );
+    }
+
+    #[test]
+    fn a_restart_the_heartbeat_saw_end_first_is_still_not_churn() {
+        // The shape that produced the warning: the heartbeat noticed the
+        // server was back before the feed did, so the feed's own opening was
+        // not the recovery — and every failed opening had been counted.
+        let health = LinkHealth::new();
+        let mut feed = Reopenings::new();
+
+        feed.opened(false, health.link(), at(0));
+
+        for nth in 1..=5 {
+            feed.closed(health.link(), at(nth * 10));
+            assert_eq!(
+                feed.opened(false, health.link(), at(nth * 10 + 1)),
+                Opened::Quiet
+            );
+        }
+
+        // The sixth close is the server going away.
+        feed.closed(health.link(), at(60));
+
+        for nth in 0..6 {
+            failed_reopening(&health, &mut feed, 61 + nth);
+        }
+
+        // The heartbeat reaches it first; the feed's opening is not a recovery.
+        health.succeeded_at(at(80));
+
+        assert_eq!(
+            feed.opened(false, health.link(), at(81)),
+            Opened::Quiet,
+            "the outage emptied the window, closes before it included",
+        );
+
+        // And the window starts again from nothing.
+        for nth in 1..=5 {
+            feed.closed(health.link(), at(81 + nth * 10));
+            assert_eq!(
+                feed.opened(false, health.link(), at(82 + nth * 10)),
+                Opened::Quiet
+            );
+        }
+    }
+
+    #[test]
+    fn a_close_the_heartbeat_found_the_link_down_for_is_the_outage() {
+        // The feed's reopening never failed — its backoff outlasted the
+        // outage — but the heartbeat saw one between the close and the open.
+        let health = LinkHealth::new();
+        let mut feed = Reopenings::new();
+
+        feed.opened(false, health.link(), at(0));
+
+        for nth in 1..=5 {
+            feed.closed(health.link(), at(nth * 10));
+            feed.opened(false, health.link(), at(nth * 10 + 1));
+        }
+
+        feed.closed(health.link(), at(60));
+        gone(&health, 61);
+        health.succeeded_at(at(70));
+
+        assert_eq!(feed.opened(false, health.link(), at(71)), Opened::Quiet);
+    }
+
+    #[test]
+    fn a_close_while_the_link_is_down_is_not_counted() {
+        let health = LinkHealth::new();
+        let mut feed = Reopenings::new();
+
+        feed.opened(false, health.link(), at(0));
+        gone(&health, 5);
+
+        let down = health.link();
+        assert!(down.down);
+
+        for nth in 1..=6 {
+            feed.closed(down, at(nth * 10));
+            // Opening again while the link reads down cannot happen in the
+            // task — a successful open is a success first — so each opening
+            // here sees the link as it would: up, with the outage counted.
+            assert_eq!(
+                feed.opened(
+                    false,
+                    Link {
+                        down: false,
+                        ..down
+                    },
+                    at(nth * 10 + 1)
+                ),
+                Opened::Quiet,
+            );
+        }
     }
 
     #[test]

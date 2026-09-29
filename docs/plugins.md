@@ -258,12 +258,15 @@ rustak-plugin-adsb --config plugin.toml [--env .env] [--check] [--enroll]
   an error.
 - `--check` loads and validates the configuration and exits, so a deployment
   pipeline can test a candidate file against the binary that will read it. It
-  touches nothing: no network, no files, no enrolment. A file whose certificate
+  changes nothing: no network, no files written, no enrolment. A file whose certificate
   and key are paths nothing has written yet still validates — it reports where
   the identity *will* be enrolled to instead of refusing to read it — as long as
   the file says it means to enrol, by `[service] pki_dir` or an enrolment token.
   An `${{ env.… }}` token whose variable is not set is refused by name, which is
-  what makes this a real check of a pre-enrolment deployment.
+  what makes this a real check of a pre-enrolment deployment. A `[service]
+  control_truststore` that does not exist, cannot be read or holds no
+  certificate is refused by name too — nothing ever writes that file, so no
+  stage of a deployment excuses its absence.
 - `--enroll` does what a first start would do about a missing certificate — it
   enrols, writes the three PEMs, says where they went — and exits 0 without
   starting the plugin. For an init container or a one-off task. A sidecar that
@@ -825,7 +828,18 @@ What a sidecar prints about all this, at `info`:
 | `The server-event feed is open.` | The first opening, and the first after an outage |
 | `The control link is back after 2m11s.` | Any control-API call working again after a run of failures |
 | `Could not open the server-event feed. The control link is down; …` | The **first** failure of a run, with the whole cause chain |
-| `The server-event feed has closed and reopened 7 times in the last 5m00s; …` | More than five clean closes in five minutes — something in the middle is cutting it |
+| `The server-event feed has closed and reopened 7 times in the last 5m00s; …` | More than five closes of a healthy feed in five minutes — something in the middle is cutting it |
+
+Only a feed that was open, with the control link up, counts towards that last
+line. A failed opening is not a close, a close that turns out to have been the
+server going away (a restart, a redeploy) is the outage the `The control link
+is down` line already reported, and the count starts again from nothing once
+the link is back.
+
+The advice under a failure fits its cause: a name that did not resolve, a
+connection refused or never answered, a network with no route, a TLS handshake,
+an error status or an answer that broke off each get their own. Only a TLS
+failure mentions `[service] truststore` and `control_truststore`.
 
 Everything else is `debug`: a clean close, the reopening after it, and every
 repeat of a failure that has already been announced. A feed that is working

@@ -270,6 +270,25 @@ impl ServiceConfig {
         Ok(std::env::var(ENROLLMENT_TOKEN_ENV).ok().map(Secret::new))
     }
 
+    /// Refuses a `control_truststore` that could never verify anything.
+    ///
+    /// For `--check`: a path that does not exist, cannot be read or holds no
+    /// certificate is refused naming the key, rather than found out about at
+    /// the first control call. Unlike `truststore`, nothing ever writes this
+    /// file, so there is no pre-enrolment state in which its absence is
+    /// ordinary.
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::User`] error naming `[service]
+    /// control_truststore`, from [`crate::http::truststore`].
+    pub fn check_control_truststore(&self) -> Result<(), Error> {
+        match &self.control_truststore {
+            Some(path) => crate::http::truststore(path, "control_truststore").map(drop),
+            None => Ok(()),
+        }
+    }
+
     /// Assembles the [`ServiceIdentity`] this section describes.
     ///
     /// # Errors
@@ -679,5 +698,76 @@ mod tests {
         let bare: SidecarConfig<Settings> =
             rustak_core::config::load_str("[service]\nname = \"example\"\n").unwrap();
         assert_eq!(bare.settings, Settings::default());
+    }
+
+    /// A configuration whose `control_truststore` is `path`.
+    fn pinned(path: &std::path::Path) -> SidecarConfig<NoSettings> {
+        load(&format!(
+            "[service]\nname = \"example\"\ncontrol_truststore = \"{}\"\n",
+            path.display()
+        ))
+    }
+
+    /// Asserts `--check` refused the file, naming the key and `why`.
+    fn refused(config: &SidecarConfig<NoSettings>, why: &str) {
+        let Err(err) = config.service.check_control_truststore() else {
+            panic!("a control truststore that cannot verify anything should be refused");
+        };
+
+        assert!(err.is(human_errors::Kind::User), "{err}");
+        assert!(
+            err.description().contains("[service] control_truststore"),
+            "{err}"
+        );
+        assert!(err.description().contains(why), "{err}");
+        assert!(!err.advice().is_empty(), "{err}");
+    }
+
+    #[test]
+    fn a_control_truststore_that_does_not_exist_is_refused_naming_the_key() {
+        let directory = tempfile::tempdir().unwrap();
+
+        refused(
+            &pinned(&directory.path().join("public-ca.pem")),
+            "does not exist",
+        );
+    }
+
+    #[test]
+    fn a_control_truststore_that_cannot_be_read_is_refused_naming_the_key() {
+        // A directory: unreadable as a file for any user, root included, which
+        // a permission bit would not be.
+        let directory = tempfile::tempdir().unwrap();
+
+        refused(&pinned(directory.path()), "could not be read");
+    }
+
+    #[test]
+    fn a_control_truststore_that_holds_no_certificate_is_refused_naming_the_key() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("public-ca.pem");
+        std::fs::write(&path, "# nothing here\n").unwrap();
+
+        refused(&pinned(&path), "holds no certificates");
+    }
+
+    #[test]
+    fn a_usable_control_truststore_or_none_at_all_passes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("public-ca.pem");
+        let key = rcgen::KeyPair::generate().unwrap();
+        let certificate = rcgen::CertificateParams::new(vec!["localhost".to_string()])
+            .unwrap()
+            .self_signed(&key)
+            .unwrap();
+        std::fs::write(&path, certificate.pem()).unwrap();
+
+        assert!(pinned(&path).service.check_control_truststore().is_ok());
+        assert!(
+            load("[service]\nname = \"example\"\n")
+                .service
+                .check_control_truststore()
+                .is_ok()
+        );
     }
 }

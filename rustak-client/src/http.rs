@@ -47,7 +47,10 @@
 //! failed — and reserves `Kind::System` for what only we could have got wrong.
 //! A transport failure is rendered down to its *cause*
 //! ([`transport`]): "error sending request" says nothing an operator can act on,
-//! and `invalid peer certificate: UnknownIssuer` says everything.
+//! and `invalid peer certificate: UnknownIssuer` says everything. The advice
+//! that follows is chosen by what kind of failure it was — a name that did not
+//! resolve, a connection refused or never answered, a handshake, a status, a
+//! body — so the truststore hints follow a TLS failure and nothing else.
 
 use std::path::Path;
 use std::time::Duration;
@@ -55,6 +58,10 @@ use std::time::Duration;
 use rustak_core::prelude::*;
 use rustak_core::service::ServiceIdentity;
 use url::Url;
+
+mod failure;
+
+pub use failure::{is_transport, transport};
 
 /// How long any one control or Marti request may take.
 ///
@@ -88,23 +95,16 @@ pub const FEED_IDLE_TIMEOUT: Duration = Duration::from_secs(65);
 /// What a sidecar calls itself to the server it talks to.
 const USER_AGENT: &str = concat!("SierraSoftworks/rustak-client/", env!("CARGO_PKG_VERSION"));
 
-/// How many links of a transport error's cause chain are rendered.
-///
-/// A handshake failure is three deep; anything longer is a chain that has
-/// started repeating itself.
-const MAX_CAUSES: usize = 6;
-
 /// Advice for a certificate, key or truststore that could not be read.
 const ADVICE_MATERIAL: &[&str] = &[
     "Check the paths under [service] in the sidecar's configuration file.",
     "The certificate and key are the ones enrolment wrote; the truststore is the server's CA.",
 ];
 
-/// Advice for a request that never reached the server.
-const ADVICE_TRANSPORT: &[&str] = &[
-    "Check that the server is reachable and that [server] names the right address.",
-    "A TLS failure here usually means the truststore is not the server's CA.",
-    "[service] truststore verifies the CoT stream and [server] marti; [server] control is verified against the platform's roots *and* that truststore, unless [service] control_truststore pins it to a PKI of your own.",
+/// Advice for a truststore that cannot verify anything.
+const ADVICE_TRUSTSTORE: &[&str] = &[
+    "Point it at a PEM file holding the certificate of the authority that issued the server's certificate.",
+    "[service] control_truststore pins [server] control alone; leave it out to verify that endpoint against the platform's roots and [service] truststore.",
 ];
 
 /// Which roots a client verifies one endpoint's certificate against.
@@ -230,12 +230,19 @@ fn build(
 ) -> Result<reqwest::Client, Error> {
     let mut builder = builder.user_agent(USER_AGENT);
 
+    // `roots_for` pins the public listener only through `control_truststore`,
+    // so that is the setting a refusal of the file names.
+    let setting = match trust {
+        Trust::Public if identity.control_truststore().is_some() => "control_truststore",
+        _ => "truststore",
+    };
+
     builder = match roots_for(identity, trust) {
         Roots::Platform => builder,
         // `tls_certs_only`: these certificates *replace* the platform's roots.
-        Roots::Only(path) => builder.tls_certs_only(certificates(path)?),
+        Roots::Only(path) => builder.tls_certs_only(truststore(path, setting)?),
         // `tls_certs_merge`: they join them.
-        Roots::PlatformAnd(path) => builder.tls_certs_merge(certificates(path)?),
+        Roots::PlatformAnd(path) => builder.tls_certs_merge(truststore(path, setting)?),
     };
 
     if let (Some(certificate), Some(key)) = (identity.certificate(), identity.key()) {
@@ -248,28 +255,35 @@ fn build(
     ])
 }
 
-/// Every certificate in a truststore file.
-fn certificates(path: &Path) -> Result<Vec<reqwest::Certificate>, Error> {
-    let pem = read(path, "truststore")?;
-
-    let roots = reqwest::Certificate::from_pem_bundle(&pem).map_err(|err| {
+/// Every certificate in the truststore `[service] <setting>` names.
+///
+/// Public so that `--check` refuses the same files, in the same words, that a
+/// start would: a truststore that is not there, cannot be read or holds
+/// nothing is refused naming the key, rather than being found out about at
+/// the first call that needed it.
+///
+/// # Errors
+///
+/// A [`human_errors::Kind::User`] error naming `[service] <setting>` when the
+/// file does not exist, cannot be read, or holds no certificate.
+pub fn truststore(path: &Path, setting: &str) -> Result<Vec<reqwest::Certificate>, Error> {
+    let refused = |why: String| {
         human_errors::user(
-            format!(
-                "The truststore at '{}' is not a PEM bundle we can read ({err}).",
-                path.display()
-            ),
-            ADVICE_MATERIAL,
+            format!("[service] {setting} names '{}', {why}.", path.display()),
+            ADVICE_TRUSTSTORE,
         )
+    };
+
+    let pem = std::fs::read(path).map_err(|err| match err.kind() {
+        std::io::ErrorKind::NotFound => refused("which does not exist".to_string()),
+        _ => refused(format!("which could not be read ({err})")),
     })?;
 
+    let roots = reqwest::Certificate::from_pem_bundle(&pem)
+        .map_err(|err| refused(format!("which is not a PEM bundle we can read ({err})")))?;
+
     if roots.is_empty() {
-        return Err(human_errors::user(
-            format!(
-                "The truststore at '{}' holds no certificates.",
-                path.display()
-            ),
-            ADVICE_MATERIAL,
-        ));
+        return Err(refused("which holds no certificates".to_string()));
     }
 
     Ok(roots)
@@ -350,40 +364,6 @@ pub fn endpoint(base: &Url, path: &str) -> Result<Url, Error> {
     Url::parse(&joined).or_system_err(&["Please report this issue via GitHub."])
 }
 
-/// Whether this is an error [`transport`] built: the server was never reached.
-///
-/// A refusal carrying a status is the server *answering* — the link is up,
-/// however unwelcome the answer — and only a failure to reach it at all is an
-/// outage. The harness uses this to decide what a failed call says about the
-/// control link as a whole, so that one endpoint answering `404` does not stop
-/// a sidecar heartbeating into another that is perfectly well.
-///
-/// Matched on the advice rather than on the message, because the message names
-/// whatever the caller happened to be doing and the advice survives being
-/// wrapped by a caller that adds its own.
-#[must_use]
-pub fn is_transport(err: &Error) -> bool {
-    ADVICE_TRANSPORT
-        .first()
-        .is_some_and(|marker| err.advice().contains(marker))
-}
-
-/// Turns a transport failure into something an operator can act on.
-///
-/// Kept in one place because the modules that make requests would otherwise each
-/// invent their own phrasing for "the server did not answer" — and because
-/// `reqwest`'s own words for a failed handshake are "error sending request for
-/// url (…)", which is the shape a production outage was mistaken for a network
-/// problem in. The *cause* is the answer, so the whole chain is rendered.
-pub fn transport(err: reqwest::Error, what: &str) -> Error {
-    let detail = rendered(err);
-
-    human_errors::user(
-        format!("Could not {what}: {detail}{}", full_stop(&detail)),
-        ADVICE_TRANSPORT,
-    )
-}
-
 /// A full stop, unless the sentence already ends in one.
 ///
 /// Every refusal this client renders is "what we were doing" followed by the
@@ -399,55 +379,6 @@ pub(crate) fn full_stop(detail: &str) -> &'static str {
         true => "",
         false => ".",
     }
-}
-
-/// A transport failure and every cause under it, on one line.
-///
-/// The URL is rebuilt from [`reqwest::Error::url`] with its userinfo and query
-/// removed rather than taken from `reqwest`'s own `Display`, because neither a
-/// credential nor a header may reach a log line. Nothing in the chain is a
-/// header: the chain below a request error is the connector's, and the deepest
-/// link of a handshake failure is `rustls`'s own reason.
-fn rendered(err: reqwest::Error) -> String {
-    let url = err.url().map(redacted);
-    // Rendering our own URL, so `reqwest`'s copy of it would only repeat.
-    let err = err.without_url();
-
-    let mut message = match url {
-        Some(url) => format!("{err} for url ({url})"),
-        None => err.to_string(),
-    };
-
-    let mut source = std::error::Error::source(&err);
-
-    for _ in 0..MAX_CAUSES {
-        let Some(cause) = source else { break };
-        let text = cause.to_string();
-
-        // hyper wraps its connector error in one with the same words.
-        if !message.ends_with(&text) {
-            message.push_str(": ");
-            message.push_str(&text);
-        }
-
-        source = cause.source();
-    }
-
-    message
-}
-
-/// A URL with everything a credential could hide in taken out of it.
-fn redacted(url: &Url) -> String {
-    let mut url = url.clone();
-
-    // Each answers `Err(())` for a URL that cannot hold the part being cleared,
-    // which is the same thing as it already being clear.
-    let _ = url.set_password(None);
-    let _ = url.set_username("");
-    url.set_query(None);
-    url.set_fragment(None);
-
-    url.to_string()
 }
 
 #[cfg(test)]
@@ -724,6 +655,7 @@ mod tests {
             .await
             .map(drop)
             .expect_err("a certificate from an authority we do not hold");
+        assert_eq!(failure::classify(&err), failure::Class::Tls, "{err:?}");
         let rendered = transport(err, "register the service 'weather'");
 
         server.abort();
@@ -744,42 +676,9 @@ mod tests {
                 .any(|line| line.contains("control_truststore")),
             "the advice names the way out",
         );
-    }
-
-    #[test]
-    fn only_a_failure_to_reach_the_server_counts_as_one() {
-        // What the harness reads to decide whether the control link is down: a
-        // refusal is the server answering, and an answer is not an outage.
-        let refused = human_errors::user(
-            "Could not register the service 'weather': 409 Conflict.",
-            &["Another account already holds that service name. Choose another."],
+        assert!(
+            is_transport(&rendered),
+            "a handshake that failed is an outage"
         );
-
-        assert!(!is_transport(&refused), "a status is an answer");
-    }
-
-    #[test]
-    fn a_wrapped_transport_failure_is_still_one() {
-        // `enrolment::ensure` wraps what `enroll` answered; the classification
-        // has to survive that or a wrapped outage reads as a refusal.
-        let inner = human_errors::user("Could not reach it.", ADVICE_TRANSPORT);
-        let wrapped = human_errors::wrap_user(
-            inner,
-            "Could not enrol 'svc.weather'.",
-            &["The sidecar does not start without an identity, so this is fatal."],
-        );
-
-        assert!(is_transport(&wrapped));
-    }
-
-    #[test]
-    fn a_rendered_url_carries_no_credential_and_no_query() {
-        // `reqwest`'s own Display prints the URL verbatim, userinfo and all.
-        let url = Url::parse("https://svc:hunter2@tak.example.com:8446/oauth/token?assertion=ey.J")
-            .unwrap();
-
-        let rendered = redacted(&url);
-
-        assert_eq!(rendered, "https://tak.example.com:8446/oauth/token");
     }
 }

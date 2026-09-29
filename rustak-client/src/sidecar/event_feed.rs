@@ -26,7 +26,9 @@
 //! a connection — so it is `debug`. `info` is kept for the first open and for
 //! the one that ends an outage [`LinkHealth`] announced, and
 //! [`Reopenings`] counts the rest into a single `warn` when there are enough of
-//! them in five minutes to mean something is cutting the feed.
+//! them in five minutes to mean something is cutting the feed. Only a healthy
+//! feed's close is counted: a failed opening, or a close that turns out to have
+//! been the server going away, is the outage `LinkHealth` already reported.
 //!
 //! # The token is bought once, not once per opening
 //!
@@ -44,7 +46,9 @@ use tokio::sync::mpsc;
 
 use crate::control::{ControlClient, ServerEvent};
 
-use super::link_health::{LinkHealth, Opened, Reopenings, Report, humanised, note, recovered};
+use super::link_health::{
+    Link, LinkHealth, Opened, Reopenings, Report, humanised, note, recovered,
+};
 use super::workload::AccessTokens;
 
 /// Keeps the server-event feed open until the sidecar stops.
@@ -92,7 +96,7 @@ pub(crate) async fn run(
                 Ok(mut stream) => {
                     let report = health.succeeded();
                     recovered(report);
-                    announce_open(&mut reopenings, report);
+                    announce_open(&mut reopenings, report, health.link());
 
                     loop {
                         let event = tokio::select! {
@@ -113,16 +117,21 @@ pub(crate) async fn run(
                         }
                     }
 
-                    reopenings.closed(Utc::now());
+                    // Whether this was the feed being cut or the link going
+                    // down is only known once the reopening succeeds or fails.
+                    reopenings.closed(health.link(), Utc::now());
                     tracing::debug!("The server-event feed ended; it will be reopened.");
                 }
                 Err(err) => {
                     // A refusal or an outage is `LinkHealth`'s to announce, and
-                    // the opening that follows it is a reopening either way.
-                    reopenings.closed(Utc::now());
+                    // a failed opening is never a close of a healthy feed.
                     note(&health, "open the server-event feed", &err);
+                    reopenings.failed(health.link());
                 }
             }
+        } else {
+            // The exchange failed, and told `LinkHealth` why.
+            reopenings.failed(health.link());
         }
 
         // The shared backoff: the heartbeat that failed a moment ago moved this
@@ -156,10 +165,10 @@ fn wait_for(health: &LinkHealth, workload: Option<&AccessTokens>) -> std::time::
 }
 
 /// Says as much about a successful opening as its history calls for.
-fn announce_open(reopenings: &mut Reopenings, report: Report) {
+fn announce_open(reopenings: &mut Reopenings, report: Report, link: Link) {
     let recovered = matches!(report, Report::Recovered { .. });
 
-    match reopenings.opened(recovered, Utc::now()) {
+    match reopenings.opened(recovered, link, Utc::now()) {
         Opened::Announce => tracing::info!("The server-event feed is open."),
         Opened::Quiet => tracing::debug!("The server-event feed is open again."),
         Opened::Churning { closes, within } => tracing::warn!(

@@ -144,9 +144,14 @@ const ADVICE_UNREADABLE: &[&str] = &[
 /// # Errors
 ///
 /// A [`human_errors::Kind::User`] error when the enrolment token still holds an
-/// unresolved `${{ env.NAME }}` expression, or when `[service]
-/// workload_identity` names both an `env` and a `file`.
+/// unresolved `${{ env.NAME }}` expression, when `[service]
+/// workload_identity` names both an `env` and a `file`, or when `[service]
+/// control_truststore` names a file that does not exist, cannot be read or
+/// holds no certificate.
 pub(crate) fn check<S>(config: &mut SidecarConfig<S>, config_path: &Path) -> Result<(), Error> {
+    // Nothing writes this one, so no state of a deployment excuses its absence.
+    config.service.check_control_truststore()?;
+
     let paths = resolve(&config.service, config_path);
 
     if paths.certificate.exists() && paths.key.exists() {
@@ -804,6 +809,24 @@ mod tests {
         assert!(
             !directory.path().join("example.pem").exists(),
             "nothing was written"
+        );
+    }
+
+    #[test]
+    fn check_refuses_a_control_truststore_that_is_not_there_even_before_enrolment() {
+        // The truststore enrolment writes is taken off a pre-enrolment file;
+        // this one is not, because nothing will ever write it.
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = config(&format!(
+            "[service]\nname = \"example\"\npki_dir = \"{0}\"\ncontrol_truststore = \"{0}/public-ca.pem\"\n",
+            directory.path().display(),
+        ));
+
+        let err = check(&mut config, &directory.path().join("plugin.toml")).unwrap_err();
+
+        assert!(
+            err.description().contains("[service] control_truststore"),
+            "{err}"
         );
     }
 
