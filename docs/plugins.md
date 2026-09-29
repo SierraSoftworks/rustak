@@ -151,7 +151,7 @@ async fn main() {
 | `tick` | On `[sidecar] tick`, starting immediately | The events to publish |
 | `health` | After every `tick` | The heartbeat to report, or `None` for "healthy" — see *Saying more than "healthy"* |
 | `on_event` | For every `SidecarEvent` | The events to publish in reply |
-| `stop` | Once, after the shutdown signal | Bounded by `[sidecar] shutdown_grace` |
+| `stop` | Once, after the shutdown signal and after the harness has closed the CoT stream | Bounded by `[sidecar] shutdown_grace` |
 
 **Returning an error from any of them stops the process** — the harness prints
 it, records it if it is ours rather than the operator's, and exits 1. A failure
@@ -179,6 +179,13 @@ negotiation on your behalf, and hands you everything else:
 
 Control traffic never reaches a plugin: pings, pongs and the negotiation
 exchange are answered inside the client.
+
+**On shutdown the harness closes the stream** before it calls `stop`: what is
+queued is written and the TLS session is closed with `close_notify`, bounded by
+two seconds (or `[sidecar] shutdown_grace`, if that is shorter). The server
+then records the restart as `client_closed` rather than a client that vanished.
+A close that fails or runs out of time is logged at `debug` and does not change
+the exit status.
 
 **A sidecar with nothing to publish stays connected by itself.** The SDK pings
 on two clocks: ATAK's — after 15s of having *heard* nothing, giving up at 25s —

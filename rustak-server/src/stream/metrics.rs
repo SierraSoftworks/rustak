@@ -85,6 +85,10 @@ pub struct StreamMetrics {
     /// on a server whose clients are otherwise fine is a timeout set below what
     /// the fleet's keepalive produces, `write_timeout` is a path that is
     /// black-holing, and `slow_consumer` is `queue_len` against the traffic.
+    /// `client_closed` and `client_vanished` are counted apart so that a fleet
+    /// of phones walking out of coverage does not read as a stream of errors,
+    /// and a sidecar that is not closing its stream on shutdown shows up as
+    /// one that vanished.
     pub left: LeaveCounters,
 }
 
@@ -185,6 +189,19 @@ mod tests {
             vec![(LeaveReason::Idle, 2), (LeaveReason::Revoked, 1)],
             "an operator reads the causes that happened, not ten zeroes",
         );
+    }
+
+    #[test]
+    fn a_client_that_vanished_is_counted_apart_from_one_that_closed_or_failed() {
+        let metrics = StreamMetrics::default();
+
+        metrics.left.incr(LeaveReason::ClientVanished);
+        metrics.left.incr(LeaveReason::ClientVanished);
+        metrics.left.incr(LeaveReason::ClientClosed);
+
+        assert_eq!(metrics.left.get(LeaveReason::ClientVanished), 2);
+        assert_eq!(metrics.left.get(LeaveReason::ClientClosed), 1);
+        assert_eq!(metrics.left.get(LeaveReason::ReadError), 0);
     }
 
     #[test]

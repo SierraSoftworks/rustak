@@ -274,6 +274,33 @@ impl Link {
         connected
     }
 
+    /// Says goodbye to the server: writes what is queued, then closes the
+    /// connection, so a TLS stream sends `close_notify` and the server records
+    /// a departure (`client_closed`) rather than a client that vanished.
+    ///
+    /// Bounded by `within`. A connection that is not up right now is simply
+    /// dropped, and a close that fails or runs out of time is a `debug` line:
+    /// the sidecar is stopping either way, and a server that does not hear the
+    /// goodbye only names the departure differently.
+    pub(crate) async fn close(&mut self, within: Duration) {
+        let Some(mut connection) = self.connection.take() else {
+            return;
+        };
+
+        if !connection.is_connected() {
+            return;
+        }
+
+        match tokio::time::timeout(within, connection.close()).await {
+            Ok(Ok(())) => tracing::debug!("Closed the CoT stream."),
+            Ok(Err(error)) => tracing::debug!(%error, "The CoT stream did not close cleanly."),
+            Err(_) => tracing::debug!(
+                within = %humanised(within),
+                "The CoT stream did not close in time; dropping it.",
+            ),
+        }
+    }
+
     /// The endpoint this link dials, for the start-up log line.
     pub(crate) fn endpoint(&self) -> Option<&str> {
         self.connection.as_ref().map(|_| self.endpoint.as_str())
@@ -554,6 +581,9 @@ mod tests {
 
         let polled = tokio::time::timeout(std::time::Duration::from_millis(50), link.next()).await;
         assert!(polled.is_err(), "an idle link should never be ready");
+
+        // Closing one is a no-op too.
+        link.close(Duration::from_secs(1)).await;
 
         // Publishing into one is a counted no-op rather than a failure.
         link.publish(vec![Event::builder("a-f-G", "SERVICE-adsb").build()])

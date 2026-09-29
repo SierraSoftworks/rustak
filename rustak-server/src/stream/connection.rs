@@ -29,9 +29,11 @@
 //! # Every disconnect says why
 //!
 //! One `info` line per connection, carrying a [`LeaveReason`] and how long the
-//! connection lasted. The reason is recorded by whichever task noticed first,
-//! so a close from outside — a revoked certificate, a slow consumer, an
-//! administrator — names itself rather than arriving as an unexplained EOF.
+//! connection lasted, in seconds to one decimal. The reason is recorded by
+//! whichever task noticed first, so a close from outside — a revoked
+//! certificate, a slow consumer, an administrator — names itself rather than
+//! arriving as an unexplained EOF. A client that goes without closing is
+//! `client_vanished`, not `read_error`: see [`LeaveReason::from_read_error`].
 //!
 //! # A bad message never costs the connection
 //!
@@ -222,7 +224,7 @@ pub async fn run<IO>(
 
     info!(
         reason = %reason,
-        connected_for = ?liveness.connected_for(),
+        connected_for = liveness.connected_secs(),
         rx = stats.rx_msgs.load(std::sync::atomic::Ordering::Relaxed),
         tx = stats.tx_msgs.load(std::sync::atomic::Ordering::Relaxed),
         dropped = stats.dropped.load(std::sync::atomic::Ordering::Relaxed),
@@ -276,9 +278,18 @@ async fn read_loop<R: AsyncRead + Unpin>(
         let frame = match next {
             None => return LeaveReason::ClientClosed,
             Some(Err(err)) => {
-                debug!(error = %err, "A stream connection failed while reading.");
+                let reason = LeaveReason::from_read_error(&err);
 
-                return peer_probe::cause(&err, LeaveReason::ReadError);
+                match reason {
+                    LeaveReason::ClientVanished => debug!(
+                        error = %err,
+                        "A client went away without closing its connection.",
+                    ),
+                    _ => debug!(error = %err, "A stream connection failed while reading."),
+                }
+
+                // `ETIMEDOUT` is the kernel's verdict and wins (M10-02).
+                return peer_probe::cause(&err, reason);
             }
             Some(Ok(frame)) => frame,
         };
@@ -479,8 +490,8 @@ mod tests {
         })
     }
 
-    /// A socket that fails rather than ending.
-    struct Broken;
+    /// A socket that fails, with the kind it is given, rather than ending.
+    struct Broken(io::ErrorKind);
 
     impl AsyncRead for Broken {
         fn poll_read(
@@ -488,7 +499,7 @@ mod tests {
             _: &mut Context<'_>,
             _: &mut ReadBuf<'_>,
         ) -> Poll<io::Result<()>> {
-            Poll::Ready(Err(io::Error::from(io::ErrorKind::ConnectionReset)))
+            Poll::Ready(Err(io::Error::from(self.0)))
         }
     }
 
@@ -561,11 +572,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_socket_that_fails_is_told_apart_from_a_client_that_left() {
+        // `InvalidData` is how rustls hands over a TLS alert or a corrupt
+        // record: something is actually wrong.
         let deps = deps().await;
         let closing = Shutdown::new();
         let (handle, _liveness, _queue) = handle(&closing);
 
-        let reading = read_until_it_ends(deps, Broken, handle, closing).await;
+        let reading =
+            read_until_it_ends(deps, Broken(io::ErrorKind::InvalidData), handle, closing).await;
 
         assert_eq!(reading.await.unwrap(), LeaveReason::ReadError);
     }
@@ -592,6 +606,26 @@ mod tests {
         let reading = read_until_it_ends(deps, TimedOut, handle, closing).await;
 
         assert_eq!(reading.await.unwrap(), LeaveReason::PeerTimeout);
+    }
+
+    #[tokio::test]
+    async fn a_client_that_goes_without_closing_has_vanished_rather_than_failed() {
+        // M10-01. An end-of-file without `close_notify` (rustls reports it as
+        // `UnexpectedEof`) and a reset are what a phone losing signal, or a
+        // process being killed, produces.
+        for kind in [io::ErrorKind::UnexpectedEof, io::ErrorKind::ConnectionReset] {
+            let deps = deps().await;
+            let closing = Shutdown::new();
+            let (handle, _liveness, _queue) = handle(&closing);
+
+            let reading = read_until_it_ends(deps, Broken(kind), handle, closing).await;
+
+            assert_eq!(
+                reading.await.unwrap(),
+                LeaveReason::ClientVanished,
+                "{kind:?}"
+            );
+        }
     }
 
     #[tokio::test]

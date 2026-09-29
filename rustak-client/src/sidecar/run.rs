@@ -58,9 +58,13 @@
 //! # Stopping
 //!
 //! `SIGINT`/`SIGTERM` cancels the [`Shutdown`] the context carries; the tick
-//! loop notices at its next turn, [`Sidecar::stop`] is given
+//! loop notices at its next turn, the CoT stream is closed — what is queued is
+//! written and a TLS stream sends `close_notify`, so the server records a
+//! departure rather than a client that vanished — within [`CLOSE_WITHIN`] or
+//! the grace if that is shorter, [`Sidecar::stop`] is given
 //! `[sidecar] shutdown_grace` to finish, telemetry is flushed, and the process
-//! exits 0. A second signal exits immediately with status 130 — see
+//! exits 0. A close that fails or runs out of time is logged at `debug` and
+//! changes nothing about the exit. A second signal exits immediately with status 130 — see
 //! [`rustak_core::runtime`].
 
 use std::path::PathBuf;
@@ -428,8 +432,17 @@ async fn tick_until_shutdown<S: Sidecar>(
     }
 
     tracing::info!("The sidecar is stopping.");
+    link.close(CLOSE_WITHIN.min(grace)).await;
     with_grace("the sidecar", sidecar.stop(), grace).await?
 }
+
+/// How long closing the CoT stream on shutdown may take.
+///
+/// A flush and a TLS `close_notify` on a healthy connection take a round trip
+/// at most; one that is wedged is not worth holding the process for. Inside
+/// the default `[sidecar] shutdown_grace` of ten seconds, and never longer
+/// than a grace an operator set shorter.
+pub const CLOSE_WITHIN: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// How long a plugin's `validate_config` may take.
 ///

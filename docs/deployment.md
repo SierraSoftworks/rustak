@@ -1043,19 +1043,21 @@ writer's flush overruns `[stream.limits] write_timeout` and closes it as
 `write_timeout`.
 
 Every disconnect prints one line, `A client left the stream.`, carrying
-`reason`, `connected_for`, and the connection's message counts:
+`reason`, `connected_for` (seconds, to one decimal, as a number that can be
+graphed), and the connection's message counts:
 
 ```
-INFO A client left the stream. reason=idle connected_for=90.002s rx=5 tx=305 dropped=0
+INFO A client left the stream. reason=idle connected_for=90.0 rx=5 tx=305 dropped=0
 ```
 
 | `reason` | What happened | What to look at |
 |---|---|---|
-| `client_closed` | The client closed its end, or the socket reached end-of-file | Ordinary. A device switching networks, an app being closed |
+| `client_closed` | The client closed its end cleanly: a TLS `close_notify` | Ordinary. An app being closed, a sidecar being stopped or restarted (the sidecar harness closes its stream on shutdown) |
+| `client_vanished` | The client went without closing: end-of-file with no `close_notify`, or a connection reset | Ordinary on a mobile fleet: a phone losing signal or switching networks, an app or process being killed. A sidecar that shows up here on a routine restart is not closing its stream |
 | `idle` | Nothing in either direction for `idle_timeout` | A device that fell off the network. A *rising* count with clients that are otherwise fine means `idle_timeout` is below what that fleet's keepalive produces |
-| `read_error` | Reading the socket failed | The network path, or a client that was killed rather than closed |
+| `read_error` | Reading the socket failed for a reason that is a fault: a TLS alert, a corrupt record, an I/O error that is neither an end-of-file nor a reset | The network path, or a client or middlebox that is misbehaving |
 | `write_timeout` | The peer stopped taking bytes for `write_timeout` | A path that is black-holing, or a device that is suspended |
-| `write_error` | Writing the socket failed | As `read_error` |
+| `write_error` | Writing the socket failed | The network path, or a client that went away mid-write |
 | `slow_consumer` | `close_after_drops` deliveries in a row would not fit in the connection's queue | `[stream.limits] queue_len` against what that channel relays; the client reconnects and is replayed |
 | `revoked` | The certificate it authenticated with was revoked | Expected after a revocation |
 | `account_disabled` | The account it belongs to was switched off | Expected after a disable |

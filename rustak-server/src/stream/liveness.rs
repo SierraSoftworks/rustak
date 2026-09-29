@@ -27,10 +27,21 @@
 //! by `connection::run` for the one `info` line a disconnect produces. First
 //! cause wins: a peer that vanishes produces a write timeout *and* a read
 //! error, and the second is a consequence of the first.
+//!
+//! # Leaving is not failing
+//!
+//! A read that ends is classified by [`LeaveReason::from_read_error`], from the
+//! error's type and [`std::io::ErrorKind`] rather than its message. A client
+//! that says goodbye (TLS `close_notify`) is `client_closed`; one that simply
+//! stops being there — a phone losing signal, a process killed, a socket
+//! dropped without a close — is `client_vanished`, which is routine on a
+//! mobile fleet; `read_error` is kept for what is actually wrong. M10-01.
 
+use std::io;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::Duration;
 
+use rustak_cot::error::CodecError;
 use tokio::time::Instant;
 
 /// Why a connection ended.
@@ -40,11 +51,15 @@ use tokio::time::Instant;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum LeaveReason {
-    /// The client closed its end, or the socket reached end-of-file.
+    /// The client closed its end cleanly: a TLS `close_notify`, or an
+    /// end-of-file at a frame boundary on a transport that reports one as
+    /// clean.
     ClientClosed = 1,
     /// Nothing was received **and** nothing was written for `idle_timeout`.
     Idle = 2,
-    /// Reading from the socket failed.
+    /// Reading from the socket failed for a reason that is a fault: malformed
+    /// framing, a TLS alert, an I/O error that is neither an end-of-file nor a
+    /// reset. See [`from_read_error`](Self::from_read_error).
     ReadError = 3,
     /// The peer stopped taking bytes and overran `write_timeout`.
     WriteTimeout = 4,
@@ -63,11 +78,15 @@ pub enum LeaveReason {
     /// The kernel gave up on the peer (`ETIMEDOUT`): a keepalive probe or
     /// transmitted data went unanswered for as long as `peer_probe` allows.
     PeerTimeout = 11,
+    /// The client went away without closing: an end-of-file with no TLS
+    /// `close_notify`, or a connection reset or aborted by the peer. What a
+    /// phone that loses signal or is killed produces; routine, not a fault.
+    ClientVanished = 12,
 }
 
 impl LeaveReason {
     /// Every cause, in declaration order. The counters are indexed by it.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::ClientClosed,
         Self::Idle,
         Self::ReadError,
@@ -79,6 +98,7 @@ impl LeaveReason {
         Self::Administrator,
         Self::Shutdown,
         Self::PeerTimeout,
+        Self::ClientVanished,
     ];
 
     /// What the `reason` field of the disconnect line reads.
@@ -96,7 +116,54 @@ impl LeaveReason {
             Self::Administrator => "administrator",
             Self::Shutdown => "shutdown",
             Self::PeerTimeout => "peer_timeout",
+            Self::ClientVanished => "client_vanished",
         }
+    }
+
+    /// Names the cause of a read that ended in an error.
+    ///
+    /// Classified from the error's type and the [`io::ErrorKind`] of any
+    /// [`io::Error`] in its source chain, never from message text:
+    ///
+    /// | Error | Cause |
+    /// |---|---|
+    /// | `UnexpectedEof` — `rustls` reports end-of-file without `close_notify` this way | [`ClientVanished`](Self::ClientVanished) |
+    /// | `ConnectionReset`, `ConnectionAborted` | [`ClientVanished`](Self::ClientVanished) |
+    /// | any other I/O error, including `InvalidData` (how a TLS alert or a corrupt record arrives) | [`ReadError`](Self::ReadError) |
+    /// | anything else the codec reports: framing, parsing, decoding | [`ReadError`](Self::ReadError) |
+    ///
+    /// A clean end — `close_notify`, or a plaintext FIN at a frame boundary —
+    /// is not an error at all: the reader simply ends, and that is
+    /// [`ClientClosed`](Self::ClientClosed).
+    #[must_use]
+    pub fn from_read_error(error: &CodecError) -> Self {
+        let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
+
+        while let Some(current) = source {
+            let Some(io) = current.downcast_ref::<io::Error>() else {
+                source = current.source();
+                continue;
+            };
+
+            if matches!(
+                io.kind(),
+                io::ErrorKind::UnexpectedEof
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted
+            ) {
+                return Self::ClientVanished;
+            }
+
+            // `io::Error::source` skips the error it wraps and answers *that*
+            // error's source, so a wrapped `io::Error` is reached through
+            // `get_ref` instead.
+            source = match io.get_ref() {
+                Some(inner) => Some(inner),
+                None => current.source(),
+            };
+        }
+
+        Self::ReadError
     }
 
     /// Where this cause's counter lives.
@@ -194,6 +261,15 @@ impl Liveness {
     #[must_use]
     pub fn connected_for(&self) -> Duration {
         Instant::now().saturating_duration_since(self.started)
+    }
+
+    /// How long the connection has been up, in seconds to one decimal place.
+    ///
+    /// A number rather than a [`Duration`]'s `Debug`, so the disconnect line
+    /// reads `91.3` and can be graphed.
+    #[must_use]
+    pub fn connected_secs(&self) -> f64 {
+        (self.connected_for().as_secs_f64() * 10.0).round() / 10.0
     }
 
     /// Records why the connection is ending, and answers the cause that
@@ -320,5 +396,79 @@ mod tests {
 
         assert_eq!(LeaveReason::from_u8(0), None, "zero means still connected");
         assert_eq!(LeaveReason::from_u8(200), None);
+    }
+
+    fn io(kind: io::ErrorKind) -> CodecError {
+        CodecError::Io(io::Error::new(kind, "from the socket"))
+    }
+
+    #[test]
+    fn a_client_that_goes_without_saying_goodbye_has_vanished_rather_than_failed() {
+        // M10-01: a sidecar restarted by its operator, and every phone that
+        // loses signal, arrived as `read_error`.
+        for kind in [
+            io::ErrorKind::UnexpectedEof,
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::ConnectionAborted,
+        ] {
+            assert_eq!(
+                LeaveReason::from_read_error(&io(kind)),
+                LeaveReason::ClientVanished,
+                "{kind:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn a_vanished_client_is_recognised_however_deep_the_io_error_is_wrapped() {
+        // A TLS layer that wraps the socket's error in one of its own still
+        // carries the kind in the chain.
+        let inner = io::Error::from(io::ErrorKind::ConnectionReset);
+        let wrapped = CodecError::Io(io::Error::other(inner));
+
+        assert_eq!(
+            LeaveReason::from_read_error(&wrapped),
+            LeaveReason::ClientVanished,
+        );
+    }
+
+    #[test]
+    fn what_is_actually_wrong_is_still_a_read_error() {
+        // A TLS alert or a corrupt record arrives from rustls as `InvalidData`;
+        // a framing failure is the codec's own.
+        for error in [
+            io(io::ErrorKind::InvalidData),
+            io(io::ErrorKind::PermissionDenied),
+            io(io::ErrorKind::Other),
+            CodecError::Frame(rustak_cot::error::FrameError::Oversized(10)),
+        ] {
+            assert_eq!(
+                LeaveReason::from_read_error(&error),
+                LeaveReason::ReadError,
+                "{error:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn the_message_text_is_not_what_decides() {
+        // An error that *says* "reset" but is not one stays a read error.
+        let says_reset = CodecError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "connection reset by peer",
+        ));
+        assert_eq!(
+            LeaveReason::from_read_error(&says_reset),
+            LeaveReason::ReadError,
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn how_long_a_connection_lasted_is_seconds_to_one_decimal() {
+        let liveness = Liveness::new();
+
+        tokio::time::advance(Duration::from_nanos(91_343_820_306)).await;
+
+        assert!((liveness.connected_secs() - 91.3).abs() < f64::EPSILON);
     }
 }
