@@ -179,3 +179,32 @@ test("on a phone a track is watched with the details folded away, and nothing de
   await details.getByRole("button", { name: "Show the details" }).click();
   await expect(details.getByText("MGRS", { exact: true })).toBeVisible();
 });
+
+for (const width of [1280, 768, 390]) {
+  test(`at ${width}px a profile's preferences fit the screen`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    // The demo's "Command" profile holds both kinds of row: one the catalogue
+    // draws, and one key it does not know.
+    await gotoApp(page, "/admin/profiles/2?demo");
+
+    await expect(page.locator("#pref-0-value")).toBeVisible();
+    await expect(page.locator("#pref-1-key")).toBeVisible();
+
+    const scrolls = await page.evaluate(
+      () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    );
+    expect(scrolls, "the page scrolls sideways").toBe(false);
+
+    for (const control of [
+      page.locator("#pref-0-value"),
+      page.locator("#pref-1-value"),
+      page.locator("#pref-add"),
+      page.getByRole("button", { name: "Save preferences" }),
+      page.getByRole("button", { name: "Remove" }).first(),
+    ]) {
+      const found = await box(control);
+      expect(found.x).toBeGreaterThanOrEqual(0);
+      expect(found.x + found.width).toBeLessThanOrEqual(width);
+    }
+  });
+}

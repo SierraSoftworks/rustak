@@ -247,13 +247,14 @@ pub async fn preview(
         .body(body))
 }
 
-/// `GET /api/v1/profiles/pref-catalog`.
+/// `GET /api/v1/profiles/pref-catalog`: the preferences the editor can
+/// describe, as a JSON Schema ([`rustak_api::pref_catalog`]).
 ///
 /// # Errors
 ///
 /// Never.
 pub async fn pref_catalog(_: Administrative) -> ApiResult {
-    Ok(json_ok(&catalog::catalog()))
+    Ok(json_ok(&catalog::schema()))
 }
 
 /// Refuses a preference list a device could not import.

@@ -231,19 +231,6 @@ pub struct ProfileFile {
     pub updated: DateTime<Utc>,
 }
 
-/// One entry of the curated catalogue the preference editor autocompletes from.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PrefCatalogEntry {
-    pub key: String,
-    pub class: PrefClass,
-    /// What the preference does, in a sentence somebody configuring a server
-    /// can act on.
-    pub description: String,
-    /// ATAK's own default, so the editor can show what changing it costs.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default: Option<String>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_and_a_catalogue_entry_round_trip() {
+    fn a_file_round_trips() {
         let file = ProfileFile {
             id: 3,
             name: "maps/source.xml".to_string(),
@@ -344,18 +331,5 @@ mod tests {
 
         let json = serde_json::to_string(&file).unwrap();
         assert_eq!(serde_json::from_str::<ProfileFile>(&json).unwrap(), file);
-
-        let entry = PrefCatalogEntry {
-            key: "prefs_enable_channels".to_string(),
-            class: PrefClass::String,
-            description: "Shows the Channels selector.".to_string(),
-            default: Some("false".to_string()),
-        };
-
-        let json = serde_json::to_string(&entry).unwrap();
-        assert_eq!(
-            serde_json::from_str::<PrefCatalogEntry>(&json).unwrap(),
-            entry
-        );
     }
 }

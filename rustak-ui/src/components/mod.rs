@@ -18,6 +18,7 @@ mod page_title;
 mod prefs_editor;
 mod qr_code;
 mod role_badge;
+mod schema_form;
 mod secret_input;
 mod secret_reveal;
 mod split_button;
@@ -45,6 +46,7 @@ pub use prefs_editor::{PrefsEditor, problem_with};
 pub use qr_code::QrCodeView;
 #[allow(unused_imports)]
 pub use role_badge::{RoleBadge, role_description, role_label, role_options};
+pub use schema_form::SchemaNode;
 #[allow(unused_imports)]
 pub use secret_input::SecretInput;
 #[allow(unused_imports)]

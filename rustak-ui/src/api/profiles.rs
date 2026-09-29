@@ -14,9 +14,7 @@
 //! list means the second save loses to the first *visibly*, which is the
 //! failure worth having.
 
-use rustak_api::{
-    PrefCatalogEntry, PrefEntry, Profile, ProfileCreate, ProfileFile, ProfileId, ProfileUpdate,
-};
+use rustak_api::{PrefEntry, Profile, ProfileCreate, ProfileFile, ProfileId, ProfileUpdate};
 
 use crate::api::download::{Download, get_download, upload};
 use crate::api::{ApiError, delete_empty, get_json, patch_json, post_json, put_json};
@@ -75,12 +73,12 @@ pub async fn set_prefs(id: ProfileId, entries: &[PrefEntry]) -> Result<Vec<PrefE
     put_json(&format!("/profiles/{}/prefs", id.get()), &entries.to_vec()).await
 }
 
-/// The curated catalogue the editor autocompletes keys from.
-///
-/// Not every preference ATAK has — a list of thousands would be a worse
-/// starting point than none — but the twenty an operator configuring a server
-/// actually reaches for, each with its class and ATAK's own default.
-pub async fn pref_catalog() -> Result<Vec<PrefCatalogEntry>, ApiError> {
+/// The ATAK preferences the server can describe, as a JSON Schema whose
+/// properties are preference keys ([`rustak_api::pref_catalog`]). Not every
+/// preference ATAK has — nobody publishes that list — but the ones this
+/// repository can vouch for, each with its class, its values and ATAK's own
+/// default where known.
+pub async fn pref_catalog() -> Result<serde_json::Value, ApiError> {
     demo!(Ok(fixtures::pref_catalog()));
 
     get_json("/profiles/pref-catalog").await

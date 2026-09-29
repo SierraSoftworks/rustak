@@ -12,8 +12,7 @@
 use std::cell::RefCell;
 
 use rustak_api::{
-    GroupName, PrefCatalogEntry, PrefClass, PrefEntry, Profile, ProfileCreate, ProfileFile,
-    ProfileId, ProfileUpdate,
+    GroupName, PrefClass, PrefEntry, Profile, ProfileCreate, ProfileFile, ProfileId, ProfileUpdate,
 };
 
 use super::data::ago;
@@ -407,82 +406,8 @@ pub fn profile_preview(id: ProfileId) -> Result<Download, ApiError> {
     })
 }
 
-/// The catalogue the preference editor autocompletes from.
-///
-/// A handful of the server's twenty, chosen so the editor's behaviour — the
-/// class arriving with the key, and ATAK's own default shown beside it — can
-/// be seen without a server.
-pub fn pref_catalog() -> Vec<PrefCatalogEntry> {
-    let entry =
-        |key: &str, class: PrefClass, description: &str, default: Option<&str>| PrefCatalogEntry {
-            key: key.to_string(),
-            class,
-            description: description.to_string(),
-            default: default.map(str::to_string),
-        };
-
-    vec![
-        entry(
-            "deviceProfileEnableOnConnect",
-            PrefClass::String,
-            "Fetch connection and tool profiles on every stream connect. Off in ATAK by \
-             default, so nothing else on this list is delivered on connect until it is on.",
-            Some("false"),
-        ),
-        entry(
-            "displayServerConnectionWidget",
-            PrefClass::String,
-            "Show the server connection indicator on the map.",
-            Some("false"),
-        ),
-        entry(
-            "prefs_enable_channels",
-            PrefClass::String,
-            "Show the Channels selector, which is how somebody chooses which channels they \
-             transmit on.",
-            Some("false"),
-        ),
-        entry(
-            "locationCallsign",
-            PrefClass::String,
-            "The callsign other people see on their maps.",
-            None,
-        ),
-        entry(
-            "locationTeam",
-            PrefClass::String,
-            "The team colour, as a word: Cyan, Green, Blue, and so on.",
-            Some("Cyan"),
-        ),
-        entry(
-            "atakRoleType",
-            PrefClass::String,
-            "The role shown beside the callsign: Team Member, Team Lead, HQ, and so on.",
-            Some("Team Member"),
-        ),
-        entry(
-            "coord_display_pref",
-            PrefClass::String,
-            "Which coordinate format the map shows: MGRS, DD, DM, DMS or UTM.",
-            Some("MGRS"),
-        ),
-        entry(
-            "alt_display_pref",
-            PrefClass::String,
-            "Whether altitude is shown above mean sea level (MSL) or the ellipsoid (HAE).",
-            Some("MSL"),
-        ),
-        entry(
-            "locationReportingStrategy",
-            PrefClass::String,
-            "Whether position reports are sent on a timer or when the device moves.",
-            Some("Dynamic"),
-        ),
-        entry(
-            "dynamicReportingRateMinReliable",
-            PrefClass::Integer,
-            "The shortest gap, in seconds, between two position reports.",
-            Some("20"),
-        ),
-    ]
+/// The catalogue the preference editor draws from: the very schema the server
+/// serves, from [`rustak_api::pref_catalog`], so the demo cannot drift from it.
+pub fn pref_catalog() -> serde_json::Value {
+    rustak_api::pref_catalog::schema()
 }

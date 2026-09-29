@@ -7,7 +7,7 @@
 //!
 //! | The service registered… | The panel is… |
 //! |---|---|
-//! | a JSON Schema | a form drawn from it ([`form`], [`schema`]) — every key named, every value an input of the right kind, the plugin's doc comments as help text — with the JSON one click away |
+//! | a JSON Schema | a form drawn from it ([`SchemaNode`], shared with the other schema-drawn forms) — every key named, every value an input of the right kind, the plugin's doc comments as help text — with the JSON one click away |
 //! | nothing | the JSON text box it always was ([`json`]) |
 //!
 //! # A save is checked before it is stored
@@ -28,11 +28,7 @@
 //! is not what this panel loaded. The alternative is a silent overwrite of
 //! somebody's settings, which is the one failure here nobody would notice.
 
-mod form;
-mod groups;
-mod inputs;
 mod json;
-mod schema;
 
 use std::rc::Rc;
 
@@ -42,10 +38,11 @@ use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
 use crate::api;
-use crate::components::{Alert, AlertKind, Button, ButtonKind, Card, Field, LoadingNote, TextArea};
+use crate::components::{
+    Alert, AlertKind, Button, ButtonKind, Card, Field, LoadingNote, SchemaNode, TextArea,
+};
 
 use super::load::use_resource;
-pub use form::SchemaNode;
 use json::{as_text, config_problem};
 
 /// What to say, after a save, about whether the service itself was asked.

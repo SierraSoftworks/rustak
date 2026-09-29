@@ -28,8 +28,7 @@ use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
 use crate::api;
-use crate::components::{Alert, AlertKind, Card};
-use crate::pages::service_config::SchemaNode;
+use crate::components::{Alert, AlertKind, Card, SchemaNode};
 
 #[derive(Properties, PartialEq)]
 pub struct DisplayPanelProps {

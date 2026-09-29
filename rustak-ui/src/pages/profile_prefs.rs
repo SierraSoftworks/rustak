@@ -101,7 +101,7 @@ pub fn profile_prefs(props: &ProfilePrefsProps) -> Html {
         (Some(_), _) => html! {
             <PrefsEditor
                 value={(*draft).clone()}
-                catalog={catalog.data.clone().unwrap_or_default()}
+                catalog={catalog.data.clone()}
                 disabled={*busy}
                 onchange={
                     let draft = draft.clone();
@@ -129,32 +129,34 @@ pub fn profile_prefs(props: &ProfilePrefsProps) -> Html {
             { body }
 
             if stored.data.is_some() {
-                <ButtonGroup>
-                    <Button
-                        kind={ButtonKind::Primary}
-                        busy={*busy}
-                        disabled={!dirty || problem.is_some()}
-                        title={problem.clone().or_else(|| (!dirty)
-                            .then(|| "Nothing has changed.".to_string()))}
-                        onclick={save}
-                    >
-                        { "Save preferences" }
-                    </Button>
+                <div class="prefs-card__actions">
+                    <ButtonGroup>
+                        <Button
+                            kind={ButtonKind::Primary}
+                            busy={*busy}
+                            disabled={!dirty || problem.is_some()}
+                            title={problem.clone().or_else(|| (!dirty)
+                                .then(|| "Nothing has changed.".to_string()))}
+                            onclick={save}
+                        >
+                            { "Save preferences" }
+                        </Button>
 
-                    <Button
-                        disabled={!dirty || *busy}
-                        title={(!dirty).then_some("Nothing has changed.")}
-                        onclick={revert}
-                    >
-                        { "Revert" }
-                    </Button>
-                </ButtonGroup>
-            }
+                        <Button
+                            disabled={!dirty || *busy}
+                            title={(!dirty).then_some("Nothing has changed.")}
+                            onclick={revert}
+                        >
+                            { "Revert" }
+                        </Button>
+                    </ButtonGroup>
 
-            if let Some(problem) = &problem {
-                <p class="pref-row__note pref-row__note--error" role="alert">
-                    { problem.clone() }
-                </p>
+                    if let Some(problem) = &problem {
+                        <p class="pref-row__note pref-row__note--error" role="alert">
+                            { problem.clone() }
+                        </p>
+                    }
+                </div>
             }
         </Card>
     }

@@ -439,9 +439,18 @@ pre {
     color: $danger;
   }
 
+  // Usually one control. When a field holds several — the switches under
+  // "Delivered" on a profile — they are stacked with the rhythm the rest of
+  // the form has, rather than touching, and each switch keeps its own width
+  // so that the space beside its label is not a second place to click it.
   &__control {
     display: flex;
     flex-direction: column;
+    gap: 0.6rem;
+
+    > .switch {
+      align-self: flex-start;
+    }
   }
 
   &__help,
@@ -2382,51 +2391,125 @@ footer {
 
 }
 
-// The typed preference list. Three controls and a button per row, with the
-// catalogue's own note under them.
+// The typed preference list: a row per entry — the inputs its catalogue entry
+// calls for, or a free key, class and value — each with its Remove button,
+// then the ways to add one, then the card's Save row. Each of those three is
+// set off from the next, so that adding is not mistaken for saving.
 .prefs-editor {
   display: flex;
   flex-direction: column;
-  // "Add a preference" is one action, not a bar across the card, so the column
-  // does not stretch its children — the list opts back in below.
-  align-items: flex-start;
-  gap: 0.75rem;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
 
   &__list {
     @include entity-list;
-    align-self: stretch;
   }
 
-  > .panel-empty {
-    align-self: stretch;
+  &__add {
+    display: flex;
+    flex-direction: column;
+    // "Add another preference" is one action, not a bar across the card.
+    align-items: flex-start;
+    gap: 0.6rem;
+    padding-top: 1rem;
+    border-top: 1px solid $border-lighter;
+
+    > .field {
+      align-self: stretch;
+      max-width: 32rem;
+      margin-bottom: 0;
+    }
   }
 }
 
 .pref-row {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 8rem) minmax(0, 2fr) auto;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 0.5rem 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0.5rem 1rem;
+  padding: 0.9rem 0;
   border-bottom: 1px solid $border-lighter;
+
+  li:first-child & {
+    padding-top: 0;
+  }
 
   li:last-child & {
     border-bottom: none;
   }
 
+  // Level with the control, not with the label above it.
+  > .btn {
+    margin-top: 1.55rem;
+  }
+
+  .field {
+    margin-bottom: 0;
+  }
+
+  // Every entry has a value, so a marker saying so on each one says nothing.
+  .field__required {
+    display: none;
+  }
+
+  &__free {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(0, 8rem) minmax(0, 2fr);
+    gap: 0.75rem;
+  }
+
+  &__key {
+    margin: 0.4rem 0 0;
+    font-size: 0.75rem;
+    color: $text-secondary;
+    overflow-wrap: anywhere;
+
+    code {
+      font-family: $font-mono;
+      color: $text-regular;
+    }
+  }
+
   &__note {
-    grid-column: 1 / -1;
-    margin: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0.5rem 0 0;
     font-size: 0.78rem;
+    line-height: 1.45;
     color: $text-secondary;
 
     &--error {
       color: $danger;
     }
+
+    &--warning {
+      padding: 0.5rem 0.65rem;
+      color: $text-regular;
+      background: $warning-bg;
+      border: 1px solid $warning-border;
+      border-radius: $radius-sm;
+    }
+  }
+}
+
+.prefs-card__actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid $border-lighter;
+}
+
+@media (max-width: 860px) {
+  .pref-row__free {
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  &__default {
-    color: $text-placeholder;
+  .pref-row > .btn {
+    margin-top: 0;
   }
 }
 

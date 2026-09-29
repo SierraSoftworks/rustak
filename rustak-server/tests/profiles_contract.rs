@@ -582,7 +582,7 @@ async fn the_admin_api_edits_a_profile_end_to_end_and_previews_what_a_device_wou
         r#"<entry key="constantReportingRateUnreliable" class="class java.lang.Integer">20</entry>"#
     ));
 
-    let catalogue: Vec<rustak_api::PrefCatalogEntry> = test::call_and_read_body_json(
+    let catalogue: serde_json::Value = test::call_and_read_body_json(
         &app,
         test::TestRequest::get()
             .uri("/api/v1/profiles/pref-catalog")
@@ -591,11 +591,19 @@ async fn the_admin_api_edits_a_profile_end_to_end_and_previews_what_a_device_wou
     )
     .await;
 
-    assert!(
-        catalogue
-            .iter()
-            .any(|entry| entry.key == "deviceProfileEnableOnConnect"),
-        "the catalogue is what the editor autocompletes from",
+    assert_eq!(
+        catalogue,
+        rustak_api::pref_catalog::schema(),
+        "the catalogue the editor draws is the one rustak-api describes",
+    );
+    assert_eq!(
+        rustak_api::pref_catalog::reads_of(&catalogue, "deviceProfileEnableOnConnect"),
+        Some(PrefClass::Boolean),
+    );
+    assert_eq!(
+        rustak_api::pref_catalog::classes_of(&catalogue, "prefs_enable_channels"),
+        [PrefClass::String, PrefClass::Boolean],
+        "a String holding \"true\" is how TAK Server, OpenTAKServer and rustak send it",
     );
 
     let deleted = test::call_service(
@@ -608,6 +616,80 @@ async fn the_admin_api_edits_a_profile_end_to_end_and_previews_what_a_device_wou
     .await;
 
     assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+}
+
+/// What a device is sent for a stored list is the list as stored, whatever the
+/// catalogue says about it: a catalogued key in each of its accepted classes (a
+/// boolean-valued key as a Boolean and as a String), a key nobody catalogued, a
+/// class the catalogue does not accept and a value outside its choices all
+/// render exactly as saved, in the order saved.
+#[actix_web::test]
+async fn the_catalogue_never_changes_the_bytes_a_device_is_sent() {
+    let server = TestServer::start().await;
+    let (_, session) = server.signed_in("ada", true).await;
+    let app = test::init_service(App::new().configure(server.app())).await;
+    let token = bearer(&session);
+
+    let created: rustak_api::Profile = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::post()
+            .uri("/api/v1/profiles")
+            .insert_header(("authorization", token.clone()))
+            .set_json(serde_json::json!({ "name": "Mixed" }))
+            .to_request(),
+    )
+    .await;
+
+    let stored = serde_json::json!([
+        { "key": "deviceProfileEnableOnConnect", "class": "Boolean", "value": "true" },
+        { "key": "com.example.plugin.flag", "class": "Integer", "value": "7" },
+        { "key": "prefs_enable_channels", "class": "String", "value": "true" },
+        { "key": "displayServerConnectionWidget", "class": "String", "value": "false" },
+        { "key": "dispatchLocationHidden", "class": "Integer", "value": "1" },
+        { "key": "locationReportingStrategy", "class": "String", "value": "Sometimes & <never>" },
+    ]);
+    let saved: Vec<PrefEntry> = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::put()
+            .uri(&format!("/api/v1/profiles/{}/prefs", created.id))
+            .insert_header(("authorization", token.clone()))
+            .set_json(stored.clone())
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(
+        serde_json::to_value(&saved).unwrap(),
+        stored,
+        "stored as sent"
+    );
+
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!("/api/v1/profiles/{}/preview", created.id))
+            .insert_header(("authorization", token))
+            .to_request(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = test::read_body(response).await.to_vec();
+
+    assert_eq!(
+        String::from_utf8(entry(&body, "file0/Mixed.pref")).unwrap(),
+        concat!(
+            "<?xml version='1.0' standalone='yes'?><preferences>",
+            r#"<preference version="1" name="com.atakmap.app.civ_preferences">"#,
+            r#"<entry key="deviceProfileEnableOnConnect" class="class java.lang.Boolean">true</entry>"#,
+            r#"<entry key="com.example.plugin.flag" class="class java.lang.Integer">7</entry>"#,
+            r#"<entry key="prefs_enable_channels" class="class java.lang.String">true</entry>"#,
+            r#"<entry key="displayServerConnectionWidget" class="class java.lang.String">false</entry>"#,
+            r#"<entry key="dispatchLocationHidden" class="class java.lang.Integer">1</entry>"#,
+            r#"<entry key="locationReportingStrategy" class="class java.lang.String">Sometimes &amp; &lt;never&gt;</entry>"#,
+            "</preference></preferences>",
+        ),
+    );
 }
 
 #[actix_web::test]
