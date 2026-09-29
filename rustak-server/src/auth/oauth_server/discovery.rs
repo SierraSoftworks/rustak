@@ -30,7 +30,7 @@ use actix_web::{HttpResponse, web};
 use crate::marti::response;
 use crate::prelude::*;
 
-use super::scopes;
+use super::{claims, id_token, scopes};
 
 /// How long a relying party may keep the document.
 ///
@@ -89,20 +89,24 @@ fn document(issuer: &str) -> serde_json::Value {
         // `S256` and nothing else. `plain` puts the verifier in the request an
         // interceptor already has, so it is not offered even as a fallback.
         "code_challenge_methods_supported": ["S256"],
-        "claims_supported": [
-            "sub",
-            "iss",
-            "aud",
-            "exp",
-            "iat",
-            "auth_time",
-            "nonce",
-            "preferred_username",
-            "name",
-            "email",
-            "groups",
-        ],
+        "claims_supported": claims_supported(),
     })
+}
+
+/// Every claim this server can release, from the same two lists the ID token
+/// and userinfo are built from — so the document cannot advertise a claim no
+/// endpoint releases, or leave out one that some endpoint does.
+///
+/// `sub` first, then the token's own envelope, then what the scopes release:
+/// the order `compat/oauth.md` §6.1 documents.
+pub(crate) fn claims_supported() -> Vec<&'static str> {
+    let about_the_account = claims::RELEASED_BY.iter().map(|(claim, _)| *claim);
+    let mut supported = vec!["sub"];
+
+    supported.extend(id_token::ENVELOPE);
+    supported.extend(about_the_account.filter(|claim| *claim != "sub"));
+
+    supported
 }
 
 #[cfg(test)]
@@ -160,6 +164,32 @@ mod tests {
         assert_eq!(
             document["token_endpoint"],
             "https://tak.example.com/oauth/token",
+        );
+    }
+
+    #[test]
+    fn the_scopes_and_claims_advertised_are_exactly_what_can_be_released() {
+        let document = document("https://tak.example.com");
+
+        assert_eq!(
+            document["scopes_supported"],
+            serde_json::json!(["openid", "profile", "email", "groups"]),
+        );
+        assert_eq!(
+            document["claims_supported"],
+            serde_json::json!([
+                "sub",
+                "iss",
+                "aud",
+                "exp",
+                "iat",
+                "auth_time",
+                "nonce",
+                "preferred_username",
+                "name",
+                "email",
+                "groups",
+            ]),
         );
     }
 

@@ -14,32 +14,39 @@
 //! `/api/v1`. `POST` is accepted beside `GET` because RFC 5.3.1 allows it and
 //! some libraries prefer it; neither changes anything.
 //!
-//! # Why the full claim set, whatever was asked for
+//! # Only what the granted scopes cover
 //!
-//! OpenID Connect says userinfo is narrowed to the scopes granted at the
-//! authorization endpoint. rustak records those against the **code**, and a
-//! code is spent in seconds — there is nowhere on a rustak access token to
-//! carry them, and inventing a table to remember them would be new state with
-//! its own lifetime and its own way to go wrong.
+//! OpenID Connect Core §5.3.2 and §5.4: userinfo releases the claims the scopes
+//! granted at the authorization endpoint cover, and nothing more. Those scopes
+//! are recorded against the session when the code is exchanged
+//! ([`crate::auth::tokens::issue_granted_session`]), found again here by the
+//! token's `jti`, carried unchanged across a refresh and ended with the
+//! session. The scope → claim mapping is [`super::claims::RELEASED_BY`], the
+//! same one the ID token is built from.
 //!
-//! It buys nothing either way. Every token that reaches here carries rustak's
-//! `api` scope, and `GET /api/v1/me` answers the same four facts — username,
-//! display name, email address and channels — to the same token. Narrowing this
-//! endpoint while that one stays open would be a formality rather than a
-//! control. What *is* enforced is the thing that matters: the token has to be
-//! live, unrevoked, and belong to an account this installation still admits.
+//! A token with **no** recorded grant is answered as if it held `openid` alone:
+//! `sub` and nothing else. That is every token not issued by the
+//! authorization-code flow to a relying party that asked for OpenID scopes —
+//! the password grant, the jwt-bearer grant, a service token, a passkey or
+//! admin-UI session, a session from before migration `0024` — and a token
+//! whose session has since been revoked. Such a caller still has
+//! `GET /api/v1/me` if its token carries the `api` scope; this endpoint is the
+//! standard one, and a relying party reading it is owed the standard answer.
+//!
+//! What is enforced before any of that: the token has to be live, unrevoked,
+//! and belong to an account this installation still admits.
 
 use actix_web::http::StatusCode;
 use actix_web::http::header::{CACHE_CONTROL, HeaderValue, WWW_AUTHENTICATE};
 use actix_web::{HttpRequest, HttpResponse, web};
 
-use crate::auth::resolve::{RequestFacts, bearer};
+use crate::auth::resolve::{RequestFacts, Resolved, bearer};
 use crate::marti::response;
 use crate::prelude::*;
 use crate::web::api::middleware::bearer_token;
 use crate::web::helpers::request::client_ip;
 
-use super::claims;
+use super::{claims, scopes};
 
 /// `GET|POST /oauth/userinfo`.
 pub async fn userinfo(request: HttpRequest, context: web::Data<AppContext>) -> HttpResponse {
@@ -69,14 +76,19 @@ pub async fn userinfo(request: HttpRequest, context: web::Data<AppContext>) -> H
         }
     };
 
-    let released = claims::released(
-        context.db(),
-        &config.auth.oauth,
-        &resolved.user,
-        resolved.principal.is_admin,
-        None,
-    )
-    .await;
+    let released = match granted(context.get_ref(), &resolved).await {
+        Ok(granted) => {
+            claims::released(
+                context.db(),
+                &config.auth.oauth,
+                &resolved.user,
+                resolved.principal.is_admin,
+                granted.as_deref().unwrap_or(scopes::OPENID),
+            )
+            .await
+        }
+        Err(err) => Err(err),
+    };
 
     let claims = match released {
         Ok(claims) => claims,
@@ -100,6 +112,16 @@ pub async fn userinfo(request: HttpRequest, context: web::Data<AppContext>) -> H
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
 
     response
+}
+
+/// The OpenID scopes recorded for the session the presented token belongs to,
+/// or [`None`] when there is no such record.
+async fn granted(context: &AppContext, resolved: &Resolved) -> Result<Option<String>, Error> {
+    let Some(claims) = resolved.token() else {
+        return Ok(None);
+    };
+
+    context.db().refresh_tokens().oidc_grant(&claims.jti).await
 }
 
 /// The one refusal a caller with no usable token gets.
@@ -198,7 +220,9 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn a_live_token_describes_the_account_it_belongs_to() {
+    async fn a_session_with_no_recorded_grant_is_told_sub_alone() {
+        // A session no relying party asked OpenID scopes for is answered as if
+        // it held `openid` alone.
         let server = TestServer::start().await;
         let (_, session) = server.signed_in("ada", false).await;
         let app = test::init_service(App::new().configure(server.app())).await;
@@ -212,17 +236,41 @@ mod tests {
         )
         .await;
 
-        assert_eq!(body["sub"], "ada");
-        assert_eq!(body["preferred_username"], "ada");
-        assert!(
-            body["groups"]
-                .as_array()
-                .is_some_and(|names| names.iter().any(|name| name == "__ANON__")),
-            "{body}",
-        );
-        assert!(
-            body.get("email").is_none(),
-            "an account with no email address must not be given one: {body}",
+        assert_eq!(body, serde_json::json!({ "sub": "ada" }));
+    }
+
+    #[actix_web::test]
+    async fn a_granted_session_is_told_what_its_scopes_cover() {
+        let server = TestServer::start().await;
+        let user = server.user("ada", false).await;
+        let session = crate::auth::tokens::issue_granted_session(
+            &server.context,
+            &user,
+            false,
+            Some("cloudtak"),
+            Some("openid profile groups"),
+        )
+        .await
+        .unwrap();
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        let body: serde_json::Value = test::call_and_read_body_json(
+            &app,
+            TestRequest::get()
+                .uri("/oauth/userinfo")
+                .insert_header(("authorization", bearer_header(&session)))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "sub": "ada",
+                "preferred_username": "ada",
+                "groups": ["__ANON__"],
+            }),
+            "no `name` for an account with none, no `email` it was not granted",
         );
     }
 

@@ -1315,7 +1315,7 @@ own configuration file by an operator, which makes them all first-party.
 | `GET /login/.well-known/openid-configuration` | The **upstream** provider's `authorization_endpoint` and `token_endpoint`, in TAK Server's bare shape. Not rustak's own discovery document. |
 | `GET /.well-known/openid-configuration` | rustak's **own** OpenID discovery document. See below. |
 | `GET /oauth/jwks` | The RS256 public keys, as a JSON Web Key Set. Cacheable for an hour. |
-| `GET\|POST /oauth/userinfo` | The account behind a bearer token: `sub`, `preferred_username`, `name`, `email`, `groups`. |
+| `GET\|POST /oauth/userinfo` | The account behind a bearer token: `sub`, plus only the claims the OpenID scopes granted at sign-in cover. See below. |
 | `GET /token/access` | The caller's own access token. |
 | `GET\|POST /logout` | Revokes the session and clears its cookies. `204`, or `302` to a registered `post_logout_redirect_uri`. |
 
@@ -1361,14 +1361,33 @@ and tell CloudTAK:
 | Client secret | the `secret` above |
 | Scopes | `openid profile email groups` |
 
-The claims it will read:
+The claims it will read, and the scope that releases each:
 
-| Claim | What rustak puts in it |
-|---|---|
-| `preferred_username` | the rustak username — the same string as the access token's `sub` and the certificate's common name |
-| `email` | the account's email address, **only when it has one**. Never synthesised from the username |
-| `name` | the account's display name, when it has one |
-| `groups` | the channels the account holds, plus `[auth.oauth] admin_group` (default `"admin"`) for an administrator |
+| Claim | Scope | What rustak puts in it |
+|---|---|---|
+| `sub` | always | the rustak username — the same string as the access token's `sub` and the certificate's common name |
+| `preferred_username` | `profile` | the rustak username again |
+| `name` | `profile` | the account's display name, when it has one |
+| `email` | `email` | the account's email address, **only when it has one**. Never synthesised from the username |
+| `groups` | `groups` | the channels the account holds, plus `[auth.oauth] admin_group` (default `"admin"`) for an administrator |
+
+**Only what was granted is released** (OpenID Connect Core §5.3–5.4). The
+scopes granted at `/oauth/authorize` — what the relying party asked for,
+narrowed to `openid profile email groups` — are recorded against the session
+when the code is exchanged, carried unchanged across every refresh, and end with
+the session. Both the ID token and `/oauth/userinfo` release `sub` plus the
+claims those scopes cover, from the one mapping above. A relying party that
+asked for `openid` alone learns `sub` and nothing else; one that wants the
+username by name has to ask for `profile`.
+
+A token with **no** recorded grant is answered as if it held `openid` alone —
+`sub` only. That is every token that did not come from a relying party's
+authorization-code sign-in: the password grant CloudTAK uses today, the
+jwt-bearer grant, service tokens, admin-UI and passkey sessions, and sessions
+started before this rule shipped. Such a client that needs the account's
+details reads `GET /api/v1/me`, which a token carrying rustak's `api` scope
+already reaches. After a
+sign-out the token is refused outright (`401`).
 
 `groups` is how a relying party maps its own roles: a channel is a group, and
 "this person administers rustak" is the one fact that is not a channel, so it is

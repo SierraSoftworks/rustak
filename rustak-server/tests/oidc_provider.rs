@@ -24,6 +24,7 @@
 //! | `a_flow_without_openid_gets_no_id_token` | scope decides the token |
 //! | `the_id_token_echoes_the_nonce_byte_for_byte` | the nonce binds the token to the flow |
 //! | `userinfo_without_a_token_is_refused` | userinfo is not public |
+//! | `userinfo_narrowing::*` | userinfo releases only what the granted scopes cover, across a refresh, and `sub` alone without a recorded grant |
 //! | `an_unregistered_sign_out_uri_redirects_nowhere` | no open redirector on `/logout` |
 //! | `the_password_grant_body_is_exactly_the_three_keys_it_has_always_been` | CloudTAK's login is untouched |
 //! | `a_half_configured_client_is_refused_before_the_server_starts` | `--check` |
@@ -1047,5 +1048,280 @@ mod configuration {
             .expect("the section parses")
             .validate()
             .expect("and is usable as written");
+    }
+}
+
+/// `/oauth/userinfo` releases `sub` plus exactly the claims the scopes granted
+/// at `/oauth/authorize` cover (OpenID Connect Core §5.3.2, §5.4), and a token
+/// with no recorded grant is answered as if it held `openid` alone.
+///
+/// The bodies are asserted whole: an extra claim is exactly the failure this
+/// module is here to catch.
+mod userinfo_narrowing {
+    use super::*;
+
+    /// Calls userinfo with `token` and returns the status, the three headers
+    /// that matter and the body.
+    macro_rules! userinfo {
+        ($app:expr, $token:expr $(,)?) => {{
+            let response = test::call_service(
+                $app,
+                test::TestRequest::get()
+                    .uri("/oauth/userinfo")
+                    .insert_header((AUTHORIZATION, format!("Bearer {}", $token)))
+                    .to_request(),
+            )
+            .await;
+            let status = response.status();
+            let header = |name: &str| {
+                response
+                    .headers()
+                    .get(name)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_string)
+            };
+            let headers = (
+                header("content-type"),
+                header("cache-control"),
+                header("www-authenticate"),
+            );
+            let body: serde_json::Value = test::read_body_json(response).await;
+
+            (status, headers, body)
+        }};
+    }
+
+    /// Signs alice in through a relying party that asked for `scope`, and
+    /// returns the token response.
+    macro_rules! signed_in_with {
+        ($app:expr, $scope:expr $(,)?) => {{
+            let (code, _) = code_for!($app, &authorize_uri($scope, None));
+            let (status, body) = exchange!($app, &confidential_grant(&code, Some(SECRET)));
+
+            assert_eq!(status, StatusCode::OK, "{body}");
+
+            body
+        }};
+    }
+
+    /// Everything alice's account can be described by.
+    fn everything() -> serde_json::Value {
+        serde_json::json!({
+            "sub": "alice",
+            "preferred_username": "alice",
+            "name": "Alice",
+            "email": "alice@example.com",
+            "groups": ["__ANON__", "ops"],
+        })
+    }
+
+    /// [`everything`] narrowed to `claims`.
+    fn only(claims: &[&str]) -> serde_json::Value {
+        let everything = everything();
+        let mut narrowed = serde_json::Map::new();
+
+        for claim in claims {
+            narrowed.insert((*claim).to_string(), everything[*claim].clone());
+        }
+
+        serde_json::Value::Object(narrowed)
+    }
+
+    #[actix_web::test]
+    async fn each_grant_releases_exactly_what_its_scopes_cover() {
+        let provider = TestIdentityProvider::start().await;
+        let server = server_with(&provider).await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        for (scope, expected) in [
+            ("openid", only(&["sub"])),
+            (
+                "openid profile",
+                only(&["sub", "preferred_username", "name"]),
+            ),
+            ("openid email", only(&["sub", "email"])),
+            ("openid groups", only(&["sub", "groups"])),
+            (SCOPES, everything()),
+        ] {
+            let body = signed_in_with!(&app, Some(scope));
+            let token = body["access_token"].as_str().expect("an access token");
+            let (status, (content_type, cache, _), claims) = userinfo!(&app, token);
+
+            assert_eq!(status, StatusCode::OK, "{scope}: {claims}");
+            assert_eq!(content_type.as_deref(), Some("application/json"), "{scope}");
+            assert_eq!(cache.as_deref(), Some("no-store"), "{scope}");
+            assert_eq!(claims, expected, "{scope}");
+        }
+    }
+
+    #[actix_web::test]
+    async fn a_refresh_carries_the_grant_unchanged() {
+        let provider = TestIdentityProvider::start().await;
+        let server = server_with(&provider).await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+        let first = signed_in_with!(&app, Some("openid email"));
+        let refresh = first["refresh_token"].as_str().expect("a refresh token");
+
+        let (status, second) = exchange!(
+            &app,
+            &[("grant_type", "refresh_token"), ("refresh_token", refresh)],
+        );
+
+        assert_eq!(status, StatusCode::OK, "{second}");
+
+        // And again, so that the grant is shown to be copied forward from row
+        // to row rather than read back from the family's first one.
+        let (status, third) = exchange!(
+            &app,
+            &[
+                ("grant_type", "refresh_token"),
+                (
+                    "refresh_token",
+                    second["refresh_token"].as_str().expect("a refresh token"),
+                ),
+            ],
+        );
+
+        assert_eq!(status, StatusCode::OK, "{third}");
+
+        for body in [&first, &second, &third] {
+            let token = body["access_token"].as_str().expect("an access token");
+            let (status, _, claims) = userinfo!(&app, token);
+
+            assert_eq!(status, StatusCode::OK, "{claims}");
+            assert_eq!(claims, only(&["sub", "email"]));
+        }
+    }
+
+    #[actix_web::test]
+    async fn after_sign_out_the_token_is_refused() {
+        let provider = TestIdentityProvider::start().await;
+        let server = server_with(&provider).await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+        let body = signed_in_with!(&app, Some(SCOPES));
+        let token = body["access_token"].as_str().expect("an access token");
+
+        let response = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/logout")
+                .insert_header((AUTHORIZATION, format!("Bearer {token}")))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        let (status, (content_type, cache, challenge), body) = userinfo!(&app, token);
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(content_type.as_deref(), Some("application/json"));
+        assert_eq!(cache.as_deref(), Some("no-store"));
+        assert_eq!(challenge.as_deref(), Some("Bearer error=\"invalid_token\""));
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "error": "invalid_token",
+                "error_description": "That access token was not accepted.",
+            }),
+        );
+    }
+
+    #[actix_web::test]
+    async fn a_revoked_session_takes_its_grant_with_it() {
+        // Signing out everywhere revokes the refresh families but leaves an
+        // access token live until it expires; that token is no longer part of
+        // a session, so it no longer carries the session's grant.
+        let provider = TestIdentityProvider::start().await;
+        let server = server_with(&provider).await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+        let body = signed_in_with!(&app, Some(SCOPES));
+        let token = body["access_token"].as_str().expect("an access token");
+        let user = server
+            .db()
+            .users()
+            .get_by_username(&Username::parse("alice").unwrap())
+            .await
+            .unwrap()
+            .expect("alice signed in");
+
+        server
+            .db()
+            .refresh_tokens()
+            .revoke_all_for_user(user.id)
+            .await
+            .unwrap();
+
+        let (status, _, claims) = userinfo!(&app, token);
+
+        assert_eq!(status, StatusCode::OK, "{claims}");
+        assert_eq!(claims, only(&["sub"]));
+    }
+
+    #[actix_web::test]
+    async fn a_token_with_no_recorded_grant_is_told_sub_alone() {
+        let provider = TestIdentityProvider::start().await;
+        let server = server_with(&provider).await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+
+        // A client that asked for no OpenID scope at all.
+        let body = signed_in_with!(&app, None);
+        let token = body["access_token"].as_str().expect("an access token");
+        let (status, _, claims) = userinfo!(&app, token);
+
+        assert_eq!(status, StatusCode::OK, "{claims}");
+        assert_eq!(claims, only(&["sub"]));
+
+        // A token minted with no session behind it: the shape of a jwt-bearer
+        // or a service token.
+        let ada = server.user("ada", true).await;
+        let (bare, _) = server
+            .jwt()
+            .unwrap()
+            .issue(&ada.username, "api admin", None, None)
+            .unwrap();
+        let (status, _, claims) = userinfo!(&app, bare);
+
+        assert_eq!(status, StatusCode::OK, "{claims}");
+        assert_eq!(claims, serde_json::json!({ "sub": "ada" }));
+    }
+
+    #[actix_web::test]
+    async fn a_password_grant_token_is_told_sub_alone() {
+        let provider = TestIdentityProvider::start().await;
+        let server = server_with(&provider).await;
+        let user = server.user("ada", false).await;
+        let password = rustak_server::identity::credentials::mint(
+            server.db(),
+            &server.config().auth,
+            &user,
+            rustak_server::identity::credentials::MintRequest::new(
+                rustak_api::CredentialKind::ClientPassword,
+                "CloudTAK",
+                &Username::parse("ada").unwrap(),
+            ),
+        )
+        .await
+        .expect("a client password")
+        .secret
+        .expose()
+        .to_string();
+        let app = test::init_service(App::new().configure(server.app())).await;
+        let (status, body) = exchange!(
+            &app,
+            &[
+                ("grant_type", "password"),
+                ("username", "ada"),
+                ("password", &password),
+            ],
+        );
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        let token = body["access_token"].as_str().expect("an access token");
+        let (status, _, claims) = userinfo!(&app, token);
+
+        assert_eq!(status, StatusCode::OK, "{claims}");
+        assert_eq!(claims, serde_json::json!({ "sub": "ada" }));
     }
 }

@@ -1,0 +1,15 @@
+# M10-06 — `/oauth/userinfo` releases only what the granted scopes allow
+
+**Why.** Found by M8-01: `/oauth/userinfo` releases the full claim set to every live token rather than narrowing by the OIDC scopes granted at authorization. The scopes are recorded on the authorization code, which is spent in seconds, and a rustak access token has nowhere flat to carry them. The ID token *is* narrowed. It is not a widening today (`GET /api/v1/me` answers the same facts to the same token), but a relying party that asked for `openid` alone should not be handed `email` and `groups` by the standard endpoint.
+
+**Read first:** `M10-00-wave-rules.md`; brief and status for M8-01 (`.claude/plan/{briefs,status}/M8-01-*`) and M5-01; `rustak-server/src/auth/oauth_server/{userinfo,claims,mod,discovery}.rs` and the token/code issuance beside them; how sessions and `jti`s are stored (migrations `0019_*` and the session store); `interop/node-tak` openid-client scenarios; OpenID Connect Core §5.3–5.4 for the facts.
+
+**Deliver.**
+1. **Record the granted scopes against the token's session/`jti`** when an authorization code is exchanged, carry them unchanged across a refresh, and delete them with the session. A new migration (next number after `0023`; STRICT table or column, never edit an applied migration). This is state, not a time series; one write per token issuance.
+2. **`/oauth/userinfo` reads them** and releases `sub` plus only the claims the granted scopes cover, using the same scope → claims mapping the ID token uses (one mapping, not two).
+3. **A token with no recorded OIDC grant** (issued by a flow that carries no OIDC scopes: jwt-bearer, service tokens, the CloudTAK password grant, a session created before this migration) is answered as if it held `openid` alone: `sub` only. First find out whether anything in the repository depends on more from such a token — the interop suites, the UI, the CloudTAK compose scenario — and report what you find; if something real depends on it, stop short of breaking it, keep that case as today, and put the decision to the orchestrator in your status note with the evidence.
+4. **Discovery stays truthful**: `scopes_supported` and `claims_supported` match what can actually be released.
+5. **Tests.** Contract tests for userinfo with `openid`, `openid profile`, `openid email`, every supported scope together, after a refresh, after logout (refused), and for a token with no recorded grant. Update the openid-client interop scenario to assert narrowing. The JSON and status codes are wire-facing: assert them exactly.
+6. **Docs.** Wherever the OIDC provider is documented (`docs/`), state the rule.
+
+**Files you own:** `rustak-server/src/auth/oauth_server/**`, the new migration, the session/token store files the recording needs, tests under `rustak-server/tests/`, `interop/node-tak` openid scenarios, the docs above, your status note. **Not yours:** `rustak-server/src/auth/cert.rs` (M10-10), `rustak-server/src/auth/ratelimit.rs`, `rustak-server/src/stream/**`.

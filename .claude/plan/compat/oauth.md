@@ -258,7 +258,7 @@ strings, which is allowed.
 | `exp`, `iat` | the access token's own window |
 | `auth_time` | when the code was issued, which is when the session was last confirmed |
 | `nonce` | echoed byte for byte when one was sent; **absent** when none was |
-| `name`, `email`, `groups` | per the granted scopes, §6.6 |
+| `preferred_username`, `name`, `email`, `groups` | per the granted scopes, §6.6 |
 
 An ID token is not a credential for rustak and cannot become one: `JwtIssuer::verify`
 deserialises the access-token claims, which need a `jti`, a `scope` and an `nbf` an ID token does
@@ -270,23 +270,32 @@ Bearer only — never a cookie. Exactly `application/json`, `no-store`. `401` wi
 `WWW-Authenticate: Bearer` when the token is missing, expired, revoked, forged or belongs to an
 account this installation no longer admits, all reported identically.
 
+With every scope granted (`openid profile email groups`):
+
 ```json
 { "sub": "alice", "preferred_username": "alice", "name": "Alice",
   "email": "alice@example.com", "groups": ["__ANON__", "ops", "admin"] }
 ```
 
-- `sub` and `preferred_username` are both the rustak username.
-- `email` is the account's `email` column **only when it is set**, never synthesised.
-- `groups` is the channels held (a membership in either direction, deduplicated — not per-device
-  active state), plus `[auth.oauth] admin_group` (default `"admin"`) for an administrator.
+With `openid` alone, or with no recorded grant at all: `{ "sub": "alice" }`.
 
-**Deviation from the M8-01 brief.** The brief asked for the claim set to be narrowed to the OIDC
-scopes granted at the authorization endpoint, releasing the full set only for a password-grant
-token. rustak records those scopes against the **code**, and a code is spent in seconds: there is
-nowhere on an access token to carry them and no table that remembers them. So userinfo releases the
-full set for every live token. It is not a widening — `GET /api/v1/me` already answers the same
-four facts to the same token — and the ID token *is* narrowed by scope, which is where a relying
-party reads them from anyway. Recording per-token OIDC scopes is backlog.
+| Scope | Claims released |
+|---|---|
+| always | `sub` — the rustak username |
+| `profile` | `preferred_username` (the rustak username again), `name` (when set) |
+| `email` | `email` — the account's `email` column **only when it is set**, never synthesised |
+| `groups` | `groups` — the channels held (a membership in either direction, deduplicated — not per-device active state), plus `[auth.oauth] admin_group` (default `"admin"`) for an administrator |
+
+The same mapping (`claims::RELEASED_BY`) builds the ID token and `claims_supported`.
+
+**Where the grant lives (M10-06).** The OpenID scopes granted at `/oauth/authorize` are recorded on
+the refresh-token row minted beside the access token when the code is exchanged
+(`refresh_tokens.oidc_scope`, keyed by the access token's `jti`; migration `0024`), copied
+unchanged by every rotation, and stop counting once the session's family is revoked or expires. A
+token with no recorded grant — password grant, jwt-bearer, service tokens, admin-UI and passkey
+sessions, sessions from before `0024`, a revoked session's still-live access token — is answered as
+if it held `openid` alone. This replaces M8-01's deviation, under which userinfo released the full
+set to every live token.
 
 ### 6.7 `GET|POST /logout` as `end_session_endpoint`
 

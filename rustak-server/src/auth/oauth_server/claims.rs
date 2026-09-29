@@ -18,12 +18,22 @@
 //!
 //! # What each scope releases
 //!
+//! [`RELEASED_BY`] is the one mapping. Userinfo, the ID token and the
+//! discovery document's `claims_supported` all read it, so none of them can
+//! promise or release a claim the others do not know about.
+//!
 //! | Scope | Claim | Source |
 //! |---|---|---|
-//! | always | `sub`, `preferred_username` | `users.username` |
+//! | always | `sub` | `users.username` |
+//! | `profile` | `preferred_username` | `users.username` |
 //! | `profile` | `name` | `users.display_name`, omitted when unset |
 //! | `email` | `email` | `users.email`, **omitted when unset** |
 //! | `groups` | `groups` | the channels held, plus the administrator marker |
+//!
+//! `preferred_username` belongs to `profile` because OpenID Connect Core §5.4
+//! puts it there: a relying party that asked for `openid` alone asked to know
+//! *that* somebody signed in, and `sub` answers that. `sub` is released
+//! whatever was granted, because a claim set without one names nobody.
 //!
 //! An account with no email address has no `email` claim. Synthesising one from
 //! the username would be a plausible-looking address that belongs to somebody
@@ -37,12 +47,33 @@ use crate::prelude::*;
 
 use super::scopes;
 
-/// The claims released for an account, narrowed to `granted`.
+/// Which scope releases each claim about an account, in the order
+/// `claims_supported` lists them.
 ///
-/// `granted` of [`None`] releases the full set. That is the password grant's
-/// token asking about itself: it was issued with rustak's own `api` scope,
-/// which already reaches every endpoint these facts come from, so withholding
-/// them would be a formality rather than a control.
+/// `sub` is listed under `openid` for the discovery document's sake; it is
+/// released whatever was granted.
+pub const RELEASED_BY: &[(&str, &str)] = &[
+    ("sub", scopes::OPENID),
+    ("preferred_username", scopes::PROFILE),
+    ("name", scopes::PROFILE),
+    ("email", scopes::EMAIL),
+    ("groups", scopes::GROUPS),
+];
+
+/// Whether `granted` releases `claim`. A claim [`RELEASED_BY`] does not name
+/// is never released.
+fn releases(granted: &str, claim: &str) -> bool {
+    claim == "sub"
+        || RELEASED_BY
+            .iter()
+            .any(|(name, scope)| *name == claim && scopes::grants(granted, scope))
+}
+
+/// The claims released for an account, narrowed to the OpenID scopes
+/// `granted`, space-separated.
+///
+/// A caller holding no record of a grant passes [`scopes::OPENID`] — `sub`,
+/// and nothing else about the account.
 ///
 /// # Errors
 ///
@@ -52,31 +83,34 @@ pub async fn released(
     oauth: &OAuthServerConfig,
     user: &UserRow,
     is_admin: bool,
-    granted: Option<&str>,
+    granted: &str,
 ) -> Result<serde_json::Map<String, serde_json::Value>, Error> {
-    let allows = |scope: &str| granted.is_none_or(|granted| scopes::grants(granted, scope));
+    let allows = |claim: &str| releases(granted, claim);
     let mut claims = serde_json::Map::new();
 
     claims.insert("sub".to_string(), user.username.as_str().into());
-    claims.insert(
-        "preferred_username".to_string(),
-        user.username.as_str().into(),
-    );
 
-    if allows(scopes::PROFILE)
+    if allows("preferred_username") {
+        claims.insert(
+            "preferred_username".to_string(),
+            user.username.as_str().into(),
+        );
+    }
+
+    if allows("name")
         && let Some(name) = user.display_name.as_deref()
     {
         claims.insert("name".to_string(), name.into());
     }
 
     // Never invented; see the module documentation.
-    if allows(scopes::EMAIL)
+    if allows("email")
         && let Some(email) = user.email.as_deref()
     {
         claims.insert("email".to_string(), email.into());
     }
 
-    if allows(scopes::GROUPS) {
+    if allows("groups") {
         claims.insert(
             "groups".to_string(),
             groups(db, oauth, user, is_admin).await?.into(),
@@ -151,40 +185,62 @@ mod tests {
     async fn the_identity_is_one_string_whatever_was_asked_for() {
         let (db, user) = fixture(Some("ada@example.com")).await;
 
-        for granted in [None, Some("openid"), Some("openid profile email groups")] {
+        for granted in ["openid profile", "openid profile email groups", "profile"] {
             let claims = released(&db, &oauth(), &user, false, granted)
                 .await
                 .unwrap();
 
-            assert_eq!(claims["sub"], "ada", "{granted:?}");
-            assert_eq!(claims["preferred_username"], "ada", "{granted:?}");
+            assert_eq!(claims["sub"], "ada", "{granted}");
+            assert_eq!(claims["preferred_username"], "ada", "{granted}");
         }
     }
 
     #[tokio::test]
-    async fn a_scope_that_was_not_granted_releases_nothing() {
+    async fn openid_alone_releases_sub_and_nothing_else() {
+        // OpenID Connect Core §5.4: `preferred_username` is a `profile` claim.
         let (db, user) = fixture(Some("ada@example.com")).await;
-        let claims = released(&db, &oauth(), &user, true, Some("openid"))
-            .await
-            .unwrap();
 
-        assert!(!claims.contains_key("name"), "{claims:?}");
-        assert!(!claims.contains_key("email"), "{claims:?}");
-        assert!(!claims.contains_key("groups"), "{claims:?}");
+        for granted in ["openid", "", "offline_access"] {
+            let claims = released(&db, &oauth(), &user, true, granted).await.unwrap();
+
+            assert_eq!(
+                serde_json::Value::Object(claims),
+                serde_json::json!({ "sub": "ada" }),
+                "{granted:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn every_scope_this_server_grants_releases_something_it_names() {
+        // One mapping: a scope nothing is released by would be a promise the
+        // discovery document makes and no endpoint keeps.
+        for scope in scopes::SUPPORTED {
+            assert!(
+                RELEASED_BY.iter().any(|(_, by)| by == scope),
+                "{scope} releases nothing",
+            );
+        }
+
+        for (claim, scope) in RELEASED_BY {
+            assert!(scopes::SUPPORTED.contains(scope), "{claim} under {scope}");
+        }
+
+        assert!(!releases("openid profile email groups", "address"));
     }
 
     #[tokio::test]
     async fn each_scope_releases_exactly_its_own_claim() {
         let (db, user) = fixture(Some("ada@example.com")).await;
 
-        let profile = released(&db, &oauth(), &user, false, Some("openid profile"))
+        let profile = released(&db, &oauth(), &user, false, "openid profile")
             .await
             .unwrap();
 
         assert_eq!(profile["name"], "Ada Lovelace");
         assert!(!profile.contains_key("email"));
 
-        let email = released(&db, &oauth(), &user, false, Some("openid email"))
+        let email = released(&db, &oauth(), &user, false, "openid email")
             .await
             .unwrap();
 
@@ -197,7 +253,7 @@ mod tests {
         // Rather than one synthesised from the username, which would be a
         // plausible address belonging to somebody else.
         let (db, user) = fixture(None).await;
-        let claims = released(&db, &oauth(), &user, false, Some("openid email"))
+        let claims = released(&db, &oauth(), &user, false, "openid email")
             .await
             .unwrap();
 
@@ -207,7 +263,7 @@ mod tests {
     #[tokio::test]
     async fn the_groups_claim_is_the_channels_held_and_nothing_is_listed_twice() {
         let (db, user) = fixture(None).await;
-        let claims = released(&db, &oauth(), &user, false, Some("groups"))
+        let claims = released(&db, &oauth(), &user, false, "groups")
             .await
             .unwrap();
 
@@ -230,7 +286,7 @@ mod tests {
     #[tokio::test]
     async fn an_administrator_carries_the_marker_group_a_relying_party_maps() {
         let (db, user) = fixture(None).await;
-        let claims = released(&db, &oauth(), &user, true, Some("groups"))
+        let claims = released(&db, &oauth(), &user, true, "groups")
             .await
             .unwrap();
 
@@ -251,9 +307,7 @@ mod tests {
             admin_group: "tak-admins".to_string(),
             ..OAuthServerConfig::default()
         };
-        let claims = released(&db, &oauth, &user, true, Some("groups"))
-            .await
-            .unwrap();
+        let claims = released(&db, &oauth, &user, true, "groups").await.unwrap();
         let names = claims["groups"].as_array().unwrap();
 
         assert!(names.iter().any(|name| name == "tak-admins"), "{names:?}");

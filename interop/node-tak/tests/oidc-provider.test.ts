@@ -21,7 +21,13 @@
  * 2. **The key set.** Fetched from the `jwks_uri` the document named and parsed
  *    as a JWK set, which is what every ID-token verification starts with.
  * 3. **Userinfo.** With a token from the password grant — the credential this
- *    suite already has — asserting the claims CloudTAK reads.
+ *    suite already has. That token carries no OpenID grant, so userinfo
+ *    answers it as if it held `openid` alone: `sub` and nothing else. The
+ *    library has to accept that narrowed answer, and the scenario asserts the
+ *    narrowing itself, since a token that asked for nothing being handed
+ *    `email` and `groups` is exactly the failure it guards against. The claims
+ *    per granted scope need a code exchange and are asserted in the Rust suite
+ *    (`oidc_provider.rs::userinfo_narrowing`).
  *
  * There is no code exchange here and there cannot be: this harness has no
  * upstream identity provider to sign anybody in at, and a browser flow with
@@ -170,7 +176,7 @@ test("publishes a key set an ID-token verification can start from", { skip }, as
   }
 });
 
-test("answers userinfo with the claims a relying party maps", { skip: unlessAll(session, "oidcDiscovery", "oauthToken") }, async () => {
+test("answers userinfo for a token with no OpenID grant with `sub` alone", { skip: unlessAll(session, "oidcDiscovery", "oauthToken") }, async () => {
   const config = await discovered();
   const token = await accessToken();
 
@@ -179,20 +185,14 @@ test("answers userinfo with the claims a relying party maps", { skip: unlessAll(
     unknown
   >;
 
-  assert.equal(
-    claims.sub,
-    session.client.username,
-    "`sub` is the rustak username, which is also the access token's and the certificate's",
+  // The whole body: `sub` is the rustak username, which is also the access
+  // token's and the certificate's, and a password-grant token was granted no
+  // OpenID scope that would release anything else (OpenID Connect Core §5.4).
+  assert.deepEqual(
+    claims,
+    { sub: session.client.username },
+    "a token that asked for no OpenID scope is not handed profile, email or groups",
   );
-  assert.equal(
-    claims.preferred_username,
-    session.client.username,
-    "the claim CloudTAK reads first",
-  );
-  assert.ok(Array.isArray(claims.groups), "`groups` is a flat array of strings");
-  for (const name of claims.groups as unknown[]) {
-    assert.equal(typeof name, "string");
-  }
 });
 
 test("refuses userinfo to a caller with no token", { skip }, async () => {

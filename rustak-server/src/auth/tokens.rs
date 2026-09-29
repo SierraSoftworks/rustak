@@ -69,12 +69,32 @@ pub fn grants_admin(scope: &str) -> bool {
 ///
 /// A [`human_errors::Kind::System`] error when the token cannot be signed or
 /// the refresh token cannot be stored.
-#[instrument("auth.tokens.issue", skip_all, fields(username = %user.username), err(Display))]
 pub async fn issue_session<S: Services>(
     services: &S,
     user: &UserRow,
     is_admin: bool,
     client: Option<&str>,
+) -> Result<TokenResponse, Error> {
+    issue_granted_session(services, user, is_admin, client, None).await
+}
+
+/// Issues a fresh session that remembers the OpenID scopes a relying party was
+/// granted, so that `/oauth/userinfo` can release exactly what they cover.
+///
+/// `oidc_scope` is recorded against the session's refresh family (migration
+/// `0024`), copied forward unchanged by every [`rotate`] and ended with the
+/// session. [`None`] is [`issue_session`]: a session granted no OpenID scopes.
+///
+/// # Errors
+///
+/// As [`issue_session`].
+#[instrument("auth.tokens.issue", skip_all, fields(username = %user.username), err(Display))]
+pub async fn issue_granted_session<S: Services>(
+    services: &S,
+    user: &UserRow,
+    is_admin: bool,
+    client: Option<&str>,
+    oidc_scope: Option<&str>,
 ) -> Result<TokenResponse, Error> {
     let config = services.config();
     let jwt = services.jwt()?;
@@ -87,6 +107,8 @@ pub async fn issue_session<S: Services>(
         &scope,
         client,
         uuid::Uuid::new_v4().to_string(),
+        &claims.jti,
+        oidc_scope,
     )
     .await?;
 
@@ -147,7 +169,18 @@ pub async fn rotate<S: Services>(
     let is_admin = user.is_effective_admin() && grants_admin(&spent.scope);
     let scope = scope_for(is_admin);
     let (token, claims) = services.jwt()?.issue(&user.username, &scope, None, None)?;
-    let refresh = mint(services, &user, &scope, client, spent.family).await?;
+    // The OpenID grant is copied forward unchanged: a refresh can neither widen
+    // nor narrow what the relying party was granted at `/oauth/authorize`.
+    let refresh = mint(
+        services,
+        &user,
+        &scope,
+        client,
+        spent.family,
+        &claims.jti,
+        spent.oidc_scope.as_deref(),
+    )
+    .await?;
 
     Ok(TokenResponse::new(
         token,
@@ -205,12 +238,17 @@ pub async fn revoke_session<S: Services>(
 }
 
 /// Stores a fresh refresh token and returns the half the caller keeps.
+///
+/// `jti` is the access token minted beside it, which is how `/oauth/userinfo`
+/// finds `oidc_scope` again.
 async fn mint<S: Services>(
     services: &S,
     user: &UserRow,
     scope: &str,
     client: Option<&str>,
     family: String,
+    jti: &str,
+    oidc_scope: Option<&str>,
 ) -> Result<String, Error> {
     let config = services.config();
     let mut bytes = [0u8; REFRESH_BYTES];
@@ -228,6 +266,8 @@ async fn mint<S: Services>(
             scope: scope.to_string(),
             client: client.map(str::to_string),
             expires_at: Utc::now() + config.auth.refresh_token_ttl,
+            jti: Some(jti.to_string()),
+            oidc_scope: oidc_scope.map(str::to_string),
         })
         .await?;
 

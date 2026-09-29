@@ -22,7 +22,7 @@ use crate::db::{
 
 /// The columns [`RefreshTokenRow::from_row`] expects, in order.
 const COLUMNS: &str = "id, user_id, token_hash, family, scope, client, created_at, expires_at, \
-                       used_at, revoked_at";
+                       used_at, revoked_at, jti, oidc_scope";
 
 /// One row of `refresh_tokens`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +41,12 @@ pub struct RefreshTokenRow {
     /// Set when the token was exchanged. A second exchange is a replay.
     pub used_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
+    /// The `jti` of the access token minted beside this refresh token.
+    /// [`None`] for a row written before migration `0024`.
+    pub jti: Option<String>,
+    /// The OpenID scopes the session was granted, carried unchanged by every
+    /// rotation. [`None`] when it was granted none.
+    pub oidc_scope: Option<String>,
 }
 
 impl RefreshTokenRow {
@@ -56,6 +62,8 @@ impl RefreshTokenRow {
             expires_at: ts(row, 7)?,
             used_at: opt_ts(row, 8)?,
             revoked_at: opt_ts(row, 9)?,
+            jti: row.get(10)?,
+            oidc_scope: row.get(11)?,
         })
     }
 
@@ -75,6 +83,11 @@ pub struct NewRefreshToken {
     pub scope: String,
     pub client: Option<String>,
     pub expires_at: DateTime<Utc>,
+    /// The `jti` of the access token issued with it.
+    pub jti: Option<String>,
+    /// The OpenID scopes granted, copied forward from the spent token on a
+    /// rotation.
+    pub oidc_scope: Option<String>,
 }
 
 /// What an exchange found.
@@ -110,8 +123,9 @@ impl<'a> RefreshTokensRepo<'a> {
                 tx.query_one(
                     &format!(
                         "INSERT INTO refresh_tokens \
-                           (user_id, token_hash, family, scope, client, created_at, expires_at) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING {COLUMNS}"
+                           (user_id, token_hash, family, scope, client, created_at, expires_at, \
+                            jti, oidc_scope) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) RETURNING {COLUMNS}"
                     ),
                     rusqlite::params![
                         new.user_id.get(),
@@ -121,6 +135,8 @@ impl<'a> RefreshTokensRepo<'a> {
                         new.client,
                         Timestamp::now(),
                         Timestamp::from(new.expires_at),
+                        new.jti,
+                        new.oidc_scope,
                     ],
                     RefreshTokenRow::from_row,
                 )
@@ -144,6 +160,35 @@ impl<'a> RefreshTokensRepo<'a> {
                     RefreshTokenRow::from_row,
                 )
                 .optional()
+            })
+            .await
+    }
+
+    /// The OpenID scopes granted to the session an access token belongs to,
+    /// found by that token's `jti`.
+    ///
+    /// [`None`] when no live session row names the token — a token minted
+    /// without a refresh token, one from before migration `0024`, one whose
+    /// session has been revoked or has expired — and when the session was
+    /// granted no OpenID scopes at all. The caller treats every one of those
+    /// the same way: as `openid` alone.
+    ///
+    /// # Errors
+    ///
+    /// A [`human_errors::Kind::System`] error if the read fails.
+    pub async fn oidc_grant(&self, jti: &str) -> Result<Option<String>, Error> {
+        let jti = jti.to_owned();
+
+        self.db
+            .read(move |c| {
+                c.query_one(
+                    "SELECT oidc_scope FROM refresh_tokens \
+                     WHERE jti = ?1 AND revoked_at IS NULL AND expires_at > ?2",
+                    rusqlite::params![jti, Timestamp::now()],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()
+                .map(Option::flatten)
             })
             .await
     }
@@ -301,6 +346,8 @@ mod tests {
             scope: "admin".into(),
             client: Some("rustak-ui".into()),
             expires_at: Utc::now() + chrono::TimeDelta::days(30),
+            jti: None,
+            oidc_scope: None,
         }
     }
 
@@ -491,6 +538,45 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[tokio::test]
+    async fn an_oidc_grant_is_found_by_its_access_tokens_jti_while_the_session_lives() {
+        let (db, user) = fixture().await;
+        db.refresh_tokens()
+            .create(NewRefreshToken {
+                jti: Some("jti-1".into()),
+                oidc_scope: Some("openid email".into()),
+                ..issued(user, "h1", "f1")
+            })
+            .await
+            .unwrap();
+        db.refresh_tokens()
+            .create(NewRefreshToken {
+                jti: Some("jti-2".into()),
+                ..issued(user, "h2", "f2")
+            })
+            .await
+            .unwrap();
+
+        let grant = |jti: &'static str| {
+            let db = db.clone();
+
+            async move { db.refresh_tokens().oidc_grant(jti).await.unwrap() }
+        };
+
+        assert_eq!(grant("jti-1").await.as_deref(), Some("openid email"));
+        assert_eq!(grant("jti-2").await, None, "a session granted no scopes");
+        assert_eq!(grant("unknown").await, None);
+
+        // Spending the token on a rotation leaves the grant readable: the
+        // access token minted beside it is still live until it expires.
+        db.refresh_tokens().exchange("h1").await.unwrap();
+        assert_eq!(grant("jti-1").await.as_deref(), Some("openid email"));
+
+        // Ending the session ends the grant with it.
+        db.refresh_tokens().revoke_family("f1").await.unwrap();
+        assert_eq!(grant("jti-1").await, None);
     }
 
     #[tokio::test]

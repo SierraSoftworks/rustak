@@ -18,7 +18,7 @@
 //! | `exp`, `iat` | the access token's own window, so the two expire together |
 //! | `auth_time` | when the session behind it began, and `iat` when that is not known |
 //! | `nonce` | echoed byte for byte when the client sent one, absent when it did not |
-//! | `name`, `email`, `groups` | [`super::claims`], according to the granted scopes |
+//! | `preferred_username`, `name`, `email`, `groups` | [`super::claims`], according to the granted scopes |
 //!
 //! `aud` is the client identifier and nothing else. A relying party checks it
 //! against its own, which is what stops a token minted for one client being
@@ -42,6 +42,11 @@ use crate::db::repos::UserRow;
 use crate::prelude::*;
 
 use super::claims;
+
+/// The claims every ID token may carry whatever was granted: the ones that
+/// describe the token rather than the account. What it says about the account
+/// is [`claims::RELEASED_BY`].
+pub const ENVELOPE: &[&str] = &["iss", "aud", "exp", "iat", "auth_time", "nonce"];
 
 /// Everything one ID token is minted from.
 pub struct Request<'a> {
@@ -82,14 +87,8 @@ pub async fn issue(
     request: &Request<'_>,
 ) -> Result<String, Error> {
     let issued_at = Utc::now().timestamp();
-    let mut claims = claims::released(
-        db,
-        oauth,
-        request.user,
-        request.is_admin,
-        Some(request.granted),
-    )
-    .await?;
+    let mut claims =
+        claims::released(db, oauth, request.user, request.is_admin, request.granted).await?;
 
     claims.insert("iss".to_string(), jwt.issuer().into());
     claims.insert("aud".to_string(), request.client_id.into());
@@ -272,5 +271,38 @@ mod tests {
             server.jwt().unwrap().verify(&token).is_err(),
             "an ID token presented as a bearer token has to be refused",
         );
+    }
+
+    #[actix_web::test]
+    async fn every_claim_a_token_can_carry_is_one_discovery_advertises() {
+        let (server, user) = fixture(true).await;
+        let token = issued(
+            &server,
+            &user,
+            request(&user, "openid profile email groups", Some("a-nonce")),
+        )
+        .await;
+        let supported = super::super::discovery::claims_supported();
+
+        for claim in payload(&token).as_object().unwrap().keys() {
+            assert!(supported.contains(&claim.as_str()), "{claim}");
+        }
+    }
+
+    #[actix_web::test]
+    async fn openid_alone_names_the_account_by_sub_and_nothing_else() {
+        let (server, user) = fixture(false).await;
+        let token = issued(&server, &user, request(&user, "openid", None)).await;
+        let claims = payload(&token);
+        let mut keys: Vec<&str> = claims
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+
+        keys.sort_unstable();
+
+        assert_eq!(keys, ["aud", "auth_time", "exp", "iat", "iss", "sub"]);
     }
 }

@@ -176,7 +176,18 @@ pub async fn grant(
     // ordinary session cannot become an administrative one either.
     let is_admin = user.is_effective_admin() && tokens::grants_admin(&redemption.scope);
     let rustak_scope = tokens::scope_for(is_admin);
-    let session = match tokens::issue_session(context, &user, is_admin, Some(&client.id)).await {
+    // The OpenID scopes granted at `/oauth/authorize` outlive the code here:
+    // they are recorded against the session, which is what `/oauth/userinfo`
+    // narrows its answer by.
+    let session = match tokens::issue_granted_session(
+        context,
+        &user,
+        is_admin,
+        Some(&client.id),
+        redemption.oidc_scope.as_deref(),
+    )
+    .await
+    {
         Ok(session) => session,
         Err(err) => {
             error!(error = %err, "Could not issue a session for an authorization code.");
