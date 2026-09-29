@@ -30,6 +30,10 @@ futures = "0.3.34"
 futures-concurrency = "7.7.1"
 async-trait = "0.1.92"
 bytes = "1.12.1"
+# Keepalive and TCP_USER_TIMEOUT on accepted stream sockets, through safe
+# wrappers (`unsafe_code = "forbid"`). `all` is what exposes the keepalive
+# count, the user timeout and their getters. M10-02.
+socket2 = { version = "0.6.5", features = ["all"] }
 actix-web = { version = "4.15.0", features = ["rustls-0_23"] }
 # Already in the tree through actix-web's `rustls-0_23` feature; named here so that
 # `pki::tls::peer` can downcast `on_connect`'s connection to the TLS stream type.

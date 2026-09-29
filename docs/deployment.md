@@ -1012,12 +1012,35 @@ never sends a byte while working perfectly. Measuring reads alone dropped
 exactly those clients, every 90 seconds, for as long as the server had something
 to say to them.
 
-A peer that has **vanished** while the server is still writing to it is not this
-timeout's job and never was: its socket stops taking bytes, the writer's flush
-overruns `[stream.limits] write_timeout` (30s), and the connection is closed as
-`write_timeout` — or its queue fills first and `close_after_drops` closes it as
-`slow_consumer`. A peer that has vanished with nothing going either way is
-reclaimed by `idle_timeout`, which is what it is for.
+A peer that has **vanished** while the server is still writing to it is harder:
+a write completes once the bytes reach this server's kernel, so the writes keep
+succeeding — and the device keeps showing as connected — until the send buffer
+fills. rustak therefore asks the kernel. Every accepted stream socket gets TCP
+keepalive probes and, on Linux, `TCP_USER_TIMEOUT`, sized from `idle_timeout`:
+the first probe after half of it, three more spread over the rest, and
+unacknowledged data given exactly `idle_timeout` (held between 10 seconds and
+15 minutes whatever the setting). There is no separate key. When the kernel
+gives up, the connection ends as `peer_timeout`.
+
+How long a vanished device can linger, by platform (defaults in brackets):
+
+| Platform | Nothing being written to it | Server still writing to it |
+|---|---|---|
+| Linux | ≈ `idle_timeout` (90s) — keepalive, or `idle_timeout` itself | ≈ `idle_timeout` (90s) — `TCP_USER_TIMEOUT` |
+| macOS, Windows | ≈ `idle_timeout` (90s) | `write_timeout` (30s) once the send buffer fills, or the system's retransmission limit — no user timeout on these systems |
+| Anything else | `idle_timeout` (90s) | `write_timeout` once the buffer fills, or the retransmission limit (≈ 15 minutes at Linux's defaults) |
+
+On Linux, `TCP_USER_TIMEOUT` also overrides keepalive's probe count
+(`tcp(7)`): a probe unanswered once `idle_timeout` has passed since anything was
+received ends the connection. On Windows before 10 1703 the probe count cannot
+be set and is ten, so a silent vanished peer lasts `idle_timeout / 2 + 10 ×` the
+interval. A socket that refuses an option is still served; the server logs one
+`warn` per start naming the option.
+
+If the queue fills before any of this, `close_after_drops` closes the
+connection as `slow_consumer`; if the peer's socket stops taking bytes, the
+writer's flush overruns `[stream.limits] write_timeout` and closes it as
+`write_timeout`.
 
 Every disconnect prints one line, `A client left the stream.`, carrying
 `reason`, `connected_for`, and the connection's message counts:
@@ -1038,6 +1061,7 @@ INFO A client left the stream. reason=idle connected_for=90.002s rx=5 tx=305 dro
 | `account_disabled` | The account it belongs to was switched off | Expected after a disable |
 | `administrator` | `DELETE /api/v1/clients/{uid}` or the Marti equivalent | Expected |
 | `shutdown` | The listener is draining | Expected on a restart |
+| `peer_timeout` | The kernel gave up on the peer (`ETIMEDOUT`): keepalive probes or sent data went unanswered | A device that dropped off the network without closing its socket — coverage lost, battery pulled |
 
 The same causes are counted per reason, so the shape of a fleet's
 disconnections is readable without reading every line.

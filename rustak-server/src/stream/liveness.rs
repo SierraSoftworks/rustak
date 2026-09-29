@@ -60,11 +60,14 @@ pub enum LeaveReason {
     Administrator = 9,
     /// The server is stopping.
     Shutdown = 10,
+    /// The kernel gave up on the peer (`ETIMEDOUT`): a keepalive probe or
+    /// transmitted data went unanswered for as long as `peer_probe` allows.
+    PeerTimeout = 11,
 }
 
 impl LeaveReason {
     /// Every cause, in declaration order. The counters are indexed by it.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::ClientClosed,
         Self::Idle,
         Self::ReadError,
@@ -75,6 +78,7 @@ impl LeaveReason {
         Self::AccountDisabled,
         Self::Administrator,
         Self::Shutdown,
+        Self::PeerTimeout,
     ];
 
     /// What the `reason` field of the disconnect line reads.
@@ -91,6 +95,7 @@ impl LeaveReason {
             Self::AccountDisabled => "account_disabled",
             Self::Administrator => "administrator",
             Self::Shutdown => "shutdown",
+            Self::PeerTimeout => "peer_timeout",
         }
     }
 

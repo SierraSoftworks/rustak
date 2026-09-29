@@ -62,7 +62,7 @@ use super::replay;
 use super::resolver::StreamPrincipal;
 use super::router::Router;
 use super::subscription::{ConnHandle, ConnId, ConnStats, Outbound, Subscription};
-use super::{notify, writer};
+use super::{notify, peer_probe, writer};
 
 /// What one connection may cost.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -278,7 +278,7 @@ async fn read_loop<R: AsyncRead + Unpin>(
             Some(Err(err)) => {
                 debug!(error = %err, "A stream connection failed while reading.");
 
-                return LeaveReason::ReadError;
+                return peer_probe::cause(&err, LeaveReason::ReadError);
             }
             Some(Ok(frame)) => frame,
         };
@@ -568,6 +568,30 @@ mod tests {
         let reading = read_until_it_ends(deps, Broken, handle, closing).await;
 
         assert_eq!(reading.await.unwrap(), LeaveReason::ReadError);
+    }
+
+    /// A socket the kernel has given up on (`ETIMEDOUT`). M10-02.
+    struct TimedOut;
+
+    impl AsyncRead for TimedOut {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Ready(Err(io::Error::from(io::ErrorKind::TimedOut)))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_peer_the_kernel_gave_up_on_is_named_as_a_peer_timeout() {
+        let deps = deps().await;
+        let closing = Shutdown::new();
+        let (handle, _liveness, _queue) = handle(&closing);
+
+        let reading = read_until_it_ends(deps, TimedOut, handle, closing).await;
+
+        assert_eq!(reading.await.unwrap(), LeaveReason::PeerTimeout);
     }
 
     #[tokio::test]

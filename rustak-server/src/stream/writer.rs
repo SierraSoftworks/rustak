@@ -38,6 +38,7 @@ use crate::prelude::*;
 
 use super::liveness::{LeaveReason, Liveness};
 use super::metrics::StreamMetrics;
+use super::peer_probe;
 use super::subscription::Outbound;
 
 /// How many queued messages one flush may carry.
@@ -188,7 +189,7 @@ async fn flush<W: AsyncWrite + Unpin>(
     match tokio::time::timeout(within, flushing).await {
         Ok(Ok(())) => true,
         Ok(Err(err)) => {
-            context.ended(LeaveReason::WriteError);
+            context.ended(peer_probe::cause(&err, LeaveReason::WriteError));
             debug!(error = %err, "A stream connection's writer could not flush.");
 
             false
@@ -275,7 +276,7 @@ async fn fed(
     match tokio::time::timeout(within, feeding).await {
         Ok(Ok(())) => true,
         Ok(Err(err)) => {
-            context.ended(LeaveReason::WriteError);
+            context.ended(peer_probe::cause(&err, LeaveReason::WriteError));
             debug!(error = %err, "A stream connection's writer could not encode a message.");
 
             false
@@ -452,6 +453,55 @@ mod tests {
         // Held to the end, so the socket is not closed from under the writer
         // and the test is about the deadline rather than about an error.
         drop(client);
+    }
+
+    /// A socket the kernel has given up on: every write is `ETIMEDOUT`.
+    struct TimedOut;
+
+    impl AsyncWrite for TimedOut {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Err(std::io::ErrorKind::TimedOut.into()))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Err(std::io::ErrorKind::TimedOut.into()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_write_the_kernel_gave_up_on_is_named_as_a_peer_timeout() {
+        // M10-02: `TCP_USER_TIMEOUT` expiring under outbound traffic surfaces
+        // here, on the write, not on the read.
+        let (tx, rx) = mpsc::channel(8);
+        let context = context(None);
+        let liveness = Arc::clone(&context.liveness);
+
+        tx.send(Outbound::Event(event("UID-1"))).await.unwrap();
+        drop(tx);
+
+        run(
+            rx,
+            FramedWrite::new(TimedOut, TakCodec::new(Mode::Xml)),
+            context,
+            Shutdown::new(),
+        )
+        .await;
+
+        assert_eq!(liveness.reason(), Some(LeaveReason::PeerTimeout));
     }
 
     #[tokio::test(start_paused = true)]

@@ -16,6 +16,7 @@
 //! | [`hub`] | the lock, and every routing question asked under it |
 //! | [`registry`] | the map of connections and the two indexes over it |
 //! | [`liveness`] | the idle clock in both directions, and why a client left |
+//! | [`peer_probe`] | the kernel's keepalive and user timeout, sized from the idle timeout |
 //! | [`router`] | flow tags, `<marti>` stripping, incognito, fan-out |
 //! | [`dest`] | `<dest>` → a list of connections |
 //! | [`groups`] | the channel name → bit position map, cached |
@@ -62,6 +63,7 @@ pub mod mission_notify;
 pub mod mission_payload;
 pub mod negotiation;
 pub mod notify;
+pub mod peer_probe;
 pub mod registry;
 pub mod replay;
 pub mod resolver;

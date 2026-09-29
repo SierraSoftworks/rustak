@@ -20,12 +20,23 @@
 //! none, so the stream's configuration deliberately has an empty one, and the
 //! certificate resolver answers without a server name.
 //!
+//! # A vanished peer is the kernel's to notice
+//!
+//! Every accepted socket gets `TCP_NODELAY`, keepalive probes and — on Linux —
+//! `TCP_USER_TIMEOUT`, sized from `idle_timeout` by [`PeerProbe`] so that a
+//! phone that drops off the network is reclaimed in roughly `idle_timeout`
+//! even while the server is still writing to it. The platform facts are in
+//! [`peer_probe`](super::peer_probe). A socket that refuses an option is still
+//! served: the options shorten how long a dead peer lingers, they are not what
+//! makes a live one work. M10-02.
+//!
 //! [`pki::Pki::stream_server_config`]: crate::pki::Pki::stream_server_config
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use rustak_core::config::ListenAddr;
+use socket2::{SockRef, TcpKeepalive};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
 use tokio_rustls::TlsAcceptor;
@@ -35,6 +46,7 @@ use crate::prelude::*;
 
 use super::connection::{self, ConnDeps};
 use super::metrics::StreamMetrics;
+use super::peer_probe::PeerProbe;
 use super::resolver::CertPrincipalResolver;
 
 /// The bounds that belong to the listener rather than to one connection.
@@ -130,13 +142,14 @@ pub async fn run(
     } = limits;
     let acceptor = TlsAcceptor::from(tls);
     let slots = Arc::new(Semaphore::new(max_connections.max(1)));
+    let mut tuning = Tuning::new(PeerProbe::for_idle_timeout(deps.limits.idle_timeout));
 
     loop {
         let accepted = tokio::select! {
             biased;
 
             () = shutdown.cancelled() => break,
-            accepted = bound.listener.accept() => accepted,
+            accepted = accept(&bound.listener, &mut tuning) => accepted,
         };
 
         let (socket, peer) = match accepted {
@@ -154,12 +167,6 @@ pub async fn run(
         let Ok(slot) = Arc::clone(&slots).acquire_owned().await else {
             break;
         };
-
-        // CoT messages are small and latency-sensitive; Nagle would hold a
-        // position report back waiting for a second one seconds away.
-        if let Err(err) = socket.set_nodelay(true) {
-            debug!(error = %err, "Could not disable Nagle on a stream connection.");
-        }
 
         let acceptor = acceptor.clone();
         let resolver = Arc::clone(&resolver);
@@ -187,6 +194,98 @@ pub async fn run(
     info!("The CoT stream listener has stopped.");
 
     Ok(())
+}
+
+/// Accepts one connection and gives its socket the options every stream
+/// socket carries.
+///
+/// The one accept path, so what the tests read back from a socket is what a
+/// device's connection gets.
+async fn accept(
+    listener: &TcpListener,
+    tuning: &mut Tuning,
+) -> std::io::Result<(TcpStream, SocketAddr)> {
+    let (socket, peer) = listener.accept().await?;
+    tuning.apply(&socket);
+
+    Ok((socket, peer))
+}
+
+/// The socket options one listener sets, and whether it has complained yet.
+#[derive(Debug)]
+struct Tuning {
+    probe: PeerProbe,
+    /// Set once an option has been refused: the platform will refuse it on
+    /// every connection alike, and a line per device says nothing new.
+    warned: bool,
+}
+
+impl Tuning {
+    fn new(probe: PeerProbe) -> Self {
+        Self {
+            probe,
+            warned: false,
+        }
+    }
+
+    /// Sets `TCP_NODELAY` and the peer probe. Never refuses the connection.
+    fn apply(&mut self, socket: &TcpStream) {
+        // CoT messages are small and latency-sensitive; Nagle would hold a
+        // position report back waiting for a second one seconds away.
+        if let Err(err) = socket.set_nodelay(true) {
+            debug!(error = %err, "Could not disable Nagle on a stream connection.");
+        }
+
+        if let Err((option, err)) = set_probe(socket, &self.probe)
+            && self.first_failure()
+        {
+            warn!(
+                option,
+                error = %err,
+                "Could not set a keepalive option on a stream connection; a device that drops off \
+                 the network may stay connected past the idle timeout. Logged once per listener start.",
+            );
+        }
+    }
+
+    /// Whether this is the first refusal since the listener started.
+    fn first_failure(&mut self) -> bool {
+        !std::mem::replace(&mut self.warned, true)
+    }
+}
+
+/// Sets keepalive and, where it exists, the user timeout; answers the first
+/// option refused, having still tried the rest.
+fn set_probe(socket: &TcpStream, probe: &PeerProbe) -> Result<(), (&'static str, std::io::Error)> {
+    let socket = SockRef::from(socket);
+    let mut refused = None;
+
+    let keepalive = TcpKeepalive::new().with_time(probe.keepalive_idle);
+    // The platforms where both the interval and the count can be set; see
+    // `peer_probe` for what each does with them.
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "windows",
+    ))]
+    let keepalive = keepalive
+        .with_interval(probe.keepalive_interval)
+        .with_retries(probe.keepalive_retries);
+
+    if let Err(err) = socket.set_tcp_keepalive(&keepalive) {
+        refused.get_or_insert(("SO_KEEPALIVE", err));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    if let Err(err) = socket.set_tcp_user_timeout(Some(probe.user_timeout)) {
+        refused.get_or_insert(("TCP_USER_TIMEOUT", err));
+    }
+
+    refused.map_or(Ok(()), Err)
 }
 
 /// Waits for the connections that were still open when the socket stopped.
@@ -334,6 +433,62 @@ mod tests {
         ] {
             assert_eq!(refusal(&noise), None, "{noise:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn an_accepted_socket_carries_the_probe_sized_from_the_idle_timeout() {
+        // M10-02. Read back from a socket that came through the listener's own
+        // accept path, so this is what a device's connection really gets.
+        let bound = bind(&ListenAddr::new("127.0.0.1", 0)).await.unwrap();
+        let probe = PeerProbe::for_idle_timeout(std::time::Duration::from_secs(90));
+        let mut tuning = Tuning::new(probe);
+
+        let (accepted, client) = tokio::join!(
+            accept(&bound.listener, &mut tuning),
+            TcpStream::connect(bound.local_addr()),
+        );
+        let (socket, _) = accepted.unwrap();
+        let _client = client.unwrap();
+        let options = SockRef::from(&socket);
+
+        assert!(options.tcp_nodelay().unwrap());
+        assert!(options.keepalive().unwrap());
+        assert!(!tuning.warned, "nothing was refused on this platform");
+
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "android",
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "netbsd",
+        ))]
+        {
+            assert_eq!(options.tcp_keepalive_time().unwrap(), probe.keepalive_idle);
+            assert_eq!(
+                options.tcp_keepalive_interval().unwrap(),
+                probe.keepalive_interval
+            );
+            assert_eq!(
+                options.tcp_keepalive_retries().unwrap(),
+                probe.keepalive_retries
+            );
+        }
+
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        assert_eq!(
+            options.tcp_user_timeout().unwrap(),
+            Some(probe.user_timeout)
+        );
+    }
+
+    #[test]
+    fn a_refused_option_is_reported_once_per_listener_not_per_connection() {
+        let mut tuning = Tuning::new(PeerProbe::for_idle_timeout(std::time::Duration::ZERO));
+
+        assert!(tuning.first_failure());
+        assert!(!tuning.first_failure());
+        assert!(!tuning.first_failure());
     }
 
     #[tokio::test]

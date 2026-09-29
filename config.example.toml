@@ -246,12 +246,23 @@ listen = ":8089"
 # server that measured only reads would drop exactly those clients every
 # idle_timeout.
 #
-# What this does NOT have to catch is a peer that has vanished while the server
-# is still writing to it: that one is reclaimed by [stream.limits] write_timeout,
-# whose flush stops completing once the socket stops taking bytes. This timeout
-# is for a connection where nothing at all is happening — a device that fell off
-# the network without closing its socket, which by then has also missed its own
-# ping.
+# A write "succeeds" once the bytes reach this server's kernel, so a device that
+# drops off the network while the server is still writing to it is caught by
+# the kernel instead: every stream socket gets TCP keepalive probes and, on
+# Linux, TCP_USER_TIMEOUT, both sized from this value (first probe after half
+# of it, three more across the rest; unacknowledged data given exactly this
+# long; never less than 10s, never more than 15 minutes). The connection then
+# ends with reason "peer_timeout". How long a vanished device can linger:
+#
+#   Linux          about idle_timeout, with or without traffic to it.
+#   macOS/Windows  about idle_timeout if nothing is being written to it; under
+#                  traffic, until [stream.limits] write_timeout fires once the
+#                  send buffer fills, or the system's own retransmission limit.
+#   elsewhere      idle_timeout with no traffic; write_timeout or the
+#                  retransmission limit (about 15 minutes on Linux defaults)
+#                  under traffic.
+#
+# There is no separate setting for the probes; this value sizes them.
 idle_timeout = "90s"
 
 

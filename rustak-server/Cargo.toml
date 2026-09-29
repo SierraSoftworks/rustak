@@ -48,6 +48,7 @@ actix-ws = { workspace = true }
 actix-multipart = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
+socket2 = { workspace = true }
 futures = { workspace = true }
 futures-concurrency = { workspace = true }
 async-trait = { workspace = true }
