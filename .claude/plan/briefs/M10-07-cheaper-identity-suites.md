@@ -1,0 +1,14 @@
+# M10-07 — Make the expensive integration suites cheaper
+
+**Why — measured by the CI-02 steward.** `workload_identity` is the most expensive binary in the `Test` job (24 tests, 168–215 s under coverage): every test boots its own server and enrols, and 20–35 s of it is issuer-key warm-up. The `Test` band moved from 16–20 to 22–28 minutes in three days, and the job's bound had to be raised from 60 to 90 minutes on 2026-09-22.
+
+**Read first:** `M10-00-wave-rules.md`; `docs/ci.md` (the `Test` job's sizing notes); `rustak-server/tests/workload_identity.rs` and its support modules; `rustak-server/tests/{sidecar_enrolment,sidecar_trust,hostile_server_name}.rs`; `rustak-server/src/testing/` (`await_serving`, the context builders); the status notes for M9-06 and M9-14 and the CI lesson they record (test keys warmed before the listener, `pool_max_idle_per_host(0)` on test clients).
+
+**Deliver.**
+1. **Measure first.** Per-test and per-binary wall time for the four suites before you change anything (`cargo test -p rustak-server --test <suite> -- --report-time` on stable if available, otherwise time the binary and count). Put the table in your status note, and again after.
+2. **`workload_identity`: share what is expensive.** One warmed issuer key set per binary; one server per group of tests that do not change server state in ways the others can see. Refusal cases (bad signature, wrong audience, expired, not-yet-valid, unknown issuer, unknown key, wrong subject rule …) become table-driven against a single deployment, with each case still reported by name on failure. Tests that mutate shared state (key rotation, rate-limiter lockouts, enrolment of a named account) keep a server of their own or use distinct accounts/addresses so they cannot see each other. Test isolation is not negotiable: a test that passes alone must pass in any order and in parallel.
+3. **The same look at `sidecar_enrolment`, `sidecar_trust` and `hostile_server_name`**: apply the same treatment where it pays; say where it does not.
+4. **Nothing is lost.** Every assertion that exists today still exists; list in the status note the mapping from old test names to new ones. No wall-clock upper bounds are introduced.
+5. **`docs/ci.md`**: correct the test count (it says 22; it is 24 since M9-14) and the timing notes to what you measured locally, clearly marked as local figures — CI's band will be re-measured by the orchestrator after landing. Do not change the job's time bound or any workflow file.
+
+**Files you own:** `rustak-server/tests/{workload_identity,sidecar_enrolment,sidecar_trust,hostile_server_name}.rs` and their support modules, additive helpers under `rustak-server/src/testing/`, `docs/ci.md`, your status note. **Not yours:** `rustak-server/tests/stream_support/`, `rustak-server/tests/feed_sidecars.rs`, `rustak-server/tests/feed_support/` (M10-08); anything under `rustak-server/src/` outside `testing/`.

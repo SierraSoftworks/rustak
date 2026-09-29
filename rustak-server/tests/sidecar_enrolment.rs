@@ -23,6 +23,12 @@
 //! APIs bound over plain HTTP because what is under test is enrolment rather
 //! than the TLS contract. The CoT stream is real mutually authenticated TLS,
 //! which is the point of having a certificate at all.
+//!
+//! A server is the expensive part, so there are two: one for the deployments
+//! that enrol with a one-time token and one trusting an orchestrator. Each runs
+//! its cases concurrently through `rustak_server::testing::cases::run`, which
+//! still reports each by name, and every case keeps to a service and an account
+//! of its own. `--check` needs no server at all.
 
 #![cfg(feature = "testing")]
 
@@ -42,9 +48,18 @@ use rustak_server::auth::RateLimiter;
 use rustak_server::db::repos::NewUser;
 use rustak_server::identity::credentials::{MintRequest, mint};
 use rustak_server::prelude::*;
+use rustak_server::testing::cases;
 use tokio::sync::mpsc;
 
-use stream_support::{EXPECT, Harness};
+use stream_support::Harness;
+
+/// How long a sidecar's start-up — enrolment, connection, registration — may
+/// take before the wait is called hung.
+///
+/// Generous on purpose, and only ever the bound on a wait that fails: a start
+/// is several round trips, an argon2 verification and a TLS handshake, which
+/// the stream harness's five-second `EXPECT` is too tight for on a loaded host.
+const START_UP: Duration = Duration::from_secs(30);
 
 /// The service this suite deploys.
 const SERVICE: &str = "enrolling";
@@ -52,6 +67,10 @@ const SERVICE: &str = "enrolling";
 /// Its account, which is *not* its service name: enrolment presents the
 /// account, and `[service] account` is what says so.
 const ACCOUNT: &str = "svc.enrolling";
+
+/// The service whose enrolment token the server never minted, and its account.
+const REFUSED_SERVICE: &str = "refused";
+const REFUSED_ACCOUNT: &str = "svc.refused";
 
 /// The plugin, reduced to "tell the test when the stream came up".
 struct Watcher {
@@ -182,14 +201,14 @@ async fn api(harness: &Harness) -> (String, actix_web::dev::ServerHandle) {
     (format!("http://{address}"), handle)
 }
 
-/// Creates the service account and mints its two credentials: a one-time
+/// Creates a service account and mints its two credentials: a one-time
 /// enrolment token to get a certificate with, and a service token to call the
 /// control API with before there is one.
-async fn credentials(harness: &Harness) -> (String, String) {
+async fn credentials(harness: &Harness, account: &str) -> (String, String) {
     rustak_core::identity::password::use_testing_params();
 
     let context = &harness.context;
-    let username = Username::parse(ACCOUNT).expect("a usable username");
+    let username = Username::parse(account).expect("a usable username");
     let user = context
         .db()
         .users()
@@ -227,7 +246,7 @@ async fn credentials(harness: &Harness) -> (String, String) {
 
 /// Waits for `check` to hold, or gives up with `what`.
 async fn until(what: &str, mut check: impl AsyncFnMut() -> bool) {
-    let deadline = tokio::time::Instant::now() + EXPECT;
+    let deadline = tokio::time::Instant::now() + START_UP;
 
     while tokio::time::Instant::now() < deadline {
         if check().await {
@@ -253,15 +272,36 @@ fn mode(path: &Path) -> u32 {
 }
 
 #[actix_web::test]
-async fn a_sidecar_enrols_on_its_first_start_and_uses_what_it_wrote_on_the_next_one() {
+async fn a_deployment_that_enrols_with_a_one_time_token() {
+    // One server for both cases. They keep to accounts and service names of
+    // their own — `svc.enrolling` enrols, `svc.refused` presents a token the
+    // server never minted — so neither can spend, supersede or see the other's.
     let harness = Harness::start_with(|config| {
         config.auth.anon_group_default = true;
     })
     .await;
     let _ = harness.context.install_live(Arc::new(harness.live.clone()));
     let (base, api_handle) = api(&harness).await;
-    let (enrolment_token, service_token) = credentials(&harness).await;
-    let deployment = Deployment::new(harness.addr, &base, &service_token, &enrolment_token);
+
+    cases::run(vec![
+        (
+            "a_sidecar_enrols_on_its_first_start_and_uses_what_it_wrote_on_the_next_one",
+            Box::pin(first_and_next_start(&harness, &base)),
+        ),
+        (
+            "a_token_the_server_refuses_stops_start_up_rather_than_running_half_identified",
+            Box::pin(a_refused_token(&harness, &base)),
+        ),
+    ])
+    .await;
+
+    harness.stop().await;
+    api_handle.stop(true).await;
+}
+
+async fn first_and_next_start(harness: &Harness, base: &str) {
+    let (enrolment_token, service_token) = credentials(harness, ACCOUNT).await;
+    let deployment = Deployment::new(harness.addr, base, &service_token, &enrolment_token);
 
     // The start-up order `run_with` uses: the environment file first, so that
     // RUSTAK_ENROLLMENT_TOKEN is there to be read.
@@ -319,7 +359,7 @@ async fn a_sidecar_enrols_on_its_first_start_and_uses_what_it_wrote_on_the_next_
     let sidecar =
         tokio::spawn(async move { serve(Watcher { seen: seen_tx }, &args, running).await });
 
-    tokio::time::timeout(EXPECT, seen.recv())
+    tokio::time::timeout(START_UP, seen.recv())
         .await
         .expect("the sidecar connects to the stream with the certificate it enrolled for")
         .expect("the harness reports the connection");
@@ -348,27 +388,21 @@ async fn a_sidecar_enrols_on_its_first_start_and_uses_what_it_wrote_on_the_next_
         .await
         .expect("the sidecar task joins")
         .expect("the sidecar stops without an error");
-
-    harness.stop().await;
-    api_handle.stop(true).await;
 }
 
-#[actix_web::test]
-async fn a_token_the_server_refuses_stops_start_up_rather_than_running_half_identified() {
-    let harness = Harness::start().await;
-    let (base, api_handle) = api(&harness).await;
-    let (_, service_token) = credentials(&harness).await;
+async fn a_refused_token(harness: &Harness, base: &str) {
+    let (_, service_token) = credentials(harness, REFUSED_ACCOUNT).await;
     // The token is written into the file here rather than into the environment:
     // `[service] enrollment_token` wins over the variable, so this test says
     // what it is about whatever else is set in this process.
-    let deployment = Deployment::new(harness.addr, &base, &service_token, "unused");
+    let deployment = Deployment::new(harness.addr, base, &service_token, "unused");
     std::fs::write(
         &deployment.config,
         format!(
             r#"
             [service]
-            name = "{SERVICE}"
-            account = "{ACCOUNT}"
+            name = "{REFUSED_SERVICE}"
+            account = "{REFUSED_ACCOUNT}"
             token = "{service_token}"
             enrollment_token = "rsk_a-token-this-server-never-minted"
 
@@ -391,7 +425,7 @@ async fn a_token_the_server_refuses_stops_start_up_rather_than_running_half_iden
     assert!(err.is(human_errors::Kind::User), "{err}");
     assert!(err.to_string().contains("Could not enrol"), "{err}");
     assert!(
-        err.to_string().contains(ACCOUNT),
+        err.to_string().contains(REFUSED_ACCOUNT),
         "the message names the account it tried: {err}",
     );
     assert!(
@@ -399,12 +433,13 @@ async fn a_token_the_server_refuses_stops_start_up_rather_than_running_half_iden
         "and the advice from the refusal itself survives: {err}",
     );
     assert!(
-        !deployment.key().exists(),
+        !deployment
+            .directory
+            .path()
+            .join(format!("{REFUSED_SERVICE}.key"))
+            .exists(),
         "a failed enrolment leaves no half-written identity behind",
     );
-
-    harness.stop().await;
-    api_handle.stop(true).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -423,6 +458,19 @@ const WORKLOAD_ENV: &str = "RUSTAK_TEST_WORKLOAD_TOKEN";
 /// `[auth.workload]` for a server that trusts `issuer` and maps its `sidecar`
 /// job to this suite's account.
 ///
+/// The namespace whose jobs become [`ENV_ACCOUNT`], and that account's service.
+///
+/// A second namespace rather than a second job, because every job under the
+/// prefix in `default` becomes [`ACCOUNT`]: this is how the environment-form
+/// case gets an account of its own on the server it shares with the file-form
+/// one, so that neither enrolment supersedes the other's certificate.
+const ENV_NAMESPACE: &str = "from-env";
+const ENV_SERVICE: &str = "from-env";
+const ENV_ACCOUNT: &str = "svc.from-env";
+
+/// `[auth.workload]` for a server that trusts `issuer` and maps its `sidecar`
+/// jobs to this suite's accounts.
+///
 /// A **fixed** account rather than a stripped prefix, which is the other half
 /// of the rule vocabulary and the shape an installation uses when its service
 /// accounts are named to its own convention (`svc.enrolling`) rather than after
@@ -439,6 +487,14 @@ fn workload_config(
         subject_claim = "nomad_job_id"
         subject_prefix = "rustak-plugin-"
         account = "{ACCOUNT}"
+
+        [[rules]]
+        issuer = "nomad"
+        namespace_claim = "nomad_namespace"
+        namespace = "{ENV_NAMESPACE}"
+        subject_claim = "nomad_job_id"
+        subject_prefix = "rustak-plugin-"
+        account = "{ENV_ACCOUNT}"
         "#
     ))
     .expect("the reference section parses");
@@ -448,9 +504,9 @@ fn workload_config(
     workload
 }
 
-/// Creates the service account, and nothing else: a deployment under an
+/// Creates a service account, and nothing else: a deployment under an
 /// orchestrator holds no rustak secret, so there is nothing to mint.
-async fn service_account(harness: &Harness) {
+async fn service_account(harness: &Harness, account: &str) {
     rustak_core::identity::password::use_testing_params();
 
     harness
@@ -459,7 +515,7 @@ async fn service_account(harness: &Harness) {
         .users()
         .create(NewUser {
             kind: UserKind::Service,
-            ..NewUser::person(Username::parse(ACCOUNT).expect("a usable username"))
+            ..NewUser::person(Username::parse(account).expect("a usable username"))
         })
         .await
         .expect("the service account");
@@ -468,12 +524,14 @@ async fn service_account(harness: &Harness) {
 /// Writes a deployment whose only credential is its workload identity.
 ///
 /// `source` is the `workload_identity` inline table, so one helper serves both
-/// the file form and the environment form.
+/// the file form and the environment form; `(service, account)` is who the
+/// deployment says it is.
 fn workload_deployment(
     directory: &Path,
     stream: std::net::SocketAddr,
     control: &str,
     source: &str,
+    (service, account): (&str, &str),
 ) -> (PathBuf, PathBuf) {
     let config = directory.join("plugin.toml");
     let env = directory.join(".env");
@@ -483,8 +541,8 @@ fn workload_deployment(
         format!(
             r#"
             [service]
-            name = "{SERVICE}"
-            account = "{ACCOUNT}"
+            name = "{service}"
+            account = "{account}"
             capabilities = ["cot.publish"]
             workload_identity = {source}
 
@@ -504,10 +562,10 @@ fn workload_deployment(
 }
 
 #[actix_web::test]
-async fn a_sidecar_under_an_orchestrator_enrols_and_reports_with_no_rustak_secret_at_all() {
-    // The whole point, end to end. The configuration file holds no token of any
-    // kind: the certificate comes from the assertion Nomad wrote into a file,
-    // and so does the access token the control API is reached with.
+async fn a_deployment_under_an_orchestrator() {
+    // One server and one issuer for both forms Nomad writes an identity in.
+    // Each enrols an account of its own (see `ENV_NAMESPACE`), so neither can
+    // supersede the certificate the other is about to connect with.
     let issuer = rustak_server::testing::TestWorkloadIssuer::start().await;
     let workload = workload_config(&issuer);
     let harness = Harness::start_with(move |config| {
@@ -517,8 +575,33 @@ async fn a_sidecar_under_an_orchestrator_enrols_and_reports_with_no_rustak_secre
     .await;
     let _ = harness.context.install_live(Arc::new(harness.live.clone()));
     let (base, api_handle) = api(&harness).await;
-    service_account(&harness).await;
+    service_account(&harness, ACCOUNT).await;
+    service_account(&harness, ENV_ACCOUNT).await;
 
+    cases::run(vec![
+        (
+            "a_sidecar_under_an_orchestrator_enrols_and_reports_with_no_rustak_secret_at_all",
+            Box::pin(no_rustak_secret_at_all(&harness, &issuer, &base)),
+        ),
+        (
+            "a_workload_identity_can_come_from_the_environment_as_nomad_also_offers_it",
+            Box::pin(from_the_environment(&harness, &issuer, &base)),
+        ),
+    ])
+    .await;
+
+    harness.stop().await;
+    api_handle.stop(true).await;
+}
+
+async fn no_rustak_secret_at_all(
+    harness: &Harness,
+    issuer: &rustak_server::testing::TestWorkloadIssuer,
+    base: &str,
+) {
+    // The whole point, end to end. The configuration file holds no token of any
+    // kind: the certificate comes from the assertion Nomad wrote into a file,
+    // and so does the access token the control API is reached with.
     let directory = tempfile::tempdir().expect("a directory for the deployment");
     let token = directory.path().join("nomad_rustak.jwt");
     std::fs::write(
@@ -530,8 +613,9 @@ async fn a_sidecar_under_an_orchestrator_enrols_and_reports_with_no_rustak_secre
     let (config, env) = workload_deployment(
         directory.path(),
         harness.addr,
-        &base,
+        base,
         &format!("{{ file = \"{}\" }}", token.display()),
+        (SERVICE, ACCOUNT),
     );
     let args = |enroll: bool| Args {
         config: config.clone(),
@@ -594,7 +678,7 @@ async fn a_sidecar_under_an_orchestrator_enrols_and_reports_with_no_rustak_secre
     let sidecar =
         tokio::spawn(async move { serve(Watcher { seen: seen_tx }, &start, running).await });
 
-    tokio::time::timeout(EXPECT, seen.recv())
+    tokio::time::timeout(START_UP, seen.recv())
         .await
         .expect("the sidecar connects to the stream with the certificate it enrolled for")
         .expect("the harness reports the connection");
@@ -613,37 +697,29 @@ async fn a_sidecar_under_an_orchestrator_enrols_and_reports_with_no_rustak_secre
         .await
         .expect("the sidecar task joins")
         .expect("the sidecar stops without an error");
-
-    harness.stop().await;
-    api_handle.stop(true).await;
 }
 
-#[actix_web::test]
-async fn a_workload_identity_can_come_from_the_environment_as_nomad_also_offers_it() {
+async fn from_the_environment(
+    harness: &Harness,
+    issuer: &rustak_server::testing::TestWorkloadIssuer,
+    base: &str,
+) {
     // Nomad's `identity` block writes both forms; a deployment that took the
     // environment one must work exactly as well as one that took the file.
-    let issuer = rustak_server::testing::TestWorkloadIssuer::start().await;
-    let workload = workload_config(&issuer);
-    let harness = Harness::start_with(move |config| {
-        config.auth.workload = workload;
-    })
-    .await;
-    let (base, api_handle) = api(&harness).await;
-    service_account(&harness).await;
-
     let directory = tempfile::tempdir().expect("a directory for the deployment");
     let (config, env) = workload_deployment(
         directory.path(),
         harness.addr,
-        &base,
+        base,
         &format!("{{ env = \"{WORKLOAD_ENV}\" }}"),
+        (ENV_SERVICE, ENV_ACCOUNT),
     );
 
     std::fs::write(
         &env,
         format!(
             "{WORKLOAD_ENV}={}\n",
-            issuer.issue(issuer.nomad_claims("default", "rustak-plugin-feed", "feed")),
+            issuer.issue(issuer.nomad_claims(ENV_NAMESPACE, "rustak-plugin-feed", "feed")),
         ),
     )
     .expect("the environment file lands");
@@ -667,12 +743,9 @@ async fn a_workload_identity_can_come_from_the_environment_as_nomad_also_offers_
     .expect("the sidecar enrols with the assertion from its environment");
 
     assert!(
-        directory.path().join(format!("{SERVICE}.pem")).exists(),
+        directory.path().join(format!("{ENV_SERVICE}.pem")).exists(),
         "the certificate landed",
     );
-
-    harness.stop().await;
-    api_handle.stop(true).await;
 }
 
 #[actix_web::test]
@@ -680,16 +753,21 @@ async fn check_names_the_workload_identity_a_first_start_would_use() {
     // A deployment pipeline validating a candidate file gets "valid" and a line
     // saying which of the credentials a start would reach for — without reading
     // the token, and without touching the network.
-    let harness = Harness::start().await;
+    //
+    // So no server is started at all: the stream address is one nothing
+    // listens on (the discard port), and a `--check` that tried to reach it
+    // would find nobody there. A server started only to lend this test its
+    // address was the most expensive line in it.
     let directory = tempfile::tempdir().expect("a directory for the deployment");
     let token = directory.path().join("nomad_rustak.jwt");
     std::fs::write(&token, "header.payload.signature").expect("the token lands");
 
     let (config, env) = workload_deployment(
         directory.path(),
-        harness.addr,
+        std::net::SocketAddr::from(([127, 0, 0, 1], 9)),
         "https://tak.example.com:8446",
         &format!("{{ file = \"{}\" }}", token.display()),
+        (SERVICE, ACCOUNT),
     );
 
     let (seen_tx, _seen) = mpsc::unbounded_channel();
@@ -701,7 +779,7 @@ async fn check_names_the_workload_identity_a_first_start_would_use() {
             check: true,
             enroll: false,
         },
-        harness.context.shutdown().child(),
+        rustak_core::runtime::Shutdown::new(),
     )
     .await
     .expect("a file that will enrol with a workload identity is a valid file");
@@ -710,6 +788,4 @@ async fn check_names_the_workload_identity_a_first_start_would_use() {
         !directory.path().join(format!("{SERVICE}.pem")).exists(),
         "--check writes nothing",
     );
-
-    harness.stop().await;
 }

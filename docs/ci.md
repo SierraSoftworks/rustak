@@ -78,17 +78,26 @@ deduplicate ──┬─ version ───────────────�
   **22–28 minutes**, not 16–20. The per-binary shape says it is the suite and
   not the hosts: the binaries' own times summed to 660–870 s on 2026-09-20 and
   sum to 1110–1250 s now, and the difference is in what landed —
-  `workload_identity` (new; 22 tests, 170–215 s, the most expensive binary in
-  the job), `sidecar_enrolment` (2 tests → 5, 12 s → 40–60 s),
+  `workload_identity` (new; 24 tests since M9-14, 170–215 s, the most
+  expensive binary in the job), `sidecar_enrolment` (2 tests → 5, 12 s → 40–60 s),
   `hostile_server_name` and `sidecar_trust` (new, 10–25 s each). By the same
   arithmetic the bad case is 28 × 2.8 ≈ 78 — past 60 — so `test` now carries
   **90**: 78, with margin. The worst whole job actually seen against this band
   is that 41m30s, so the margin is generous, and deliberately: with images gated
   on the test suite a cancelled `test` blocks every image, while a timeout is
-  cheap and reversible. The other lever is the suite's own cost —
-  `workload_identity`'s 22 tests each boot a server and enrol, and sharing one
-  server per suite or grouping the cases is on the backlog. If that lands, the
-  band and this number should both come back down.
+  cheap and reversible. The other lever is the suite's own cost, and M10-07
+  pulled it: `workload_identity`'s 24 tests each booted a server and enrolled,
+  and now its cases share a server per group — seven servers, not 24 — through
+  `rustak_server::testing::cases`, which still reports every failing case by
+  name. `sidecar_enrolment` went from four servers to two and `sidecar_trust`
+  from two to one. **Local figures, not CI's** (an uninstrumented debug build
+  on a ten-core laptop that other builds were loading, CPU time of the whole
+  binary, two samples each): `workload_identity` 21–23 s of CPU → 7–8 s, and
+  16–17 s of wall at `--test-threads=2` → 8–9 s; `sidecar_enrolment` 3.4–4.4 s
+  → 2.0 s; `sidecar_trust` 1.8–2.0 s → 1.0–1.2 s. What that buys under
+  coverage on a two-vCPU runner has not been measured yet; the band and this
+  number should both come back down, and the next steward's samples say by how
+  much.
 
   **A `test` job that hits 90 is a bug report again** — and the first thing to
   check is the per-binary shape, not the total. Cost landing in the binaries a
@@ -291,7 +300,7 @@ tests reported as "has been running for over 60 seconds". `grcov` already discar
 everything outside the workspace at *report* time, but that is after the cost
 has been paid.
 
-Three things keep it inside 30 minutes, all of them in test-only code:
+Four things keep it in check, all of them in test-only code:
 
 1. **One token signing key per test process.** `rustak-server/src/testing/keys.rs`
    holds a `LazyLock` RSA-2048 key and `TestServer` adopts it through
@@ -308,6 +317,13 @@ Three things keep it inside 30 minutes, all of them in test-only code:
    the workspace `Cargo.toml`: `rsa`, `num-bigint-dig`, `argon2`, `blake2`).
    Dependencies of a test target are built with the `dev` profile, so these
    apply to `cargo test`.
+4. **One server per group of cases, not per assertion**, in the integration
+   suites where a server is most of the cost (`workload_identity`,
+   `sidecar_enrolment`, `sidecar_trust`). Cases that cannot see one another —
+   distinct accounts, distinct service names — run concurrently against one
+   deployment through `rustak_server::testing::cases::run`, which reports each
+   failing case by name; a test that changes the server's configuration keeps
+   a server of its own.
 
 If the job ever creeps back towards its timeout, measure before changing
 anything: `cargo test -p rustak-server --features testing` with and without
@@ -320,7 +336,7 @@ applies to every crate that invocation builds, and the per-package equivalent
 (`[profile.dev.package.<dep>] rustflags`) is nightly-only behind
 `-Zprofile-rustflags`. `cargo llvm-cov` does not change that — it sets the same
 flag through `RUSTFLAGS` and filters at report time, as `grcov` already does.
-So the levers are the three above; dropping coverage is not one, because codecov
+So the levers are the four above; dropping coverage is not one, because codecov
 is a gate.
 
 ## Caching, and why the binaries are fetched the way they are

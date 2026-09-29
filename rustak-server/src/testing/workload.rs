@@ -169,12 +169,6 @@ impl TestWorkloadIssuer {
         }
     }
 
-    /// Publishes the second key, as a cluster rotating its signing keys does.
-    ///
-    /// # Panics
-    ///
-    /// Never: a poisoned lock leaves the set as it was, which fails the
-    /// assertion the caller was about to make rather than the whole suite.
     /// Generates the lazily-built keys now, before a test opens a connection.
     ///
     /// `PRIMARY`, `ROTATED` and `UNADVERTISED` are each an RSA-2048 key behind a
@@ -188,12 +182,25 @@ impl TestWorkloadIssuer {
     /// on two consecutive `main` runs with
     /// `hyper::Error(IncompleteMessage)` — the shape you get when a request is
     /// written onto a connection the server has already decided to close.
+    ///
+    /// The three are generated side by side rather than one after another:
+    /// they are independent, each is a single-threaded prime search, and the
+    /// first deployment in a binary waits for all three. A later call finds
+    /// them made and returns at once; a concurrent one waits on the same locks.
     pub fn warm(&self) {
-        LazyLock::force(&PRIMARY);
-        LazyLock::force(&ROTATED);
-        LazyLock::force(&UNADVERTISED);
+        std::thread::scope(|scope| {
+            for key in [&PRIMARY, &ROTATED, &UNADVERTISED] {
+                scope.spawn(|| LazyLock::force(key));
+            }
+        });
     }
 
+    /// Publishes the second key, as a cluster rotating its signing keys does.
+    ///
+    /// # Panics
+    ///
+    /// Never: a poisoned lock leaves the set as it was, which fails the
+    /// assertion the caller was about to make rather than the whole suite.
     pub fn rotate(&self) {
         if let Ok(mut held) = self.published.lock() {
             held.push(ROTATED.jwk.clone());

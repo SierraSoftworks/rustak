@@ -47,15 +47,29 @@ use rustak_server::auth::RateLimiter;
 use rustak_server::db::repos::NewUser;
 use rustak_server::identity::credentials::{MintRequest, mint};
 use rustak_server::prelude::*;
+use rustak_server::testing::cases;
 use tokio::sync::mpsc;
 
-use stream_support::{EXPECT, Harness};
+use stream_support::Harness;
+
+/// How long a sidecar's start-up — enrolment, connection, registration — may
+/// take before the wait is called hung.
+///
+/// Generous on purpose, and only ever the bound on a wait that fails: a start
+/// is several round trips, an argon2 verification and a TLS handshake, and on a
+/// loaded host the stream harness's five-second `EXPECT` failed this suite once
+/// without anything being wrong.
+const START_UP: Duration = Duration::from_secs(30);
 
 /// The service this suite deploys.
 const SERVICE: &str = "pinned";
 
 /// Its account; enrolment presents the account, not the service name.
 const ACCOUNT: &str = "svc.pinned";
+
+/// The service that never pins the public listener, and its account.
+const UNPINNED_SERVICE: &str = "unpinned";
+const UNPINNED_ACCOUNT: &str = "svc.unpinned";
 
 /// The plugin, reduced to "tell the test when the stream came up".
 struct Watcher {
@@ -170,12 +184,12 @@ async fn public_listener(harness: &Harness) -> (String, PublicCa, actix_web::dev
     )
 }
 
-/// Creates the service account and mints the two credentials it starts with.
-async fn credentials(harness: &Harness) -> (String, String) {
+/// Creates a service account and mints the two credentials it starts with.
+async fn credentials(harness: &Harness, account: &str) -> (String, String) {
     rustak_core::identity::password::use_testing_params();
 
     let context = &harness.context;
-    let username = Username::parse(ACCOUNT).expect("a usable username");
+    let username = Username::parse(account).expect("a usable username");
     let user = context
         .db()
         .users()
@@ -213,7 +227,7 @@ async fn credentials(harness: &Harness) -> (String, String) {
 
 /// Waits for `check` to hold, or gives up with `what`.
 async fn until(what: &str, mut check: impl AsyncFnMut() -> bool) {
-    let deadline = tokio::time::Instant::now() + EXPECT;
+    let deadline = tokio::time::Instant::now() + START_UP;
 
     while tokio::time::Instant::now() < deadline {
         if check().await {
@@ -227,14 +241,38 @@ async fn until(what: &str, mut check: impl AsyncFnMut() -> bool) {
 }
 
 #[actix_web::test]
-async fn a_sidecar_trusts_the_public_listener_and_the_stream_with_different_roots() {
+async fn a_deployment_whose_public_listener_holds_another_authority() {
+    // One deployment for both cases, which keep to accounts and service names
+    // of their own: the first enrols `svc.pinned`, the second is refused before
+    // it can enrol `svc.unpinned`, and neither can see the other's rows.
     let harness = Harness::start_with(|config| {
         config.auth.anon_group_default = true;
     })
     .await;
     let _ = harness.context.install_live(Arc::new(harness.live.clone()));
     let (base, authority, api_handle) = public_listener(&harness).await;
-    let (enrolment_token, service_token) = credentials(&harness).await;
+
+    cases::run(vec![
+        (
+            "a_sidecar_trusts_the_public_listener_and_the_stream_with_different_roots",
+            Box::pin(different_roots(&harness, &base, &authority)),
+        ),
+        (
+            "a_sidecar_that_trusts_only_the_internal_ca_cannot_reach_the_public_listener",
+            Box::pin(internal_roots_only(&harness, &base)),
+        ),
+    ])
+    .await;
+
+    harness.stop().await;
+    // `false`, not `true`: a graceful stop waits for the server's half of the
+    // event feed to notice the sidecar has gone, which it does on its next
+    // keepalive — thirty seconds of a suite that has already finished.
+    api_handle.stop(false).await;
+}
+
+async fn different_roots(harness: &Harness, base: &str, authority: &PublicCa) {
+    let (enrolment_token, service_token) = credentials(harness, ACCOUNT).await;
 
     let directory = tempfile::tempdir().expect("a directory for the deployment");
     let public_ca = directory.path().join("public-ca.pem");
@@ -286,7 +324,7 @@ async fn a_sidecar_trusts_the_public_listener_and_the_stream_with_different_root
     // 2. The stream comes up, which means enrolment wrote the three files and
     //    the CoT stream is being verified against rustak's *internal* CA — a
     //    different set of roots from the one the control API just used.
-    let connected = tokio::time::timeout(EXPECT, seen.recv())
+    let connected = tokio::time::timeout(START_UP, seen.recv())
         .await
         .expect("the sidecar connects to the stream with the certificate it enrolled for");
 
@@ -394,23 +432,14 @@ async fn a_sidecar_trusts_the_public_listener_and_the_stream_with_different_root
             .is_ok(),
         "the control policy verifies the public listener",
     );
-
-    harness.stop().await;
-    // `false`, not `true`: a graceful stop waits for the server's half of the
-    // event feed to notice the sidecar has gone, which it does on its next
-    // keepalive — thirty seconds of a suite that has already finished.
-    api_handle.stop(false).await;
 }
 
-#[actix_web::test]
-async fn a_sidecar_that_trusts_only_the_internal_ca_cannot_reach_the_public_listener() {
+async fn internal_roots_only(harness: &Harness, base: &str) {
     // The same finding as a start-up failure rather than as a request failure:
     // a deployment that never pins the public listener and whose platform roots
     // do not cover it fails at enrolment, which is the first call it makes —
     // and the message it fails with names the cause.
-    let harness = Harness::start().await;
-    let (base, _authority, api_handle) = public_listener(&harness).await;
-    let (enrolment_token, service_token) = credentials(&harness).await;
+    let (enrolment_token, service_token) = credentials(harness, UNPINNED_ACCOUNT).await;
 
     let directory = tempfile::tempdir().expect("a directory for the deployment");
     let config_path = directory.path().join("plugin.toml");
@@ -419,8 +448,8 @@ async fn a_sidecar_that_trusts_only_the_internal_ca_cannot_reach_the_public_list
         format!(
             r#"
             [service]
-            name = "{SERVICE}"
-            account = "{ACCOUNT}"
+            name = "{UNPINNED_SERVICE}"
+            account = "{UNPINNED_ACCOUNT}"
             token = "{service_token}"
             enrollment_token = "{enrolment_token}"
 
@@ -461,10 +490,10 @@ async fn a_sidecar_that_trusts_only_the_internal_ca_cannot_reach_the_public_list
     );
 
     assert!(
-        !directory.path().join(format!("{SERVICE}.key")).exists(),
+        !directory
+            .path()
+            .join(format!("{UNPINNED_SERVICE}.key"))
+            .exists(),
         "a failed enrolment leaves no half-written identity behind",
     );
-
-    harness.stop().await;
-    api_handle.stop(true).await;
 }

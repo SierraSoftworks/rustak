@@ -18,6 +18,7 @@
 #![cfg(any(test, feature = "testing"))]
 
 pub mod authenticator;
+pub mod cases;
 pub mod context;
 pub mod keys;
 pub mod oidc;
