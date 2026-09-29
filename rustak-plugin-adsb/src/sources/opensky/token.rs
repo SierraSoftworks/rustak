@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 use rustak_core::prelude::*;
 
-use crate::sources::notice::{Repeated, Report, humanised};
+use rustak_client::feed::upstream::{Repeated, Report, humanised};
 
 /// Where a client credential becomes a bearer token.
 pub const TOKEN_URL: &str =

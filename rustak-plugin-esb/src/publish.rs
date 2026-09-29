@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use rustak_client::feed::FeedCounters;
+use rustak_client::feed::upstream::{self, Every};
 use rustak_core::prelude::*;
 use rustak_cot::Event;
 
@@ -56,13 +57,13 @@ pub struct OutagePublisher {
     held: HashMap<String, Held>,
     outbox: Vec<Event>,
     counters: FeedCounters,
-    /// When the counters were last logged.
-    reported_at: Option<DateTime<Utc>>,
+    /// When the counters are next logged.
+    report: Every,
 }
 
 /// How often the counters are logged at `info`: the cadence of
 /// `rustak_client::feed::FeedPublisher`'s `The feed is publishing.` line.
-pub const REPORT_EVERY: Duration = Duration::from_secs(300);
+pub const REPORT_EVERY: Duration = upstream::REPORT_EVERY;
 
 impl OutagePublisher {
     /// A publisher whose markers live for `stale` and are republished every
@@ -88,7 +89,7 @@ impl OutagePublisher {
             held: HashMap::new(),
             outbox: Vec::new(),
             counters: FeedCounters::default(),
-            reported_at: None,
+            report: Every::default(),
         }
     }
 
@@ -195,15 +196,10 @@ impl OutagePublisher {
     ///
     /// Answers whether it logged, for the tests.
     pub fn report_at(&mut self, now: DateTime<Utc>) -> bool {
-        let due = self
-            .reported_at
-            .is_none_or(|last| (now - last).to_std().unwrap_or_default() >= REPORT_EVERY);
-
-        if !due {
+        if !self.report.due_at(now) {
             return false;
         }
 
-        self.reported_at = Some(now);
         let summary = self.summary();
 
         info!(

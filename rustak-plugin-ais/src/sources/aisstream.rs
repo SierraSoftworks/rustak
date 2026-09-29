@@ -33,6 +33,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use futures::{SinkExt, StreamExt};
+use rustak_client::feed::upstream::{Repeated, Report, humanised};
 use rustak_client::feed::{Feed, Track};
 use rustak_client::sidecar::async_trait;
 use rustak_core::prelude::*;
@@ -44,7 +45,6 @@ use crate::vessels::{Observation, Vessels};
 
 use frames::{Frames, Step};
 
-use super::notice::{Repeated, Report, humanised};
 use super::{Backoff, SourceContext};
 
 /// What this source calls itself in a log line and on a heartbeat.

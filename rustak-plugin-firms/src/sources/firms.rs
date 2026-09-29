@@ -27,10 +27,11 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use rustak_client::feed::Area;
+use rustak_client::feed::upstream::{RETRY_AFTER, retry_after};
 use rustak_client::sidecar::async_trait;
 use rustak_core::prelude::*;
 
-use super::{HotspotFeed, MAX_REPLY_BYTES, SourceState, http_client, read_bounded, retry_after};
+use super::{HotspotFeed, MAX_REPLY_BYTES, SourceState, http_client, read_bounded};
 use crate::wire::{self, Detection};
 
 /// Where FIRMS lives, unless a configuration names a mirror or a proxy.
@@ -268,7 +269,7 @@ impl FirmsFeed {
         let status = response.status();
 
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            return Ok(Reply::Wait(retry_after(response.headers())));
+            return Ok(Reply::Wait(retry_after(response.headers(), RETRY_AFTER)));
         }
 
         let body = read_bounded(response, MAX_REPLY_BYTES).await?;

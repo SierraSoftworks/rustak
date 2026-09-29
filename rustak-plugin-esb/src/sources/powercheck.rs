@@ -32,10 +32,11 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use reqwest::StatusCode;
 use reqwest::header::{HeaderMap, HeaderValue};
+use rustak_client::feed::upstream::{RETRY_AFTER, retry_after};
 use rustak_client::sidecar::async_trait;
 use rustak_core::prelude::*;
 
-use super::{OutageFeed, SourceState, http_client, retry_after};
+use super::{OutageFeed, SourceState, http_client};
 use crate::outage::Outage;
 use crate::scope::Scope;
 use crate::wire::Listing;
@@ -181,7 +182,10 @@ impl PowerCheckFeed {
 
         match response.status() {
             StatusCode::NOT_FOUND => Ok(Fetched::Missing),
-            StatusCode::TOO_MANY_REQUESTS => Ok(Fetched::Limited(retry_after(response.headers()))),
+            StatusCode::TOO_MANY_REQUESTS => Ok(Fetched::Limited(retry_after(
+                response.headers(),
+                RETRY_AFTER,
+            ))),
             status @ (StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) => {
                 Ok(Fetched::Denied(status))
             }

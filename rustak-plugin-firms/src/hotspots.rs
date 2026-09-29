@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use rustak_client::feed::Area;
+use rustak_client::feed::upstream::{self, Every};
 use rustak_core::config::duration;
 use rustak_core::prelude::*;
 use rustak_cot::Event;
@@ -140,13 +141,13 @@ pub struct Hotspots {
     publish: Publish,
     known: HashMap<String, Known>,
     counters: Counters,
-    /// When the counters were last logged.
-    reported_at: Option<DateTime<Utc>>,
+    /// When the counters are next logged.
+    report: Every,
 }
 
 /// How often the counters are logged at `info`: the cadence of
 /// `rustak_client::feed::FeedPublisher`'s `The feed is publishing.` line.
-pub const REPORT_EVERY: Duration = Duration::from_secs(300);
+pub const REPORT_EVERY: Duration = upstream::REPORT_EVERY;
 
 impl Hotspots {
     /// An empty map.
@@ -159,7 +160,7 @@ impl Hotspots {
             publish,
             known: HashMap::new(),
             counters: Counters::default(),
-            reported_at: None,
+            report: Every::default(),
         }
     }
 
@@ -355,15 +356,10 @@ impl Hotspots {
     ///
     /// Answers whether it logged, for the tests.
     pub fn report_at(&mut self, now: DateTime<Utc>) -> bool {
-        let due = self
-            .reported_at
-            .is_none_or(|last| (now - last).to_std().unwrap_or_default() >= REPORT_EVERY);
-
-        if !due {
+        if !self.report.due_at(now) {
             return false;
         }
 
-        self.reported_at = Some(now);
         info!(
             tracked = self.tracked(),
             pending = self.pending(),

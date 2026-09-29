@@ -26,12 +26,12 @@
 //!
 //! An upstream that is down at a one-second backoff is a log line a second, and
 //! an operator who cannot find the first one is no better off than one who was
-//! never told. Every run of failures goes through `notice`: one line at the
+//! never told. Every run of failures goes through the shared
+//! [`Repeated`](rustak_client::feed::upstream::Repeated): one line at the
 //! start with the cause, `debug` for the repeats, one every five minutes with a
 //! count, and one when it comes back naming how long it was gone.
 
 mod aisstream;
-mod notice;
 mod udp;
 
 use std::net::SocketAddr;

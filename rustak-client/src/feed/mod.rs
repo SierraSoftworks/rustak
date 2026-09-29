@@ -17,6 +17,7 @@
 //! | [`FeedPublisher`] | The rate limiter, the expiry and the counters |
 //! | [`Feed`] | An upstream, polled once per sidecar tick |
 //! | [`Replay`] | A [`Feed`] over a file of tracks, for demonstrations and tests |
+//! | [`upstream`] | What a feed that polls somebody else's service shares: its source state, backoff, `Retry-After` and log-once notices |
 //!
 //! # A whole feed plugin
 //!
@@ -89,6 +90,7 @@ mod replay;
 mod source;
 mod symbol;
 mod track;
+pub mod upstream;
 
 pub use area::{Area, distance_m};
 pub use config::FeedConfig;

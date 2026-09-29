@@ -4,13 +4,16 @@
 //! want the same three things: a floor under how often they reach out, a capped
 //! backoff when the answer is a failure, and enough memory of what happened to
 //! tell an administrator whether the feed is fine, struggling or has never
-//! worked at all. That is this type, and it is deliberately the only thing in
-//! the crate that logs a *state change* — a source that logged every failed
-//! poll would fill a log with the same line every five seconds.
+//! worked at all. That machine is [`rustak_client::feed::upstream::SourceState`],
+//! shared by every polled feed plugin, and it is deliberately the only thing
+//! that logs a *state change* — a source that logged every failed poll would
+//! fill a log with the same line every five seconds. Each run — the outage, the
+//! rate limiting — costs one line at the start, one every five minutes while it
+//! lasts and one at the end, however many polls it spans.
 //!
-//! Each of those runs — the outage, the rate limiting — is a [`Repeated`], so
-//! it costs one line at the start, one every five minutes while it lasts and
-//! one at the end, however many polls it spans.
+//! What is this plugin's own is the cadence, which the shared type does not
+//! adapt: this type keeps it, and moves the shared state's interval to it
+//! before every outcome is recorded.
 //!
 //! # The cadence adapts to the provider
 //!
@@ -37,8 +40,9 @@
 //!
 //! # And it says who chose the number
 //!
-//! Everything this type says about a refusal comes from `wording`, which never
-//! writes "asked us to wait" about a delay the provider did not state.
+//! Everything said about a refusal is the shared [`Rules`] wording, which never
+//! writes "asked us to wait" about a delay the provider did not state; a change
+//! of cadence is said by `wording`.
 
 mod cadence;
 mod probe;
@@ -47,75 +51,66 @@ mod wording;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use rustak_client::feed::upstream::{self, Rules};
 use rustak_core::prelude::*;
 
 use self::cadence::{Cadence, Change};
-use super::notice::{REMIND_EVERY, Repeated, Report, humanised};
 
 pub use self::cadence::{CLEAN_RUN, LIMIT_WINDOW, MAX_ADAPTED, RECENT_POLLS};
 
-/// The longest a source waits between attempts, however many have failed.
+/// The longest a source waits between attempts, however many have failed,
+/// and the longest a stated `Retry-After` is believed.
 ///
 /// Five minutes: long enough that a receiver that has been unplugged for the
 /// weekend is not a request every second, short enough that plugging it back in
 /// puts aircraft on the map while somebody is still standing next to it.
 pub const MAX_BACKOFF: Duration = Duration::from_secs(300);
 
-/// How many doublings the backoff is allowed, before [`MAX_BACKOFF`] catches
-/// it anyway. Six, so the shift cannot overflow on a source that has been
-/// failing for a week.
-const MAX_DOUBLINGS: u32 = 6;
+/// This plugin's rules and words for the shared source state: a five-minute
+/// ceiling, a `429` that moves the schedule and not the connection state, and
+/// a run of refusals that settles after five minutes without one.
+#[derive(Clone, Copy, Debug)]
+pub struct Adsb;
 
-/// How an upstream is doing.
+impl Rules for Adsb {
+    const MAX_BACKOFF: Duration = MAX_BACKOFF;
+
+    fn subject(_name: &str) -> String {
+        "The ADS-B source".to_string()
+    }
+}
+
+/// How an upstream is doing, and how often it is willing to be asked.
 #[derive(Clone, Debug)]
 pub struct SourceState {
-    name: String,
+    /// The shared machine: schedule, backoff, runs and what they say.
+    state: upstream::SourceState<Adsb>,
 
     /// How often it may ask: what was configured, and what refusals have since
     /// made of it.
     cadence: Cadence,
-    connected: bool,
-    ever_connected: bool,
-    failures: u32,
-    since: DateTime<Utc>,
-    last_error: Option<String>,
-    next_attempt: DateTime<Utc>,
-
-    /// The run of failures, so an outage is announced once.
-    outage: Repeated,
-
-    /// The run of rate limits. It settles rather than ending on the next
-    /// request that works, because a provider refusing every other request is
-    /// one run and not a hundred.
-    limit: Repeated,
-
-    /// How many `429`s this source has been sent, for the heartbeat.
-    rate_limited: u64,
 }
 
 impl SourceState {
     /// A source that has not been asked anything yet, and may be asked now.
     #[must_use]
     pub fn new(name: impl Into<String>, interval: Duration) -> Self {
+        Self::new_at(name, interval, Utc::now())
+    }
+
+    /// [`new`](Self::new), at an instant of the caller's choosing.
+    #[must_use]
+    pub fn new_at(name: impl Into<String>, interval: Duration, now: DateTime<Utc>) -> Self {
         Self {
-            name: name.into(),
+            state: upstream::SourceState::new_at(name, interval, now),
             cadence: Cadence::new(interval),
-            connected: false,
-            ever_connected: false,
-            failures: 0,
-            since: Utc::now(),
-            last_error: None,
-            next_attempt: Utc::now(),
-            outage: Repeated::new(Duration::ZERO),
-            limit: Repeated::new(REMIND_EVERY),
-            rate_limited: 0,
         }
     }
 
     /// The upstream's name, for a log line or a heartbeat.
     #[must_use]
     pub fn name(&self) -> &str {
-        &self.name
+        self.state.name()
     }
 
     /// How often this source may reach its upstream **as it stands**: the
@@ -147,7 +142,7 @@ impl SourceState {
     /// How many times this source has been rate-limited, for the heartbeat.
     #[must_use]
     pub const fn rate_limited(&self) -> u64 {
-        self.rate_limited
+        self.state.rate_limited()
     }
 
     /// Whether it is time to reach out again.
@@ -156,13 +151,19 @@ impl SourceState {
     /// its upstream wants to be asked; this is what makes the two independent.
     #[must_use]
     pub fn ready(&self) -> bool {
-        self.ready_at(Utc::now())
+        self.state.ready()
     }
 
     /// [`ready`](Self::ready), at an instant of the caller's choosing.
     #[must_use]
     pub fn ready_at(&self, now: DateTime<Utc>) -> bool {
-        now >= self.next_attempt
+        self.state.ready_at(now)
+    }
+
+    /// When the next request is due.
+    #[must_use]
+    pub const fn next_attempt(&self) -> DateTime<Utc> {
+        self.state.next_attempt()
     }
 
     /// Records an answer, and schedules the next attempt one interval away.
@@ -176,35 +177,8 @@ impl SourceState {
             self.announce(change);
         }
 
-        match self.outage.cleared(now) {
-            Report::Recovered { count, over } => {
-                info!(
-                    source = %self.name,
-                    "The ADS-B source answered again after {} and {count} failed attempts; \
-                     the feed is connected.",
-                    humanised(over),
-                );
-                self.since = now;
-            }
-            _ if !self.ever_connected => {
-                info!(
-                    source = %self.name,
-                    "The ADS-B source answered; the feed is connected.",
-                );
-                self.since = now;
-            }
-            _ => {}
-        }
-
-        if let Report::Recovered { count, over } = self.limit.cleared(now) {
-            info!(source = %self.name, "{}", wording::stopped_refusing(count, over));
-        }
-
-        self.connected = true;
-        self.ever_connected = true;
-        self.failures = 0;
-        self.last_error = None;
-        self.next_attempt = now + self.interval();
+        self.state.set_interval(self.interval());
+        self.state.succeeded_at(now);
     }
 
     /// Records a failure, and backs off.
@@ -217,34 +191,9 @@ impl SourceState {
 
     /// [`failed`](Self::failed), at an instant of the caller's choosing.
     pub fn failed_at(&mut self, error: impl Into<String>, now: DateTime<Utc>) {
-        let error = error.into();
         self.cadence.failed();
-
-        match self.outage.happened(now) {
-            Report::First => {
-                self.since = now;
-                warn!(
-                    source = %self.name,
-                    "The ADS-B source stopped answering; retrying with backoff. {error}",
-                );
-            }
-            Report::Reminder { count, over } => warn!(
-                source = %self.name,
-                "The ADS-B source has not answered for {}; {count} attempts failed in the last \
-                 {}. {error}",
-                humanised(elapsed(self.since, now)),
-                humanised(over),
-            ),
-            _ => debug!(
-                source = %self.name,
-                "The ADS-B source is still not answering. {error}",
-            ),
-        }
-
-        self.connected = false;
-        self.failures = self.failures.saturating_add(1);
-        self.last_error = Some(error);
-        self.next_attempt = now + self.backoff();
+        self.state.set_interval(self.interval());
+        self.state.failed_at(error, now);
     }
 
     /// Holds off because the upstream said "not so fast".
@@ -258,10 +207,8 @@ impl SourceState {
 
     /// [`wait_for`](Self::wait_for), at an instant of the caller's choosing.
     pub fn wait_for_at(&mut self, asked: Option<Duration>, now: DateTime<Utc>) {
-        self.rate_limited = self.rate_limited.saturating_add(1);
-
-        // The cadence moves first, so that the wait below — and the line that
-        // names it — are about the interval that is now in use.
+        // The cadence moves first, so that the wait — and the line that names
+        // it — are about the interval that is now in use.
         if let Some(change) = self
             .cadence
             .refused(asked.map(|stated| stated.min(MAX_BACKOFF)))
@@ -269,53 +216,24 @@ impl SourceState {
             self.announce(change);
         }
 
-        // A `429` that names no delay is waited out on twice the interval.
-        // That is our own guess, and `wording` says so.
-        let every = self.interval();
-        let waiting = asked
-            .unwrap_or_else(|| every.saturating_mul(2))
-            .min(MAX_BACKOFF)
-            .max(every);
-
-        match self.limit.happened(now) {
-            Report::First => info!(
-                source = %self.name,
-                seconds = waiting.as_secs(),
-                stated = asked.is_some(),
-                "{}",
-                wording::refused(asked, waiting),
-            ),
-            Report::Reminder { count, over } => info!(
-                source = %self.name,
-                "{}",
-                wording::still_refusing(count, over, every),
-            ),
-            _ => debug!(
-                source = %self.name,
-                seconds = waiting.as_secs(),
-                stated = asked.is_some(),
-                "{}",
-                wording::refused_again(asked, waiting),
-            ),
-        }
-
-        self.next_attempt = now + waiting;
+        self.state.set_interval(self.interval());
+        self.state.wait_for_at(asked, now);
     }
 
     /// Says, once, that the interval is not what it was.
     fn announce(&self, change: Change) {
         info!(
-            source = %self.name,
+            source = %self.name(),
             seconds = change.interval().as_secs(),
             "{}",
-            wording::changed(&self.name, change, self.cadence.floor()),
+            wording::changed(self.name(), change, self.cadence.floor()),
         );
     }
 
     /// Whether the last attempt worked.
     #[must_use]
     pub const fn is_connected(&self) -> bool {
-        self.connected
+        self.state.is_connected()
     }
 
     /// Whether any attempt has ever worked.
@@ -325,47 +243,36 @@ impl SourceState {
     /// outage — and the difference between `degraded` and `unhealthy`.
     #[must_use]
     pub const fn ever_connected(&self) -> bool {
-        self.ever_connected
+        self.state.ever_connected()
     }
 
     /// When the current condition began.
     #[must_use]
     pub const fn since(&self) -> DateTime<Utc> {
-        self.since
+        self.state.since()
     }
 
     /// How long it has been failing, or [`None`] while it is working.
     #[must_use]
     pub fn reconnecting_for(&self) -> Option<chrono::Duration> {
-        (!self.connected).then(|| Utc::now() - self.since)
+        self.state.reconnecting_for()
     }
 
     /// What went wrong last, if anything has.
     #[must_use]
     pub fn last_error(&self) -> Option<&str> {
-        self.last_error.as_deref()
+        self.state.last_error()
     }
-
-    /// The wait before the next attempt: the interval, doubled once per
-    /// consecutive failure, capped at [`MAX_BACKOFF`].
-    fn backoff(&self) -> Duration {
-        let doublings = self.failures.saturating_sub(1).min(MAX_DOUBLINGS);
-
-        self.interval()
-            .saturating_mul(1_u32 << doublings)
-            .min(MAX_BACKOFF)
-            .max(self.interval())
-    }
-}
-
-/// `now - before`, never negative.
-fn elapsed(before: DateTime<Utc>, now: DateTime<Utc>) -> Duration {
-    (now - before).to_std().unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `now - before`, never negative.
+    fn elapsed(before: DateTime<Utc>, now: DateTime<Utc>) -> Duration {
+        (now - before).to_std().unwrap_or_default()
+    }
 
     /// The clock these tests move by hand, so that nothing here waits.
     fn at(seconds: i64) -> DateTime<Utc> {
@@ -377,11 +284,7 @@ mod tests {
     }
 
     fn polling_every(seconds: u64) -> SourceState {
-        let mut state = SourceState::new("adsb.lol", Duration::from_secs(seconds));
-        state.since = at(0);
-        state.next_attempt = at(0);
-
-        state
+        SourceState::new_at("adsb.lol", Duration::from_secs(seconds), at(0))
     }
 
     /// A provider that answers one request every `tolerates`, refuses anything
@@ -421,7 +324,7 @@ mod tests {
     fn drive(state: &mut SourceState, provider: &mut Grudging, polls: usize) -> Vec<Outcome> {
         (0..polls)
             .map(|_| {
-                let now = state.next_attempt;
+                let now = state.next_attempt();
                 let refused = !provider.answers(now);
 
                 assert!(state.ready_at(now));
@@ -461,104 +364,6 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_poll_holds_the_next_one_off_for_an_interval() {
-        let mut state = state();
-
-        state.succeeded_at(at(0));
-
-        assert!(state.is_connected());
-        assert!(state.ever_connected());
-        assert!(!state.ready_at(at(4)), "five seconds have not passed");
-        assert!(state.ready_at(at(5)));
-        assert_eq!(state.reconnecting_for(), None);
-    }
-
-    #[test]
-    fn the_backoff_doubles_and_then_stops_doubling() {
-        let mut state = state();
-
-        for (failures, expected) in [
-            (1_u32, Duration::from_secs(5)),
-            (2, Duration::from_secs(10)),
-            (3, Duration::from_secs(20)),
-            (4, Duration::from_secs(40)),
-            (5, Duration::from_secs(80)),
-            (6, Duration::from_secs(160)),
-            (7, MAX_BACKOFF),
-            (80, MAX_BACKOFF),
-        ] {
-            state.failures = failures;
-
-            assert_eq!(state.backoff(), expected, "after {failures} failures");
-        }
-    }
-
-    #[test]
-    fn a_failure_remembers_what_went_wrong_and_that_it_never_worked() {
-        let mut state = state();
-
-        state.failed_at("the receiver refused the connection", at(0));
-
-        assert!(!state.is_connected());
-        assert!(!state.ever_connected(), "it has never answered");
-        assert_eq!(
-            state.last_error(),
-            Some("the receiver refused the connection"),
-        );
-        assert!(state.reconnecting_for().is_some());
-        assert!(!state.ready_at(at(4)));
-    }
-
-    #[test]
-    fn recovering_clears_the_failure_and_the_backoff() {
-        let mut state = state();
-
-        state.failed_at("timed out", at(0));
-        state.failed_at("timed out", at(10));
-        state.succeeded_at(at(30));
-
-        assert_eq!(state.failures, 0);
-        assert_eq!(state.last_error(), None);
-        assert!(state.is_connected());
-        assert!(!state.outage.standing(), "and the run is over");
-    }
-
-    #[test]
-    fn a_rate_limit_moves_the_schedule_without_marking_a_failure() {
-        let mut state = state();
-        state.succeeded_at(at(0));
-
-        state.wait_for_at(Some(Duration::from_secs(60)), at(5));
-
-        assert!(state.is_connected(), "429 is an upstream that is working");
-        assert_eq!(state.last_error(), None);
-        assert_eq!(state.rate_limited(), 1);
-        assert!(!state.ready_at(at(64)));
-        assert!(state.ready_at(at(65)));
-    }
-
-    #[test]
-    fn a_rate_limit_never_asks_us_to_wait_longer_than_the_cap() {
-        let mut state = state();
-
-        state.wait_for_at(Some(Duration::from_secs(86_400)), at(0));
-
-        // A `Retry-After` of a day is either a mistake or a ban; either way a
-        // sidecar that stopped polling until tomorrow would never notice it
-        // being lifted.
-        assert!(state.ready_at(at(0) + MAX_BACKOFF));
-    }
-
-    #[test]
-    fn a_short_rate_limit_still_respects_the_configured_interval() {
-        let mut state = SourceState::new("adsb.fi", Duration::from_secs(5));
-
-        state.wait_for_at(Some(Duration::from_millis(100)), at(0));
-
-        assert!(!state.ready_at(at(4)));
-    }
-
-    #[test]
     fn two_stated_rate_limits_inside_ten_polls_raise_the_interval_for_good() {
         // The Dublin finding: 429 with Retry-After: 10 on about every other
         // request at a five-second poll.
@@ -595,7 +400,7 @@ mod tests {
 
         for _ in 0..(CLEAN_RUN * 5) {
             state.succeeded_at(now);
-            now = state.next_attempt;
+            now = state.next_attempt();
         }
 
         assert_eq!(state.interval(), Duration::from_secs(10));
@@ -671,11 +476,11 @@ mod tests {
             state.wait_for_at(None, now);
 
             for _ in 0..=LIMIT_WINDOW {
-                now = state.next_attempt;
+                now = state.next_attempt();
                 state.succeeded_at(now);
             }
 
-            now = state.next_attempt;
+            now = state.next_attempt();
         }
 
         assert_eq!(
@@ -694,10 +499,10 @@ mod tests {
 
         for _ in 0..10 {
             for _ in 0..4 {
-                state.succeeded_at(state.next_attempt);
+                state.succeeded_at(state.next_attempt());
             }
 
-            state.wait_for_at(None, state.next_attempt);
+            state.wait_for_at(None, state.next_attempt());
             seen.push(state.interval().as_secs());
         }
 
@@ -766,7 +571,7 @@ mod tests {
     fn drive_until(state: &mut SourceState, provider: &mut Grudging, until: i64) -> Vec<Outcome> {
         let mut outcomes = Vec::new();
 
-        while state.next_attempt < at(until) {
+        while state.next_attempt() < at(until) {
             outcomes.extend(drive(state, provider, 1));
         }
 
@@ -821,14 +626,14 @@ mod tests {
         let mut state = polling_every(10);
 
         for _ in 0..3 {
-            state.wait_for_at(None, state.next_attempt);
+            state.wait_for_at(None, state.next_attempt());
         }
 
         assert_eq!(state.interval(), Duration::from_secs(23));
 
         let mut clean = |polls: u64| {
             for _ in 0..polls {
-                state.succeeded_at(state.next_attempt);
+                state.succeeded_at(state.next_attempt());
             }
 
             state.interval()
@@ -852,23 +657,23 @@ mod tests {
     fn a_refusal_in_the_middle_of_a_clean_run_starts_the_count_again() {
         let mut state = polling_every(10);
 
-        state.wait_for_at(None, state.next_attempt);
-        state.wait_for_at(None, state.next_attempt);
+        state.wait_for_at(None, state.next_attempt());
+        state.wait_for_at(None, state.next_attempt());
 
         for _ in 0..(CLEAN_RUN - 1) {
-            state.succeeded_at(state.next_attempt);
+            state.succeeded_at(state.next_attempt());
         }
 
         // Outside the window of the last one, so it raises nothing either.
-        state.wait_for_at(None, state.next_attempt);
+        state.wait_for_at(None, state.next_attempt());
 
         for _ in 0..(CLEAN_RUN - 1) {
-            state.succeeded_at(state.next_attempt);
+            state.succeeded_at(state.next_attempt());
         }
 
         assert_eq!(state.interval(), Duration::from_secs(15), "not yet");
 
-        state.succeeded_at(state.next_attempt);
+        state.succeeded_at(state.next_attempt());
 
         assert_eq!(state.interval(), Duration::from_secs(10));
     }
@@ -877,38 +682,12 @@ mod tests {
     fn a_source_refused_more_often_than_answered_says_how_often() {
         let mut state = polling_every(10);
 
-        state.succeeded_at(state.next_attempt);
+        state.succeeded_at(state.next_attempt());
 
         for _ in 0..11 {
-            state.wait_for_at(None, state.next_attempt);
+            state.wait_for_at(None, state.next_attempt());
         }
 
         assert_eq!(state.mostly_refused(), Some((11, 12)));
-    }
-
-    #[test]
-    fn a_provider_that_refuses_every_other_request_is_one_run_of_notices() {
-        // What the operator sees, rather than what the plugin does: twelve
-        // notices in five minutes was the complaint.
-        let mut state = state();
-
-        state.wait_for_at(Some(Duration::from_secs(10)), at(0));
-
-        assert!(state.limit.standing());
-
-        for poll in 1..24 {
-            state.succeeded_at(at(poll * 10));
-            state.wait_for_at(Some(Duration::from_secs(10)), at(poll * 10 + 5));
-        }
-
-        assert!(
-            state.limit.standing(),
-            "a success in between does not end a run of rate limiting",
-        );
-
-        // Five minutes of not being refused is the end of it.
-        state.succeeded_at(at(1_000));
-
-        assert!(!state.limit.standing());
     }
 }

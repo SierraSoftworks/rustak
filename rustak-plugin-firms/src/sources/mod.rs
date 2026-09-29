@@ -10,19 +10,20 @@
 //! `Track`s, and a detection is not one: see [`crate::hotspots`].
 
 pub mod firms;
-mod notice;
 pub mod replay;
 mod state;
 
 use std::time::Duration;
 
+use reqwest::header::HeaderMap;
+use rustak_client::feed::upstream;
 use rustak_client::sidecar::async_trait;
 use rustak_core::prelude::*;
 
 pub use firms::{FirmsFeed, Sensor};
-pub use notice::{REMIND_EVERY, Report};
 pub use replay::ReplayFeed;
-pub use state::{MAX_BACKOFF, SourceState};
+pub use rustak_client::feed::upstream::{REMIND_EVERY, Report};
+pub use state::{Firms, MAX_BACKOFF, SourceState};
 
 use rustak_client::feed::Area;
 
@@ -85,14 +86,7 @@ pub trait HotspotFeed: Send {
 /// A [`human_errors::Kind::System`] error when the TLS backend will not
 /// initialise, which is not something an operator can do anything about.
 pub fn http_client() -> Result<reqwest::Client, Error> {
-    reqwest::Client::builder()
-        .user_agent(USER_AGENT)
-        .timeout(REQUEST_TIMEOUT)
-        .build()
-        .or_system_err(&[
-            "This usually means the TLS backend could not be initialised.",
-            "Please report this issue to the development team via GitHub.",
-        ])
+    upstream::http_client(USER_AGENT, REQUEST_TIMEOUT, HeaderMap::new())
 }
 
 /// Reads a reply's body as text, refusing one larger than `limit` bytes
@@ -142,33 +136,9 @@ pub async fn read_bounded(mut response: reqwest::Response, limit: usize) -> Resu
     Ok(String::from_utf8_lossy(&body).into_owned())
 }
 
-/// Reads a `Retry-After` header, which is a number of seconds or an HTTP date.
-/// One we cannot read answers [`None`], and the caller falls back to its own
-/// guess rather than waiting for a moment it cannot work out.
-#[must_use]
-pub fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
-    let value = headers
-        .get("retry-after")?
-        .to_str()
-        .ok()?
-        .trim()
-        .to_string();
-
-    if let Ok(seconds) = value.parse::<u64>() {
-        return Some(Duration::from_secs(seconds));
-    }
-
-    let at = chrono::DateTime::parse_from_rfc2822(&value).ok()?;
-
-    (at.with_timezone(&chrono::Utc) - chrono::Utc::now())
-        .to_std()
-        .ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reqwest::header::{HeaderMap, HeaderValue};
 
     #[test]
     fn the_user_agent_names_the_software_and_links_to_it() {
@@ -210,20 +180,5 @@ mod tests {
             .expect_err("ten times the ceiling");
 
         assert!(err.to_string().contains("100 bytes"), "{err}");
-    }
-
-    #[test]
-    fn a_retry_after_is_read_in_either_form_or_not_at_all() {
-        let header = |value: &str| {
-            let mut headers = HeaderMap::new();
-            headers.insert("retry-after", HeaderValue::from_str(value).unwrap());
-            headers
-        };
-        let soon = (chrono::Utc::now() + chrono::Duration::seconds(120)).to_rfc2822();
-
-        assert_eq!(retry_after(&header("30")), Some(Duration::from_secs(30)));
-        assert!(retry_after(&header(&soon)).is_some_and(|d| d > Duration::from_secs(100)));
-        assert_eq!(retry_after(&header("soon")), None);
-        assert_eq!(retry_after(&HeaderMap::new()), None);
     }
 }

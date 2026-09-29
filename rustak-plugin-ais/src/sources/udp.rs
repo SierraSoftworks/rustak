@@ -24,6 +24,7 @@ use std::time::Duration;
 use chrono::Utc;
 use nmea_parser::ais::{CargoType, ShipType, VesselDynamicData, VesselStaticData};
 use nmea_parser::{NmeaParser, ParsedMessage};
+use rustak_client::feed::upstream::{Repeated, Report, humanised};
 use rustak_client::feed::{Feed, Track};
 use rustak_client::sidecar::async_trait;
 use rustak_core::prelude::*;
@@ -34,7 +35,6 @@ use crate::mapping::{Dimensions, Position, StaticData};
 use crate::status::{Connection, ConnectionTx};
 use crate::vessels::{Observation, Vessels};
 
-use super::notice::{Repeated, Report, humanised};
 use super::{Backoff, SourceContext};
 
 /// What this source calls itself in a log line and on a heartbeat.

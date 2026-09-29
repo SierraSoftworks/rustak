@@ -23,7 +23,6 @@
 //! ```
 
 use std::collections::HashMap;
-use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use rustak_cot::Event;
@@ -32,9 +31,7 @@ use serde::Serialize;
 use super::policy::{COURSE_CHANGE_DEG, SPEED_CHANGE_MPS};
 use super::{Affiliation, Area, PublishPolicy, Symbology, Track, distance_m};
 
-/// How often the counters are logged at `info`. Slow on purpose: a feed that
-/// logged its rate every tick would be the noisiest thing in the journal.
-const REPORT_EVERY: Duration = Duration::from_secs(300);
+use super::upstream::Every;
 
 /// What a feed has done, for the plugin's heartbeat and the operator's logs.
 ///
@@ -88,7 +85,7 @@ pub struct FeedPublisher {
     tracks: HashMap<String, Tracked>,
     pending: Vec<Event>,
     counters: FeedCounters,
-    reported_at: Option<DateTime<Utc>>,
+    report: Every,
 }
 
 impl FeedPublisher {
@@ -103,7 +100,7 @@ impl FeedPublisher {
             tracks: HashMap::new(),
             pending: Vec::new(),
             counters: FeedCounters::default(),
-            reported_at: None,
+            report: Every::default(),
         }
     }
 
@@ -302,18 +299,13 @@ impl FeedPublisher {
         over
     }
 
-    /// Logs the counters, no more often than [`REPORT_EVERY`].
+    /// Logs the counters, no more often than
+    /// [`REPORT_EVERY`](super::upstream::REPORT_EVERY).
     fn report(&mut self, now: DateTime<Utc>) {
-        let due = match self.reported_at {
-            None => true,
-            Some(last) => (now - last).to_std().unwrap_or_default() >= REPORT_EVERY,
-        };
-
-        if !due {
+        if !self.report.due_at(now) {
             return;
         }
 
-        self.reported_at = Some(now);
         tracing::info!(
             tracked = self.tracks.len(),
             offered = self.counters.offered,
@@ -352,6 +344,7 @@ fn turned_by(before: Option<f64>, after: Option<f64>, threshold: f64) -> bool {
 mod tests {
     use super::*;
     use crate::feed::{AircraftClass, TrackKind, VesselClass};
+    use std::time::Duration;
 
     /// The clock these tests move by hand, so that nothing here waits.
     fn at(seconds: i64) -> DateTime<Utc> {

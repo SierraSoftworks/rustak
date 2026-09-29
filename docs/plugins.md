@@ -1119,6 +1119,73 @@ knows whether its upstream wants a new socket, a new token or another minute.
 On `SidecarEvent::Connected`, call `refresh_all()` — a reopened connection is a
 new subscription, and the server has none of what went down the old one.
 
+### Polling somebody else's service: `feed::upstream`
+
+A feed that polls an HTTP API on a timer — ADS-B's aggregators, ESB, FIRMS —
+is a guest of somebody else's service, and `rustak_client::feed::upstream` is
+what the three that ship share, so a new one gets the good manners for free.
+The one decision a plugin states is a `Rules` type:
+
+```rust
+use std::time::Duration;
+use rustak_client::feed::upstream::{self, RETRY_AFTER, Rules, retry_after};
+
+#[derive(Clone, Copy, Debug)]
+pub struct Tides;
+
+impl Rules for Tides {
+    const MAX_BACKOFF: Duration = Duration::from_secs(900);
+
+    fn subject(_name: &str) -> String {
+        "The tide gauge".to_string()
+    }
+}
+
+pub type SourceState = upstream::SourceState<Tides>;
+
+// In the source's `poll`, with `now` from the caller so a test can move it:
+if !self.state.ready_at(now) {
+    return Ok(Vec::new()); // the tick is not the request rate
+}
+match self.client.get(&self.url).send().await {
+    Ok(r) if r.status() == 429 => {
+        self.state.wait_for_at(retry_after(r.headers(), RETRY_AFTER), now);
+    }
+    Ok(r) => { /* parse */ self.state.succeeded_at(now); }
+    Err(err) => { self.state.failed_at(err.to_string(), now); }
+}
+```
+
+What that gives it:
+
+| | |
+|---|---|
+| **A floor under the request rate** | `ready_at` is independent of the sidecar's tick: the upstream is asked once an interval, however often the plugin polls |
+| **Backoff** | Failures double the wait, capped at `MAX_BACKOFF`; the first answer resets it |
+| **`poll` is a floor, not a pin** | A stated `Retry-After` is waited out above the interval (up to `MAX_RETRY_AFTER`); a `429` naming none waits twice the interval and says the number is ours; the next answer is an interval away again |
+| **A tolerant `Retry-After`** | `retry_after` reads seconds, decimal seconds (rounded up) and all three HTTP-date spellings; what it cannot read is a refusal that named no delay |
+| **Quiet logs** | The outage and the rate limit are each a run: one line when it starts (`warn` / `info`), one reminder every five minutes with a count, one when it is over, `debug` between. A run of refusals settles rather than ending on the next answer, so a provider refusing every other request is one run |
+| **A heartbeat's facts** | `is_connected`, `ever_connected` (the difference between an outage and a configuration error), `since`, `last_success`, `last_error`, `rate_limited`, `reconnecting_for` |
+| **An injected clock** | Every method that moves the state has an `_at` form, so a suite drives it by hand and never sleeps |
+
+The rest of `Rules` is defaulted and overridden only where a plugin disagrees:
+`MAX_RETRY_AFTER` (ESB believes a stated delay for an hour, past its backoff),
+`REFUSAL_IS_AN_ANSWER` (FIRMS counts a `429` as the upstream working),
+`REFUSALS_SETTLE_OVER_POLLS` (ESB and FIRMS settle a run of refusals over three
+slow polls), and every sentence. The default sentences only ever say "asked us
+to wait" about a delay the response stated; an override must keep to that.
+
+Also in the module: `Repeated`, the log-once run on its own, for anything that
+is not a poll (a WebSocket that will not connect, a port that will not bind, a
+token that will not renew); `Every`, the five-minute cadence of a feed's
+counters line, for a plugin that publishes through something other than
+`FeedPublisher`; and `http_client`, a client on public roots with a
+`User-Agent` that names the software and a per-request timeout.
+
+What it deliberately leaves to the plugin: an adaptive cadence (ADS-B's lives
+in ADS-B and moves the shared state through `set_interval`), a streaming source
+(AIS shares `Repeated` and nothing else), and settings.
+
 ### The replay fixture format
 
 `Replay` is a `Feed` over a file, which is what the demonstrations and
