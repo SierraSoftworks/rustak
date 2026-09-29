@@ -29,6 +29,7 @@ pub mod devices;
 pub mod download;
 pub mod groups;
 pub mod health;
+pub mod lockouts;
 pub mod map;
 pub mod missions;
 pub mod packages;

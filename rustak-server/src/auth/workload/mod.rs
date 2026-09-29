@@ -58,7 +58,7 @@ use crate::prelude::*;
 /// this one bounds what an address can spend on *verification* before any
 /// account has been named, because a caller who sends us rubbish never reaches
 /// the other key at all.
-pub const RATE_LIMIT_SUBJECT: &str = "workload-identity";
+pub const RATE_LIMIT_SUBJECT: &str = crate::auth::ratelimit::subjects::WORKLOAD_IDENTITY;
 
 pub use claims::Claims;
 pub use grant::{GRANT_TYPE, jwt_bearer};

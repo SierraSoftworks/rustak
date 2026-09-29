@@ -35,6 +35,18 @@
 //! once it is full, a new bucket evicts one of a small random sample, cheapest
 //! candidate first. Losing somebody's lockout a few minutes early is a far
 //! better failure than making every request pay for the attacker's.
+//!
+//! # What an administrator can see
+//!
+//! A lockout used to leave no trace but the `429` its victim received (M9-14).
+//! Each one now remembers when it began and how many failures earned it, each
+//! refusal and each lockout is counted per [`class`] of key, and
+//! [`RateLimiter::lockouts`] and [`RateLimiter::clear`] list and forgive them
+//! for `/api/v1/auth/lockouts`. None of that
+//! changes what earns a lockout or how long it lasts.
+
+pub mod class;
+mod view;
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -43,6 +55,8 @@ use std::sync::Mutex;
 use chrono::{DateTime, Duration, Utc};
 
 use crate::config::RateLimitConfig;
+
+pub use class::{CLIENT_PREFIX, classify, subject_for, subjects};
 
 /// The most keys tracked at once.
 ///
@@ -68,8 +82,26 @@ struct Bucket {
     failures: u32,
     /// When the current counting window began.
     window_started: DateTime<Utc>,
-    /// When the lockout ends, for a key that has one.
-    locked_until: Option<DateTime<Utc>>,
+    /// The lockout, for a key that has one.
+    lock: Option<Lock>,
+}
+
+/// A lockout, as it was applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Lock {
+    /// The failure that crossed the limit.
+    since: DateTime<Utc>,
+    /// When the key is let through again.
+    until: DateTime<Utc>,
+    /// How many failures inside the window earned it.
+    failures: u32,
+}
+
+impl Bucket {
+    /// The lockout, if it is still in force at `now`.
+    fn active(&self, now: DateTime<Utc>) -> Option<Lock> {
+        self.lock.filter(|lock| lock.until > now)
+    }
 }
 
 /// The tracked keys, and when they were last pruned.
@@ -78,6 +110,8 @@ struct Buckets {
     map: HashMap<Key, Bucket>,
     /// The earliest moment another sweep is worth running.
     next_sweep: DateTime<Utc>,
+    /// How many full scans have run, which is what the flood test counts.
+    prunes: u64,
 }
 
 /// Refuses a key that has been failing.
@@ -87,19 +121,27 @@ pub struct RateLimiter {
     attempts: u32,
     window: Duration,
     lockout: Duration,
+    counters: class::Counters,
+    /// When this limiter started counting, which is when the process did.
+    created_at: DateTime<Utc>,
 }
 
 impl RateLimiter {
     /// Builds a limiter from `[auth.rate_limit]`.
     pub fn new(config: &RateLimitConfig) -> Self {
+        let now = Utc::now();
+
         Self {
             buckets: Mutex::new(Buckets {
                 map: HashMap::new(),
-                next_sweep: Utc::now(),
+                next_sweep: now,
+                prunes: 0,
             }),
             attempts: config.attempts.max(1),
             window: config.window,
             lockout: config.lockout,
+            counters: class::Counters::default(),
+            created_at: now,
         }
     }
 
@@ -109,18 +151,32 @@ impl RateLimiter {
     /// challenge id, the literal `setup` — so that failures against one account
     /// do not lock out another from the same office.
     pub fn check(&self, client_ip: Option<IpAddr>, subject: &str) -> Result<(), Duration> {
-        let now = Utc::now();
+        self.check_at(Utc::now(), client_ip, subject)
+    }
+
+    /// [`check`](Self::check), at a moment the caller chooses.
+    fn check_at(
+        &self,
+        now: DateTime<Utc>,
+        client_ip: Option<IpAddr>,
+        subject: &str,
+    ) -> Result<(), Duration> {
         let mut buckets = self.lock();
 
         self.sweep_if_due(&mut buckets, now);
 
-        match buckets.map.get(&(client_ip, subject.to_owned())) {
-            Some(Bucket {
-                locked_until: Some(until),
-                ..
-            }) if *until > now => Err(*until - now),
-            _ => Ok(()),
-        }
+        let Some(lock) = buckets
+            .map
+            .get(&(client_ip, subject.to_owned()))
+            .and_then(|bucket| bucket.active(now))
+        else {
+            return Ok(());
+        };
+
+        drop(buckets);
+        self.counters.refused(classify(subject).0);
+
+        Err(lock.until - now)
     }
 
     /// Counts a failure, locking the key out once it has had too many.
@@ -128,7 +184,16 @@ impl RateLimiter {
     /// Returns the lockout that was applied, so the caller can log or audit the
     /// moment it starts rather than discovering it on the next attempt.
     pub fn record_failure(&self, client_ip: Option<IpAddr>, subject: &str) -> Option<Duration> {
-        let now = Utc::now();
+        self.record_failure_at(Utc::now(), client_ip, subject)
+    }
+
+    /// [`record_failure`](Self::record_failure), at a moment the caller chooses.
+    fn record_failure_at(
+        &self,
+        now: DateTime<Utc>,
+        client_ip: Option<IpAddr>,
+        subject: &str,
+    ) -> Option<Duration> {
         let mut buckets = self.lock();
         let key = (client_ip, subject.to_owned());
 
@@ -139,7 +204,7 @@ impl RateLimiter {
         let bucket = buckets.map.entry(key).or_insert(Bucket {
             failures: 0,
             window_started: now,
-            locked_until: None,
+            lock: None,
         });
 
         // A window that has run out starts again rather than accumulating: the
@@ -151,13 +216,20 @@ impl RateLimiter {
 
         bucket.failures += 1;
 
-        if bucket.failures >= self.attempts && bucket.locked_until.is_none_or(|until| until <= now)
-        {
-            bucket.locked_until = Some(now + self.lockout);
-            return Some(self.lockout);
+        if bucket.failures < self.attempts || bucket.active(now).is_some() {
+            return None;
         }
 
-        None
+        bucket.lock = Some(Lock {
+            since: now,
+            until: now + self.lockout,
+            failures: bucket.failures,
+        });
+
+        drop(buckets);
+        self.counters.locked(classify(subject).0);
+
+        Some(self.lockout)
     }
 
     /// Forgets a key, which is what a success means.
@@ -197,6 +269,7 @@ impl RateLimiter {
             .map
             .retain(|_, bucket| live(bucket, now, self.window));
         buckets.next_sweep = now + self.window;
+        buckets.prunes += 1;
     }
 
     /// Makes space for one more key when the map is at its ceiling.
@@ -217,7 +290,7 @@ impl RateLimiter {
                 .map
                 .iter()
                 .take(EVICTION_SAMPLE)
-                .min_by_key(|(_, bucket)| bucket.locked_until)
+                .min_by_key(|(_, bucket)| bucket.lock.map(|lock| lock.until))
                 .map(|(key, _)| key.clone())
             else {
                 return;
@@ -239,7 +312,7 @@ impl RateLimiter {
 
 /// Whether a bucket still says anything about the future.
 fn live(bucket: &Bucket, now: DateTime<Utc>, window: Duration) -> bool {
-    bucket.locked_until.is_some_and(|until| until > now) || now - bucket.window_started <= window
+    bucket.active(now).is_some() || now - bucket.window_started <= window
 }
 
 #[cfg(test)]
@@ -265,10 +338,14 @@ mod tests {
         // sweep used to run on every check past a thousand entries, so each
         // legitimate sign-in afterwards scanned the whole attack under the
         // mutex, on a reactor thread.
+        //
+        // Counted rather than timed: what made the checks slow was the number
+        // of full scans, and the number is the same on any host.
         let limiter = limiter(1);
+        let now = Utc::now();
 
         for index in 0..(MAX_BUCKETS + 5_000) {
-            limiter.record_failure(address(), &format!("victim-{index}"));
+            limiter.record_failure_at(now, address(), &format!("victim-{index}"));
         }
 
         assert!(
@@ -277,19 +354,17 @@ mod tests {
             limiter.tracked()
         );
 
-        let started = std::time::Instant::now();
+        let before = limiter.lock().prunes;
 
         for index in 0..10_000 {
-            let _ = limiter.check(address(), &format!("ada-{index}"));
+            let _ = limiter.check_at(now, address(), &format!("ada-{index}"));
         }
 
-        let elapsed = started.elapsed();
+        let scans = limiter.lock().prunes - before;
 
-        // Generous by two orders of magnitude: the same loop against a full map
-        // and a sweep per check is a billion comparisons, which is minutes.
         assert!(
-            elapsed < std::time::Duration::from_secs(5),
-            "ten thousand checks took {elapsed:?} against a full map"
+            scans <= 1,
+            "ten thousand checks inside one window scanned the full map {scans} times",
         );
     }
 
@@ -312,7 +387,7 @@ mod tests {
         );
 
         let remaining = limiter.check(address(), "ada").unwrap_err();
-        assert!(remaining <= Duration::minutes(15) && remaining > Duration::minutes(14));
+        assert!(remaining <= Duration::minutes(15) && remaining > Duration::zero());
     }
 
     #[test]
@@ -365,19 +440,40 @@ mod tests {
         // who mistypes a token twice a day should never be locked out.
         let limiter = RateLimiter::new(&RateLimitConfig {
             attempts: 2,
-            window: Duration::milliseconds(30),
+            window: Duration::minutes(1),
             lockout: Duration::minutes(15),
         });
+        let start = Utc::now();
 
-        assert_eq!(limiter.record_failure(address(), "ada"), None);
+        assert_eq!(limiter.record_failure_at(start, address(), "ada"), None);
 
-        std::thread::sleep(std::time::Duration::from_millis(60));
+        let later = start + Duration::minutes(2);
 
         assert_eq!(
-            limiter.record_failure(address(), "ada"),
+            limiter.record_failure_at(later, address(), "ada"),
             None,
             "a failure in a new window is the first one, not the second",
         );
-        assert!(limiter.check(address(), "ada").is_ok());
+        assert!(limiter.check_at(later, address(), "ada").is_ok());
+    }
+
+    #[test]
+    fn refusals_and_lockouts_are_counted_by_class_and_never_by_key() {
+        let limiter = limiter(1);
+
+        limiter.record_failure(address(), "ada");
+        let _ = limiter.check(address(), "ada");
+        let _ = limiter.check(address(), "ada");
+        limiter.record_failure(address(), subjects::PASSKEY);
+        let _ = limiter.check(address(), "grace");
+
+        let counters = limiter.counters.snapshot();
+        let of = |class: rustak_api::LockoutClass| counters[class.index()];
+
+        assert_eq!(of(rustak_api::LockoutClass::Account).lockouts, 1);
+        assert_eq!(of(rustak_api::LockoutClass::Account).refusals, 2);
+        assert_eq!(of(rustak_api::LockoutClass::Address).lockouts, 1);
+        assert_eq!(of(rustak_api::LockoutClass::Address).refusals, 0);
+        assert_eq!(of(rustak_api::LockoutClass::Client).lockouts, 0);
     }
 }

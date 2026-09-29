@@ -20,6 +20,8 @@ mod cloudtak;
 #[cfg(debug_assertions)]
 mod data;
 #[cfg(debug_assertions)]
+mod lockouts;
+#[cfg(debug_assertions)]
 mod map;
 #[cfg(debug_assertions)]
 mod missions;
@@ -38,6 +40,8 @@ mod store;
 pub use certificates::*;
 #[cfg(debug_assertions)]
 pub use cloudtak::*;
+#[cfg(debug_assertions)]
+pub use lockouts::*;
 #[cfg(debug_assertions)]
 pub use map::*;
 #[cfg(debug_assertions)]

@@ -166,7 +166,10 @@ fn marti_server(context: AppContext, socket: MartiSocket) -> Result<Server, Erro
     let required = matches!(config.web.marti.client_cert, ClientCertMode::Required);
     let drain = config.server.listener_drain_seconds();
     let tls = pki.marti_server_config(required)?;
-    let limiter = Arc::new(RateLimiter::new(&config.auth.rate_limit));
+    // The context's, so that this listener and the public one count against
+    // the same buckets — which the comment on `marti_services` always said
+    // they did, and which, until M10-11, they did not.
+    let limiter = context.rate_limiter();
 
     let mut server = HttpServer::new(move || {
         App::new()
@@ -224,7 +227,7 @@ pub fn build_public(context: AppContext, tls: PublicTls) -> Result<Server, Error
         ));
     }
 
-    let limiter = Arc::new(RateLimiter::new(&config.auth.rate_limit));
+    let limiter = context.rate_limiter();
     let drain = config.server.listener_drain_seconds();
 
     let mut server = HttpServer::new(move || {

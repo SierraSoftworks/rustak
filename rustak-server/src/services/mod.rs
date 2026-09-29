@@ -67,6 +67,7 @@ use chrono::{DateTime, Utc};
 use rustak_core::{prelude::*, telemetry::Session};
 
 use crate::{
+    auth::RateLimiter,
     config::Config,
     crypto::SecretStore,
     db::{AuditStore, Cache, Database, KeyValueStore, Queue},
@@ -181,6 +182,7 @@ pub struct AppContext {
     http_client: reqwest::Client,
     shutdown: Shutdown,
     started_at: DateTime<Utc>,
+    rate_limiter: Arc<RateLimiter>,
 }
 
 impl AppContext {
@@ -203,6 +205,7 @@ impl AppContext {
         shutdown: Shutdown,
     ) -> Result<Self, Error> {
         let http_client = http_client(&config)?;
+        let rate_limiter = Arc::new(RateLimiter::new(&config.auth.rate_limit));
 
         Ok(Self {
             config: Arc::new(config),
@@ -219,6 +222,7 @@ impl AppContext {
             http_client,
             shutdown,
             started_at: Utc::now(),
+            rate_limiter,
         })
     }
 
@@ -316,6 +320,16 @@ impl AppContext {
     /// When this process finished starting up, for `/api/v1/health`'s uptime.
     pub fn started_at(&self) -> DateTime<Utc> {
         self.started_at
+    }
+
+    /// The one limiter every credential endpoint on every listener shares.
+    ///
+    /// Owned here rather than by a listener so that an attacker cannot double
+    /// their allowance by alternating ports, and so that the administrator's
+    /// view of what is locked out (`GET /api/v1/auth/lockouts`) sees the
+    /// lockouts earned on `[web.marti]` as well as on `[web.public]`.
+    pub fn rate_limiter(&self) -> Arc<RateLimiter> {
+        self.rate_limiter.clone()
     }
 }
 

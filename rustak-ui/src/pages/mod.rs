@@ -36,6 +36,7 @@ mod service_detail;
 mod service_metrics;
 mod services;
 mod settings_files;
+mod settings_lockouts;
 mod settings_security;
 mod settings_storage;
 mod settings_tls;

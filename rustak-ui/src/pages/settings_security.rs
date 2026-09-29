@@ -1,11 +1,12 @@
 //! How this server is reached, and how people prove who they are.
 //!
-//! Three cards. What the server calls itself is read-only here: values set in
+//! Four cards. What the server calls itself is read-only here: values set in
 //! `config.toml` win over anything the wizard wrote, so a form that appeared
 //! to accept a change the file then overrode would be lying. The transport
 //! card carries the one thing worth doing — reloading a certificate whose
 //! last fetch failed — and the authentication card says how sign-in is set
-//! up, from the same metadata the login page draws itself with.
+//! up, from the same metadata the login page draws itself with. The last card
+//! lists who the sign-in rate limiter is refusing, and can forgive one of them.
 
 use rustak_api::{AuthMetadata, AuthMode};
 use yew::prelude::*;
@@ -16,6 +17,7 @@ use crate::components::{Alert, AlertKind, Card, LoadingNote, StatusPill, StatusT
 use crate::util::format_iso8601;
 
 use super::load::{use_refresh_action, use_resource};
+use super::settings_lockouts::LockoutsCard;
 use super::settings_tls::TlsCard;
 
 #[function_component(Security)]
@@ -105,6 +107,8 @@ pub fn security() -> Html {
             >
                 { auth }
             </Card>
+
+            <LockoutsCard />
         </>
     }
 }

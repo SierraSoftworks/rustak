@@ -35,7 +35,7 @@ use super::extract::Authenticated;
 use super::middleware::bearer_token;
 
 /// The rate-limiter subject the ceremonies share.
-const SUBJECT: &str = "passkey";
+const SUBJECT: &str = crate::auth::ratelimit::subjects::PASSKEY;
 
 /// `POST /auth/passkey/register/start`.
 ///

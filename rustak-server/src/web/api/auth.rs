@@ -34,7 +34,7 @@ use super::error::{ApiError, ApiResult, json_ok};
 use super::extract::Authenticated;
 
 /// The rate-limiter subject the token endpoints share.
-pub(super) const SUBJECT: &str = "auth-token";
+pub(super) const SUBJECT: &str = crate::auth::ratelimit::subjects::AUTH_TOKEN;
 
 /// `GET /auth/metadata`: what sign-in methods this installation offers.
 ///

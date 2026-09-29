@@ -44,6 +44,7 @@ pub mod event;
 pub mod group;
 pub mod health;
 pub mod identity;
+pub mod lockout;
 pub mod map;
 pub mod mission;
 pub mod package;
@@ -90,6 +91,9 @@ pub use identity::{
     CertificateId, CredentialId, DeviceId, DeviceUid, DeviceUidError, Direction, GroupId,
     GroupName, GroupNameError, MissionGuid, MissionId, PasskeyId, ProfileId, ResourceId, ServiceId,
     ServiceName, ServiceNameError, UserId, Username, UsernameError,
+};
+pub use lockout::{
+    ClearLockoutRequest, Lockout, LockoutClass, LockoutCounter, Lockouts, MAX_LISTED_LOCKOUTS,
 };
 pub use map::{MapEllipse, MapFeature, MapPoint, MapShape, MapStyle, MapUpdate, PublishFeature};
 pub use mission::{

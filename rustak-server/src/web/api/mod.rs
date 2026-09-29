@@ -66,6 +66,7 @@ pub mod events;
 pub mod extract;
 pub mod groups;
 pub mod health;
+pub mod lockouts;
 pub mod map;
 pub mod me;
 pub mod middleware;
@@ -139,6 +140,7 @@ pub fn configure() -> actix_web::Scope<
             .route("/auth/logout", web::post().to(auth::logout))
             .route("/auth/passkeys", web::get().to(passkey::list))
             .route("/auth/passkeys/{id}", web::delete().to(passkey::remove))
+            .configure(lockouts::routes)
             .route("/users", web::get().to(users::list))
             .route("/users", web::post().to(users::create))
             .route("/users/{username}", web::get().to(users::get))
@@ -274,6 +276,8 @@ mod tests {
         ("POST", "/api/v1/auth/logout"),
         ("GET", "/api/v1/auth/passkeys"),
         ("DELETE", "/api/v1/auth/passkeys/1"),
+        ("GET", "/api/v1/auth/lockouts"),
+        ("POST", "/api/v1/auth/lockouts/clear"),
         ("GET", "/api/v1/users"),
         ("POST", "/api/v1/users"),
         ("GET", "/api/v1/users/ada"),

@@ -1447,6 +1447,67 @@ TAK Server's contract so that when CloudTAK does ship an OIDC client, it works
 against rustak unchanged — no rustak-specific branch, no configuration beyond
 registering the client above. See `.claude/plan/compat/oauth.md` §4.
 
+## Sign-in lockouts
+
+Every endpoint that accepts a secret — a passkey ceremony, the setup token, a
+token exchange, the `/oauth/token` password and client-secret grants, a Basic
+credential on the enrolment routes, a workload identity — counts its failures.
+`[auth] rate_limit` (default `{ attempts = 10, window = "1m", lockout = "15m" }`)
+says how many failures inside a window **lock out** the key that failed, and for
+how long. A locked-out key is refused with `429 Too Many Requests` before its
+credential is even looked at; the lockout ends on its own, and a success before
+it is reached forgets the failures.
+
+A key is the caller's address plus what it was guessing at, and falls into one
+of three classes:
+
+| Class | What the key names | Example |
+|---|---|---|
+| `account` | A username: a password grant, a Basic credential, a workload identity once it has named its account | `ada` from `198.51.100.4` |
+| `client` | A confidential OAuth client's identifier | `cloudtak` from `192.0.2.10` |
+| `address` | A sign-in endpoint with no account to name, so the address is what tells callers apart | `passkey`, `setup-token`, `auth-token`, `oauth-token`, `workload-identity` |
+
+The limiter is one per process, shared by `[web.public]` and `[web.marti]`, and
+held in memory: a restart forgives every lockout.
+
+### Seeing and clearing one
+
+**Settings → Security → Sign-in lockouts** in the console lists every key
+locked out now — its class, the key, the address, when it began and ends, and
+how many failures earned it — newest first, with how many lockouts have started
+and how many attempts have been refused per class since the server started.
+**Clear** asks first, then forgives that one key and its failures at once. There
+is no "clear all": clearing is vouching for one caller.
+
+The same, for a script, with an administrator's bearer token:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" https://tak.example.com:8446/api/v1/auth/lockouts
+# {"lockouts":[{"class":"account","address":"198.51.100.4","key":"ada",
+#   "started_at":"…","ends_at":"…","failures":10}],"total":1,
+#  "counters":[{"class":"address","refusals":0,"lockouts":0}, …],"counting_since":"…"}
+
+curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+     -d '{"class":"account","address":"198.51.100.4","key":"ada"}' \
+     https://tak.example.com:8446/api/v1/auth/lockouts/clear
+```
+
+The listing carries at most 200 lockouts (`total` says how many there are) and
+is not itself rate limited, so an administrator who is already signed in can
+read it even from an address that is locked out of sign-in. Reading it never
+starts, extends or ends a lockout, and is logged at `debug` only — the list is
+addresses and usernames. A clear answers `404` when nothing is locked out under
+that key (it may have run out between the page loading and the click), and is
+written to the audit log as `lockout.cleared` (category `administration`) with
+the administrator who did it, the class, the key and the address; the server's
+own log line names the class and the administrator, not the key.
+
+The counters are also where an attack shows up: a steady climb in `address`
+refusals is somebody hammering a sign-in endpoint, and `account` lockouts
+spread across many addresses are somebody guessing at one account from many
+places — which the per-address key does not stop, and which is worth taking to
+a firewall.
+
 ## Security notes worth knowing about
 
 None of these is a setting you have to change; they are the trades rustak makes

@@ -49,7 +49,7 @@ use super::error::MartiResult;
 use super::response;
 
 /// The rate-limiter subject used when a request named no account.
-const ANONYMOUS_SUBJECT: &str = "oauth-token";
+const ANONYMOUS_SUBJECT: &str = crate::auth::ratelimit::subjects::OAUTH_TOKEN;
 
 /// The form `POST /oauth/token` accepts.
 ///

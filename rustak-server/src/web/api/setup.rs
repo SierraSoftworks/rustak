@@ -32,7 +32,7 @@ use super::error::{ApiError, ApiResult, json_ok};
 use super::extract::Administrative;
 
 /// The rate-limiter subject the setup token shares.
-const SUBJECT: &str = "setup-token";
+const SUBJECT: &str = crate::auth::ratelimit::subjects::SETUP_TOKEN;
 
 /// `GET /setup/status`: what the wizard still has to do.
 ///

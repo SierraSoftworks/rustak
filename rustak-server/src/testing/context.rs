@@ -105,9 +105,9 @@ impl TestServer {
             )))
             .expect("the content store is installed once");
 
-        let limiter = Arc::new(crate::auth::RateLimiter::new(
-            &context.config().auth.rate_limit,
-        ));
+        // The context's own, as a listener takes it, so that what the routes
+        // count is what `/api/v1/auth/lockouts` lists.
+        let limiter = context.rate_limiter();
 
         Self {
             context,

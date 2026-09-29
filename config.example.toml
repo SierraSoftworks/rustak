@@ -390,8 +390,10 @@ allow_access_token_retrieval = true
 
 # The limiter on every endpoint that accepts a secret, keyed on the source
 # address and the identity being attempted. It cannot be disabled: it is what
-# stands between a client password and an offline guessing attack.
-# rate_limit = { attempts = 10, window = "1m", lockout = "15m" }
+# stands between a client password and an offline guessing attack. What it is
+# refusing now is listed, and can be cleared one key at a time, under Settings
+# -> Security in the console (GET /api/v1/auth/lockouts).
+# rate_limit ={ attempts = 10, window = "1m", lockout = "15m" }
 
 
 # Accepting an orchestrator's workload identity as a credential.

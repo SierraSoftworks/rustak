@@ -2273,6 +2273,36 @@ footer {
   }
 }
 
+// The Security page's sign-in lockouts: what is locked out, from where, when
+// it ends, and a Clear behind a confirmation (`pages/settings_lockouts.rs`).
+.lockout-list {
+  @include entity-list;
+}
+
+.lockout-row {
+  @include entity-row;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto auto;
+
+  &__identity {
+    @include entity-identity;
+  }
+
+  &__origin {
+    font-family: $font-mono;
+    font-size: 0.78rem;
+    color: $text-secondary;
+    overflow-wrap: anywhere;
+  }
+
+  &__meta {
+    @include entity-meta;
+  }
+
+  &__error {
+    @include entity-error;
+  }
+}
+
 .change-list {
   @include entity-list;
 }
@@ -3028,6 +3058,7 @@ footer {
   .profile-file-row,
   .mission-row,
   .subscriber-row,
+  .lockout-row,
   .change-row,
   .pref-row,
   .package-row,

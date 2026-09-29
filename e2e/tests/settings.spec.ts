@@ -62,3 +62,50 @@ test("an ACME listener whose orders keep failing shows the authority's own reaso
   // The other source's rows belong to the other source.
   await expect(page.getByText("Certificate file", { exact: true })).toHaveCount(0);
 });
+
+/**
+ * The sign-in lockouts card (M10-11). The real server behind this suite has
+ * locked nobody out, which is itself worth asserting — it is the endpoint
+ * answering an administrator through the embedded UI — and the demo fixtures
+ * carry one lockout of each class, which is how the rows and the confirmation
+ * are driven.
+ */
+test("a server that has locked nobody out says so", async ({ page }) => {
+  await gotoApp(page, "/admin/settings/security");
+
+  await expect(page.getByRole("heading", { name: "Sign-in lockouts" })).toBeVisible();
+  await expect(page.getByText("Nothing is locked out.")).toBeVisible();
+});
+
+test("a lockout says what it names and where from, and is cleared only after asking", async ({
+  page,
+}) => {
+  await gotoApp(page, "/admin/settings/security?demo");
+
+  await expect(page.getByRole("heading", { name: "Sign-in lockouts" })).toBeVisible();
+
+  const rows = page.locator(".lockout-row");
+  await expect(rows).toHaveCount(3);
+  await expect(page.getByText("Every 'passkey' attempt")).toBeVisible();
+  await expect(page.getByText("OAuth client 'cloudtak'")).toBeVisible();
+  await expect(
+    page.getByText("5 lockouts started and 41 attempts refused", { exact: false }),
+  ).toBeVisible();
+
+  const linus = rows.filter({ hasText: "Account 'linus'" });
+  await expect(linus).toContainText("from 203.0.113.7");
+  await expect(linus).toContainText("10 failures");
+
+  // The first click only asks, and the question names what is about to go.
+  await linus.getByRole("button", { name: "Clear", exact: true }).click();
+  await expect(
+    linus.getByText("Clear the lockout on account 'linus' from 203.0.113.7?", { exact: false }),
+  ).toBeVisible();
+  await expect(rows).toHaveCount(3);
+
+  await linus.getByRole("button", { name: "Clear it" }).click();
+
+  await expect(rows).toHaveCount(2);
+  await expect(page.getByText("Account 'linus'")).toHaveCount(0);
+  await expect(page.getByText("Every 'passkey' attempt")).toBeVisible();
+});
