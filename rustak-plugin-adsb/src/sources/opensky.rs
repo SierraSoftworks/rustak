@@ -282,6 +282,10 @@ impl AdsbFeed for OpenSkyFeed {
     fn state(&self) -> &SourceState {
         &self.state
     }
+
+    fn state_mut(&mut self) -> &mut SourceState {
+        &mut self.state
+    }
 }
 
 #[cfg(test)]

@@ -40,6 +40,9 @@ serde_json = { workspace = true }
 # Observation times, the `"90s"` durations in `[settings.source]`, and the age
 # of a position report.
 chrono = { workspace = true }
+# The configuration an administrator sets on the Services page is a JSON
+# document, and the form there is drawn from the schema derived here.
+schemars = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

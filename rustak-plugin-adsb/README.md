@@ -120,8 +120,27 @@ which, for adsb.lol, is the number nobody publishes. Every sixty clean polls the
 source tries one step faster; if that is refused twice it steps back, which is
 the price of noticing when a limit has gone away. A step the provider refused is
 remembered, and each time it refuses the same one the clean run before it is
-tried again doubles (60 polls, 120, 240 …, about three hours at most); a step
+tried again doubles (60 polls, 120, 240 …, up to `probe_max_wait`); a step
 that holds forgets, and a restart or a changed `poll` starts afresh.
+
+**`probe_max_wait`** (in `[settings.source]` for `aggregator` and `opensky`,
+default `"3h"`) is how long that wait may grow. It is a trade: against a
+provider that refuses every faster try, each try costs two refusals, so once
+the wait has reached its cap three hours is 16 refusals a day, six hours 8 and
+a day 2 (the first day costs more — 22 at three hours — because the wait starts
+at sixty polls); a shorter cap follows a provider that has relaxed its limit
+back down sooner. It must be at least one clean run of sixty polls at `poll`
+(ten minutes at `10s`) and at most `"24h"`; anything else is refused by
+`--check` and at start-up, naming the key.
+
+An administrator can change it on the Services page, as
+`probe_max_wait_minutes` (a whole number of minutes, 1 to 1440): the value
+there wins over the file, takes effect for the next decision about a faster
+try without reopening the source or forgetting what was refused, and is logged
+once at `info` with where it came from. Clearing it gives the choice back to
+the file. A value shorter than one clean run at this source's `poll` is
+refused when it is saved while the sidecar is running, and ignored with a
+warning otherwise.
 
 What reaches the log, each of them once per change rather than once per `429`:
 
@@ -290,11 +309,12 @@ how many there have been since the last one; and coming back is one line naming
 how long it was gone. A change to the poll interval is one line per change. Everything else lives on the Services page, which is where
 the *current* state belongs.
 
-An administrator may also set an `area` and a `symbology` for the service, from
-the form the Services page draws or through `PUT /api/v1/services/adsb/config`.
-Either wins over the one in the file and is logged at `info` when it takes
-effect, which needs no restart; removing `symbology` gives the choice back to
-the file.
+An administrator may also set an `area`, a `symbology` and a
+`probe_max_wait_minutes` for the service, from the form the Services page draws
+or through `PUT /api/v1/services/adsb/config`. Each wins over the one in the
+file and is logged at `info` when it takes effect, which needs no restart;
+removing `symbology` or `probe_max_wait_minutes` gives the choice back to the
+file.
 
 ## Docker
 

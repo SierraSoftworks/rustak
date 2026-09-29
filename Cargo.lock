@@ -4284,6 +4284,7 @@ dependencies = [
  "rustak-client",
  "rustak-core",
  "rustak-cot",
+ "schemars",
  "serde",
  "serde_json",
  "tempfile",

@@ -275,6 +275,23 @@ max_tracks = 5000
 # refused about every other request and at "10s" about one in five, without a
 # Retry-After either time, so the source finds the rate it tolerates for itself.
 # poll = "10s"
+#
+# How long, at most, a faster interval the provider refused is left alone before
+# it is tried again. Default: "3h". Every step back down after a clean run is an
+# experiment; when the provider refuses it, that interval is not tried again for
+# 120 clean polls, then 240, doubling each time it is refused, up to this.
+#
+# Longer means fewer refusals against a provider that never relaxes: one that
+# refuses every try costs two refusals a try, so about 16 a day at "3h" once the
+# wait has reached it and 8 at "6h" (the first day costs more, 22 at "3h").
+# Shorter means a provider that relaxed its limit is followed back down sooner. At least one clean run of sixty polls at `poll` (10m at "10s"), at most
+# "24h"; anything else is refused, by --check as well as at start-up.
+#
+# An administrator can change it on the Services page while the sidecar runs
+# ("Longest wait before retrying a refused poll interval", in minutes). That
+# value wins over this one and takes effect from the next probe without
+# reopening the source; clearing it there gives the choice back to this file.
+# probe_max_wait = "3h"
 
 
 # 3. The OpenSky Network, which is a research network: its terms are research
@@ -297,6 +314,10 @@ max_tracks = 5000
 # spends the budget twice as fast. A floor rather than a pin, exactly as for an
 # aggregator above: a 429 can raise the interval in use, never lower it.
 # poll = "10s"
+#
+# The longest a refused faster interval is left alone, exactly as for an
+# aggregator above. Default: "3h".
+# probe_max_wait = "3h"
 
 
 # 4. A file of tracks, offered on every tick: what this file ships with, what

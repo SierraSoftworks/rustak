@@ -35,12 +35,14 @@
 
 pub mod health;
 pub mod mapping;
+pub mod remote;
 pub mod settings;
 pub mod sources;
 pub mod wire;
 
+use std::time::Duration;
+
 use rustak_api::{Heartbeat, ServiceState};
-use rustak_client::feed::FeedConfig;
 use rustak_client::feed::{Area, FeedCounters, FeedPublisher, Symbology};
 use rustak_client::sidecar::{
     ConfigValidation, ServiceSettings, Sidecar, SidecarContext, SidecarEvent, async_trait,
@@ -49,8 +51,11 @@ use rustak_client::sidecar::{
 use rustak_core::prelude::*;
 use rustak_cot::Event;
 
+pub use remote::AdsbConfig;
 pub use settings::{MIN_MOVE_M, STALE, Settings, Source};
-pub use sources::{AdsbFeed, Provider};
+pub use sources::{AdsbFeed, DEFAULT_PROBE_MAX_WAIT, Provider};
+
+use sources::probe_max_wait_out_of_range;
 
 /// The plugin: one upstream, one publisher, and what it has done so far.
 #[derive(Default)]
@@ -76,11 +81,17 @@ pub struct AdsbSidecar {
 
     /// The edition of MIL-STD-2525 in effect right now, from either of the two.
     symbology: Symbology,
+
+    /// The longest a refused faster interval is left alone, in effect right
+    /// now, and where it came from: the server, the file, or the default.
+    probe_max_wait: Duration,
+    probe_max_wait_from: &'static str,
 }
 
 /// What [`AdsbSidecar::area_from`] says for each of the two.
 const FROM_FILE: &str = "the configuration file";
 const FROM_SERVER: &str = "an administrator, through the control API";
+const FROM_DEFAULT: &str = "the default";
 
 impl AdsbSidecar {
     /// What this feed has offered, published, suppressed and expired — for a
@@ -90,6 +101,13 @@ impl AdsbSidecar {
         self.publisher
             .as_ref()
             .map_or_else(FeedCounters::default, FeedPublisher::counters)
+    }
+
+    /// The longest the open source leaves a refused faster interval alone
+    /// before trying it again, or [`None`] before a source is open.
+    #[must_use]
+    pub fn probe_max_wait(&self) -> Option<Duration> {
+        self.feed.as_ref().map(|feed| feed.state().probe_max_wait())
     }
 
     /// How many aircraft are on the map right now.
@@ -126,9 +144,9 @@ impl AdsbSidecar {
     /// What an administrator set for this service, when the server holds a
     /// document this has not applied yet.
     ///
-    /// `GET /api/v1/services/<name>/config` is a [`FeedConfig`]: the area, and
-    /// the edition of MIL-STD-2525 these tracks carry. Server-side
-    /// configuration wins over the file, because the file is baked into a
+    /// `GET /api/v1/services/<name>/config` is an [`AdsbConfig`]: the area, the
+    /// edition of MIL-STD-2525 these tracks carry, and `probe_max_wait_minutes`.
+    /// Server-side configuration wins over the file, because the file is baked into a
     /// container image and the admin UI is where an operator changes either
     /// without a redeploy. Anything unreadable is a warning and what is already
     /// in effect, never a sidecar that will not start.
@@ -139,7 +157,7 @@ impl AdsbSidecar {
     /// for the whole life of a process. [`ServiceSettings`] owns the cadence,
     /// and answers one document once — which is why both settings are read
     /// from the same answer rather than asked for one at a time.
-    async fn configured(&mut self) -> Option<FeedConfig> {
+    async fn configured(&mut self) -> Option<AdsbConfig> {
         let context = self.context.clone()?;
         let document = self.configured.refresh(&context).await?;
 
@@ -173,6 +191,55 @@ impl AdsbSidecar {
         );
     }
 
+    /// Puts the longest probe wait into effect: the administrator's when the
+    /// server's document sets one, and otherwise the file's or the default.
+    ///
+    /// Applied to the open source in place, so it counts from the next probe
+    /// decision and every rung already refused is still remembered. A value
+    /// the open source cannot use — shorter than one clean run at its `poll`,
+    /// which the schema alone cannot know — is a warning, and what is in
+    /// effect stays. `announce` is false at start-up, whose own line says it.
+    fn apply_probe_max_wait(&mut self, from_server: Option<Duration>, announce: bool) {
+        let file = self
+            .context
+            .as_ref()
+            .map(|context| probe_max_wait_in(context.settings()));
+        let (wait, from) = match (from_server, file) {
+            (Some(wait), _) => (wait, FROM_SERVER),
+            (None, Some(from_file)) => from_file,
+            (None, None) => (DEFAULT_PROBE_MAX_WAIT, FROM_DEFAULT),
+        };
+        let Some(feed) = &mut self.feed else {
+            return;
+        };
+
+        if let Some(why) =
+            probe_max_wait_out_of_range("probe_max_wait_minutes", wait, feed.state().configured())
+        {
+            warn!(
+                "{why} The longest wait already in effect ({}s) stays in effect.",
+                self.probe_max_wait.as_secs(),
+            );
+            return;
+        }
+
+        if (wait, from) == (self.probe_max_wait, self.probe_max_wait_from) {
+            return;
+        }
+
+        feed.state_mut().set_probe_max_wait(wait);
+        self.probe_max_wait = wait;
+        self.probe_max_wait_from = from;
+
+        if announce {
+            info!(
+                probe_max_wait_s = wait.as_secs(),
+                probe_max_wait_from = from,
+                "The longest wait before a refused poll interval is tried again has changed.",
+            );
+        }
+    }
+
     /// Opens the source and the publisher for `area`, and remembers where it
     /// came from.
     ///
@@ -181,7 +248,14 @@ impl AdsbSidecar {
     /// the source again.
     fn watch(&mut self, settings: &Settings, area: Area, from: &'static str) -> Result<(), Error> {
         self.kind = settings.source.kind();
-        self.feed = Some(settings.source.open(area)?);
+        let mut feed = settings.source.open(area)?;
+
+        // A source opened again for a new area keeps the wait in effect.
+        if !self.probe_max_wait.is_zero() {
+            feed.state_mut().set_probe_max_wait(self.probe_max_wait);
+        }
+
+        self.feed = Some(feed);
         self.publisher = Some(
             FeedPublisher::new(settings.publish, settings.affiliation)
                 .with_symbology(self.symbology)
@@ -201,14 +275,16 @@ impl Sidecar for AdsbSidecar {
 
     type Settings = Settings;
 
-    /// What an administrator may change from the admin UI: the area, and
-    /// nothing else. The form there is drawn from this.
+    /// What an administrator may change from the admin UI: the area, the
+    /// symbology and the longest probe wait. The form there is drawn from this.
     fn config_schema() -> Option<serde_json::Value> {
-        Some(schema_for::<FeedConfig>())
+        Some(schema_for::<AdsbConfig>())
     }
 
     async fn validate_config(&mut self, config: &serde_json::Value) -> ConfigValidation {
-        FeedConfig::check(config)
+        let configured = self.feed.as_ref().map(|feed| feed.state().configured());
+
+        AdsbConfig::check(config, configured)
     }
 
     async fn start(&mut self, ctx: SidecarContext<Self::Settings>) -> Result<(), Error> {
@@ -217,12 +293,13 @@ impl Sidecar for AdsbSidecar {
         self.context = Some(ctx.clone());
 
         self.symbology = ctx.settings().symbology;
+        (self.probe_max_wait, self.probe_max_wait_from) = probe_max_wait_in(ctx.settings());
 
         let configured = self.configured().await.unwrap_or_default();
-        if let Some(symbology) = configured.symbology {
+        if let Some(symbology) = configured.feed.symbology {
             self.symbology = symbology;
         }
-        let (area, from) = match configured.area.filter(|area| *area != self.area) {
+        let (area, from) = match configured.feed.area.filter(|area| *area != self.area) {
             Some(area) => (area, FROM_SERVER),
             None => (self.area, FROM_FILE),
         };
@@ -231,6 +308,7 @@ impl Sidecar for AdsbSidecar {
         // Before anything else: a source that cannot be opened is a setting the
         // operator got wrong, and the one thing `start` should refuse over.
         self.watch(settings, area, from)?;
+        self.apply_probe_max_wait(configured.probe_max_wait(), false);
 
         info!(
             uid = %ctx.identity().uid(),
@@ -240,6 +318,8 @@ impl Sidecar for AdsbSidecar {
             area_from = self.area_from,
             affiliation = ?settings.affiliation,
             symbology = ?self.symbology,
+            probe_max_wait_s = self.probe_max_wait.as_secs(),
+            probe_max_wait_from = self.probe_max_wait_from,
             "The ADS-B sidecar is watching.",
         );
 
@@ -257,11 +337,16 @@ impl Sidecar for AdsbSidecar {
         {
             // A document that no longer names an edition gives the choice back
             // to the file this sidecar was started with.
-            self.apply_symbology(configured.symbology.unwrap_or(context.settings().symbology));
+            self.apply_symbology(
+                configured
+                    .feed
+                    .symbology
+                    .unwrap_or(context.settings().symbology),
+            );
         }
 
         if let Some(area) = configured
-            .and_then(|configured| configured.area)
+            .and_then(|configured| configured.feed.area)
             .filter(|area| *area != self.area)
             && let Some(context) = self.context.clone()
         {
@@ -276,6 +361,13 @@ impl Sidecar for AdsbSidecar {
                     "Could not open the source for the area an administrator set; the one already in effect stays in effect.",
                 ),
             }
+        }
+
+        // After the area, so that a source opened again for it gets this too;
+        // like the edition, a document without one gives the choice back to
+        // the file.
+        if let Some(configured) = configured {
+            self.apply_probe_max_wait(configured.probe_max_wait(), true);
         }
 
         if let (Some(feed), Some(publisher)) = (&mut self.feed, &mut self.publisher) {
@@ -351,6 +443,16 @@ impl Sidecar for AdsbSidecar {
 
         Ok(())
     }
+}
+
+/// The longest probe wait `settings` asks for, and where that came from.
+fn probe_max_wait_in(settings: &Settings) -> (Duration, &'static str) {
+    settings
+        .source
+        .probe_max_wait()
+        .map_or((DEFAULT_PROBE_MAX_WAIT, FROM_DEFAULT), |wait| {
+            (wait, FROM_FILE)
+        })
 }
 
 #[cfg(test)]
@@ -560,6 +662,60 @@ mod tests {
                 chrono::Utc::now(),
             )),
             "an interval that would have suppressed this was cleared",
+        );
+    }
+
+    #[tokio::test]
+    async fn the_longest_probe_wait_follows_the_server_and_falls_back_to_the_file() {
+        let hours = |hours: u64| Duration::from_secs(hours * 3600);
+        let mut sidecar = started().await;
+
+        assert_eq!(sidecar.probe_max_wait(), Some(DEFAULT_PROBE_MAX_WAIT));
+        assert_eq!(sidecar.probe_max_wait_from, FROM_DEFAULT);
+
+        // What a tick does with a document that sets it: the open source takes
+        // it in place, and says where it came from.
+        sidecar.apply_probe_max_wait(Some(hours(6)), true);
+
+        assert_eq!(sidecar.probe_max_wait(), Some(hours(6)));
+        assert_eq!(sidecar.probe_max_wait_from, FROM_SERVER);
+
+        // One the source cannot use changes nothing.
+        sidecar.apply_probe_max_wait(Some(hours(25)), true);
+
+        assert_eq!(sidecar.probe_max_wait(), Some(hours(6)));
+
+        // A document without one gives the choice back to the file.
+        sidecar.apply_probe_max_wait(None, true);
+
+        assert_eq!(sidecar.probe_max_wait(), Some(DEFAULT_PROBE_MAX_WAIT));
+        assert_eq!(sidecar.probe_max_wait_from, FROM_DEFAULT);
+    }
+
+    #[tokio::test]
+    async fn the_services_page_is_offered_the_wait_and_its_bounds_are_held() {
+        let schema = AdsbSidecar::config_schema().expect("a schema");
+
+        assert_eq!(
+            schema["properties"]["probe_max_wait_minutes"]["maximum"],
+            1440
+        );
+
+        let mut sidecar = started().await;
+        let accepted = sidecar
+            .validate_config(&serde_json::json!({ "probe_max_wait_minutes": 360 }))
+            .await;
+        let refused = sidecar
+            .validate_config(&serde_json::json!({ "probe_max_wait_minutes": 1441 }))
+            .await;
+
+        assert!(accepted.is_valid(), "{accepted:?}");
+        assert_eq!(
+            refused
+                .issues
+                .first()
+                .and_then(|issue| issue.path.as_deref()),
+            Some("/probe_max_wait_minutes"),
         );
     }
 

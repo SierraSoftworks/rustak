@@ -54,7 +54,8 @@ pub use readsb::ReadsbFeed;
 pub use replay::ReplayFeed;
 pub use rustak_client::feed::upstream::{retry_after, retry_after_at};
 pub use state::{
-    Adsb, CLEAN_RUN, LIMIT_WINDOW, MAX_ADAPTED, MAX_BACKOFF, RECENT_POLLS, SourceState,
+    Adsb, CLEAN_RUN, DEFAULT_PROBE_MAX_WAIT, LIMIT_WINDOW, LONGEST_PROBE_MAX_WAIT, MAX_ADAPTED,
+    MAX_BACKOFF, RECENT_POLLS, SourceState, probe_max_wait_out_of_range, shortest_probe_max_wait,
 };
 
 /// What this plugin calls itself to every upstream it reaches.
@@ -83,6 +84,10 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 pub trait AdsbFeed: Feed {
     /// How the upstream is doing, for the heartbeat and for the logs.
     fn state(&self) -> &SourceState;
+
+    /// The same, to change a setting that applies while the source runs
+    /// (`probe_max_wait`) without opening it again.
+    fn state_mut(&mut self) -> &mut SourceState;
 }
 
 /// Builds the HTTP client a live source reaches its upstream with.

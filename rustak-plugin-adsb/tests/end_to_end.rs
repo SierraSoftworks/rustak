@@ -452,3 +452,50 @@ async fn an_area_an_administrator_set_wins_over_the_one_in_the_file() {
     );
     assert!(uids.iter().any(|uid| uid == "ADSB-3c6444"), "{uids:?}");
 }
+
+#[tokio::test]
+async fn a_probe_wait_an_administrator_set_wins_over_the_default() {
+    let receiver = receiver().await;
+    let control = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/services/adsb/config"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(r#"{"probe_max_wait_minutes":360}"#),
+        )
+        .mount(&control)
+        .await;
+
+    let config: SidecarConfig<Settings> = rustak_core::config::load_str(&format!(
+        r#"
+        [service]
+        name = "adsb"
+        token = "not-a-real-token"
+
+        [server]
+        control = "{}"
+
+        [settings.source]
+        kind = "readsb"
+        url_or_path = "{}/data/aircraft.json"
+        poll = "1s"
+        "#,
+        control.uri(),
+        receiver.uri(),
+    ))
+    .expect("the configuration loads");
+
+    let mut plugin = AdsbSidecar::default();
+    plugin
+        .start(
+            SidecarContext::from_config(config, AdsbSidecar::VERSION, Shutdown::new())
+                .expect("a usable identity"),
+        )
+        .await
+        .expect("the source opens");
+
+    assert_eq!(
+        plugin.probe_max_wait(),
+        Some(Duration::from_secs(6 * 3600)),
+        "six hours from the Services page, not the three-hour default",
+    );
+}

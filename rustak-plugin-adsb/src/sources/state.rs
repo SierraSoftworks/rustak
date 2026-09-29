@@ -33,6 +33,9 @@
 //! A step down that the provider refuses is remembered, and the clean run before
 //! that rung is tried again doubles each time (`probe`), so a provider with a
 //! real limit between two rungs is not asked the same question every hour.
+//! How long that wait may grow is `probe_max_wait`, three hours unless an
+//! operator chose otherwise, and it can be changed while the source runs
+//! ([`SourceState::set_probe_max_wait`]) without forgetting what was refused.
 //!
 //! The second rule is reversible because the number in it is our own guess,
 //! and a guess made permanent is how a feed slows itself to a crawl over a week
@@ -57,6 +60,10 @@ use rustak_core::prelude::*;
 use self::cadence::{Cadence, Change};
 
 pub use self::cadence::{CLEAN_RUN, LIMIT_WINDOW, MAX_ADAPTED, RECENT_POLLS};
+pub use self::probe::{
+    DEFAULT_MAX_WAIT as DEFAULT_PROBE_MAX_WAIT, LONGEST_MAX_WAIT as LONGEST_PROBE_MAX_WAIT,
+    out_of_range as probe_max_wait_out_of_range, shortest_max_wait as shortest_probe_max_wait,
+};
 
 /// The longest a source waits between attempts, however many have failed,
 /// and the longest a stated `Retry-After` is believed.
@@ -127,6 +134,22 @@ impl SourceState {
     #[must_use]
     pub const fn configured(&self) -> Duration {
         self.cadence.configured()
+    }
+
+    /// The longest a rung the provider refused is left alone before it is
+    /// probed again, measured at the interval the source is resting at.
+    #[must_use]
+    pub const fn probe_max_wait(&self) -> Duration {
+        self.cadence.probe_max_wait()
+    }
+
+    /// Changes [`probe_max_wait`](Self::probe_max_wait) from the next poll on.
+    ///
+    /// The source stays open and every rung already refused is remembered:
+    /// the next decision about a step down is measured against the new cap.
+    /// Says nothing; the caller knows where the value came from, and says so.
+    pub const fn set_probe_max_wait(&mut self, max_wait: Duration) {
+        self.cadence.set_probe_max_wait(max_wait);
     }
 
     /// How many of how many recent polls were refused, when that is more than
@@ -619,6 +642,83 @@ mod tests {
 
         assert_eq!(state.interval(), Duration::from_secs(10));
         assert_eq!(refusals(&outcomes), 0, "nothing refused once it relaxed");
+    }
+
+    /// How many times a provider whose budget is 30s refuses a source polling
+    /// every 10s, with `probe_max_wait` set to `cap` (or left alone): on the
+    /// first simulated day, and on the second, once the doubling wait has had
+    /// time to reach its cap.
+    fn refusals_on_days(cap: Option<Duration>) -> (usize, usize) {
+        let mut provider = Grudging::tolerating(30);
+        let mut state = polling_every(10);
+
+        if let Some(cap) = cap {
+            state.set_probe_max_wait(cap);
+        }
+
+        let first = refusals(&drive_until(&mut state, &mut provider, 24 * 3600));
+        let second = refusals(&drive_until(&mut state, &mut provider, 48 * 3600));
+
+        (first, second)
+    }
+
+    const fn hours(hours: u64) -> Duration {
+        Duration::from_secs(hours * 3600)
+    }
+
+    #[test]
+    fn the_default_longest_wait_is_three_hours_as_m10_05_left_it() {
+        assert_eq!(state().probe_max_wait(), hours(3));
+        assert_eq!(DEFAULT_PROBE_MAX_WAIT, hours(3));
+        assert_eq!(
+            refusals_on_days(None),
+            refusals_on_days(Some(hours(3))),
+            "leaving it alone is setting three hours",
+        );
+        assert_eq!(
+            refusals_on_days(None).0,
+            22,
+            "M10-05's figure for the first day, unchanged",
+        );
+    }
+
+    #[test]
+    fn a_longer_cap_costs_fewer_refusals_a_day_and_a_shorter_one_more() {
+        // Each refused probe is two refusals, and once the wait has doubled up
+        // to the cap there is one probe per cap: 3h is 16 a day, 6h half that.
+        // The first day is dearer, because the wait starts at sixty polls.
+        let [one, three, six, day] = [1, 3, 6, 24].map(|h| refusals_on_days(Some(hours(h))));
+
+        assert_eq!(one, (50, 48), "an hour");
+        assert_eq!(three, (22, 16), "three hours, the default");
+        assert_eq!(six, (16, 8), "six hours");
+        assert_eq!(day, (14, 2), "a day");
+    }
+
+    #[test]
+    fn a_changed_cap_applies_to_the_next_wait_and_keeps_the_refused_rung() {
+        let mut provider = Grudging::tolerating(30);
+        let mut state = polling_every(10);
+
+        // Long enough at the default for the wait to have reached its cap.
+        drive_until(&mut state, &mut provider, 12 * 3600);
+        assert_eq!(state.interval(), Duration::from_secs(35));
+
+        // On to the next refused probe: the refusal that raises 23s back to 35s.
+        while drive(&mut state, &mut provider, 1) != [(true, Duration::from_secs(35))] {}
+
+        state.set_probe_max_wait(hours(1));
+
+        // Clean polls at 35s until the next probe to 23s: an hour's worth, not
+        // three — and more than sixty, which is what a forgotten rung gets.
+        let resting = drive(&mut state, &mut provider, 400)
+            .iter()
+            .take_while(|(refused, interval)| !refused && interval.as_secs() == 35)
+            .count() as u64;
+        let waited = resting + 1;
+
+        assert_eq!(waited, 3600 / 35, "the next wait is the new cap");
+        assert!(waited > CLEAN_RUN, "and the refused rung is remembered");
     }
 
     #[test]

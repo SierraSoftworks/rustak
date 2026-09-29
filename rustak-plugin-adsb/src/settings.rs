@@ -10,7 +10,11 @@ use rustak_client::feed::{Affiliation, Area, PublishPolicy, Symbology};
 use rustak_core::config::duration;
 use rustak_core::prelude::*;
 
-use crate::sources::{AdsbFeed, AggregatorFeed, OpenSkyFeed, Provider, ReadsbFeed, ReplayFeed};
+use crate::sources::opensky::{ANONYMOUS_INTERVAL, AUTHENTICATED_INTERVAL};
+use crate::sources::{
+    AdsbFeed, AggregatorFeed, OpenSkyFeed, Provider, ReadsbFeed, ReplayFeed,
+    probe_max_wait_out_of_range,
+};
 
 /// How long an aircraft stays on a map without another report.
 ///
@@ -80,6 +84,18 @@ pub enum Source {
         /// back towards this value.
         #[serde(default, with = "duration::humane_option")]
         poll: Option<chrono::Duration>,
+
+        /// The longest a faster interval the provider refused is left alone
+        /// before it is tried again. Default: `"3h"`.
+        ///
+        /// Each refused try doubles the wait (sixty clean polls, then 120,
+        /// 240 ...) up to this. Longer means fewer refusals against a provider
+        /// that never relaxes; shorter means a relaxed limit is followed down
+        /// sooner. At least one clean run of sixty polls at `poll`, at most
+        /// `"24h"`; anything else is refused. An administrator can change it
+        /// from the Services page while the sidecar runs.
+        #[serde(default, with = "duration::humane_option")]
+        probe_max_wait: Option<chrono::Duration>,
     },
 
     /// The OpenSky Network's state vectors, anonymously or with an OAuth2
@@ -98,6 +114,11 @@ pub enum Source {
         /// credential — OpenSky's own two resolutions.
         #[serde(default, with = "duration::humane_option")]
         poll: Option<chrono::Duration>,
+
+        /// As for an aggregator: the longest a refused faster interval is left
+        /// alone. Default: `"3h"`.
+        #[serde(default, with = "duration::humane_option")]
+        probe_max_wait: Option<chrono::Duration>,
     },
 }
 
@@ -114,28 +135,87 @@ impl Source {
     /// replay file that is missing or malformed names itself, and a URL that
     /// will not parse names the setting it came from.
     pub fn open(&self, area: Area) -> Result<Box<dyn AdsbFeed>, Error> {
-        match self {
-            Self::Replay { path } => Ok(Box::new(ReplayFeed::open(path)?)),
-            Self::Readsb { url_or_path, poll } => Ok(Box::new(ReadsbFeed::open(
-                url_or_path,
-                std(*poll, READSB_POLL),
-            )?)),
-            Self::Aggregator { provider, poll } => Ok(Box::new(AggregatorFeed::open(
-                *provider,
-                area,
-                poll.and_then(|poll| poll.to_std().ok()),
-            )?)),
+        let mut feed: Box<dyn AdsbFeed> = match self {
+            Self::Replay { path } => Box::new(ReplayFeed::open(path)?),
+            Self::Readsb { url_or_path, poll } => {
+                Box::new(ReadsbFeed::open(url_or_path, std(*poll, READSB_POLL))?)
+            }
+            Self::Aggregator { provider, .. } => {
+                Box::new(AggregatorFeed::open(*provider, area, self.poll())?)
+            }
             Self::OpenSky {
                 client_id,
                 client_secret,
-                poll,
-            } => Ok(Box::new(OpenSkyFeed::open(
+                ..
+            } => Box::new(OpenSkyFeed::open(
                 area,
                 client_id.clone(),
                 client_secret.clone(),
-                poll.and_then(|poll| poll.to_std().ok()),
-            )?)),
+                self.poll(),
+            )?),
+        };
+
+        if let Some(wait) = self.probe_max_wait() {
+            feed.state_mut().set_probe_max_wait(wait);
         }
+
+        Ok(feed)
+    }
+
+    /// The `probe_max_wait` this file sets, when it sets one.
+    #[must_use]
+    pub fn probe_max_wait(&self) -> Option<Duration> {
+        match self {
+            Self::Aggregator { probe_max_wait, .. } | Self::OpenSky { probe_max_wait, .. } => {
+                probe_max_wait.and_then(|wait| wait.to_std().ok())
+            }
+            Self::Replay { .. } | Self::Readsb { .. } => None,
+        }
+    }
+
+    /// The `poll` this file sets for a source whose default is resolved when
+    /// it opens.
+    fn poll(&self) -> Option<Duration> {
+        match self {
+            Self::Aggregator { poll, .. } | Self::OpenSky { poll, .. } => {
+                poll.and_then(|poll| poll.to_std().ok())
+            }
+            Self::Replay { .. } | Self::Readsb { .. } => None,
+        }
+    }
+
+    /// The interval the source will open at, which is what `probe_max_wait`'s
+    /// floor is measured in: the same resolution each source does on opening.
+    fn opens_at(&self) -> Option<Duration> {
+        match self {
+            Self::Aggregator { provider, .. } => Some(
+                self.poll()
+                    .unwrap_or_else(|| provider.default_poll())
+                    .max(provider.min_interval()),
+            ),
+            Self::OpenSky {
+                client_id,
+                client_secret,
+                ..
+            } => Some(
+                self.poll()
+                    .unwrap_or(if client_id.is_some() && client_secret.is_some() {
+                        AUTHENTICATED_INTERVAL
+                    } else {
+                        ANONYMOUS_INTERVAL
+                    }),
+            ),
+            Self::Replay { .. } | Self::Readsb { .. } => None,
+        }
+    }
+
+    /// Why this source's `probe_max_wait` is not one it can use, if it is not.
+    #[must_use]
+    pub fn problem(&self) -> Option<String> {
+        let wait = self.probe_max_wait()?;
+
+        probe_max_wait_out_of_range("probe_max_wait", wait, self.opens_at()?)
+            .map(|why| format!("In [settings.source]: {why}"))
     }
 
     /// What to call this kind of source in a heartbeat, before one is open.
@@ -184,6 +264,7 @@ pub struct Settings {
 
     /// The upstream. Required, because choosing one is the whole deployment
     /// decision.
+    #[serde(deserialize_with = "checked")]
     pub source: Source,
 }
 
@@ -223,6 +304,18 @@ fn std(value: chrono::Duration, fallback: Duration) -> Duration {
 /// The default for [`Source::Readsb`]'s `poll`.
 fn readsb_poll() -> chrono::Duration {
     chrono::Duration::from_std(READSB_POLL).unwrap_or_else(|_| chrono::Duration::seconds(1))
+}
+
+/// Reads `[settings.source]`, and refuses a `probe_max_wait` out of range
+/// there rather than at the first refused probe: `--check` loads the file with
+/// this, so it is where an operator hears about it.
+fn checked<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Source, D::Error> {
+    let source = Source::deserialize(deserializer)?;
+
+    match source.problem() {
+        Some(why) => Err(serde::de::Error::custom(why)),
+        None => Ok(source),
+    }
 }
 
 /// Reads an optional string into a [`Secret`], which redacts itself when
@@ -286,7 +379,7 @@ mod tests {
             ));
 
             match &settings.source {
-                Source::Aggregator { provider, poll } => {
+                Source::Aggregator { provider, poll, .. } => {
                     assert_eq!(*provider, expected);
                     assert!(
                         poll.is_none(),
@@ -340,6 +433,7 @@ mod tests {
                 client_id,
                 client_secret,
                 poll,
+                ..
             } => {
                 assert!(client_id.is_none());
                 assert!(client_secret.is_none());
@@ -420,6 +514,75 @@ mod tests {
                 .kind(),
             "opensky",
         );
+    }
+
+    fn refused(source: &str) -> String {
+        rustak_core::config::load_str::<SidecarConfig<Settings>>(&format!(
+            "[service]\nname = \"adsb\"\n\n[settings.source]\n{source}",
+        ))
+        .expect_err("the file is refused")
+        .to_string()
+    }
+
+    #[test]
+    fn a_probe_max_wait_in_the_file_reaches_the_source_it_opens() {
+        for source in [
+            "kind = \"aggregator\"\nprovider = \"adsb_lol\"\nprobe_max_wait = \"6h\"\n",
+            "kind = \"opensky\"\nprobe_max_wait = \"6h\"\n",
+        ] {
+            let source = settings(&format!("[settings.source]\n{source}")).source;
+
+            assert_eq!(source.probe_max_wait(), Some(Duration::from_secs(6 * 3600)));
+            assert_eq!(
+                source
+                    .open(Area::default())
+                    .expect("it opens")
+                    .state()
+                    .probe_max_wait(),
+                Duration::from_secs(6 * 3600),
+            );
+        }
+
+        let unset = settings("[settings.source]\nkind = \"aggregator\"\nprovider = \"adsb_lol\"\n");
+
+        assert_eq!(unset.source.probe_max_wait(), None);
+        assert_eq!(
+            unset
+                .source
+                .open(Area::default())
+                .expect("it opens")
+                .state()
+                .probe_max_wait(),
+            crate::DEFAULT_PROBE_MAX_WAIT,
+        );
+    }
+
+    #[test]
+    fn a_probe_max_wait_longer_than_a_day_is_refused_by_name() {
+        let err =
+            refused("kind = \"aggregator\"\nprovider = \"adsb_lol\"\nprobe_max_wait = \"25h\"\n");
+
+        assert!(err.contains("probe_max_wait"), "{err}");
+        assert!(err.contains("1440 minutes"), "{err}");
+    }
+
+    #[test]
+    fn a_probe_max_wait_shorter_than_one_clean_run_at_the_poll_is_refused_by_name() {
+        // Sixty polls at adsb.lol's own 10s is ten minutes.
+        let err =
+            refused("kind = \"aggregator\"\nprovider = \"adsb_lol\"\nprobe_max_wait = \"9m\"\n");
+
+        assert!(err.contains("probe_max_wait"), "{err}");
+        assert!(err.contains("10m"), "{err}");
+
+        // And measured at the poll written, not the provider's default.
+        let err = refused("kind = \"opensky\"\npoll = \"60s\"\nprobe_max_wait = \"30m\"\n");
+        assert!(err.contains("1h"), "{err}");
+
+        let _ = settings(
+            "[settings.source]\nkind = \"aggregator\"\nprovider = \"adsb_lol\"\nprobe_max_wait = \"10m\"\n",
+        );
+        let _ = settings("[settings.source]\nkind = \"opensky\"\nprobe_max_wait = \"24h\"\n");
     }
 
     #[test]

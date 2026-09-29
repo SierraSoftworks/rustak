@@ -39,8 +39,8 @@
 //!
 //! The step down after a clean run is an experiment. When the provider refuses
 //! it, the rung is remembered (see `probe`) and the next clean run required
-//! before trying it again doubles, every time, up to about three hours at the
-//! resting interval. A provider whose real limit sits between two rungs is
+//! before trying it again doubles, every time, up to `probe_max_wait` (three
+//! hours unless an operator chose otherwise) at the resting interval. A provider whose real limit sits between two rungs is
 //! therefore probed less and less often instead of every [`CLEAN_RUN`] polls for
 //! ever.
 //!
@@ -188,6 +188,18 @@ impl Cadence {
     #[must_use]
     pub const fn effective(&self) -> Duration {
         self.effective
+    }
+
+    /// The longest a refused rung is left alone before it is probed again.
+    #[must_use]
+    pub const fn probe_max_wait(&self) -> Duration {
+        self.probes.max_wait()
+    }
+
+    /// Changes [`probe_max_wait`](Self::probe_max_wait) for every decision
+    /// from the next poll on, remembering every rung already refused.
+    pub const fn set_probe_max_wait(&mut self, max_wait: Duration) {
+        self.probes.set_max_wait(max_wait);
     }
 
     /// How many of the last [`RECENT_POLLS`] polls were refused.
@@ -376,7 +388,7 @@ fn eased(from: Duration) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use super::super::probe::MAX_WAIT;
+    use super::super::probe::DEFAULT_MAX_WAIT;
     use super::*;
 
     fn cadence() -> Cadence {
@@ -764,7 +776,11 @@ mod tests {
 
         let (polls, _) = clean_until_eased(&mut cadence);
 
-        assert_eq!(polls, MAX_WAIT.as_secs() / 35, "three hours of 35s polls");
+        assert_eq!(
+            polls,
+            DEFAULT_MAX_WAIT.as_secs() / 35,
+            "three hours of 35s polls"
+        );
     }
 
     #[test]
