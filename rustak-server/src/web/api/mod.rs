@@ -77,6 +77,7 @@ pub mod packages_upload;
 pub mod passkey;
 pub mod profile_files;
 pub mod profiles;
+pub mod service_onboarding;
 pub mod services;
 pub mod settings;
 pub mod setup;
@@ -197,6 +198,7 @@ pub fn configure() -> actix_web::Scope<
             // of its own so the `{id}.p12` pattern never competes with a bare
             // `{id}` elsewhere.
             .configure(cloudtak_onboarding::routes)
+            .configure(service_onboarding::routes)
             // Stored files, live connections and relayed CoT, each registering
             // its literal segments ahead of the `{hash}`/`{uid}` that would
             // otherwise swallow them.
@@ -284,6 +286,7 @@ mod tests {
         ("PATCH", "/api/v1/users/ada"),
         ("POST", "/api/v1/users/ada/cloudtak-onboarding"),
         ("GET", "/api/v1/cloudtak-onboarding/abc.p12"),
+        ("POST", "/api/v1/service-onboarding"),
         ("GET", "/api/v1/users/ada/groups"),
         ("PUT", "/api/v1/users/ada/groups"),
         ("GET", "/api/v1/groups"),

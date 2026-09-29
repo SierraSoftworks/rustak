@@ -53,6 +53,7 @@ pub mod preferences;
 pub mod profile;
 pub mod service;
 pub mod service_config;
+pub mod service_onboarding;
 pub mod settings;
 pub mod setup;
 pub mod user;
@@ -117,6 +118,7 @@ pub use service_config::{
     CONFIG_VALIDATE, ConfigIssue, ConfigValidation, ConfigValidationReport,
     ConfigValidationRequest, ServiceCheck,
 };
+pub use service_onboarding::{ServiceOnboarding, ServiceOnboardingRequest, ServiceTokenOutcome};
 pub use settings::{
     FileSettings, MartiSettings, ServerSettings, TlsCertificateState, TlsSource, TlsStatus,
 };

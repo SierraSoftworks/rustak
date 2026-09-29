@@ -34,6 +34,7 @@ pub mod map;
 pub mod missions;
 pub mod packages;
 pub mod profiles;
+pub mod service_onboarding;
 pub mod services;
 pub mod settings;
 pub mod setup;

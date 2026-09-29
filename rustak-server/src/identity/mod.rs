@@ -34,6 +34,7 @@ pub mod devices;
 pub mod groups;
 pub mod members;
 pub mod secret_cache;
+pub mod service_onboarding;
 pub mod sessions;
 pub mod settings;
 pub mod users;

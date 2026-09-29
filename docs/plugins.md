@@ -292,6 +292,65 @@ grace period, telemetry is flushed, and the process exits 0. A second signal
 exits immediately with status 130, so an impatient operator never has to reach
 for `kill -9`.
 
+### Deploying one: one step in the console
+
+A sidecar with no orchestrator identity (for that, see
+[Under an orchestrator](#under-an-orchestrator-none-of-the-three)) needs three
+things from the server before its first start: a service account, a service
+token for the control API, and a one-time enrolment token for its certificate.
+The enrolment token expires `[auth] enrollment_token_ttl` after it is minted —
+fifteen minutes by default — so they are made together:
+
+**Settings → Services → Add a service.** Give it the service name (what
+`[service] name` will say) and, if your accounts follow a convention of their
+own, the account (`svc.adsb` for `adsb`; blank means the name). One click
+creates the account if it is not there and answers, **once**, with:
+
+- the enrolment token and when it expires;
+- the service token;
+- the `[service]` fragment to put in the sidecar's configuration file — it
+  names the service token as `"${{ env.RUSTAK_SERVICE_TOKEN }}"`, never by
+  value;
+- the environment lines, `RUSTAK_ENROLLMENT_TOKEN=…` and
+  `RUSTAK_SERVICE_TOKEN=…`, with the expiry in a comment above them.
+
+Add a `[server]` section saying where the server is, supply the two variables,
+and start the sidecar before the enrolment token expires: the first start
+enrols, writes its certificate, key and truststore, connects and registers.
+
+The same action is `POST /api/v1/service-onboarding` with
+`{"name": "adsb", "account": "svc.adsb"}`, administrators only, and audited as
+`service.onboarding.created` — which records what was minted and never a
+secret. It refuses a name that is a person's account (`409`), a switched-off
+service account (`409`), a service name another account has registered
+(`409`), and a name that cannot be a service's (`400`); and if any step fails,
+nothing it wrote is left behind.
+
+**Why a service token as well as a certificate.** The certificate authenticates
+the CoT stream and the Marti API. The control API is on the public listener,
+which asks for no client certificate, so registration, heartbeats and the
+configuration an administrator sets reach it with the service token.
+
+**Asking again for a service that already exists** mints a fresh enrolment
+token and says so; it revokes nothing. The account's service token is kept and
+not shown again, because revoking it would cut off whatever is running with it.
+To replace it, tick *Replace its service token* (`"rotate_service_token":
+true`): a new one is minted and the old one revoked, and the response says
+which.
+
+#### By hand
+
+What the action does, as separate steps, for a script or an installation that
+wants them apart:
+
+1. Create a user of kind `service` (`POST /api/v1/users`).
+2. Mint its service token: `POST /api/v1/credentials` with kind
+   `service_token` and the account's `username`.
+3. Mint its one-time enrolment token the same way, kind `enrollment_token` —
+   last, because its clock starts now.
+4. Write `[service] token = "${{ env.RUSTAK_SERVICE_TOKEN }}"` in the
+   configuration file, and supply both tokens from the environment.
+
 ### The first start
 
 A sidecar whose `[service] certificate` and `key` are missing — unset, or naming

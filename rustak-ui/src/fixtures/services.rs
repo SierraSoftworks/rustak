@@ -12,9 +12,11 @@
 
 use std::cell::RefCell;
 
+use rustak_api::service_onboarding;
 use rustak_api::{
-    Capability, ConfigIssue, ConfigValidationReport, ServiceCheck, ServiceDescriptor,
-    ServiceEndpoints, ServiceId, ServiceName, ServiceState, ServiceStatus, ServiceSummary,
+    Capability, ConfigIssue, ConfigValidationReport, CredentialId, ServiceCheck, ServiceDescriptor,
+    ServiceEndpoints, ServiceId, ServiceName, ServiceOnboarding, ServiceOnboardingRequest,
+    ServiceState, ServiceStatus, ServiceSummary, ServiceTokenOutcome, Username,
 };
 
 use super::data::ago;
@@ -357,6 +359,80 @@ pub fn remove_service(name: &str) -> Result<(), ApiError> {
 
         state.configs.retain(|(key, _)| key != name);
         Ok(())
+    })
+}
+
+// The accounts "Add a service" has set up in this demo session, so that asking
+// twice shows what the server says the second time: the account already
+// existed, and its service token was kept rather than silently replaced.
+thread_local! {
+    static ONBOARDED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Sets up a service the way `POST /service-onboarding` does, with values that
+/// name themselves as fake.
+pub fn service_onboarding(
+    request: &ServiceOnboardingRequest,
+) -> Result<ServiceOnboarding, ApiError> {
+    let invalid = |err: &dyn std::fmt::Display| ApiError::Server(err.to_string());
+    let name = ServiceName::parse(&request.name).map_err(|err| invalid(&err))?;
+    let account = request
+        .account
+        .as_deref()
+        .map(str::trim)
+        .filter(|account| !account.is_empty())
+        .unwrap_or(name.as_str());
+    let account = Username::parse(account).map_err(|err| invalid(&err))?;
+
+    let created = ONBOARDED.with(|held| {
+        let mut held = held.borrow_mut();
+        let created = !held.contains(&account.to_string());
+        if created {
+            held.push(account.to_string());
+        }
+        created
+    });
+
+    let outcome = match (created, request.rotate_service_token) {
+        (true, _) => ServiceTokenOutcome::Minted,
+        (false, false) => ServiceTokenOutcome::Kept,
+        (false, true) => ServiceTokenOutcome::Rotated,
+    };
+    let service_token = (outcome != ServiceTokenOutcome::Kept)
+        .then(|| "rsk_demo-mode-not-a-real-secret".to_string());
+    let enrollment_token = "demo-mode-not-a-real-enrolment-token".to_string();
+    let expires_at = ago(-15);
+
+    Ok(ServiceOnboarding {
+        config_fragment: service_onboarding::config_fragment(&name, &account),
+        environment: service_onboarding::environment(
+            &enrollment_token,
+            expires_at,
+            service_token.as_deref(),
+        ),
+        notes: vec![if created {
+            format!(
+                "Created the service account '{account}' and minted its one-time enrolment token."
+            )
+        } else {
+            format!(
+                "The service account '{account}' already existed: a fresh one-time enrolment token was minted for it."
+            )
+        }],
+        name,
+        account,
+        account_created: created,
+        enrollment_token,
+        enrollment_token_id: CredentialId::new(41),
+        enrollment_expires_at: expires_at,
+        service_token_outcome: outcome,
+        service_token_id: service_token.as_ref().map(|_| CredentialId::new(42)),
+        service_token,
+        revoked_service_tokens: if outcome == ServiceTokenOutcome::Rotated {
+            vec![CredentialId::new(40)]
+        } else {
+            Vec::new()
+        },
     })
 }
 

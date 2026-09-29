@@ -34,6 +34,7 @@ mod protected;
 mod service_config;
 mod service_detail;
 mod service_metrics;
+mod service_onboarding;
 mod services;
 mod settings_files;
 mod settings_lockouts;

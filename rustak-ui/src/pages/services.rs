@@ -25,6 +25,7 @@ use crate::util::{format_iso8601, short_relative, window};
 
 use super::load::{use_refresh_action, use_resource};
 use super::service_detail::ServiceDetail;
+use super::service_onboarding::AddService;
 
 /// How often the list re-reads itself while the tab is in front.
 const REFRESH_MS: u32 = 10_000;
@@ -121,8 +122,9 @@ pub fn services() -> Html {
         },
         (Some(list), _) if list.is_empty() => html! {
             <p class="panel-empty">
-                { "Nothing has registered. A sidecar registers itself when its configuration \
-                   names this server's control API, so there is nothing to add here by hand — " }
+                { "Nothing has registered. A sidecar registers itself on its first start, once \
+                   its configuration names this server's control API; Add a service above sets \
+                   one up — " }
                 <a href={DOCS} target="_blank" rel="noopener noreferrer">
                     { "see Registering with the server" }
                 </a>
@@ -161,6 +163,8 @@ pub fn services() -> Html {
 
     html! {
         <>
+            <AddService />
+
             <Card
                 title="Registered services"
                 subtitle="Every sidecar that has registered, and what its last heartbeat said."
