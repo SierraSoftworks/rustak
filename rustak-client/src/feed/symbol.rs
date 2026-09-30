@@ -193,10 +193,14 @@ mod tests {
 
     #[test]
     fn a_feed_that_says_nothing_leaves_the_event_alone() {
-        let mut marked = event(KINDS[0]);
+        // One event, compared with a copy of itself: two events built a
+        // moment apart carry different `time`/`start`/`stale` stamps whenever
+        // the millisecond ticks between them.
+        let original = event(KINDS[0]);
+        let mut marked = original.clone();
         Symbology::TypeOnly.mark(&mut marked, KINDS[0], Affiliation::Hostile);
 
-        assert_eq!(marked, event(KINDS[0]));
+        assert_eq!(marked, original);
         assert_eq!(Symbology::default(), Symbology::TypeOnly);
     }
 
