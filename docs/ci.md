@@ -16,7 +16,7 @@ Runs on every push to `main`, every pull request, and every published release.
 ```
 deduplicate ──┬─ version ─────────────────────────────────────┐
               ├─ lint    (fmt --check, clippy -D warnings, check-file-length.sh, cargo doc -D warnings)
-              ├─ test    (cargo test --workspace, coverage → grcov → codecov)
+              ├─ test    (cargo nextest run + doctests, coverage → grcov → codecov)
               ├─ ui      (lints + tests rustak-ui; trunk build → ui-dist-e2e; trunk build --release → ui-dist)
               ├─ e2e     (needs ui; cargo build -p rustak-server; Playwright)
               ├─ interop-node-tak  (needs ui; @tak-ps/node-tak contract suite)
@@ -282,25 +282,36 @@ failing.
   mission API.
 
 `interop/rust` (the `rustak-client` fake-EUD suites) is **not** a separate
-workflow — it is part of `cargo test --workspace` in the `test` job, since
+workflow — it is part of the workspace test run in the `test` job, since
 those suites live under `rustak-server/tests/stream_*.rs`.
 
 ## Keeping the test job inside its timeout
 
 The `test` job compiles the whole workspace with `RUSTFLAGS=-Cinstrument-coverage`
-and runs the lot on a two-vCPU runner — over 1300 tests in `rustak-server`'s
-library target alone, plus eleven integration binaries. Instrumentation applies to *every*
-crate in the graph, dependencies included — there is no stable per-package
-rustflag — so the arithmetic-heavy dependencies (`rsa`, `num-bigint-dig`,
-`argon2`, `blake2`) run with a counter update in their innermost loops. That is
-why an RSA-2048 generation that costs a fraction of a second uninstrumented costs
-*minutes* of CPU instrumented — measured at roughly two orders of magnitude on
-this workspace — and why the job once stopped finishing at all, with individual
-tests reported as "has been running for over 60 seconds". `grcov` already discards
-everything outside the workspace at *report* time, but that is after the cost
-has been paid.
+and runs the lot — about 3,800 tests, 2,000 of them in `rustak-server`'s library
+target — on a GitHub-hosted `ubuntu-latest` runner, which for a public
+repository has **four** vCPUs (GitHub's published runner table, checked
+2026-09-29; older notes in this repository say two). Instrumentation applies to
+*every* crate in the graph, dependencies included — there is no stable
+per-package rustflag — so the arithmetic-heavy dependencies (`rsa`,
+`num-bigint-dig`, `argon2`, `blake2`) run with a counter update in their
+innermost loops. `grcov` discards everything outside the workspace at *report*
+time, but that is after the cost has been paid.
 
-Four things keep it in check, all of them in test-only code:
+**Most of that cost was not instrumentation; it was tests sharing a process.**
+The coverage counters are process-global, so tests running on several threads
+of one process update the same memory and fight over it. Measured on
+2026-09-29 (instrumented, same machine, same tests): `stream_session` spent
+**15 s of CPU on one thread and 493 s on four**, and the `pki::` tests of the
+library 9 s against 145 s; uninstrumented, the same pairs cost the same either
+way. An RSA-2048 generation in a process of its own costs 1–2 s instrumented
+(0.2–0.3 s without), not the minutes it cost inside `cargo test`. That is why
+the job once stopped finishing at all, with individual tests reported as "has
+been running for over 60 seconds" — and why the tests now run under
+[nextest](#why-the-tests-run-under-nextest), one process each.
+
+Four things in test-only code kept it inside its bound before that, and still
+help:
 
 1. **One token signing key per test process.** `rustak-server/src/testing/keys.rs`
    holds a `LazyLock` RSA-2048 key and `TestServer` adopts it through
@@ -325,10 +336,16 @@ Four things keep it in check, all of them in test-only code:
    failing case by name; a test that changes the server's configuration keeps
    a server of its own.
 
+Under nextest the first of these is per *test*, not per suite: a process holds
+one test, so each test that builds a server generates its own key (about 1.7 s
+instrumented). That is the cost the few binaries that got slower under nextest
+pay — see below.
+
 If the job ever creeps back towards its timeout, measure before changing
-anything: `cargo test -p rustak-server --features testing` with and without
-`RUSTFLAGS=-Cinstrument-coverage` gives the instrumentation multiplier directly,
-and `--lib <module>::` narrows it to one suite.
+anything: the `Run tests` log has one line per test with its duration, and
+`cargo nextest run -p rustak-server --profile ci` with and without
+`RUSTFLAGS=-Cinstrument-coverage` gives the instrumentation multiplier directly;
+`-E 'binary(<suite>)'` narrows it to one suite.
 
 Instrumenting only the workspace is the obvious fourth lever and it is not
 available on stable: `-Cinstrument-coverage` is a per-*invocation* flag and
@@ -336,8 +353,88 @@ applies to every crate that invocation builds, and the per-package equivalent
 (`[profile.dev.package.<dep>] rustflags`) is nightly-only behind
 `-Zprofile-rustflags`. `cargo llvm-cov` does not change that — it sets the same
 flag through `RUSTFLAGS` and filters at report time, as `grcov` already does.
-So the levers are the four above; dropping coverage is not one, because codecov
-is a gate.
+So the levers are the four above and process isolation; dropping coverage is
+not one, because codecov is a gate.
+
+### Why the tests run under nextest
+
+Adopted 2026-09-29 (brief M10-16; the full figures are in
+`.claude/plan/status/M10-16-nextest-evaluation.md`). `cargo test` runs one
+binary at a time and that binary's tests on threads of one process; nextest
+runs every test in a process of its own, across binaries at once.
+
+**Measured locally**, a 10-core machine shared with other builds, every run
+reported, tests already built:
+
+| | `cargo test` | nextest + doctests |
+|---|---|---|
+| Uninstrumented, all cores | 140, 122, 128 s (median 128) | 84, 72, 70 s (median 72) |
+| Uninstrumented, 4 threads | 150, 134, 135 s (median 135) | 142, 142, 133 s (median 142) |
+| **Instrumented, 4 threads** | **1708, 1366 s** | **343, 336 s** |
+
+Uninstrumented at the runner's four threads the two are level — process start
+costs about what cross-binary scheduling saves. Instrumented, which is what CI
+runs, nextest is **four to five times faster**, and the reason is the contention
+described above, not scheduling.
+
+**Projected for CI** from the six normal `main` runs of 2026-09-28/29 (job
+23–28 minutes; `Run tests` 21–26 minutes, of which 200–270 s compiling and
+1064–1313 s running binaries): the running part becomes **4–14 minutes**
+instead of 18–22, so the job should land around **9–21 minutes**. The range is
+wide because the local ratio is from Apple silicon and the runner is x86: the
+lower end assumes the runner contends as much as this machine did (4–5×), the
+upper end assumes none of that carries over and only the per-test cost does,
+at 1.5–2.5× slower cores. The runner *does* contend: `stream_session` takes
+52–101 s there for eleven tests that need 15 s of CPU here in separate
+processes, which no plausible difference in core speed explains. **The first `main` run under nextest is the measurement
+that matters**; compare its `Run tests` and `Run doctests` against 21–26
+minutes, and the per-test lines against the per-binary figures above. Leave
+`timeout-minutes` at 90 until two runs agree, then bring it down with the band.
+
+**What moves and what does not:**
+
+- Faster: every suite that runs a server on several threads — `stream_*`,
+  `marti_channels`, `cloudtak_onboarding`, `feed_sidecars`, `workload_identity`
+  (208–238 s → 36–38 s modelled on four slots), the library (154–346 s → 149 s).
+- Slower: suites of many short server tests, because each test now generates
+  the keys a process used to share — `oidc_provider` (2 RSA keys a process)
+  3.6–5.5 s → 15–16 s, `oauth_flows` 4–5 s → 13 s, `missions_flow`,
+  `api_v1_map`, `enroll_flows`. Together roughly half a minute on four slots
+  (modelled from per-test times) — less than any one contended suite costs, so
+  the workspace is not split between runners. Sharing a pre-generated key
+  across processes would win it back.
+
+**Coverage is unchanged.** Left alone, nextest's ~3,800 processes would each
+write a `default_<sig>_<pid>.profraw`: ~3,800 files and ~35 GB measured
+locally, against 14 GB of runner disk. So the job sets
+`LLVM_PROFILE_FILE=<workspace>/coverage/%m.profraw` — outside `target/`, which
+rust-cache saves. `%m` without `%p` makes every process of one binary merge
+into one file as it exits (the profiling runtime locks the file). That left 89 files, 339 MB — `cargo test` wrote 387 files,
+461 MB — and grcov read it in 71–78 s against 79–81 s, with the same 95,580
+lines found and 91,134–91,136 hit against 91,131–91,132. `cargo-llvm-cov` is not
+needed.
+
+**The config** is `.config/nextest.toml`: profile `ci` has **no retries** (a
+flaky test here is fixed, not retried), `fail-fast = false`, and a
+`slow-timeout` of 120 s that terminates a test after ten minutes — a hung-wait
+guard that names the test, not a bound on how long a test may take. It prints
+one line per test with its duration, and the slow ones and failures again at
+the end. No JUnit file: nothing reads one yet.
+
+**Doctests** are not run by nextest; `Run doctests` runs them with the same
+flags, so nothing rebuilds, and the same profile path.
+
+**Installing it** follows trunk and cross: one pinned release asset,
+`NEXTEST_VERSION`/`NEXTEST_SHA256` in `env:`, curl with
+`--retry-all-errors`, `sha256sum --check`, and an `actions/cache` entry keyed on
+the version in front. The asset is 12 MB, so the cache entry is too — nothing
+against the 10 GB quota. The checksum is GitHub's recorded digest for the
+asset; it has not yet been exercised in-workflow, and the first run will
+download it (the cache is empty).
+
+**What nextest gives besides speed:** a duration for every test, a SLOW line
+for any test past two minutes, a named failure instead of a stuck job when a
+test hangs, and every failure repeated at the end of the log.
 
 ## Caching, and why the binaries are fetched the way they are
 
@@ -529,7 +626,10 @@ cargo clippy --all-targets --target wasm32-unknown-unknown -- -D warnings
 cargo test   # host target: nothing in the suite needs a DOM, and CI has no wasm runner
 cd ..
 
-# test
+# test (what CI runs, without coverage; needs cargo-nextest — see CONTRIBUTING.md)
+cargo nextest run --workspace --profile ci
+cargo test --workspace --doc
+# or, with no extra tool:
 cargo test --workspace --no-fail-fast
 
 # ui bundles

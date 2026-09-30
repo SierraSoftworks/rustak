@@ -88,7 +88,10 @@ cargo fmt --all --check
 cargo clippy --all-targets --target wasm32-unknown-unknown -- -D warnings
 cd ..
 
-# test
+# test — what CI runs (see "Running the tests with nextest" below)
+cargo nextest run --workspace --profile ci
+cargo test --workspace --doc
+# or, with no extra tool (slower, same tests):
 cargo test --workspace --no-fail-fast
 ```
 
@@ -176,6 +179,46 @@ the ones that most often surprise a first change:
 - **e2e** (`e2e/`) is Playwright against a real debug build of the UI and the
   server — see [`e2e/README.md`](e2e/README.md) for how to run it and the
   build-order trap above.
+
+### Running the tests with nextest
+
+CI runs the workspace under [cargo-nextest](https://nexte.st), one process per
+test, configured in `.config/nextest.toml`. Install the version CI pins
+(`NEXTEST_VERSION` in `.github/workflows/rust.yml`; the config refuses older
+ones):
+
+```sh
+cargo install cargo-nextest --locked --version 0.9.146
+```
+
+**Check that a run says "Starting 3800 tests", not "Starting 0 tests".** A
+nextest older than the config's version check can predate the check itself:
+0.9.51 finds no test binaries in this workspace and reports success.
+
+```sh
+cargo nextest run --workspace            # default profile: stops at the first failure
+cargo nextest run --workspace --profile ci   # what CI runs: every failure, a line per test
+cargo nextest run -p rustak-server -E 'binary(stream_session)'   # one suite
+cargo test --workspace --doc             # nextest does not run doctests
+```
+
+Locally it is quicker on all cores (a median of 72 s against 128 s for the
+whole workspace on a 10-core machine) and level with `cargo test` on four. In
+CI, under coverage, it is several times quicker; `docs/ci.md` has the figures.
+
+Two things it changes for a test author:
+
+- **A test has its process to itself.** A `LazyLock` is built once per *test*,
+  not once per suite, so an expensive shared value (the test signing key in
+  `rustak-server/src/testing/keys.rs`) is paid by every test that touches it.
+  Anything a test relied on another test having done first was already a bug;
+  under nextest it fails every time.
+- **No retries.** The profiles set `retries = 0` deliberately. A test that
+  passes on a second attempt is a flaky test, and it gets fixed. The
+  `slow-timeout` is a hung-wait guard that names the test, not a time limit to
+  write tests against.
+
+`cargo test --workspace --no-fail-fast` still runs exactly the same tests.
 
 ## Licensing
 

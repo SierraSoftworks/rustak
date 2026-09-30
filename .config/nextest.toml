@@ -1,0 +1,38 @@
+# cargo-nextest configuration. See docs/ci.md ("Why the test job runs under
+# nextest") for the measurements behind it, and CONTRIBUTING.md for local use.
+#
+# nextest runs every test in a process of its own. That is what makes it fast
+# here under `-Cinstrument-coverage`: the coverage counters are process-global,
+# and tests sharing one process on several threads fight over them.
+#
+# nextest does not run doctests; `cargo test --workspace --doc` still does.
+
+# The version the workflow installs, and the only one measured against this
+# workspace. Required, not merely recommended, because an old nextest can fail
+# quietly: 0.9.51 finds *zero* test binaries here and reports success. (It is
+# also too old to read this key at all, so check that a run says "Starting 3800
+# tests", not "Starting 0 tests".)
+nextest-version = { required = "0.9.146" }
+
+[profile.default]
+# A flaky test is fixed, not retried. Never set this above zero.
+retries = 0
+# Not a bound on how long a test may take: a hung-wait guard that names the
+# test. A test still running at 60 s is reported as SLOW; at 10 minutes it is
+# terminated and fails, so a hang is a named failure instead of a stuck job.
+slow-timeout = { period = "60s", terminate-after = 10 }
+
+[profile.ci]
+retries = 0
+# Every failure in one run, as `cargo test --no-fail-fast` gave.
+fail-fast = false
+# Generous on purpose: the slowest test measured under coverage takes ~13 s on
+# its own, and a slow GitHub host has cost two to four times the normal band.
+# Two minutes marks it SLOW in the log; ten minutes terminates it as a hang.
+slow-timeout = { period = "120s", terminate-after = 5 }
+# One line per test with its duration, so the log keeps the per-test and
+# per-binary shape docs/ci.md asks to be read before any timeout is raised.
+status-level = "pass"
+# And the slow ones and failures again, together, at the end.
+final-status-level = "slow"
+failure-output = "immediate-final"

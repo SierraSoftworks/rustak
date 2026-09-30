@@ -27,6 +27,12 @@ env:
   # forever, with nothing in the repository naming that version.
   CROSS_VERSION: "0.2.5"
   CROSS_SHA256: "642375d1bcf3bd88272c32ba90e999f3d983050adf45e66bd2d3887e8e838bad"
+  # cargo-nextest for the `test` job, pinned and checked the same way as trunk
+  # and cross. The checksum is GitHub's recorded digest for the
+  # `x86_64-unknown-linux-gnu.tar.gz` asset of this release. Bump deliberately:
+  # `.config/nextest.toml` recommends this version too.
+  NEXTEST_VERSION: "0.9.146"
+  NEXTEST_SHA256: "682c21b777c333e96fd532e114d3a5a894e0729ab88d94c0a9f20f8419695428"
 
 concurrency:
   group: rust-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
@@ -221,10 +227,63 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # The tests run under cargo-nextest, one process per test, because under
+      # `-Cinstrument-coverage` tests that share a process fight over its
+      # coverage counters: measured on 2026-09-29, the same four-way suite took
+      # 1366-1708s under `cargo test` and 336-343s under nextest, and one
+      # binary alone (`stream_session`) spent 33x the CPU on four threads that
+      # it spent on one. docs/ci.md has the figures.
+      #
+      # Fetched like trunk and cross — one release asset, curl's own retries,
+      # a pinned SHA-256, a cache in front — and for the same reasons.
+      - name: Cache nextest
+        id: nextest-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/cargo-nextest
+          key: nextest-${{ env.NEXTEST_VERSION }}-${{ runner.os }}
+
+      - name: Install nextest
+        if: steps.nextest-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          url="https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-${NEXTEST_VERSION}/cargo-nextest-${NEXTEST_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+               --retry 5 --retry-all-errors --retry-delay 5 \
+               --output /tmp/nextest.tar.gz "$url"
+
+          echo "${NEXTEST_SHA256}  /tmp/nextest.tar.gz" | sha256sum --check --strict
+
+          mkdir -p "$HOME/.cargo/bin"
+          tar -xzf /tmp/nextest.tar.gz -C "$HOME/.cargo/bin" cargo-nextest
+          chmod +x "$HOME/.cargo/bin/cargo-nextest"
+
+      # `LLVM_PROFILE_FILE` is not optional under nextest. Left unset, every
+      # process writes its own `default_<sig>_<pid>.profraw` — ~3,800 files and
+      # ~35 GB measured locally, on a runner with 14 GB of disk. `%m` without
+      # `%p` makes each binary's processes merge into one file as they exit (the
+      # profiling runtime locks it), which is fewer files and fewer bytes than
+      # `cargo test` wrote. The directory is outside `target/` so rust-cache
+      # never saves it; grcov finds the files anywhere under `.`, and locally
+      # the report found the same 95,580 lines as `cargo test`'s and hit within
+      # five lines of it (91,134-91,136 against 91,131-91,132).
       - name: Run tests
-        run: cargo test --workspace --no-fail-fast
+        run: cargo nextest run --workspace --profile ci
         env:
           RUSTFLAGS: -Cinstrument-coverage
+          LLVM_PROFILE_FILE: ${{ github.workspace }}/coverage/%m.profraw
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # nextest does not run doctests. Same flags, so nothing rebuilds, and the
+      # same profile path, so what they cover reaches the report as before.
+      # Runs even when a test above failed, as `--no-fail-fast` used to.
+      - name: Run doctests
+        if: success() || failure()
+        run: cargo test --workspace --doc --no-fail-fast
+        env:
+          RUSTFLAGS: -Cinstrument-coverage
+          LLVM_PROFILE_FILE: ${{ github.workspace }}/coverage/%m.profraw
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: grcov
