@@ -20,6 +20,7 @@
 pub mod authenticator;
 pub mod cases;
 pub mod context;
+mod key_file;
 pub mod keys;
 pub mod oidc;
 pub mod serving;

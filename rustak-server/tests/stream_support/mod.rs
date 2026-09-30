@@ -8,7 +8,9 @@
 //! broken.
 //!
 //! Elliptic-curve keys throughout, because an RSA authority is hundreds of
-//! milliseconds of key generation and every test here wants several.
+//! milliseconds of key generation and every test here wants several. The one
+//! RSA key start-up insists on — the token signing key — is the build's shared
+//! one ([`rustak_server::testing::keys`]), adopted as `TestServer` adopts it.
 
 #![allow(dead_code)]
 
@@ -116,6 +118,12 @@ impl Harness {
         // default channel would silently connect all of them to each other.
         config.auth.anon_group_default = false;
         adjust(&mut config);
+
+        // The shared token signing key, stored where start-up will find it, so
+        // that `build_context` loads a key rather than generating one — seconds
+        // of every harness under coverage. Nothing here is about that key; the
+        // first start's own generation is tested in the library.
+        rustak_server::testing::keys::adopt_signing_key(&config).await;
 
         let context = rustak_server::build_context(config, session(), Shutdown::new())
             .await

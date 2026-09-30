@@ -1,7 +1,8 @@
 //! The key pairs the software authenticator signs with, and the CBOR it writes.
 //!
 //! One key per algorithm per process: RSA generation would otherwise dominate
-//! the suite, and which key signs is not what any of these tests is about.
+//! the suite, and which key signs is not what any of these tests is about. The
+//! RSA key is one per *build*, too, because under nextest a process is a test.
 //!
 //! # Why all three algorithms are here
 //!
@@ -32,11 +33,10 @@ const COSE_CRV_ED25519: i64 = 6;
 /// The COSE curve identifier for P-256.
 const COSE_CRV_P256: i64 = 1;
 
-/// One process-wide RSA key.
-static RSA_KEY: LazyLock<RsaPrivateKey> = LazyLock::new(|| {
-    RsaPrivateKey::new(&mut rsa::rand_core::OsRng, 2048)
-        .expect("generate an RSA key for the authenticator under test")
-});
+/// One RSA key, made once per build and read by every test process after
+/// that; see [`testing::keys`](crate::testing::keys).
+static RSA_KEY: LazyLock<RsaPrivateKey> =
+    LazyLock::new(|| crate::testing::keys::rsa("webauthn-rs256"));
 
 /// One process-wide P-256 key.
 static P256_KEY: LazyLock<p256::ecdsa::SigningKey> =

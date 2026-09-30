@@ -341,17 +341,24 @@ mod tests {
         //
         // Counted rather than timed: what made the checks slow was the number
         // of full scans, and the number is the same on any host.
+        //
+        // The flood overruns the ceiling by a handful, not by thousands: each
+        // insert past it prunes the whole map before evicting (`make_room`),
+        // so 5 000 of them were half a billion bucket visits — 13 s alone
+        // uninstrumented, 42 s under coverage in CI — to prove what five
+        // prove. The map is still full of live lockouts when the checks run,
+        // so a check that scanned it would still be counted below.
         let limiter = limiter(1);
         let now = Utc::now();
 
-        for index in 0..(MAX_BUCKETS + 5_000) {
+        for index in 0..(MAX_BUCKETS + 5) {
             limiter.record_failure_at(now, address(), &format!("victim-{index}"));
         }
 
-        assert!(
-            limiter.tracked() <= MAX_BUCKETS,
-            "{} buckets is past the ceiling",
-            limiter.tracked()
+        assert_eq!(
+            limiter.tracked(),
+            MAX_BUCKETS,
+            "a flood past the ceiling fills the map to it and no further",
         );
 
         let before = limiter.lock().prunes;

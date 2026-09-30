@@ -56,28 +56,27 @@ struct ProviderKey {
     jwk: serde_json::Value,
 }
 
-/// Generated once per test process.
+/// Generated once per build and read by every test process after that; see
+/// [`super::keys`].
 ///
 /// Once because RSA key generation would otherwise dominate a suite that runs
 /// in a couple of seconds; generated rather than committed because a private
 /// key in a repository is one that eventually gets copied somewhere real.
-static PROVIDER_KEY: LazyLock<ProviderKey> = LazyLock::new(|| key(2048));
+static PROVIDER_KEY: LazyLock<ProviderKey> = LazyLock::new(|| key("oidc-provider"));
 
 /// A second real key the provider does **not** advertise.
 ///
 /// The forgery the tests care about: a token signed by somebody else, correct
 /// in every other respect.
-static UNADVERTISED_KEY: LazyLock<ProviderKey> = LazyLock::new(|| key(2048));
+static UNADVERTISED_KEY: LazyLock<ProviderKey> = LazyLock::new(|| key("oidc-unadvertised"));
 
-/// Generates a key and derives the JSON Web Key for its public half.
-fn key(bits: usize) -> ProviderKey {
+/// The shared key called `name`, with the JSON Web Key for its public half.
+fn key(name: &str) -> ProviderKey {
     use base64::Engine as _;
-    use rsa::RsaPrivateKey;
     use rsa::pkcs1::{EncodeRsaPrivateKey as _, LineEnding};
     use rsa::traits::PublicKeyParts as _;
 
-    let key = RsaPrivateKey::new(&mut rsa::rand_core::OsRng, bits)
-        .expect("generate a key for the identity provider under test");
+    let key = super::keys::rsa(name);
 
     let pem = key
         .to_pkcs1_pem(LineEnding::LF)

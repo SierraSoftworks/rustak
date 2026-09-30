@@ -9,12 +9,13 @@
 //!
 //! Everything a test can observe is its own: a fresh in-memory database, a
 //! fresh data directory, a fresh secret store, a fresh rate limiter. Two things
-//! that cost real time and that no test asserts on are process-wide instead —
-//! the RSA token signing key ([`keys`](super::keys)) and the argon2id cost
+//! that cost real time and that no test asserts on are shared instead — the
+//! RSA token signing key, made once per build and read by every test process
+//! ([`keys`](super::keys)), and the argon2id cost
 //! ([`use_testing_params`](rustak_core::identity::password::use_testing_params))
 //! — because generating a key and hashing at 19 MiB once per test is what made
-//! this suite unfinishable on a two-core runner under coverage. Both are still
-//! the real algorithms on the real code path; only their cost changes.
+//! this suite unfinishable on a CI runner under coverage. Both are still the
+//! real algorithms on the real code path; only their cost changes.
 
 use std::sync::Arc;
 

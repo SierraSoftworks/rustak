@@ -209,10 +209,16 @@ CI, under coverage, it is several times quicker; `docs/ci.md` has the figures.
 Two things it changes for a test author:
 
 - **A test has its process to itself.** A `LazyLock` is built once per *test*,
-  not once per suite, so an expensive shared value (the test signing key in
-  `rustak-server/src/testing/keys.rs`) is paid by every test that touches it.
-  Anything a test relied on another test having done first was already a bug;
-  under nextest it fails every time.
+  not once per suite, so an expensive shared value is paid by every test that
+  touches it. The RSA keys the test helpers use are therefore made once per
+  *build* instead: `rustak_server::testing::keys::rsa("<name>")` generates a
+  key the first time any process asks for that name and leaves it in
+  `target/<profile>/rustak-test-keys/`, and every later process reads it.
+  Reach for it (behind a `LazyLock`) rather than `RsaPrivateKey::new` in a
+  test helper, unless the test is about generating a key. `cargo clean`, or
+  deleting that directory, starts from fresh keys. Anything a test relied on
+  another test having done first was already a bug; under nextest it fails
+  every time.
 - **No retries.** The profiles set `retries = 0` deliberately. A test that
   passes on a second attempt is a flaky test, and it gets fixed. The
   `slow-timeout` is a hung-wait guard that names the test, not a time limit to

@@ -313,12 +313,19 @@ been running for over 60 seconds" — and why the tests now run under
 Four things in test-only code kept it inside its bound before that, and still
 help:
 
-1. **One token signing key per test process.** `rustak-server/src/testing/keys.rs`
-   holds a `LazyLock` RSA-2048 key and `TestServer` adopts it through
-   `JwtIssuer::load_or_adopt`, instead of each of the 240-odd test servers
-   generating its own. Databases, data directories, secret stores and content
-   stores stay per test, so isolation is unchanged; the tests that are *about*
-   key generation (rotation, "a token signed by another server") still generate.
+1. **One set of test keys per build, shared by every test process.**
+   `rustak-server/src/testing/keys.rs` makes each RSA-2048 key the helpers
+   need — the token signing key, the identity provider's two, the
+   orchestrator's three, the software authenticator's one — the first time any
+   process asks for it, and leaves it in `target/<profile>/rustak-test-keys/`
+   for every later process to read (see
+   [Test keys shared across processes](#test-keys-shared-across-processes)).
+   `TestServer` adopts the signing key through `JwtIssuer::load_or_adopt`, and
+   so does the stream harness, before `build_context` would generate one.
+   Databases, data directories, secret stores and content stores stay per
+   test, so isolation is unchanged; the tests that are *about* key generation
+   (rotation, "a token signed by another server", a first start) still
+   generate.
 2. **A cheaper argon2id cost in tests.** `rustak_core::identity::password::use_testing_params`
    switches the process to `Params::TESTING` (m = 8 MiB, t = 1) and `TestServer`
    calls it. It is compiled out without the `testing` feature, no deployment can
@@ -336,10 +343,10 @@ help:
    failing case by name; a test that changes the server's configuration keeps
    a server of its own.
 
-Under nextest the first of these is per *test*, not per suite: a process holds
-one test, so each test that builds a server generates its own key (about 1.7 s
-instrumented). That is the cost the few binaries that got slower under nextest
-pay — see below.
+The first of these was once per *process*, and under nextest a process holds
+one test, so for the first two `main` runs under nextest every test that built
+a server generated its own keys — the cost the binaries that got slower under
+nextest paid (below). M10-17 made it once per build.
 
 If the job ever creeps back towards its timeout, measure before changing
 anything: the `Run tests` log has one line per test with its duration, and
@@ -377,32 +384,99 @@ costs about what cross-binary scheduling saves. Instrumented, which is what CI
 runs, nextest is **four to five times faster**, and the reason is the contention
 described above, not scheduling.
 
-**Projected for CI** from the six normal `main` runs of 2026-09-28/29 (job
-23–28 minutes; `Run tests` 21–26 minutes, of which 200–270 s compiling and
-1064–1313 s running binaries): the running part becomes **4–14 minutes**
-instead of 18–22, so the job should land around **9–21 minutes**. The range is
-wide because the local ratio is from Apple silicon and the runner is x86: the
-lower end assumes the runner contends as much as this machine did (4–5×), the
-upper end assumes none of that carries over and only the per-test cost does,
-at 1.5–2.5× slower cores. The runner *does* contend: `stream_session` takes
-52–101 s there for eleven tests that need 15 s of CPU here in separate
-processes, which no plausible difference in core speed explains. **The first `main` run under nextest is the measurement
-that matters**; compare its `Run tests` and `Run doctests` against 21–26
-minutes, and the per-test lines against the per-binary figures above. Leave
-`timeout-minutes` at 90 until two runs agree, then bring it down with the band.
+**Measured in CI.** The first two `main` runs under nextest, against 21–26
+minutes of `Run tests` for `cargo test` on the six normal runs before them:
 
-**What moves and what does not:**
+| Run | `Run tests` | of which compiling | running (3,866 tests) | test time summed | `Run doctests` | `grcov` |
+|---|---|---|---|---|---|---|
+| 36648789737 (`03b09f0e`) | **18m17s** | 3m30s | 881 s | 3,464 s | 55 s | 69 s |
+| 36648792932 (`2eeb9915`), a slow host | 45m05s | 3m40s | 2,479 s | 9,796 s | 52 s | 67 s |
 
-- Faster: every suite that runs a server on several threads — `stream_*`,
-  `marti_channels`, `cloudtak_onboarding`, `feed_sidecars`, `workload_identity`
-  (208–238 s → 36–38 s modelled on four slots), the library (154–346 s → 149 s).
-- Slower: suites of many short server tests, because each test now generates
-  the keys a process used to share — `oidc_provider` (2 RSA keys a process)
-  3.6–5.5 s → 15–16 s, `oauth_flows` 4–5 s → 13 s, `missions_flow`,
-  `api_v1_map`, `enroll_flows`. Together roughly half a minute on four slots
-  (modelled from per-test times) — less than any one contended suite costs, so
-  the workspace is not split between runners. Sharing a pre-generated key
-  across processes would win it back.
+The first job took 20m56s, about four and a half minutes less than `cargo test`
+— the pessimistic end of M10-16's projection of 9–21 minutes. The second ran
+every test about 2.8 times slower on the same code (`2eeb9915` changes only
+plan documents; the per-binary shape is the same), which is the slow-host band this job has always had (53
+minutes once under `cargo test`), not a regression. Four slots were busy
+throughout (3,464 s ≈ 4 × 866 s), so what was left was CPU, and the first
+run's log said where:
+
+| Binary | Tests | Summed time (run 1 / run 2) | Per test (run 1) |
+|---|---|---|---|
+| `rustak-server` (library) | 2,056 | 1,556 / 4,683 s | 0.76 s |
+| `oidc_provider` | 24 | 192 / 540 s | 8.0 s |
+| `workload_identity` | 7 | 150 / 358 s | 21 s |
+| `cloudtak_onboarding` | 20 | 134 / 442 s | 6.7 s |
+| `oauth_flows` | 31 | 131 / 454 s | 4.2 s |
+| `api_v1_map` | 16 | 95 / 171 s | 5.9 s |
+
+248 tests took five seconds or more. Most of it was every test process
+generating the RSA keys a `cargo test` binary used to generate once — which is
+what [the next section](#test-keys-shared-across-processes) removed — and one
+library test, `a_flood_of_lockouts_does_not_make_every_later_check_pay_for_it`,
+took 42 s on its own. Leave `timeout-minutes` at 90 until two normal runs after
+M10-17 agree, then bring it down with the band.
+
+### Test keys shared across processes
+
+M10-17, 2026-09-30. Every RSA key the test helpers use — the token signing key
+`TestServer` and the stream harness adopt, the identity provider's advertised
+and forged keys, the orchestrator's three, the software authenticator's RS256
+key — is now `rustak_server::testing::keys::rsa("<name>")`. The first process
+to ask for a name generates the key and writes it to
+`target/<profile>/rustak-test-keys/<name>.pk8` (a temporary name, then a
+rename, so a reader sees a whole file or none); every other process reads and
+parses it. On a cold build the first process takes `<name>.lock` and the rest
+wait for its file rather than each generating the same key; a lock older than
+a minute is a dead process's and is taken over. A file that does not parse is
+replaced. Why beside the binaries and not in `CARGO_TARGET_TMPDIR`: Cargo sets
+that only when compiling integration tests, and the keys are made in the
+library. The keys protect nothing, live and die with `target/`, are never
+checked in, and nothing a deployment runs reads them — the module doc of
+`testing/keys.rs` has the threat model.
+
+`stream_support::Harness` (and so `feed_support` and `workload_support`) also
+stops generating a signing key per harness: `testing::keys::adopt_signing_key`
+stores the shared one in the harness's database before `build_context` opens
+it, so start-up loads a key instead of making one. Databases, data directories,
+secret stores and content stores are still per test. And the flood test
+overran the rate limiter's ceiling by 5,000 entries, each of which pruned the
+whole 100,000-entry map; it now overruns it by five, which proves the same
+ceiling and still counts every full scan a check makes.
+
+In CI a run is expected to start with no key files — rust-cache prunes a
+profile directory to its `build`, `deps` and `.fingerprint` before saving it,
+though no run has confirmed it yet — so a run pays seven generations in all
+instead of one or more per test; a run that does find them pays none. Locally
+the files persist between runs until `cargo clean`.
+
+**Measured locally** (10-core Apple silicon, `cargo nextest run --workspace
+--profile ci -j 4`, tests already built, before and after interleaved, the key
+directory deleted before every run so each starts cold as CI does; load
+average 4–9 throughout):
+
+| | before | after |
+|---|---|---|
+| **Instrumented** (`-Cinstrument-coverage`, `LLVM_PROFILE_FILE=<dir>/%m.profraw`) | 412, 383, 342 s (median **383 s**) | 124, 120, 113 s (median **120 s**, −69%) |
+| CPU (user) instrumented | 1,284–1,552 s | 224–230 s |
+| Uninstrumented | 129, 124, 121 s (median 124 s) | 93, 88 s (−27%) |
+
+| Binary, instrumented | summed before | summed after |
+|---|---|---|
+| `rustak-server` (library) | 613–635 s | 209–212 s |
+| `oidc_provider` | 49–50 s | 4.2–4.4 s |
+| `workload_identity` | 157–248 s | 51–67 s |
+| `cloudtak_onboarding` | 35–40 s | 17–22 s |
+| `oauth_flows` | 44–53 s | 4.2–4.4 s |
+| `api_v1_map` | 20–24 s | 2.9–3.2 s |
+| every test | 1,347–1,450 s | 425–450 s |
+
+The flood test: 13.9 s instrumented and 13.0 s uninstrumented before, 0.2 s
+after. What remains in `workload_identity` is the cold start: its first few
+tests wait while the orchestrator's three keys are generated, ~10 s each
+instrumented; later tests read them and take about a second. Applied to the
+first CI run's 3,464 s of test time, the local ratio (0.3) would put the
+running part near five minutes on four slots instead of fifteen — a
+projection, not a measurement; the next `main` run is the measurement.
 
 **Coverage is unchanged.** Left alone, nextest's ~3,800 processes would each
 write a `default_<sig>_<pid>.profraw`: ~3,800 files and ~35 GB measured
