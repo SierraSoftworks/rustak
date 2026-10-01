@@ -309,8 +309,8 @@ pub async fn resolve_limited<S: Services>(
         }
         Err(AuthFailure::Unavailable(err)) => Err(Denied::Failed(AuthFailure::Unavailable(err))),
         Err(failure) => {
-            limiter.record_failure(address, RATE_LIMIT_SUBJECT);
-            limiter.record_failure(address, assertion.account.as_str());
+            // One attempt, so the address is counted once and each pair once.
+            limiter.record_failures(address, &[RATE_LIMIT_SUBJECT, assertion.account.as_str()]);
 
             Err(Denied::Failed(failure))
         }

@@ -11,6 +11,10 @@
 //!   ([`LockoutClass::Client`]);
 //! * **anything else**, which is a username ([`LockoutClass::Account`]).
 //!
+//! Those are tier 2, the pair. A tier-1 lockout names no subject at all — it is
+//! the address — and is always [`LockoutClass::Source`], which [`classify`]
+//! never answers.
+//!
 //! The endpoint names live here rather than beside each endpoint so that
 //! adding one is adding it to [`subjects::ALL`], and a subject that is not in
 //! the list is counted as an account rather than silently as nothing.
@@ -65,12 +69,14 @@ pub fn classify(subject: &str) -> (LockoutClass, &str) {
 ///
 /// [`None`] for a pair [`classify`] could never have produced, such as an
 /// `address` key that is not an endpoint name, so an administrator cannot
-/// clear a bucket under a class it was never counted as.
+/// clear a key under a class it was never counted as — and for
+/// [`LockoutClass::Source`], which names an address and has no subject.
 pub fn subject_for(class: LockoutClass, key: &str) -> Option<String> {
     let subject = match class {
         LockoutClass::Address => key.to_owned(),
         LockoutClass::Client => format!("{CLIENT_PREFIX}{key}"),
         LockoutClass::Account => key.to_owned(),
+        LockoutClass::Source => return None,
     };
 
     (classify(&subject) == (class, key)).then_some(subject)
@@ -155,6 +161,7 @@ mod tests {
         assert_eq!(subject_for(LockoutClass::Account, "passkey"), None);
         assert_eq!(subject_for(LockoutClass::Account, "oauth-client:x"), None);
         assert_eq!(subject_for(LockoutClass::Address, "ada"), None);
+        assert_eq!(subject_for(LockoutClass::Source, "198.51.100.4/32"), None);
         assert_eq!(
             subject_for(LockoutClass::Client, "passkey").as_deref(),
             Some("oauth-client:passkey")

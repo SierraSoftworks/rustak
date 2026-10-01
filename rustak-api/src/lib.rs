@@ -95,7 +95,8 @@ pub use identity::{
     ServiceName, ServiceNameError, UserId, Username, UsernameError,
 };
 pub use lockout::{
-    ClearLockoutRequest, Lockout, LockoutClass, LockoutCounter, Lockouts, MAX_LISTED_LOCKOUTS,
+    CLEARED_NOTE, ClearLockoutRequest, ClearedLockout, Lockout, LockoutClass, LockoutCounter,
+    LockoutTier, Lockouts, MAX_LISTED_LOCKOUTS, TierFill,
 };
 pub use map::{MapEllipse, MapFeature, MapPoint, MapShape, MapStyle, MapUpdate, PublishFeature};
 pub use mission::{

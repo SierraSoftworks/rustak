@@ -11,7 +11,10 @@
 use std::cell::RefCell;
 
 use chrono::Duration;
-use rustak_api::{ClearLockoutRequest, Lockout, LockoutClass, LockoutCounter, Lockouts};
+use rustak_api::{
+    CLEARED_NOTE, ClearLockoutRequest, ClearedLockout, Lockout, LockoutClass, LockoutCounter,
+    LockoutTier, Lockouts, TierFill,
+};
 
 use super::data::ago;
 use crate::api::ApiError;
@@ -28,6 +31,7 @@ fn seed() -> Vec<Lockout> {
         Lockout {
             class,
             address: address.parse().ok(),
+            prefix: Some(32),
             key: key.to_string(),
             started_at,
             ends_at: started_at + Duration::minutes(15),
@@ -37,6 +41,13 @@ fn seed() -> Vec<Lockout> {
 
     vec![
         lockout(LockoutClass::Account, "203.0.113.7", "linus", 2, 10),
+        lockout(
+            LockoutClass::Source,
+            "203.0.113.99",
+            "203.0.113.99/32",
+            4,
+            300,
+        ),
         lockout(LockoutClass::Address, "198.51.100.23", "passkey", 6, 11),
         lockout(LockoutClass::Client, "192.0.2.10", "cloudtak", 9, 10),
     ]
@@ -58,14 +69,34 @@ pub fn lockouts() -> Lockouts {
             counts(LockoutClass::Address, 4, 1),
             counts(LockoutClass::Account, 37, 3),
             counts(LockoutClass::Client, 0, 1),
+            counts(LockoutClass::Source, 12, 1),
         ],
         counting_since: ago(60 * 26),
+        tiers: vec![
+            TierFill {
+                tier: LockoutTier::Source,
+                sampled: 4096,
+                locked: 4,
+                rows: 4,
+            },
+            TierFill {
+                tier: LockoutTier::Pair,
+                sampled: 4096,
+                locked: 12,
+                rows: 4,
+            },
+        ],
     }
 }
 
 /// Forgives one, as the server does: once.
-pub fn clear_lockout(request: &ClearLockoutRequest) -> Result<Lockout, ApiError> {
-    LOCKOUTS.with(|held| take(&mut held.borrow_mut(), request))
+pub fn clear_lockout(request: &ClearLockoutRequest) -> Result<ClearedLockout, ApiError> {
+    LOCKOUTS
+        .with(|held| take(&mut held.borrow_mut(), request))
+        .map(|lockout| ClearedLockout {
+            lockout,
+            note: CLEARED_NOTE.to_string(),
+        })
 }
 
 /// Takes the matching lockout out of `held`.
@@ -121,7 +152,7 @@ mod tests {
         let first = held[0].clone();
 
         assert_eq!(take(&mut held, &request_for(&first)).unwrap(), first);
-        assert_eq!(held.len(), 2);
+        assert_eq!(held.len(), 3);
         assert!(take(&mut held, &request_for(&first)).is_err());
     }
 }

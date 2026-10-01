@@ -85,27 +85,35 @@ test("a lockout says what it names and where from, and is cleared only after ask
   await expect(page.getByRole("heading", { name: "Sign-in lockouts" })).toBeVisible();
 
   const rows = page.locator(".lockout-row");
-  await expect(rows).toHaveCount(3);
+  await expect(rows).toHaveCount(4);
   await expect(page.getByText("Every 'passkey' attempt")).toBeVisible();
   await expect(page.getByText("OAuth client 'cloudtak'")).toBeVisible();
   await expect(
-    page.getByText("5 lockouts started and 41 attempts refused", { exact: false }),
+    page.getByText("6 lockouts started and 53 attempts refused", { exact: false }),
+  ).toBeVisible();
+
+  // M10-18: an address locked out whatever it guessed at, and the two facts a
+  // sketch makes an operator need — counts are estimates, and how full it is.
+  await expect(rows.filter({ hasText: "Every sign-in" })).toContainText("from 203.0.113.99");
+  await expect(page.getByText("Failure counts are estimates", { exact: false })).toBeVisible();
+  await expect(
+    page.getByText("Accounts and endpoints: 0.3% of cells locked", { exact: false }),
   ).toBeVisible();
 
   const linus = rows.filter({ hasText: "Account 'linus'" });
   await expect(linus).toContainText("from 203.0.113.7");
-  await expect(linus).toContainText("10 failures");
+  await expect(linus).toContainText("about 10 failures");
 
   // The first click only asks, and the question names what is about to go.
   await linus.getByRole("button", { name: "Clear", exact: true }).click();
   await expect(
     linus.getByText("Clear the lockout on account 'linus' from 203.0.113.7?", { exact: false }),
   ).toBeVisible();
-  await expect(rows).toHaveCount(3);
+  await expect(rows).toHaveCount(4);
 
   await linus.getByRole("button", { name: "Clear it" }).click();
 
-  await expect(rows).toHaveCount(2);
+  await expect(rows).toHaveCount(3);
   await expect(page.getByText("Account 'linus'")).toHaveCount(0);
   await expect(page.getByText("Every 'passkey' attempt")).toBeVisible();
 });

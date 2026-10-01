@@ -388,12 +388,26 @@ allow_access_token_retrieval = true
 # secret_key = "${{ env.RUSTAK_SECRET_KEY }}"
 # previous_secret_keys = []
 
-# The limiter on every endpoint that accepts a secret, keyed on the source
-# address and the identity being attempted. It cannot be disabled: it is what
-# stands between a client password and an offline guessing attack. What it is
-# refusing now is listed, and can be cleared one key at a time, under Settings
+# The limiter on every endpoint that accepts a secret. It cannot be disabled: it
+# is what stands between a client password and an offline guessing attack. Every
+# failure is counted twice, each count over `window`, and a count that reaches
+# its allowance is refused for `lockout`:
+#   attempts         - per source address AND what it guessed at (a username, an
+#                      OAuth client, an endpoint). The address is in this key on
+#                      purpose: keyed on the username alone, anybody who knew an
+#                      account's name could lock it out from anywhere.
+#   address_attempts - per source address (IPv4, or IPv6 /64), whatever it
+#                      guessed at, so one address cannot try a new username on
+#                      every attempt.
+#   network_attempts - per IPv6 /48, whatever it guessed at.
+# The source address is the TCP peer unless [server] trust_proxy is on. Behind a
+# reverse proxy that is the proxy's address for everybody, so one failing client
+# locks out every client: turn trust_proxy on there (with a proxy that
+# overwrites X-Forwarded-For), or raise address_attempts. Counts are estimates
+# held in a fixed 4 MiB sketch, and allowances above 65535 behave as 65535. What
+# is refused now is listed, and can be cleared one key at a time, under Settings
 # -> Security in the console (GET /api/v1/auth/lockouts).
-# rate_limit ={ attempts = 10, window = "1m", lockout = "15m" }
+# rate_limit = { attempts = 10, address_attempts = 300, network_attempts = 3000, window = "1m", lockout = "15m" }
 
 
 # Accepting an orchestrator's workload identity as a credential.

@@ -236,14 +236,23 @@ fn credentials(config: &Config) -> Result<(), Error> {
     positive(auth.client_password_ttl, "[auth] client_password_ttl")?;
     positive(auth.rate_limit.window, "[auth.rate_limit] window")?;
 
-    if auth.rate_limit.attempts == 0 {
-        return Err(human_errors::user(
-            "`[auth.rate_limit] attempts = 0` would lock out every credential on its first use.",
-            &[
-                "Set `attempts` to the number of failures allowed within `window`, for example 10.",
-                "There is no way to disable the rate limiter: it is what stands between a client password and an offline guessing attack.",
-            ],
-        ));
+    let limits = &auth.rate_limit;
+    for (key, value) in [
+        ("attempts", limits.attempts),
+        ("address_attempts", limits.address_attempts),
+        ("network_attempts", limits.network_attempts),
+    ] {
+        if value == 0 {
+            return Err(human_errors::user(
+                format!(
+                    "`[auth.rate_limit] {key} = 0` would lock out every credential on its first use."
+                ),
+                &[
+                    "Set it to the number of failures allowed within `window`: the defaults are attempts = 10, address_attempts = 300 and network_attempts = 3000.",
+                    "There is no way to disable the rate limiter: it is what stands between a client password and an offline guessing attack.",
+                ],
+            ));
+        }
     }
 
     Ok(())
@@ -623,6 +632,9 @@ mod tests {
     fn a_rate_limit_that_allows_nothing_is_refused() {
         let message = refusal("[auth.rate_limit]\nattempts = 0\n");
         assert!(message.contains("lock out"), "{message}");
+
+        let message = refusal("[auth.rate_limit]\naddress_attempts = 0\n");
+        assert!(message.contains("address_attempts"), "{message}");
     }
 
     #[test]

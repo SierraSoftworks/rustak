@@ -305,14 +305,36 @@ impl AuthConfig {
 
 /// `[auth.rate_limit]` — the limiter on every endpoint that accepts a secret.
 ///
-/// Keyed on the source address and the identity being attempted, so that one
-/// client cannot lock another out by guessing at their username.
+/// Two tiers, both counting failures in `window` and locking for `lockout`:
+///
+/// * **the pair** — the source address and what it was guessing at — allowed
+///   `attempts`. The address is in the key on purpose: keyed on the username
+///   alone, anybody who knew an account's name could lock it out from
+///   anywhere. The cost is that a guess spread across many addresses gets an
+///   allowance per address;
+/// * **the address** — whatever it was guessing at — allowed
+///   `address_attempts` per IPv4 address or IPv6 /64, and `network_attempts`
+///   per IPv6 /48, so one address cannot try a different username every time.
+///
+/// Counts are held in a sketch with 16-bit cells, so an allowance above
+/// 65 535 behaves as 65 535.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RateLimitConfig {
-    /// Failures allowed within `window` before `lockout` applies.
+    /// Failures one address may make against one key within `window` before
+    /// that pair is locked out for `lockout`.
     #[serde(default = "default_attempts")]
     pub attempts: u32,
+
+    /// Failures one address (IPv4 /32, IPv6 /64) may make within `window`,
+    /// against anything, before everything from it is locked out.
+    #[serde(default = "default_address_attempts")]
+    pub address_attempts: u32,
+
+    /// Failures one IPv6 /48 may make within `window`, against anything,
+    /// before everything from it is locked out.
+    #[serde(default = "default_network_attempts")]
+    pub network_attempts: u32,
 
     /// The window failures are counted over.
     #[serde(
@@ -333,6 +355,14 @@ fn default_attempts() -> u32 {
     10
 }
 
+fn default_address_attempts() -> u32 {
+    300
+}
+
+fn default_network_attempts() -> u32 {
+    3_000
+}
+
 fn default_window() -> chrono::Duration {
     chrono::Duration::minutes(1)
 }
@@ -348,6 +378,8 @@ impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
             attempts: default_attempts(),
+            address_attempts: default_address_attempts(),
+            network_attempts: default_network_attempts(),
             window: default_window(),
             lockout: default_lockout(),
         }
@@ -418,8 +450,28 @@ mod tests {
         let parsed: AuthConfig = toml::from_str("").unwrap();
 
         assert_eq!(parsed.rate_limit.attempts, 10);
+        assert_eq!(parsed.rate_limit.address_attempts, 300);
+        assert_eq!(parsed.rate_limit.network_attempts, 3_000);
         assert_eq!(parsed.rate_limit.window, chrono::Duration::minutes(1));
         assert_eq!(parsed.rate_limit.lockout, chrono::Duration::minutes(15));
+    }
+
+    #[test]
+    fn the_address_tier_is_set_beside_the_pair_and_a_typo_is_refused() {
+        let parsed: AuthConfig = toml::from_str(
+            r#"rate_limit = { attempts = 5, address_attempts = 50, network_attempts = 500 }"#,
+        )
+        .unwrap();
+
+        assert_eq!(parsed.rate_limit.attempts, 5);
+        assert_eq!(parsed.rate_limit.address_attempts, 50);
+        assert_eq!(parsed.rate_limit.network_attempts, 500);
+        assert_eq!(parsed.rate_limit.window, chrono::Duration::minutes(1));
+
+        let Err(err) = toml::from_str::<AuthConfig>("rate_limit = { address_attempt = 50 }") else {
+            panic!("an unknown key should be refused");
+        };
+        assert!(err.to_string().contains("address_attempt"), "{err}");
     }
 
     #[test]

@@ -9,24 +9,26 @@
 //! These routes sit behind the bearer gate, which is not rate limited — the
 //! limiter guards the endpoints that *accept a secret*, and an access token is
 //! checked by signature, not guessed at. So an administrator already signed in
-//! can always read the list, even from an address that is itself locked out of
-//! the passkey ceremony. Reading neither sweeps nor touches a bucket
-//! (`auth::ratelimit::view`), and it logs nothing above `debug`: the list is
-//! addresses and usernames, and a log line per page load would copy them into
-//! every log store for no reason.
+//! can always read the list, even from an address that is itself locked out.
+//! Reading writes nothing to the limiter (`auth::ratelimit::view`), and it
+//! logs nothing above `debug`: the list is addresses and usernames, and a log
+//! line per page load would copy them into every log store for no reason.
 //!
 //! # Clearing is one key, on purpose
 //!
 //! There is no "clear all". A lockout is the limiter doing its job, and the
 //! administrator who clears one is vouching for that one caller; the audit
-//! trail records who did it, which key and when.
+//! trail records who did it, which key and when. The limiter counts in shared
+//! cells, so clearing one key also forgives any other key whose cells were all
+//! among its; the answer says so.
 
 use actix_web::web;
 use rustak_api::{
-    AuditCategory, AuditOutcome, ClearLockoutRequest, Lockout, LockoutClass, MAX_LISTED_LOCKOUTS,
+    AuditCategory, AuditOutcome, CLEARED_NOTE, ClearLockoutRequest, ClearedLockout, Lockout,
+    LockoutClass, MAX_LISTED_LOCKOUTS,
 };
 
-use crate::auth::ratelimit::subject_for;
+use crate::auth::ratelimit::Unclearable;
 use crate::db::AuditEntry;
 use crate::prelude::*;
 
@@ -72,16 +74,21 @@ pub async fn clear(
 ) -> ApiResult {
     let request = body.into_inner();
 
-    let Some(subject) = subject_for(request.class, &request.key) else {
-        return Err(ApiError::bad_request(
-            "That key is not one the rate limiter files under that class.",
-        ));
-    };
-
-    let Some(cleared) = context.rate_limiter().clear(request.address, &subject) else {
-        return Err(ApiError::not_found(
-            "Nothing is locked out under that key. It may have run out on its own.",
-        ));
+    let cleared = match context
+        .rate_limiter()
+        .clear(request.class, request.address, &request.key)
+    {
+        Ok(cleared) => cleared,
+        Err(Unclearable::NotAKey) => {
+            return Err(ApiError::bad_request(
+                "That key is not one the rate limiter files under that class.",
+            ));
+        }
+        Err(Unclearable::NotLocked) => {
+            return Err(ApiError::not_found(
+                "Nothing is locked out under that key. It may have run out on its own.",
+            ));
+        }
     };
 
     // The class and who asked, but not the key: the audit entry below carries
@@ -94,19 +101,23 @@ pub async fn clear(
 
     record(&context, &caller, &cleared).await;
 
-    Ok(json_ok(&cleared))
+    Ok(json_ok(&ClearedLockout {
+        lockout: cleared,
+        note: CLEARED_NOTE.to_string(),
+    }))
 }
 
 /// Writes who cleared which lockout.
 ///
 /// The subject is what an administrator would search the log for: the account
-/// or client for those classes, and the address for an endpoint-wide lockout,
-/// whose key (`passkey`, `setup-token`) says nothing about who it was.
+/// or client for those classes, the address for an endpoint-wide lockout,
+/// whose key (`passkey`, `setup-token`) says nothing about who it was, and the
+/// address with its prefix for an address lockout.
 async fn record(context: &AppContext, caller: &Administrative, cleared: &Lockout) {
     let address = cleared.address.map(|address| address.to_string());
     let subject = match cleared.class {
         LockoutClass::Address => address.clone().unwrap_or_else(|| cleared.key.clone()),
-        LockoutClass::Account | LockoutClass::Client => cleared.key.clone(),
+        LockoutClass::Account | LockoutClass::Client | LockoutClass::Source => cleared.key.clone(),
     };
 
     let entry = AuditEntry::new(
@@ -120,6 +131,7 @@ async fn record(context: &AppContext, caller: &Administrative, cleared: &Lockout
         "class": cleared.class.as_str(),
         "key": cleared.key,
         "address": address,
+        "prefix": cleared.prefix,
         "failures": cleared.failures,
         "started_at": cleared.started_at,
         "ends_at": cleared.ends_at,
@@ -145,7 +157,20 @@ mod tests {
         Some("198.51.100.4".parse().unwrap())
     }
 
-    /// Locks `subject` out from [`address`], as ten failures would.
+    /// A server whose allowances are this module's own rather than the
+    /// defaults: three a pair, so a lockout is three failures; eight an
+    /// address, above the two pair lockouts a test makes (six failures) and
+    /// within easy reach of the one test that wants an address locked.
+    async fn server() -> TestServer {
+        TestServer::start_with(|config| {
+            config.auth.rate_limit.attempts = 3;
+            config.auth.rate_limit.address_attempts = 8;
+            config.auth.rate_limit.network_attempts = 24;
+        })
+        .await
+    }
+
+    /// Locks `subject` out from [`address`], as its allowance of failures would.
     fn lock_out(server: &TestServer, subject: &str) {
         let attempts = server.config().auth.rate_limit.attempts;
 
@@ -156,7 +181,7 @@ mod tests {
 
     #[actix_web::test]
     async fn an_administrator_is_shown_what_is_locked_out() {
-        let server = TestServer::start().await;
+        let server = server().await;
         let (_, session) = server.signed_in("root", true).await;
         let app = test::init_service(App::new().configure(server.app())).await;
 
@@ -181,8 +206,12 @@ mod tests {
         let body: serde_json::Value = test::read_body_json(response).await;
 
         assert_eq!(body["total"], 2);
-        assert_eq!(body["counters"].as_array().unwrap().len(), 3);
+        assert_eq!(body["counters"].as_array().unwrap().len(), 4);
         assert!(body["counting_since"].is_string());
+        assert_eq!(body["tiers"][0]["tier"], "source");
+        assert_eq!(body["tiers"][1]["tier"], "pair");
+        assert_eq!(body["tiers"][1]["rows"], 4);
+        assert!(body["tiers"][1]["locked"].as_u64().unwrap() <= 4096);
 
         let ada = body["lockouts"]
             .as_array()
@@ -193,6 +222,7 @@ mod tests {
 
         assert_eq!(ada["class"], "account");
         assert_eq!(ada["address"], "198.51.100.4");
+        assert_eq!(ada["prefix"], 32);
         assert_eq!(ada["failures"], server.config().auth.rate_limit.attempts);
         assert!(ada["started_at"].is_string());
         assert!(ada["ends_at"].is_string());
@@ -208,7 +238,7 @@ mod tests {
 
     #[actix_web::test]
     async fn somebody_who_is_not_an_administrator_is_refused_both_routes() {
-        let server = TestServer::start().await;
+        let server = server().await;
         let (_, session) = server.signed_in("ada", false).await;
         let app = test::init_service(App::new().configure(server.app())).await;
 
@@ -246,7 +276,7 @@ mod tests {
 
     #[actix_web::test]
     async fn clearing_forgives_one_key_and_says_who_did_it() {
-        let server = TestServer::start().await;
+        let server = server().await;
         let (_, session) = server.signed_in("root", true).await;
         let app = test::init_service(App::new().configure(server.app())).await;
 
@@ -268,8 +298,9 @@ mod tests {
         .await;
 
         assert_eq!(response.status(), StatusCode::OK);
-        let cleared: Lockout = test::read_body_json(response).await;
-        assert_eq!(cleared.key, "ada");
+        let cleared: ClearedLockout = test::read_body_json(response).await;
+        assert_eq!(cleared.lockout.key, "ada");
+        assert_eq!(cleared.note, CLEARED_NOTE);
 
         assert!(server.limiter.check(address(), "ada").is_ok());
         assert!(server.limiter.check(address(), "grace").is_err());
@@ -290,8 +321,69 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn an_address_locked_out_at_tier_one_is_listed_as_itself_and_cleared_by_it() {
+        let server = server().await;
+        let (_, session) = server.signed_in("root", true).await;
+        let app = test::init_service(App::new().configure(server.app())).await;
+        let allowance = server.config().auth.rate_limit.address_attempts;
+
+        for index in 0..allowance {
+            server
+                .limiter
+                .record_failure(address(), &format!("guess-{index}"));
+        }
+        assert!(server.limiter.check(address(), "anybody").is_err());
+
+        let listed: rustak_api::Lockouts = test::read_body_json(
+            test::call_service(
+                &app,
+                test::TestRequest::get()
+                    .uri("/api/v1/auth/lockouts")
+                    .insert_header(("authorization", bearer(&session)))
+                    .to_request(),
+            )
+            .await,
+        )
+        .await;
+        let source = listed
+            .lockouts
+            .iter()
+            .find(|lockout| lockout.class == LockoutClass::Source)
+            .expect("the address is listed");
+        assert_eq!(source.key, "198.51.100.4/32");
+
+        let response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/v1/auth/lockouts/clear")
+                .insert_header(("authorization", bearer(&session)))
+                .set_json(ClearLockoutRequest {
+                    class: LockoutClass::Source,
+                    address: source.address,
+                    key: source.key.clone(),
+                })
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(server.limiter.check(address(), "anybody").is_ok());
+
+        let entries = server
+            .db()
+            .audit(crate::db::AuditQuery::about("198.51.100.4/32", 10))
+            .await
+            .unwrap();
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.action == "lockout.cleared")
+        );
+    }
+
+    #[actix_web::test]
     async fn a_key_that_is_not_locked_out_or_not_of_that_class_is_refused() {
-        let server = TestServer::start().await;
+        let server = server().await;
         let (_, session) = server.signed_in("root", true).await;
         let app = test::init_service(App::new().configure(server.app())).await;
 

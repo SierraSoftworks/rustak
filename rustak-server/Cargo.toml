@@ -85,6 +85,7 @@ hmac = { workspace = true }
 base64 = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
+siphasher = { workspace = true }
 zeroize = { workspace = true }
 filt-rs = { workspace = true }
 webauthn_rp = { workspace = true }

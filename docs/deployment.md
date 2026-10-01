@@ -1451,18 +1451,55 @@ registering the client above. See `.claude/plan/compat/oauth.md` §4.
 
 Every endpoint that accepts a secret — a passkey ceremony, the setup token, a
 token exchange, the `/oauth/token` password and client-secret grants, a Basic
-credential on the enrolment routes, a workload identity — counts its failures.
-`[auth] rate_limit` (default `{ attempts = 10, window = "1m", lockout = "15m" }`)
-says how many failures inside a window **lock out** the key that failed, and for
-how long. A locked-out key is refused with `429 Too Many Requests` before its
-credential is even looked at; the lockout ends on its own, and a success before
-it is reached forgets the failures.
+credential on the enrolment routes, a workload identity — counts its failures,
+and counts each one twice:
 
-A key is the caller's address plus what it was guessing at, and falls into one
-of three classes:
+| Tier | Counted per | Allowance (`[auth] rate_limit`) | What it is for |
+|---|---|---|---|
+| 1 — the address | IPv4 address, IPv6 /64 | `address_attempts = 300` | One address guessing without end, whatever at |
+| 1 — the network | IPv6 /48 | `network_attempts = 3000` | A hosting customer's /48 is 65 536 /64s |
+| 2 — the pair | the address (as above) **and** what it guessed at | `attempts = 10` | Guessing at one account, client or endpoint |
+
+Each count is over `window` (default `"1m"`); a count that reaches its allowance
+**locks out** that key for `lockout` (default `"15m"`), and a locked-out caller
+is refused with `429 Too Many Requests` before its credential is even looked
+at. Locking out an address refuses everything from it; locking out a pair
+refuses only that account (or client, or endpoint) from that address. A lockout
+ends on its own. Windows are a fixed grid rather than starting at a
+key's first failure, so a burst straddling a boundary can land up to twice the
+allowance less one before it locks, as the old per-key window allowed too.
+
+**Why the address is in the pair.** Keyed on the username alone, anybody who
+knew an account's name could lock it out from anywhere — CloudTAK's OAuth client
+and its password-grant account are well-known names. The cost, accepted: a guess
+spread across many addresses gets an allowance per address. Tier 1 is what
+stops one address spreading its guesses across many usernames without end: with
+the defaults an address that fails 300 times in a minute is refused everything
+for fifteen minutes, having locked out at most thirty accounts on the way (a
+/48, 3 000 failures and about three hundred). The address allowance is set high
+on purpose, so that one address fronting many people — CloudTAK's server, an
+office or campus NAT — is not locked out by a few of them (see below); the price
+is that tier 1 bounds a single address's damage at thirty accounts a lockout
+rather than three.
+
+**A success no longer forgives.** The rule is *ten failures in a window, whether
+or not a success came between*. (Before M10-18 a success cleared that key's
+count.) A client that fails often and succeeds in between — a script retrying
+with a stale token, an office where people cancel passkey prompts — can now be
+locked out where it was not before.
+
+**Account names are compared as the database compares them**: `Ada`, `ada` and
+` ADA ` are one key. A name nobody holds is counted exactly like a real one, so
+when a `429` arrives says nothing about whether the account exists. An
+IPv4-mapped IPv6 address (`::ffff:192.0.2.1`) is the IPv4 address; a request
+whose address the server could not read is a key of its own.
+
+A key falls into one of four classes, which is how the console and the counters
+describe it:
 
 | Class | What the key names | Example |
 |---|---|---|
+| `source` | An address or IPv6 /48, whatever it guessed at (tier 1) | `198.51.100.4/32`, `2001:db8:1::/48` |
 | `account` | A username: a password grant, a Basic credential, a workload identity once it has named its account | `ada` from `198.51.100.4` |
 | `client` | A confidential OAuth client's identifier | `cloudtak` from `192.0.2.10` |
 | `address` | A sign-in endpoint with no account to name, so the address is what tells callers apart | `passkey`, `setup-token`, `auth-token`, `oauth-token`, `workload-identity` |
@@ -1470,43 +1507,124 @@ of three classes:
 The limiter is one per process, shared by `[web.public]` and `[web.marti]`, and
 held in memory: a restart forgives every lockout.
 
+### The address it sees, behind a proxy
+
+The address is the TCP peer's, unless `[server] trust_proxy = true`, in which
+case it is the left-most `X-Forwarded-For` entry. Every limiter call site goes
+through the same helper, so the setting is honoured everywhere. Two ways to get
+this wrong, both worse than before because tier 1 counts *every* failure from an
+address:
+
+- **Behind a reverse proxy with `trust_proxy = false`**, every caller is the
+  proxy. Three hundred failures a minute from anybody — one script — lock out
+  *everybody* for fifteen minutes, and ten against one account lock that
+  account out for everybody. Turn `trust_proxy` on.
+- **With `trust_proxy = true` and no proxy, or a proxy that appends to
+  `X-Forwarded-For` rather than overwriting it**, a client chooses its own
+  address per request, and both tiers can be walked around. Only turn it on
+  behind a proxy that overwrites the header.
+
+The same applies to a server-side client that signs users in on their behalf.
+CloudTAK's server makes every password grant itself, from its own address, so
+rustak sees all of CloudTAK's users as one address. At the default of 300, three
+hundred failed CloudTAK logins in a minute — from anybody, against any accounts,
+which one person with a script can produce — lock out every CloudTAK login for
+fifteen minutes; and ten failures against one account lock that account out of
+CloudTAK for everybody, because the pair is CloudTAK's address and that
+account. Ordinary mistyping across a busy deployment stays well below 300 a
+minute. Where CloudTAK (or another such client) fronts many users and that
+exposure is too much, raise `address_attempts` (and, on IPv6,
+`network_attempts`) for the deployment — it is still the per-deployment lever —
+accepting that tier 1 then bounds a single address less.
+
+### Estimates, and failing closed
+
+The counts are not kept in a table of keys. Each tier is a *count-min sketch*:
+four rows of 65 536 cells, 4 MiB for both tiers whatever happens, in which a
+key is one cell per row chosen by a hash under a key drawn at start-up. A key's
+count is the least of its cells and a key is refused only when **every** one of
+its cells is locked. So a lockout's `failures` is an estimate — never fewer
+failures than there were, sometimes more when keys share cells — and nothing an
+attacker sends can grow the limiter, evict a lockout or slow a check down.
+Allowances above 65 535 behave as 65 535.
+
+The price is paid only under a large flood. With `K` lockouts in force, a key
+that never failed shares every cell with somebody locked out with probability
+about `(1 − e^(−K/65536))^4`. Measured (`auth::ratelimit::simulation_tests`,
+50 000 fresh keys per row), both for a fresh key being refused and for a fresh
+key being locked out by a *single* failure when `K` others sit one failure short
+of their allowance:
+
+| `K` | `K` / 65 536 | predicted | refused, measured | locked by one failure, measured |
+|---|---|---|---|---|
+| 100 | 0.0015 | ≈ 0 | 0 | 0 |
+| 1 000 | 0.015 | 0.000005 % | 0 | 0 |
+| 16 384 | 0.25 | 0.24 % | 0.26 % | 0.29 % |
+| 32 768 | 0.5 | 2.4 % | 2.4 % | 2.5 % |
+| 65 536 | 1 | 16 % | 16 % | 16 % |
+| 131 072 | 2 | 56 % | 56 % | 56 % |
+
+A real installation has a handful of lockouts at a time. Tier 1 caps what one
+caller adds: at the defaults one IPv4 address locks about 30 pairs before it is
+locked itself for the lockout, and one IPv6 /48 about 300. So 16 384 lockouts in
+force (0.24 % of innocent callers refused) takes roughly 550 IPv4 addresses or
+55 IPv6 /48s acting within one fifteen-minute lockout, and 65 536 (16 %) about
+2 200 addresses or 220 /48s — an IPv6 /32 alone holds 65 536 /48s. An attacker
+with that much can refuse some innocent callers — the limiter fails *closed* —
+and the console says how far it has got (below). That is the
+trade: the old limiter answered a flood by evicting lockouts, which forgave the
+attacker's own.
+
 ### Seeing and clearing one
 
-**Settings → Security → Sign-in lockouts** in the console lists every key
-locked out now — its class, the key, the address, when it began and ends, and
-how many failures earned it — newest first, with how many lockouts have started
-and how many attempts have been refused per class since the server started.
-**Clear** asks first, then forgives that one key and its failures at once. There
-is no "clear all": clearing is vouching for one caller.
+**Settings → Security → Sign-in lockouts** in the console lists the lockouts in
+force — the class, the key, the address (with its prefix for IPv6), when each
+began and ends, and its estimated failures — newest first, with how many
+lockouts have started and how many attempts have been refused per class since
+the server started. It also shows how full each tier is (the share of a fixed
+sample of cells that is locked) and what that means for somebody who never
+failed. **Clear** asks first, then forgives that one key. There is no "clear
+all": clearing is vouching for one caller.
+
+A sketch cannot list its keys, so each lockout is also recorded when it begins
+in a ring of the most recent 256, used for this listing and nothing else; the
+listing shows the ones the sketch still refuses. Under a flood with more than
+that in force, `total` is a lower bound and the `lockouts` counters say how many
+began.
 
 The same, for a script, with an administrator's bearer token:
 
 ```bash
 curl -H "Authorization: Bearer $TOKEN" https://tak.example.com:8446/api/v1/auth/lockouts
-# {"lockouts":[{"class":"account","address":"198.51.100.4","key":"ada",
+# {"lockouts":[{"class":"account","address":"198.51.100.4","prefix":32,"key":"ada",
 #   "started_at":"…","ends_at":"…","failures":10}],"total":1,
-#  "counters":[{"class":"address","refusals":0,"lockouts":0}, …],"counting_since":"…"}
+#  "counters":[{"class":"address","refusals":0,"lockouts":0}, …],"counting_since":"…",
+#  "tiers":[{"tier":"source","sampled":4096,"locked":0,"rows":4}, …]}
 
 curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
      -d '{"class":"account","address":"198.51.100.4","key":"ada"}' \
      https://tak.example.com:8446/api/v1/auth/lockouts/clear
+# An address: {"class":"source","address":"198.51.100.4","key":"198.51.100.4/32"}
 ```
 
-The listing carries at most 200 lockouts (`total` says how many there are) and
-is not itself rate limited, so an administrator who is already signed in can
-read it even from an address that is locked out of sign-in. Reading it never
-starts, extends or ends a lockout, and is logged at `debug` only — the list is
-addresses and usernames. A clear answers `404` when nothing is locked out under
-that key (it may have run out between the page loading and the click), and is
+Clearing zeroes the key's cells — its count and its lock — so it starts again
+from nothing. **Cells are shared, so clearing one key also forgives any other
+key whose cells were all among them**; the answer's `note` says so. The listing
+carries at most 200 lockouts and is not itself rate limited, so an administrator
+who is already signed in can read it even from an address that is locked out.
+Reading it never starts, extends or ends a lockout, and is logged at `debug`
+only — the list is addresses and usernames. A clear answers `404` when the key
+is not refused now (it may have run out between the page loading and the
+click) and `400` for a class and key the limiter could not have counted, and is
 written to the audit log as `lockout.cleared` (category `administration`) with
 the administrator who did it, the class, the key and the address; the server's
 own log line names the class and the administrator, not the key.
 
-The counters are also where an attack shows up: a steady climb in `address`
-refusals is somebody hammering a sign-in endpoint, and `account` lockouts
-spread across many addresses are somebody guessing at one account from many
-places — which the per-address key does not stop, and which is worth taking to
-a firewall.
+The counters are also where an attack shows up: a steady climb in `source`
+lockouts is somebody failing from many addresses, `address` refusals somebody
+hammering a sign-in endpoint, and `account` lockouts spread across many
+addresses somebody guessing at one account from many places — which the
+per-address key does not stop, and which is worth taking to a firewall.
 
 ## Security notes worth knowing about
 

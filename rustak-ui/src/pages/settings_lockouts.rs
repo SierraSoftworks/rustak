@@ -3,14 +3,19 @@
 //! Before this card, "why was I refused?" had no answer short of reading the
 //! code: a lockout left nothing behind but the `429` its victim saw (M9-14).
 //! Here is every key locked out now — what kind of key, where the failures
-//! came from, when it began and ends, how many failures earned it — and a way
-//! to forgive one.
+//! came from, when it began and ends, about how many failures earned it — and
+//! a way to forgive one.
+//!
+//! The limiter counts in a fixed-size sketch, so the card says two things a
+//! table of keys would not need to: a lockout's count is an estimate, and how
+//! full each tier is, which decides how often somebody who never failed is
+//! refused along with an attacker.
 //!
 //! Clearing asks first, names the key it is about to forgive, and does one key
 //! at a time: a lockout is the limiter doing its job, and the administrator
 //! clearing one is vouching for that one caller. The server audits it.
 
-use rustak_api::{Lockout, LockoutClass, LockoutCounter, Lockouts};
+use rustak_api::{Lockout, LockoutClass, LockoutCounter, Lockouts, TierFill};
 use yew::prelude::*;
 
 use crate::api;
@@ -27,14 +32,17 @@ fn describe(lockout: &Lockout) -> String {
         LockoutClass::Account => format!("Account '{}'", lockout.key),
         LockoutClass::Client => format!("OAuth client '{}'", lockout.key),
         LockoutClass::Address => format!("Every '{}' attempt", lockout.key),
+        LockoutClass::Source => "Every sign-in".to_string(),
     }
 }
 
-/// Where the failures came from.
+/// Where the failures came from: the address, with its prefix when that is
+/// more than one IPv4 host.
 fn origin(lockout: &Lockout) -> String {
-    match lockout.address {
-        Some(address) => format!("from {address}"),
-        None => "from an address the server could not read".to_string(),
+    match (lockout.address, lockout.prefix) {
+        (Some(address), Some(prefix)) if address.is_ipv6() => format!("from {address}/{prefix}"),
+        (Some(address), _) => format!("from {address}"),
+        (None, _) => "from an address the server could not read".to_string(),
     }
 }
 
@@ -42,7 +50,7 @@ fn origin(lockout: &Lockout) -> String {
 fn question(lockout: &Lockout) -> String {
     format!(
         "Clear the lockout on {} {}? Its failures are forgotten too, and it can sign in \
-         again at once.",
+         again at once — as can any other key that shared all of its cells.",
         lowercase_first(&describe(lockout)),
         origin(lockout),
     )
@@ -75,6 +83,29 @@ fn counter_summary(counters: &[LockoutCounter]) -> String {
     }
 }
 
+/// How full the tiers are, and what that costs somebody who never failed.
+fn fill_summary(tiers: &[TierFill]) -> Option<String> {
+    let worst = tiers.iter().map(TierFill::false_refusal).reduce(f64::max)?;
+    let parts: Vec<String> = tiers
+        .iter()
+        .map(|tier| {
+            format!(
+                "{}: {:.1}% of cells locked",
+                tier.tier.label(),
+                tier.fraction() * 100.0,
+            )
+        })
+        .collect();
+
+    Some(format!(
+        "Failure counts are estimates from a fixed-size sketch: never fewer than there \
+         were, sometimes more. {}. A caller who never failed is refused about {} times in \
+         a million.",
+        parts.join("; "),
+        (worst * 1_000_000.0).round(),
+    ))
+}
+
 /// `"Account 'ada'"` → `"account 'ada'"`, for the middle of a sentence.
 fn lowercase_first(text: &str) -> String {
     let mut chars = text.chars();
@@ -105,8 +136,9 @@ pub fn lockouts_card() -> Html {
     html! {
         <Card
             title="Sign-in lockouts"
-            subtitle="Keys the rate limiter is refusing after too many failed attempts. \
-                A lockout ends on its own; clear one only for a caller you know."
+            subtitle="Addresses, and accounts or endpoints from an address, that the rate \
+                limiter is refusing after too many failed attempts. A lockout ends on its \
+                own; clear one only for a caller you know."
         >
             { body }
         </Card>
@@ -148,6 +180,10 @@ fn lockout_list(props: &LockoutListProps) -> Html {
                 <p class="panel-note">
                     { format!("Showing the {shown} most recent of {total} lockouts.") }
                 </p>
+            }
+
+            if let Some(fill) = fill_summary(&listed.tiers) {
+                <p class="panel-note">{ fill }</p>
             }
 
             <p class="panel-note" title={format_iso8601(listed.counting_since)}>
@@ -211,8 +247,11 @@ fn lockout_row(props: &LockoutRowProps) -> Html {
 
             <StatusPill
                 tone={StatusTone::Warning}
-                label={format!("{} failures", lockout.failures)}
-                title={Some(AttrValue::from("How many failed attempts inside the window earned it."))}
+                label={format!("about {} failures", lockout.failures)}
+                title={Some(AttrValue::from(
+                    "Estimated failures inside the window that earned it: never fewer than \
+                     there were, possibly more.",
+                ))}
             />
 
             <ConfirmButton
@@ -242,6 +281,7 @@ mod tests {
         Lockout {
             class,
             address: "203.0.113.7".parse().ok(),
+            prefix: Some(32),
             key: key.to_string(),
             started_at,
             ends_at: started_at + Duration::minutes(15),
@@ -262,6 +302,56 @@ mod tests {
         assert_eq!(
             describe(&lockout(LockoutClass::Address, "passkey")),
             "Every 'passkey' attempt"
+        );
+        assert_eq!(
+            describe(&lockout(LockoutClass::Source, "203.0.113.7/32")),
+            "Every sign-in"
+        );
+    }
+
+    #[test]
+    fn an_address_lockout_and_an_ipv6_prefix_say_how_wide_they_are() {
+        let source = lockout(LockoutClass::Source, "203.0.113.7/32");
+        assert!(
+            question(&source).starts_with("Clear the lockout on every sign-in from 203.0.113.7?")
+        );
+
+        let network = Lockout {
+            address: "2001:db8:1::".parse().ok(),
+            prefix: Some(48),
+            ..lockout(LockoutClass::Source, "2001:db8:1::/48")
+        };
+        assert_eq!(origin(&network), "from 2001:db8:1::/48");
+    }
+
+    #[test]
+    fn the_fill_says_counts_are_estimates_and_what_a_full_tier_costs() {
+        use rustak_api::LockoutTier;
+
+        let tier = |tier, locked| TierFill {
+            tier,
+            sampled: 4096,
+            locked,
+            rows: 4,
+        };
+
+        assert_eq!(fill_summary(&[]), None);
+
+        let summary =
+            fill_summary(&[tier(LockoutTier::Source, 0), tier(LockoutTier::Pair, 1024)]).unwrap();
+
+        assert!(summary.contains("estimates"), "{summary}");
+        assert!(
+            summary.contains("Addresses: 0.0% of cells locked"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("Accounts and endpoints: 25.0% of cells locked"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("about 3906 times in a million"),
+            "{summary}"
         );
     }
 

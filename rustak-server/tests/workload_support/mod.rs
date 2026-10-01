@@ -89,11 +89,14 @@ impl Deployment {
 
     /// As [`start`](Self::start), letting a test adjust the configuration.
     ///
-    /// The login rate limit is raised out of reach. Every workload refusal
-    /// from one address counts against one key, so a deployment shared by a
-    /// dozen refusal cases would lock itself out at the default of ten — and a
-    /// lockout is a refusal, which would let a case pass for the wrong reason.
-    /// Every case that expects a refusal also asserts it was not a `429`.
+    /// The login rate limit is raised out of reach, in both tiers. Every
+    /// workload refusal from one address counts against one key, and every
+    /// failure of any kind against the address, so a deployment shared by a
+    /// dozen refusal cases would lock itself out at the pair's default of ten
+    /// (the address tier's default is far above what the cases make, but is
+    /// raised too so that its default can move freely) — and a lockout is a
+    /// refusal, which would let a case pass for the wrong reason. Every case
+    /// that expects a refusal also asserts it was not a `429`.
     pub async fn start_with(
         revoke_previous: bool,
         adjust: impl FnOnce(&mut rustak_server::config::Config),
@@ -109,6 +112,8 @@ impl Deployment {
             config.auth.workload = workload;
             config.auth.anon_group_default = true;
             config.auth.rate_limit.attempts = 10_000;
+            config.auth.rate_limit.address_attempts = 10_000;
+            config.auth.rate_limit.network_attempts = 10_000;
             adjust(config);
         })
         .await;

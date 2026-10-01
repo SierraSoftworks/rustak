@@ -94,6 +94,8 @@ hmac = "0.13.0"
 base64 = "0.23.1"
 hex = "0.4.3"
 rand = "0.10.2"
+# The rate limiter's keyed cell index: SipHash-2-4 under a key drawn at start-up.
+siphasher = { version = "1.0.3", default-features = false }
 zeroize = { version = "1.9.0", features = ["derive"] }
 filt-rs = { version = "1.1.3", features = ["serde"] }
 # Pure-Rust WebAuthn relying party (RustCrypto: p256/rsa/ed25519-dalek). `webauthn-rs` 0.5

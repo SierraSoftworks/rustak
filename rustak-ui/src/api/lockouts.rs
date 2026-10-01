@@ -2,7 +2,7 @@
 //!
 //! Administrators only; anybody else is answered `403`.
 
-use rustak_api::{ClearLockoutRequest, Lockout, Lockouts};
+use rustak_api::{ClearLockoutRequest, ClearedLockout, Lockout, Lockouts};
 
 use crate::api::{ApiError, get_json, post_json};
 #[cfg(debug_assertions)]
@@ -16,8 +16,9 @@ pub async fn list() -> Result<Lockouts, ApiError> {
     get_json("/auth/lockouts").await
 }
 
-/// Forgives one lockout. Answers the lockout that was cleared.
-pub async fn clear(lockout: &Lockout) -> Result<Lockout, ApiError> {
+/// Forgives one lockout. Answers the lockout that was cleared, and that any
+/// key sharing all of its cells was forgiven with it.
+pub async fn clear(lockout: &Lockout) -> Result<ClearedLockout, ApiError> {
     let request = ClearLockoutRequest {
         class: lockout.class,
         address: lockout.address,

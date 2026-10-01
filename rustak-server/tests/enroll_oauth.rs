@@ -350,6 +350,40 @@ async fn guessing_a_password_is_rate_limited() {
 }
 
 #[actix_web::test]
+async fn an_account_nobody_holds_runs_out_of_guesses_exactly_as_a_real_one_does() {
+    // Otherwise the point at which a `429` arrives would say whether the
+    // account exists.
+    let server = TestServer::start_with(|config| {
+        config.auth.rate_limit.attempts = 3;
+    })
+    .await;
+    with_password(&server, "ada", false).await;
+    let app = test::init_service(App::new().configure(server.app())).await;
+
+    for username in ["ada", "nobody"] {
+        let mut statuses = Vec::new();
+
+        for _ in 0..4 {
+            let response = test::call_service(
+                &app,
+                grant(form(&[
+                    ("grant_type", "password"),
+                    ("username", username),
+                    ("password", "wrong"),
+                ]))
+                .to_request(),
+            )
+            .await;
+
+            statuses.push(response.status().as_u16());
+        }
+
+        assert_eq!(statuses[..3], [401, 401, 401], "{username}: {statuses:?}");
+        assert_eq!(statuses[3], 429, "{username}: {statuses:?}");
+    }
+}
+
+#[actix_web::test]
 async fn the_signing_key_is_published_in_both_shapes() {
     let server = TestServer::start().await;
     let app = test::init_service(App::new().configure(server.app())).await;
