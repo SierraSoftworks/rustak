@@ -48,9 +48,8 @@ pub mod subjects {
 
 /// What the code grant puts in front of a client identifier.
 ///
-/// The same value as `auth::oauth_server::code_grant`'s own private constant.
-/// If the two ever differ, a client's lockout is listed and counted as an
-/// account's — mislabelled, but still listed and still clearable.
+/// `auth::oauth_server::code_grant` uses this constant itself, so a client's
+/// lockout cannot be listed or counted as an account's.
 pub const CLIENT_PREFIX: &str = "oauth-client:";
 
 /// Which class a subject belongs to, and the part of it worth showing.

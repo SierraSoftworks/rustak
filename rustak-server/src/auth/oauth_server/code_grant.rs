@@ -44,8 +44,9 @@ use super::responses::{
 use super::{clients, id_token, scopes};
 
 /// What a client identifier is prefixed with in the rate limiter, so that it
-/// cannot collide with the usernames the password grant counts.
-const CLIENT_SUBJECT_PREFIX: &str = "oauth-client:";
+/// cannot collide with the usernames the password grant counts. The limiter's
+/// own constant, so that a client's lockout is always listed as a client's.
+const CLIENT_SUBJECT_PREFIX: &str = crate::auth::ratelimit::CLIENT_PREFIX;
 
 /// The fields of a token request this grant reads.
 #[derive(Debug, Clone, Copy, Default)]
