@@ -135,9 +135,18 @@ impl StreamMetrics {
 
     /// Takes one off a counter, never wrapping past zero.
     pub fn decr(counter: &AtomicU64) {
-        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-            Some(value.saturating_sub(1))
-        });
+        let mut value = counter.load(Ordering::Relaxed);
+        loop {
+            match counter.compare_exchange_weak(
+                value,
+                value.saturating_sub(1),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(current) => value = current,
+            }
+        }
     }
 
     /// Reads a counter.
@@ -168,6 +177,11 @@ mod tests {
         // eighteen quintillion and send somebody looking for a leak.
         let metrics = StreamMetrics::default();
 
+        StreamMetrics::decr(&metrics.connected);
+
+        assert_eq!(StreamMetrics::get(&metrics.connected), 0);
+
+        StreamMetrics::incr(&metrics.connected);
         StreamMetrics::decr(&metrics.connected);
 
         assert_eq!(StreamMetrics::get(&metrics.connected), 0);
