@@ -119,7 +119,13 @@ pub fn bootstrap(
         // See "Debug builds still log" above: without this a `cargo run` build
         // says nothing at all.
         .with_debug_builds()
-        .with_battery(tracing_batteries::OpenTelemetry::new("").with_stdout(options.stdout));
+        .with_battery(tracing_batteries::OpenTelemetry::new("").with_stdout(options.stdout))
+        // CPU profiles go to the same collector as the traces, so this is
+        // silent unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+        .with_battery(
+            tracing_batteries::Profiling::new("")
+                .with_backend(tracing_batteries::ProfilingPprof::new()),
+        );
 
     if let Some(dsn) = options.sentry_dsn.as_deref() {
         session = session.with_battery(tracing_batteries::Sentry::new(dsn));
