@@ -963,7 +963,7 @@ which reads these environment variables:
 | Variable | Effect |
 |---|---|
 | `LOG_LEVEL` | `error`, `warn`, `info` (default), `debug` or `trace`. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | When set, traces (and logs) are exported over OTLP as well as printed. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | When set, traces (and logs) are exported over OTLP as well as printed, and CPU profiles are exported to the same collector (Linux and macOS only; the collector needs a `profiles` pipeline). |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `http-binary` (default), `http-json` or `grpc`. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | Extra headers for the collector, e.g. `X-API-KEY=...`. |
 | `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | Standard OpenTelemetry sampling knobs. |
