@@ -53,7 +53,7 @@ rustls-pki-types = { version = "1.15.1", features = ["std"] }
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "aws_lc_rs", "x509-parser"] }
 x509-parser = { version = "0.18.1", features = ["verify-aws"] }
 instant-acme = { version = "0.8.5", default-features = false, features = ["aws-lc-rs", "hyper-rustls"] }
-p12-keystore = "0.3.2"
+p12-keystore = "0.4.0"
 pem = "4.0.0"
 rsa = { version = "0.9.10", features = ["getrandom", "sha2"] }   # RSA key generation (CA + JWT keys); rcgen cannot generate RSA
 
