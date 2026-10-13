@@ -72,7 +72,7 @@ quick-xml = { version = "0.42.0", features = ["serialize"] }
 prost = "0.14.4"
 prost-types = "0.14.4"
 prost-build = "0.14.4"
-protox = "0.9.1"
+protox = "0.10.0"
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }   # pure Rust, cross-friendly
 
 # ---- configuration schemas ----
