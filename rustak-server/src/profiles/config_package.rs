@@ -287,7 +287,7 @@ mod tests {
         zip::ZipArchive::new(Cursor::new(zip.to_vec()))
             .unwrap()
             .file_names()
-            .map(str::to_string)
+            .map(|name| name.unwrap().into_owned())
             .collect()
     }
 

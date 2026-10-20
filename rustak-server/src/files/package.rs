@@ -222,8 +222,10 @@ pub fn read_manifest<R: Read + Seek>(
 ) -> Result<(Manifest, String), Error> {
     let path = zip
         .file_names()
+        // A name that cannot be decoded is not the manifest's.
+        .filter_map(Result::ok)
         .find(|name| name.ends_with(MANIFEST_PATH))
-        .map(str::to_string)
+        .map(std::borrow::Cow::into_owned)
         .ok_or_else(|| {
             human_errors::user(
                 "That package has no MANIFEST/manifest.xml, so we cannot tell what is in it.",
