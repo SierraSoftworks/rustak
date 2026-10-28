@@ -69,7 +69,7 @@ fn names(body: &[u8]) -> Vec<String> {
     zip::ZipArchive::new(Cursor::new(body.to_vec()))
         .expect("a readable zip")
         .file_names()
-        .map(str::to_string)
+        .map(|name| name.unwrap().into_owned())
         .collect()
 }
 

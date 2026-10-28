@@ -390,7 +390,14 @@ mod tests {
         let mut archive = zip::ZipArchive::new(Cursor::new(zip)).expect("a readable archive");
 
         (0..archive.len())
-            .map(|index| archive.by_index(index).unwrap().name().to_string())
+            .map(|index| {
+                archive
+                    .by_index(index)
+                    .unwrap()
+                    .name()
+                    .unwrap()
+                    .into_owned()
+            })
             .collect()
     }
 
