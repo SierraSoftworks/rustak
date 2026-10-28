@@ -326,7 +326,7 @@ fn redacted(url: &Url) -> String {
 mod tests {
     use std::fmt;
 
-    use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
 
@@ -583,6 +583,14 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
+            // Answering before the request has arrived is a different failure:
+            // the client drops the unasked-for response as it sends.
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                if stream.read_buf(&mut request).await.unwrap_or(0) == 0 {
+                    break;
+                }
+            }
             let _ = stream
                 .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\nshort")
                 .await;
