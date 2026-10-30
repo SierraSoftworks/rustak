@@ -6,6 +6,6 @@
   "dependencies": {
     "maplibre-gl": "6.16.0",
     "mil-std-2525": "0.2.8",
-    "milsymbol": "3.0.4"
+    "milsymbol": "3.0.5"
   }
 }
