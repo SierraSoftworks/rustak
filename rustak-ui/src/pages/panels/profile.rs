@@ -15,7 +15,7 @@ use yew::prelude::*;
 use crate::api;
 use crate::app::AuthHandle;
 use crate::components::{
-    Alert, AlertKind, Button, ButtonKind, Card, Field, StatusPill, StatusTone, Switch, TextInput,
+    Alert, AlertKind, Button, ButtonKind, Field, Section, StatusPill, StatusTone, Switch, TextInput,
 };
 use crate::util::{format_iso8601, optional_relative};
 
@@ -102,7 +102,7 @@ pub fn profile_panel(props: &ProfilePanelProps) -> Html {
     let managed_here = props.user.source.is_managed_here();
 
     html! {
-        <Card title="Profile" subtitle="Who this is, and what they may do.">
+        <Section title="Profile" subtitle="Who this is, and what they may do.">
             if let Some(message) = &*error {
                 <Alert
                     kind={AlertKind::Error}
@@ -200,7 +200,7 @@ pub fn profile_panel(props: &ProfilePanelProps) -> Html {
             >
                 { "Save profile" }
             </Button>
-        </Card>
+        </Section>
     }
 }
 

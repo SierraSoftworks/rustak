@@ -10,7 +10,7 @@ use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
 use crate::api;
-use crate::components::{Card, ConfirmButton, Select, StatusPill, StatusTone, role_options};
+use crate::components::{ConfirmButton, Section, Select, StatusPill, StatusTone, role_options};
 use crate::util::{format_iso8601, short_relative};
 
 #[derive(Properties, PartialEq)]
@@ -25,7 +25,7 @@ pub fn mission_subscribers(props: &MissionSubscribersProps) -> Html {
     let guid = props.mission.summary.guid;
 
     html! {
-        <Card
+        <Section
             title="Subscribers"
             subtitle="Every device receiving this mission, and what it may do to it."
         >
@@ -47,7 +47,7 @@ pub fn mission_subscribers(props: &MissionSubscribersProps) -> Html {
                     }) }
                 </ul>
             }
-        </Card>
+        </Section>
     }
 }
 
@@ -171,7 +171,7 @@ pub struct MissionLayersProps {
 #[function_component(MissionLayers)]
 pub fn mission_layers(props: &MissionLayersProps) -> Html {
     html! {
-        <Card title="Layers" subtitle="How this mission's contents are arranged for a client.">
+        <Section title="Layers" subtitle="How this mission's contents are arranged for a client.">
             if props.layers.is_empty() {
                 <p class="panel-empty">
                     { "No layers. Everything in this mission sits at its root." }
@@ -179,7 +179,7 @@ pub fn mission_layers(props: &MissionLayersProps) -> Html {
             } else {
                 { branch(&props.layers, None) }
             }
-        </Card>
+        </Section>
     }
 }
 

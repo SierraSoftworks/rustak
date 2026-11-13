@@ -36,18 +36,31 @@ pub(super) const DIRECTORY: &str = "rustak-test-keys";
 
 /// Where this process keeps its keys, if it is a test binary Cargo built.
 ///
-/// Test binaries live in `<target>/<profile>/deps/`. `CARGO_TARGET_TMPDIR`
+/// Test binaries live in `<target>/<profile>/deps/`, or since Cargo 1.100 in
+/// `<target>/<profile>/build/<package>/<hash>/out/`. `CARGO_TARGET_TMPDIR`
 /// would be the obvious place, but Cargo sets it only when compiling
 /// integration tests and benchmarks, not the library these keys are made in.
 pub(super) fn directory() -> Option<PathBuf> {
     let executable = std::env::current_exe().ok()?;
-    let deps = executable.parent()?;
 
-    if deps.file_name()? != "deps" {
-        return None;
+    Some(profile_directory(&executable)?.join(DIRECTORY))
+}
+
+/// The `<target>/<profile>/` directory of a test binary at `executable`, under
+/// either layout Cargo has used.
+pub(super) fn profile_directory(executable: &Path) -> Option<&Path> {
+    let parent = executable.parent()?;
+
+    match parent.file_name()?.to_str()? {
+        "deps" => parent.parent(),
+        "out" => {
+            let build = parent.ancestors().nth(3)?;
+            (build.file_name()? == "build")
+                .then(|| build.parent())
+                .flatten()
+        }
+        _ => None,
     }
-
-    Some(deps.parent()?.join(DIRECTORY))
 }
 
 /// Reads `name` from `directory`, or makes it and leaves it there for the

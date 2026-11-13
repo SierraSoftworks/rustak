@@ -14,7 +14,8 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Alert, AlertKind, Button, ButtonGroup, ButtonKind, Card, LoadingNote, PrefsEditor, problem_with,
+    Alert, AlertKind, Button, ButtonGroup, ButtonKind, LoadingNote, PrefsEditor, Section,
+    problem_with,
 };
 
 use super::load::use_resource;
@@ -112,7 +113,7 @@ pub fn profile_prefs(props: &ProfilePrefsProps) -> Html {
     };
 
     html! {
-        <Card
+        <Section
             title="Preferences"
             subtitle="Delivered in this order, each with the Java class ATAK reads it as."
         >
@@ -158,6 +159,6 @@ pub fn profile_prefs(props: &ProfilePrefsProps) -> Html {
                     }
                 </div>
             }
-        </Card>
+        </Section>
     }
 }

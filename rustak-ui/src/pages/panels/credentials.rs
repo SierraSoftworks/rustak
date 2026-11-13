@@ -13,8 +13,7 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Alert, AlertKind, Card, ConfirmButton, LoadingNote, QrCodeView, SecretReveal, StatusPill,
-    StatusTone,
+    Alert, AlertKind, ConfirmButton, LoadingNote, SecretReveal, Section, StatusPill, StatusTone,
 };
 use crate::util::{format_iso8601, optional_relative};
 
@@ -95,9 +94,9 @@ pub fn credentials_panel(props: &CredentialsPanelProps) -> Html {
 
             <MintForm username={props.username.clone()} {on_minted} />
 
-            <Card title={props.title.clone()} subtitle="Everything this account can present.">
+            <Section title={props.title.clone()} subtitle="Everything this account can present.">
                 { body }
-            </Card>
+            </Section>
         </>
     }
 }
@@ -122,7 +121,7 @@ fn revealed(props: &RevealedProps) -> Html {
         >
             if let Some(url) = &created.enroll_url {
                 <div class="secret-reveal__qr">
-                    <QrCodeView data={url.clone()} alt="Enrolment QR code for ATAK" />
+                    <yewi::QrCode value={url.clone()} label="Enrolment QR code for ATAK" size={208} />
                     <p class="secret-reveal__qr-note">
                         { "In ATAK, choose Settings → Network Preferences → Manage Server \
                            Connections → Quick Connect and scan this." }

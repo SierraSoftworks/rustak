@@ -13,7 +13,7 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::app::AuthHandle;
-use crate::components::{Alert, AlertKind, Card, LoadingNote, StatusPill, StatusTone};
+use crate::components::{Alert, AlertKind, LoadingNote, Section, StatusPill, StatusTone};
 use crate::util::format_iso8601;
 
 use super::load::{use_refresh_action, use_resource};
@@ -91,22 +91,22 @@ pub fn security() -> Html {
 
     html! {
         <>
-            <Card
+            <Section
                 title="This server"
                 subtitle="Values set in config.toml win over the ones the wizard wrote, so \
                     this is what clients are actually told."
             >
                 { details }
-            </Card>
+            </Section>
 
             <TlsCard />
 
-            <Card
+            <Section
                 title="Authentication"
                 subtitle="How people sign in to this console, and how you signed in."
             >
                 { auth }
-            </Card>
+            </Section>
 
             <LockoutsCard />
         </>
@@ -131,7 +131,7 @@ fn auth_details(props: &AuthDetailsProps) -> Html {
 
     html! {
         <>
-            <div class="card__status">
+            <div class="pill-row">
                 <StatusPill tone={mode_tone} label={mode_label} />
                 <StatusPill
                     tone={if metadata.passkeys_enabled { StatusTone::Ok } else { StatusTone::Neutral }}

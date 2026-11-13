@@ -15,7 +15,8 @@ use yew_router::prelude::*;
 use crate::api;
 use crate::app::{AuthHandle, Route};
 use crate::components::{
-    Alert, AlertKind, Card, LoadingNote, MenuAction, MenuItem, SplitButton, StatusPill, StatusTone,
+    Alert, AlertKind, LoadingNote, MenuAction, MenuItem, Section, SplitButton, StatusPill,
+    StatusTone,
 };
 use crate::util::{nav_href, optional_relative, urlencode};
 
@@ -59,7 +60,9 @@ pub fn users() -> Html {
     html! {
         <>
             <CreateUser on_created={users.reload.clone()} />
-            <Card>{ body }</Card>
+            <Section title="All accounts" subtitle="Open one to see its devices, credentials and channels.">
+                { body }
+            </Section>
         </>
     }
 }

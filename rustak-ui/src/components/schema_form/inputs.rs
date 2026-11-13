@@ -94,7 +94,7 @@ pub fn decimal_input(props: &DecimalInputProps) -> Html {
     html! {
         <input
             id={props.id.clone()}
-            class={classes!("field__input", invalid.then_some("field__input--invalid"))}
+            class={classes!("yi-input", "yi-input--md", invalid.then_some("yi-input--invalid"))}
             type="text"
             inputmode="decimal"
             aria-invalid={invalid.then_some("true")}

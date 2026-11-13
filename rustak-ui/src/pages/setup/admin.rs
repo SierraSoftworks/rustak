@@ -276,7 +276,7 @@ pub fn passkey_step(props: &PasskeyStepProps) -> Html {
                     title="The passkey could not be registered."
                     message={message.clone()}
                 >
-                    <p class="alert__message">
+                    <p>
                         { "You can try again; the registration token is good for a few \
                            minutes." }
                     </p>

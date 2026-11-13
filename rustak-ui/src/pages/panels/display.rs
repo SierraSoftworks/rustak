@@ -28,7 +28,7 @@ use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
 use crate::api;
-use crate::components::{Alert, AlertKind, Card, SchemaNode};
+use crate::components::{Alert, AlertKind, SchemaNode, Section};
 
 #[derive(Properties, PartialEq)]
 pub struct DisplayPanelProps {
@@ -76,7 +76,7 @@ pub fn display_panel(props: &DisplayPanelProps) -> Html {
     };
 
     html! {
-        <Card
+        <Section
             title="Preferences"
             subtitle="What you have chosen for yourself. These follow your account, to this console and to your devices."
         >
@@ -100,6 +100,6 @@ pub fn display_panel(props: &DisplayPanelProps) -> Html {
                 disabled={*busy}
                 scope="pref"
             />
-        </Card>
+        </Section>
     }
 }

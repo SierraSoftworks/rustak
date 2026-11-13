@@ -11,7 +11,7 @@ use yew::prelude::*;
 use crate::api;
 use crate::auth;
 use crate::components::{
-    Alert, AlertKind, Button, ButtonKind, Card, EmptyState, LoadingNote, TextInput,
+    Alert, AlertKind, Button, ButtonKind, EmptyState, LoadingNote, Section, TextInput,
 };
 use crate::util::{format_iso8601, optional_relative};
 
@@ -156,7 +156,7 @@ fn passkeys(props: &PasskeysProps) -> Html {
     };
 
     html! {
-        <Card title={props.title.clone()} subtitle={props.subtitle.clone()} {actions}>
+        <Section title={props.title.clone()} subtitle={props.subtitle.clone()} {actions}>
             { list }
 
             if let Some(message) = &*error {
@@ -166,7 +166,7 @@ fn passkeys(props: &PasskeysProps) -> Html {
                     message={message.clone()}
                 />
             }
-        </Card>
+        </Section>
     }
 }
 

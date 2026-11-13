@@ -20,7 +20,7 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Alert, AlertKind, Card, ConfirmButton, EmptyState, LoadingNote, StatusPill, StatusTone,
+    Alert, AlertKind, ConfirmButton, EmptyState, LoadingNote, Section, StatusPill, StatusTone,
 };
 use crate::util::{format_iso8601, short_relative};
 
@@ -134,14 +134,14 @@ pub fn lockouts_card() -> Html {
     };
 
     html! {
-        <Card
+        <Section
             title="Sign-in lockouts"
             subtitle="Addresses, and accounts or endpoints from an address, that the rate \
                 limiter is refusing after too many failed attempts. A lockout ends on its \
                 own; clear one only for a caller you know."
         >
             { body }
-        </Card>
+        </Section>
     }
 }
 

@@ -59,10 +59,10 @@ const DEMO_ACCOUNT = "service-weather";
 async function createCloudTakAccount(page: Page, username: string): Promise<void> {
   await gotoApp(page, "/admin/users");
 
+  await page.getByRole("button", { name: "New account" }).click();
   await page.getByLabel("Username").fill(username);
-  // The CloudTAK account is the other kind, behind the create button's caret.
-  await page.getByRole("button", { name: "Other kinds of account" }).click();
-  await page.getByRole("menuitem", { name: "Create CloudTAK account" }).click();
+  // The CloudTAK account is the other kind, on its own button beside "Create account".
+  await page.getByRole("button", { name: "Create CloudTAK account" }).click();
 
   // It creates the service account and lands on its CloudTAK tab, so the
   // operator does not have to know those are two separate things.
@@ -118,7 +118,7 @@ test("onboarding produces the three URLs and a keystore that downloads exactly o
 
   await expect(page.getByText("This is the only time this secret is shown")).toBeVisible();
 
-  const values = page.locator(".copyable__value");
+  const values = page.locator(".yi-copyable__value");
 
   await expect(values.filter({ hasText: "ssl://" })).toHaveCount(1);
   await expect(values.filter({ hasText: /^https:\/\/.+:\d+$/ })).toHaveCount(2);
@@ -149,7 +149,7 @@ test("the secrets are shown once and are not on the page after a reload", async 
 
   await expect(page.getByText("This is the only time this secret is shown")).toBeVisible();
 
-  const secret = (await page.locator(".copyable__value").first().innerText()).trim();
+  const secret = (await page.locator(".yi-copyable__value").first().innerText()).trim();
 
   expect(secret.length).toBeGreaterThan(0);
 
@@ -178,7 +178,7 @@ test("the host and ports a published deployment uses can be overridden before ge
 
   // rustak has no way to know which ports a container was published on, so the
   // three URLs have to come back exactly as they were asked for.
-  const values = page.locator(".copyable__value");
+  const values = page.locator(".yi-copyable__value");
 
   await expect(values.filter({ hasText: "ssl://tak.published.example:28089" })).toHaveCount(1);
   await expect(values.filter({ hasText: "https://tak.published.example:28443" })).toHaveCount(1);

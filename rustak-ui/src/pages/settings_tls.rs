@@ -22,7 +22,7 @@ use rustak_api::{TlsCertificateState, TlsSource, TlsStatus};
 use yew::prelude::*;
 
 use crate::api;
-use crate::components::{Alert, AlertKind, Button, Card, LoadingNote, StatusPill, StatusTone};
+use crate::components::{Alert, AlertKind, Button, LoadingNote, Section, StatusPill, StatusTone};
 use crate::util::{format_iso8601, short_relative};
 
 use super::load::use_resource;
@@ -130,9 +130,9 @@ pub fn tls_card() -> Html {
     };
 
     html! {
-        <Card title="Transport security" subtitle="What the public listener presents.">
+        <Section title="Transport security" subtitle="What the public listener presents.">
             { body }
-        </Card>
+        </Section>
     }
 }
 
@@ -174,7 +174,7 @@ fn details(props: &DetailsProps) -> Html {
 
     if status.source == TlsSource::None {
         return html! {
-            <Card title="Transport security" {subtitle}>
+            <Section title="Transport security" {subtitle}>
                 <Alert
                     kind={AlertKind::Warning}
                     title="This server is not serving TLS."
@@ -182,7 +182,7 @@ fn details(props: &DetailsProps) -> Html {
                              password, a bearer token — travels in the clear. Set \
                              `[web.public.tls] mode` in the configuration file."
                 />
-            </Card>
+            </Section>
         };
     }
 
@@ -204,7 +204,7 @@ fn details(props: &DetailsProps) -> Html {
     };
 
     html! {
-        <Card title="Transport security" {subtitle} {actions}>
+        <Section title="Transport security" {subtitle} {actions}>
             if let Some(message) = &*error {
                 <Alert
                     kind={AlertKind::Error}
@@ -306,7 +306,7 @@ fn details(props: &DetailsProps) -> Html {
                     </dd>
                 }
             </dl>
-        </Card>
+        </Section>
     }
 }
 

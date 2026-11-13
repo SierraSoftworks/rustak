@@ -328,3 +328,12 @@ export async function storedSession(page: Page): Promise<Session | undefined> {
     refreshToken: refresh ?? undefined,
   };
 }
+
+/**
+ * Signs out through the account menu in the app bar, which is where the
+ * console keeps it.
+ */
+export async function signOut(page: Page): Promise<void> {
+  await page.locator(".yi-user-menu__trigger").click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
+}

@@ -1,27 +1,28 @@
-//! A destructive action that asks first.
-//!
-//! Revoking a credential strands whatever is using it and forgetting a device
-//! loses what we knew about it, and neither is undone by doing it again. The
-//! browser's own `confirm()` would do the job, but it cannot say *which* row is
-//! about to go and it cannot be driven by a test — so the button replaces itself
-//! with the question, in place, and the answer stays next to the thing it is
-//! about.
+//! Asking before something that cannot be taken back.
 
 use yew::prelude::*;
 
-use crate::components::{Button, ButtonGroup, ButtonKind};
+use super::{Button, ButtonKind};
+
+/// A question as a dialog shows it: what is asked as the title, and whatever
+/// was said after it as the body beneath.
+pub fn question_parts(question: &str) -> (AttrValue, Html) {
+    match question.split_once('?') {
+        Some((asked, rest)) if !rest.trim().is_empty() => (
+            AttrValue::from(format!("{asked}?")),
+            html! { <p>{ rest.trim().to_string() }</p> },
+        ),
+        _ => (AttrValue::from(question.to_string()), Html::default()),
+    }
+}
 
 #[derive(Properties, PartialEq)]
 pub struct ConfirmButtonProps {
-    /// The label before anybody has asked for anything.
     pub label: AttrValue,
 
-    /// The question, which should name what is about to happen to what.
+    /// What is asked before it happens: "Revoke this credential?"
     pub question: AttrValue,
 
-    /// The label on the button that goes through with it. Says what it does
-    /// rather than "Yes", so the two buttons cannot be told apart only by
-    /// position.
     #[prop_or(AttrValue::from("Confirm"))]
     pub confirm_label: AttrValue,
 
@@ -33,12 +34,16 @@ pub struct ConfirmButtonProps {
     #[prop_or_default]
     pub busy: bool,
 
-    /// Why the action is unavailable, when it is.
+    /// Row-sized by default; off beside full-sized buttons.
+    #[prop_or(true)]
+    pub small: bool,
+
     #[prop_or_default]
     pub title: Option<AttrValue>,
 }
 
-/// A button that asks before it acts.
+/// A destructive action that asks first, in a dialog that names what is about
+/// to happen and keeps the way back as easy as the way forward.
 #[function_component(ConfirmButton)]
 pub fn confirm_button(props: &ConfirmButtonProps) -> Html {
     let asking = use_state(|| false);
@@ -47,24 +52,24 @@ pub fn confirm_button(props: &ConfirmButtonProps) -> Html {
         let asking = asking.clone();
         Callback::from(move |_: MouseEvent| asking.set(true))
     };
-
-    let oncancel = {
+    let on_cancel = {
         let asking = asking.clone();
-        Callback::from(move |_: MouseEvent| asking.set(false))
+        Callback::from(move |()| asking.set(false))
     };
-
-    let onconfirm = {
+    let on_confirm = {
         let (asking, onconfirm) = (asking.clone(), props.onconfirm.clone());
-        Callback::from(move |_: MouseEvent| {
+        Callback::from(move |()| {
             asking.set(false);
             onconfirm.emit(());
         })
     };
 
-    if !*asking {
-        return html! {
+    let (title, detail) = question_parts(&props.question);
+
+    html! {
+        <>
             <Button
-                small=true
+                small={props.small}
                 kind={ButtonKind::Danger}
                 disabled={props.disabled}
                 busy={props.busy}
@@ -73,23 +78,32 @@ pub fn confirm_button(props: &ConfirmButtonProps) -> Html {
             >
                 { props.label.clone() }
             </Button>
-        };
+            <yewi::ConfirmDialog
+                open={*asking}
+                title={title}
+                confirm_label={props.confirm_label.clone()}
+                danger=true
+                {on_confirm}
+                {on_cancel}
+            >
+                { detail }
+            </yewi::ConfirmDialog>
+        </>
     }
+}
 
-    html! {
-        <div class="confirm">
-            <span class="confirm__question" role="alert">{ props.question.clone() }</span>
-            <ButtonGroup label={props.question.clone()}>
-                <Button small=true onclick={oncancel}>{ "Cancel" }</Button>
-                <Button
-                    small=true
-                    kind={ButtonKind::Danger}
-                    busy={props.busy}
-                    onclick={onconfirm}
-                >
-                    { props.confirm_label.clone() }
-                </Button>
-            </ButtonGroup>
-        </div>
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_question_is_the_title_and_what_follows_is_the_body() {
+        let (title, detail) = question_parts("Delete 'x'? Its files go with it.");
+        assert_eq!(title, "Delete 'x'?");
+        assert_ne!(detail, Html::default());
+
+        let (title, detail) = question_parts("Delete 'x'?");
+        assert_eq!(title, "Delete 'x'?");
+        assert_eq!(detail, Html::default());
     }
 }

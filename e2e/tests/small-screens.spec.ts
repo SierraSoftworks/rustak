@@ -60,7 +60,8 @@ test("the navigation folds away beside the page, and stays folded", async ({ pag
   await expect(nav).toBeVisible();
   const before = (await box(map)).width;
 
-  await page.getByRole("button", { name: "Close the navigation" }).click();
+  const toggle = page.getByRole("button", { name: "Navigation", exact: true });
+  await toggle.click();
   await expect(nav).toBeHidden();
   // The width goes to the page, and the map takes it.
   await expect.poll(async () => (await box(map)).width).toBeGreaterThan(before);
@@ -70,7 +71,7 @@ test("the navigation folds away beside the page, and stays folded", async ({ pag
   await expect(page.getByRole("application")).toBeVisible();
   await expect(nav).toBeHidden();
 
-  await page.getByRole("button", { name: "Open the navigation" }).click();
+  await toggle.click();
   await expect(nav).toBeVisible();
 });
 
@@ -81,18 +82,19 @@ test("on a phone the navigation is a drawer the same button opens and closes", a
   const nav = page.getByRole("navigation", { name: "Admin sections" });
   await expect(nav).toBeHidden();
 
-  await page.getByRole("button", { name: "Open the navigation" }).click();
+  const toggle = page.getByRole("button", { name: "Navigation", exact: true });
+  await toggle.click();
   await expect(nav).toBeVisible();
 
-  await page.getByRole("button", { name: "Close the navigation" }).click();
+  await page.keyboard.press("Escape");
   await expect(nav).toBeHidden();
 
   // Turned on its side, or the window let out: the navigation is a column
-  // again, there without being asked for, and the button says it would fold it.
-  await page.getByRole("button", { name: "Open the navigation" }).click();
+  // again, there without being asked for, and the button says it is open.
+  await toggle.click();
   await page.setViewportSize({ width: 1280, height: 800 });
   await expect(nav).toBeVisible();
-  await expect(page.getByRole("button", { name: "Close the navigation" })).toBeVisible();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
 });
 
 for (const width of [1280, 1024, 768, 390]) {

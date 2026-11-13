@@ -37,6 +37,7 @@ test("a package is uploaded, given a channel, downloaded and deleted", async ({ 
 
   await gotoApp(page, "/admin/packages");
 
+  await page.getByRole("button", { name: "New package" }).click();
   await page.getByLabel("Name").fill(name);
   await page.getByLabel("Keywords").fill("missionpackage, e2e");
 
@@ -49,6 +50,8 @@ test("a package is uploaded, given a channel, downloaded and deleted", async ({ 
     });
 
   await expect(page.getByText(`'${name}' was stored.`, { exact: false })).toBeVisible();
+  // The form stays open to say so, and for the next upload; the list is behind it.
+  await page.keyboard.press("Escape");
 
   // The list reloads from the server rather than pushing the row in locally,
   // so seeing it here means the package was genuinely written.
@@ -67,9 +70,9 @@ test("a package is uploaded, given a channel, downloaded and deleted", async ({ 
 
   // --- the filter --------------------------------------------------------
 
-  await page.getByLabel("Filter").fill("a name no package could have");
+  await page.getByRole("searchbox").fill("a name no package could have");
   await expect(page.locator(".package-row")).toHaveCount(0);
-  await page.getByLabel("Filter").fill(name);
+  await page.getByRole("searchbox").fill(name);
   await expect(page.locator(".package-row")).toHaveCount(1);
 
   // --- editing -----------------------------------------------------------
@@ -117,6 +120,7 @@ test("a package upload with no file is not a request at all", async ({ page }) =
 
   // Nothing is sent until a file is chosen: the drop zone is the trigger, not
   // a separate Upload button that could be pressed with an empty form.
+  await page.getByRole("button", { name: "New package" }).click();
   await page.getByLabel("Name").fill(uniqueName("Never uploaded"));
   await expect(page.getByText("was stored.", { exact: false })).toHaveCount(0);
   await expect(page.getByText("could not be uploaded", { exact: false })).toHaveCount(0);

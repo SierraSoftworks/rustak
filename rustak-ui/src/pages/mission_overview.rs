@@ -22,8 +22,8 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Alert, AlertKind, Button, ButtonGroup, Card, ConfirmButton, RoleBadge, StatusPill, StatusTone,
-    Switch,
+    Alert, AlertKind, Button, ButtonGroup, ConfirmButton, RoleBadge, Section, StatusPill,
+    StatusTone, Switch,
 };
 use crate::util::{format_iso8601, short_relative};
 
@@ -76,7 +76,7 @@ pub fn overview(props: &OverviewProps) -> Html {
     let deleted = *deleted;
 
     html! {
-        <Card title="Overview" subtitle="What this mission is, and what happens to it.">
+        <Section title="Overview" subtitle="What this mission is, and what happens to it.">
             if let Some(message) = &*error {
                 <Alert
                     kind={AlertKind::Error}
@@ -206,6 +206,7 @@ pub fn overview(props: &OverviewProps) -> Html {
                     </Button>
 
                     <ConfirmButton
+                        small=false
                         label="Delete"
                         confirm_label="Delete it"
                         question={format!(
@@ -220,6 +221,6 @@ pub fn overview(props: &OverviewProps) -> Html {
                     />
                 </ButtonGroup>
             </div>
-        </Card>
+        </Section>
     }
 }

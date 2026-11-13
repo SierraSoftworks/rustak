@@ -12,7 +12,7 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Alert, AlertKind, Button, ButtonGroup, ButtonKind, Card, ConfirmButton, Field, LoadingNote,
+    Alert, AlertKind, Button, ButtonGroup, ButtonKind, ConfirmButton, Field, LoadingNote, Section,
     Switch, TextInput,
 };
 use crate::util::nav_href;
@@ -119,7 +119,7 @@ pub fn settings(props: &SettingsProps) -> Html {
     };
 
     html! {
-        <Card
+        <Section
             title="Delivery"
             subtitle="When this profile is handed out, and to whom."
         >
@@ -219,6 +219,7 @@ pub fn settings(props: &SettingsProps) -> Html {
                 </Button>
 
                 <ConfirmButton
+                    small=false
                     label="Delete"
                     confirm_label="Delete it"
                     question={format!(
@@ -229,7 +230,7 @@ pub fn settings(props: &SettingsProps) -> Html {
                     onconfirm={remove}
                 />
             </ButtonGroup>
-        </Card>
+        </Section>
     }
 }
 

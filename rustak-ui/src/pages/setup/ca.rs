@@ -121,13 +121,16 @@ fn existing(props: &ExistingProps) -> Html {
 
             if let Some(pem) = &summary.certificate_pem {
                 <p class="wizard__lead">
-                    <a
-                        class="btn"
-                        download="ca.crt"
-                        href={format!("data:application/x-pem-file;charset=utf-8,{}", urlencode(pem))}
+                    <yewi::Button
+                        icon={yewi::icons::DOWNLOAD}
+                        href={yewi::NavTarget::href(format!(
+                            "data:application/x-pem-file;charset=utf-8,{}",
+                            urlencode(pem),
+                        ))}
+                        attrs={yewi::attrs! { "download" => "ca.crt" }}
                     >
                         { "Download the authority certificate" }
-                    </a>
+                    </yewi::Button>
                 </p>
             }
 

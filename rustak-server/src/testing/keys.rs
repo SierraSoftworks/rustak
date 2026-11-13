@@ -22,7 +22,7 @@
 //! Cargo's `CARGO_TARGET_TMPDIR` would be the obvious place, but Cargo sets it
 //! only when compiling integration tests and benchmarks — not the library,
 //! whose unit tests and `testing` feature are where these keys are made. A
-//! process that is not a test binary in `<target>/<profile>/deps/` (a doctest,
+//! process that is not a test binary under `<target>/<profile>/` (a doctest,
 //! say) keeps its keys in memory and writes nothing.
 //!
 //! # Threat model
@@ -174,7 +174,7 @@ mod tests {
         // Whether this process made the key or read it, the file now holds
         // it, and the next process to start will sign with the same one.
         let shared = rsa::RsaPrivateKey::from_pkcs8_der(&JWT_SIGNING_KEY).unwrap();
-        let directory = key_file::directory().expect("a test binary runs from deps/");
+        let directory = key_file::directory().expect("a test binary runs from target/");
         let bytes = std::fs::read(directory.join("jwt-signing.pk8")).expect("the key was left");
 
         assert_eq!(parse(&bytes).expect("the file holds a key"), shared);
@@ -182,17 +182,35 @@ mod tests {
 
     #[test]
     fn a_test_binary_keeps_its_keys_beside_the_binaries() {
-        // This test runs from `<target>/<profile>/deps/`, under both runners,
+        // This test runs from inside `<target>/<profile>/`, under both runners,
         // so the keys go in the profile directory — inside `target/`, where
         // `cargo clean` finds them.
-        let directory = key_file::directory().expect("a test binary runs from deps/");
+        let directory = key_file::directory().expect("a test binary runs from target/");
         let executable = std::env::current_exe().unwrap();
 
         assert_eq!(directory.file_name().unwrap(), key_file::DIRECTORY);
-        assert_eq!(
-            directory.parent(),
-            executable.parent().and_then(Path::parent)
-        );
+        assert!(executable.starts_with(directory.parent().unwrap()));
+    }
+
+    #[test]
+    fn the_profile_directory_is_found_under_either_cargo_layout() {
+        let cases = [
+            ("/t/debug/deps/server-1a2b", Some("/t/debug")),
+            (
+                "/t/debug/build/server/1a2b/out/server-1a2b",
+                Some("/t/debug"),
+            ),
+            ("/t/debug/server", None),
+            ("/usr/out/server", None),
+        ];
+
+        for (executable, expected) in cases {
+            assert_eq!(
+                key_file::profile_directory(Path::new(executable)),
+                expected.map(Path::new),
+                "{executable}"
+            );
+        }
     }
 
     #[test]

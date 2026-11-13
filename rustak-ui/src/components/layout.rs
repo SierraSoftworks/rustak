@@ -22,7 +22,7 @@ pub fn layout(props: &LayoutProps) -> Html {
 
             { props.children.clone() }
 
-            <footer>
+            <footer class="app-footer">
                 <p>{ format!("Copyright © Sierra Softworks {}", Utc::now().year()) }</p>
             </footer>
         </>

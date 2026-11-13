@@ -13,12 +13,10 @@
 
 use rustak_api::{Profile, ProfileId};
 use yew::prelude::*;
-use yew_router::prelude::*;
 
 use crate::api;
-use crate::app::Route;
-use crate::components::{Alert, AlertKind, LoadingNote};
-use crate::util::{format_iso8601, nav_href};
+use crate::components::{Alert, AlertKind, LoadingNote, PageHeading};
+use crate::util::format_iso8601;
 
 use super::load::{use_refresh_action, use_resource};
 use super::profile_delivery::Settings;
@@ -48,7 +46,7 @@ pub fn profile_editor(props: &ProfileEditorProps) -> Html {
         },
         (Some(found), _) => html! {
             <>
-                <Heading profile={found.clone()} />
+                { heading(found) }
                 <Settings profile={found.clone()} on_changed={profile.reload.clone()} />
                 <ProfilePrefs {id} />
                 <ProfileFiles {id} on_changed={profile.reload.clone()} />
@@ -57,41 +55,24 @@ pub fn profile_editor(props: &ProfileEditorProps) -> Html {
     }
 }
 
-#[derive(Properties, PartialEq)]
-struct HeadingProps {
-    profile: Profile,
-}
-
-#[function_component(Heading)]
-fn heading(props: &HeadingProps) -> Html {
-    html! {
-        <div class="entity-heading">
-            <div>
-                <h2 class="entity-heading__name">{ props.profile.name.clone() }</h2>
-                <p class="entity-heading__meta">
-                    { format!(
-                        "{} preferences · {} files · changed {}",
-                        props.profile.pref_count,
-                        props.profile.file_count,
-                        format_iso8601(props.profile.updated),
-                    ) }
-                </p>
-            </div>
-            { back_link() }
-        </div>
-    }
-}
-
-/// Demo mode lives in the query string, which a client-side navigation would
-/// drop — so the way back out of a demo page is a plain link that carries it.
-fn back_link() -> Html {
-    if crate::fixtures::is_demo() {
-        return html! {
-            <a class="btn btn--small" href={nav_href("/admin/profiles")}>{ "All profiles" }</a>
-        };
-    }
+/// Which profile this is, in the shell's title row, with the way back to the
+/// list.
+fn heading(profile: &Profile) -> Html {
+    let subtitle = html! {
+        { format!(
+            "{} preferences · {} files · changed {}",
+            profile.pref_count,
+            profile.file_count,
+            format_iso8601(profile.updated),
+        ) }
+    };
 
     html! {
-        <Link<Route> to={Route::Profiles} classes="btn btn--small">{ "All profiles" }</Link<Route>>
+        <PageHeading
+            title={profile.name.clone()}
+            {subtitle}
+            parent="Profiles"
+            parent_path="/admin/profiles"
+        />
     }
 }

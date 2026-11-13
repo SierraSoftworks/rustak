@@ -37,7 +37,7 @@ test("the map draws what the server reports, with no base layer to draw it on", 
   await expect(page.getByText("Live", { exact: true })).toBeVisible();
   // The map is the page: it is still headed, but nothing is drawn above it.
   await expect(page.getByRole("heading", { name: "Map", exact: true })).toBeAttached();
-  await expect(page.locator(".page-title")).toHaveCount(0);
+  await expect(page.locator(".yi-page-header")).toHaveCount(0);
 
   // Set by the map itself once the features have reached it, so this is the
   // libraries having loaded from /vendor and the data having crossed into them.
@@ -265,14 +265,14 @@ test("a type and a symbol are chosen by name, with a picture of each, and never 
   // It opens where what is chosen lives, with the trail saying where that is
   // and every step of it a way back up.
   await type.click();
-  const trail = details.getByRole("navigation", { name: "Where this list is" });
+  const trail = details.getByRole("navigation", { name: "Level" });
   await expect(trail).toContainText("Markers");
   await expect(details.getByRole("option", { name: /^Spot marker/ })).toHaveAttribute("aria-selected", "true");
 
   // Walked: one level at a time, by the pointer or by the keys.
   await trail.getByRole("button", { name: "All" }).click();
   await expect(details.getByRole("option", { name: /^Ground track a-u-G\b/ })).toBeVisible();
-  await details.getByRole("button", { name: "Show what is inside Air track" }).click();
+  await details.getByRole("option", { name: /^Air track/ }).locator("[data-yi-enter]").click();
   await expect(trail).toContainText("Air track");
   await search.press("ArrowLeft");
   await expect(details.getByRole("option", { name: /^Markers/ })).toBeVisible();
@@ -298,14 +298,14 @@ test("a type and a symbol are chosen by name, with a picture of each, and never 
   await symbol.click();
   await search.fill("mortar medium");
   await details.getByRole("option", { name: /^Mortar medium/ }).click();
-  await expect(symbol.locator("code")).toHaveText(/^SF/);
+  await expect(symbol).toContainText(/mediumSF/);
   await details.getByLabel("Affiliation").selectOption({ label: "Hostile" });
-  await expect(symbol.locator("code")).toHaveText(/^SH/);
+  await expect(symbol).toContainText(/mediumSH/);
 
   // Something no catalogue lists can still be said, once it is well formed.
   await type.click();
   await search.fill("a-h-G-X-Y-Z");
-  await details.getByRole("option", { name: /Use a-h-G-X-Y-Z as typed/ }).click();
+  await details.getByRole("option", { name: /^Use a-h-G-X-Y-Z/ }).click();
   await expect(type).toContainText("a-h-G-X-Y-Z");
 
   await details.getByRole("button", { name: "Delete" }).click();

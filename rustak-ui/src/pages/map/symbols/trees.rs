@@ -26,6 +26,10 @@ const MARKERS: &[(&str, &str)] = &[
 /// wants most often; the rest is MIL-STD-2525C's warfighting hierarchy, which
 /// is what CoT's atom types were laid out on.
 pub fn types(rows: &[(String, Vec<String>)], whose: Affiliation) -> Tree {
+    Tree::build(type_entries(rows, whose))
+}
+
+fn type_entries(rows: &[(String, Vec<String>)], whose: Affiliation) -> Vec<TreeEntry> {
     let markers = MARKERS.iter().map(|(kind, label)| TreeEntry {
         path: vec!["Markers".to_string(), (*label).to_string()],
         value: Some((*kind).to_string()),
@@ -43,21 +47,31 @@ pub fn types(rows: &[(String, Vec<String>)], whose: Affiliation) -> Tree {
         }
     });
 
-    Tree::build(markers.chain(atoms))
+    markers.chain(atoms).collect()
 }
 
 /// Every symbol of `edition`, as `whose`.
 pub fn symbols(rows: &[(String, Vec<String>)], edition: Symbology, whose: Affiliation) -> Tree {
-    Tree::build(rows.iter().map(|(row, names)| {
-        let code = codes::sidc(edition, whose, row);
+    Tree::build(symbol_entries(rows, edition, whose))
+}
 
-        TreeEntry {
-            path: names.clone(),
-            value: Some(code.clone()),
-            detail: Some(code.clone()),
-            icon: Some(code),
-        }
-    }))
+fn symbol_entries(
+    rows: &[(String, Vec<String>)],
+    edition: Symbology,
+    whose: Affiliation,
+) -> Vec<TreeEntry> {
+    rows.iter()
+        .map(|(row, names)| {
+            let code = codes::sidc(edition, whose, row);
+
+            TreeEntry {
+                path: names.clone(),
+                value: Some(code.clone()),
+                detail: Some(code.clone()),
+                icon: Some(code),
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -78,9 +92,16 @@ mod tests {
             .collect()
     }
 
+    fn valued<'a>(entries: &'a [TreeEntry], value: &str) -> &'a TreeEntry {
+        entries
+            .iter()
+            .find(|entry| entry.value.as_deref() == Some(value))
+            .unwrap_or_else(|| panic!("no entry valued {value}"))
+    }
+
     #[test]
-    fn a_type_is_found_by_its_name_and_drawn_as_whose_it_is() {
-        let tree = types(
+    fn a_type_is_drawn_as_whose_it_is() {
+        let entries = type_entries(
             &rows(&[
                 ("G------", &["Ground track"]),
                 ("GUCI---", &["Ground track", "Unit", "Combat", "Infantry"]),
@@ -88,25 +109,19 @@ mod tests {
             HOSTILE,
         );
 
-        let found = tree.search("infantry", 5);
-        let infantry = tree.item(found[0]).expect("infantry");
-        assert_eq!(infantry.value.as_deref(), Some("a-h-G-U-C-I"));
+        let infantry = valued(&entries, "a-h-G-U-C-I");
+        assert_eq!(infantry.path.last().map(String::as_str), Some("Infantry"));
         assert_eq!(infantry.icon.as_deref(), Some("SHGPUCI--------"));
 
         // A marker is no atom: nobody's, and drawn as a dot rather than a symbol.
-        let spot = tree
-            .item(tree.find("b-m-p-s-m").expect("a spot marker"))
-            .unwrap();
-        assert_eq!(
-            (spot.label.as_str(), spot.icon.as_deref()),
-            ("Spot marker", None)
-        );
-        assert_eq!(tree.trail(tree.find("b-m-p-s-m").unwrap()), ["Markers"]);
+        let spot = valued(&entries, "b-m-p-s-m");
+        assert_eq!(spot.path, ["Markers", "Spot marker"]);
+        assert_eq!(spot.icon, None);
     }
 
     #[test]
     fn a_symbol_is_a_whole_code_in_the_edition_asked_for() {
-        let tree = symbols(
+        let entries = symbol_entries(
             &rows(&[(
                 "10121100",
                 &["Land unit", "Movement and Maneuver", "Infantry"],
@@ -115,6 +130,6 @@ mod tests {
             HOSTILE,
         );
 
-        assert!(tree.find("10061000001211000000").is_some());
+        valued(&entries, "10061000001211000000");
     }
 }

@@ -11,8 +11,8 @@ use rustak_api::{AuditOutcome, ComponentStatus, MissionRoleKind};
 use yew::prelude::*;
 
 use crate::components::{
-    Alert, AlertKind, Button, ButtonGroup, ButtonKind, Card, Center, EmptyState, Field, FileDrop,
-    Layout, LoadingNote, MenuAction, MenuItem, NumberInput, RoleBadge, SecretInput, Select,
+    Alert, AlertKind, Button, ButtonGroup, ButtonKind, Center, EmptyState, Field, FileDrop, Layout,
+    LoadingNote, MenuAction, MenuItem, NumberInput, RoleBadge, SecretInput, Section, Select,
     SelectOption, SplitButton, Stat, StatusPill, StatusTone, Switch, TextArea, TextInput, XmlView,
 };
 
@@ -20,10 +20,10 @@ use crate::components::{
 pub fn demo_controls() -> Html {
     html! {
         <Layout>
-            <main class="app-main">
-                <div class="app-container gallery">
-                    <h1 class="page-title__heading">{ "Controls" }</h1>
-                    <p class="page-title__subtitle">
+            <main>
+                <div class="gallery">
+                    <h1 class="gallery__title">{ "Controls" }</h1>
+                    <p class="gallery__lead">
                         { "Every shared component, in every state. Debug builds only." }
                     </p>
 
@@ -44,7 +44,7 @@ pub fn demo_controls() -> Html {
 fn buttons() -> Html {
     let noop = Callback::noop();
     html! {
-        <Card title="Buttons">
+        <Section title="Buttons">
             <div class="gallery__row">
                 <Button onclick={noop.clone()}>{ "Default" }</Button>
                 <Button kind={ButtonKind::Primary} onclick={noop.clone()}>{ "Primary" }</Button>
@@ -85,19 +85,19 @@ fn buttons() -> Html {
                 />
                 <SplitButton
                     busy=true
-                    primary={MenuAction::new("Save", Callback::noop())}
+                    primary={MenuAction::new("Save", Callback::noop()).primary()}
                     items={vec![MenuItem::Action(MenuAction::new("Delete", Callback::noop()).danger())]}
                 />
                 <SplitButton primary={MenuAction::new("Alone", Callback::noop())} />
             </div>
-        </Card>
+        </Section>
     }
 }
 
 #[function_component(Pills)]
 fn pills() -> Html {
     html! {
-        <Card title="Status pills">
+        <Section title="Status pills">
             <div class="gallery__row">
                 { for AuditOutcome::ALL.iter().map(|outcome| html! {
                     <StatusPill
@@ -113,14 +113,14 @@ fn pills() -> Html {
                     />
                 }) }
             </div>
-        </Card>
+        </Section>
     }
 }
 
 #[function_component(Alerts)]
 fn alerts() -> Html {
     html! {
-        <Card title="Alerts">
+        <Section title="Alerts">
             <Alert kind={AlertKind::Error} title="Something went wrong"
                 message="With a longer explanation beneath it." />
             <Alert kind={AlertKind::Warning} title="Worth a look"
@@ -131,7 +131,7 @@ fn alerts() -> Html {
             <Alert kind={AlertKind::Info} title="For information" />
             <Alert kind={AlertKind::Success} title="That worked"
                 message="Nothing further is needed." />
-        </Card>
+        </Section>
     }
 }
 
@@ -145,7 +145,7 @@ fn inputs() -> Html {
     let switched = use_state(|| true);
 
     html! {
-        <Card title="Form controls">
+        <Section title="Form controls">
             <Field id="gallery-text" label="Text" required=true help="With help beneath it.">
                 <TextInput
                     id="gallery-text"
@@ -220,7 +220,7 @@ fn inputs() -> Html {
                     onchange={Callback::noop()}
                 />
             </Field>
-        </Card>
+        </Section>
     }
 }
 
@@ -247,7 +247,7 @@ const SAMPLE_COT: &str = concat!(
 #[function_component(Files)]
 fn files() -> Html {
     html! {
-        <Card title="Choosing a file">
+        <Section title="Choosing a file">
             <FileDrop
                 id="gallery-file-drop"
                 help="Also reachable from a keyboard: it is a label around a real file input."
@@ -259,7 +259,7 @@ fn files() -> Html {
                 busy=true
                 onfiles={Callback::noop()}
             />
-        </Card>
+        </Section>
     }
 }
 
@@ -267,17 +267,17 @@ fn files() -> Html {
 fn documents() -> Html {
     html! {
         <>
-            <Card title="Mission roles">
+            <Section title="Mission roles">
                 <div class="gallery__row">
                     { for MissionRoleKind::ALL.iter().map(|role| html! {
                         <RoleBadge key={role.as_str()} role={*role} />
                     }) }
                 </div>
-            </Card>
+            </Section>
 
-            <Card title="An XML document">
+            <Section title="An XML document">
                 <XmlView xml={SAMPLE_COT} label="A sample CoT event" />
-            </Card>
+            </Section>
         </>
     }
 }
@@ -286,15 +286,15 @@ fn documents() -> Html {
 fn furniture() -> Html {
     html! {
         <>
-            <Card title="Figures">
+            <Section title="Figures">
                 <div class="stat-row">
                     <Stat label="Accounts" value="4" />
                     <Stat label="Administrators" value="1" />
                     <Stat label="Suspended" value="1" detail="Cannot sign in or connect." />
                 </div>
-            </Card>
+            </Section>
 
-            <Card title="Waiting, and nothing to show">
+            <Section title="Waiting, and nothing to show">
                 <LoadingNote />
                 <EmptyState
                     title="Nothing here yet"
@@ -304,9 +304,9 @@ fn furniture() -> Html {
                         { "Add one" }
                     </Button>
                 </EmptyState>
-            </Card>
+            </Section>
 
-            <Card title="Centred panel">
+            <Section title="Centred panel">
                 <div class="gallery__centred">
                     <Center>
                         <div class="auth-card">
@@ -315,7 +315,7 @@ fn furniture() -> Html {
                         </div>
                     </Center>
                 </div>
-            </Card>
+            </Section>
         </>
     }
 }

@@ -14,6 +14,16 @@
          Trunk so the server embeds it beside the bundle. -->
     <link data-trunk rel="copy-file" href="../docs/assets/logo.svg" />
     <link rel="icon" href="/logo.svg" type="image/svg+xml" />
+    <meta name="color-scheme" content="light dark" />
+    <!-- Written by build.rs from the yewi-fonts crate and staged by the
+         post_build hook in Trunk.toml. -->
+    <link rel="stylesheet" href="/fonts/fonts.css" />
+    <!-- Apply the stored theme before anything paints (yewi::THEME_SCRIPT),
+         so somebody who chose a theme is never flashed with the other one
+         while the bundle loads. -->
+    <script>
+      (function(){try{var t=localStorage.getItem("yewi-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}})()
+    </script>
     <link data-trunk rel="scss" href="styles.scss" />
     <link data-trunk rel="rust" data-bin="rustak-ui" />
   </head>

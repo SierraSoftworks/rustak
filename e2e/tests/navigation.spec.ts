@@ -79,11 +79,12 @@ test("an account's own page is a deep link, and the sidebar still says where it 
 
   // One account's page is somewhere inside Users, so the sidebar must not read
   // as though nothing is selected while it is open.
-  await expect(page.getByRole("link", { name: "Users", exact: true })).toHaveClass(
-    /admin-nav__link--active/,
-  );
+  const users = page
+    .getByRole("navigation", { name: "Admin sections" })
+    .getByRole("link", { name: "Users", exact: true });
+  await expect(users).toHaveAttribute("aria-current", "page");
 
-  await page.getByRole("link", { name: "Users", exact: true }).click();
+  await users.click();
   await expect(page.getByRole("heading", { name: "Users", exact: true })).toBeVisible();
 });
 

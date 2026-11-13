@@ -10,7 +10,7 @@
 use yew::prelude::*;
 
 use crate::app::AuthHandle;
-use crate::components::{Alert, AlertKind, Card, LoadingNote};
+use crate::components::{Alert, AlertKind, LoadingNote, Section};
 
 use super::panels::{CredentialsPanel, DevicesPanel, DisplayPanel, PasskeysPanel, SignInMethods};
 
@@ -26,7 +26,7 @@ pub fn me() -> Html {
 
     html! {
         <>
-            <Card
+            <Section
                 title={format!("Signed in as {}", user.display_name.clone().unwrap_or_else(|| user.username.to_string()))}
                 subtitle="Bring a client on without asking an administrator."
             >
@@ -38,7 +38,7 @@ pub fn me() -> Html {
                         Connections. The token is spent the moment a certificate is issued, \
                         and it is worthless afterwards."
                 />
-            </Card>
+            </Section>
 
             <DisplayPanel
                 preferences={user.preferences}

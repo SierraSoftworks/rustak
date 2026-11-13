@@ -20,7 +20,7 @@ use rustak_api::{ServiceState, ServiceSummary};
 use yew::prelude::*;
 
 use crate::api;
-use crate::components::{Alert, AlertKind, Card, LoadingNote, StatusPill, StatusTone};
+use crate::components::{Alert, AlertKind, LoadingNote, Section, StatusPill, StatusTone, Tag};
 use crate::util::{format_iso8601, short_relative, window};
 
 use super::load::{use_refresh_action, use_resource};
@@ -165,7 +165,7 @@ pub fn services() -> Html {
         <>
             <AddService />
 
-            <Card
+            <Section
                 title="Registered services"
                 subtitle="Every sidecar that has registered, and what its last heartbeat said."
             >
@@ -178,7 +178,7 @@ pub fn services() -> Html {
                 }
 
                 { body }
-            </Card>
+            </Section>
 
             if let Some(service) = chosen {
                 // Keyed on the name so that choosing a different service
@@ -233,9 +233,9 @@ fn row(service: &ServiceSummary, selected: bool, onselect: Callback<MouseEvent>)
 
             <div class="service-row__tags">
                 { for descriptor.capabilities.iter().map(|capability| html! {
-                    <span class="tag" key={capability.to_string()}>
+                    <Tag key={capability.to_string()} mono=true>
                         { capability.to_string() }
-                    </span>
+                    </Tag>
                 }) }
             </div>
 

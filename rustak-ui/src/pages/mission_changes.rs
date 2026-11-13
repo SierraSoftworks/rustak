@@ -8,7 +8,7 @@ use rustak_api::{MissionChangeSummary, MissionGuid};
 use yew::prelude::*;
 
 use crate::api;
-use crate::components::{Alert, AlertKind, Card, LoadingNote, StatusPill, StatusTone, Switch};
+use crate::components::{Alert, AlertKind, LoadingNote, Section, StatusPill, StatusTone, Switch};
 use crate::util::{format_iso8601, short_relative};
 
 use super::load::use_resource;
@@ -65,7 +65,7 @@ pub fn mission_changes(props: &MissionChangesProps) -> Html {
     };
 
     html! {
-        <Card title="Changes" subtitle="What has been added to and taken out of this mission.">
+        <Section title="Changes" subtitle="What has been added to and taken out of this mission.">
             <Switch
                 id="mission-changes-squashed"
                 checked={*squashed}
@@ -78,7 +78,7 @@ pub fn mission_changes(props: &MissionChangesProps) -> Html {
             />
 
             { body }
-        </Card>
+        </Section>
     }
 }
 

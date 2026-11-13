@@ -12,7 +12,7 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Alert, AlertKind, Card, ConfirmButton, Field, FileDrop, LoadingNote, TextInput,
+    Alert, AlertKind, ConfirmButton, Field, FileDrop, LoadingNote, Section, TextInput,
 };
 use crate::util::short_relative;
 
@@ -112,7 +112,7 @@ pub fn profile_files(props: &ProfileFilesProps) -> Html {
     };
 
     html! {
-        <Card
+        <Section
             title="Files"
             subtitle="Delivered beside the preferences, at the path each one names."
         >
@@ -150,7 +150,7 @@ pub fn profile_files(props: &ProfileFilesProps) -> Html {
             />
 
             { body }
-        </Card>
+        </Section>
     }
 }
 

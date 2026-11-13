@@ -61,6 +61,7 @@ test("an administrator creates an account, and it opens on its own page", async 
 
   await gotoApp(page, "/admin/users");
 
+  await page.getByRole("button", { name: "New account" }).click();
   await page.getByLabel("Username").fill(username);
   await page.getByLabel("Display name").fill(displayName);
   await page.getByLabel("Email").fill(`${username}@example.com`);
@@ -90,6 +91,7 @@ test("minting an enrolment token shows the secret once, with a scannable QR code
   const label = uniqueName("Handset");
 
   await gotoApp(page, "/admin/users");
+  await page.getByRole("button", { name: "New account" }).click();
   await page.getByLabel("Username").fill(username);
   await page.getByRole("button", { name: "Create account" }).click();
   await page.getByRole("link", { name: username, exact: true }).click();
@@ -112,7 +114,7 @@ test("minting an enrolment token shows the secret once, with a scannable QR code
 
   // The URL ATAK's quick connect parses, with the account it enrols and the
   // host the certificate will be issued for.
-  const link = page.locator(".copyable__value").filter({ hasText: "tak://" });
+  const link = page.locator(".yi-copyable__value").filter({ hasText: "tak://" });
   await expect(link).toBeVisible();
   const url = (await link.innerText()).trim();
   expect(url).toContain("tak://com.atakmap.app/enroll?host=");
@@ -122,7 +124,7 @@ test("minting an enrolment token shows the secret once, with a scannable QR code
   // A secret and a link that embeds it are the same secret, so the two boxes
   // have to agree — a link built from the wrong token would enrol nothing.
   const secret = (
-    await page.locator(".copyable__value").first().innerText()
+    await page.locator(".yi-copyable__value").first().innerText()
   ).trim();
   expect(secret.length).toBeGreaterThan(8);
   expect(url).toContain(encodeURIComponent(secret));
@@ -143,6 +145,7 @@ test("a credential can be revoked, and says so afterwards", async ({ page }) => 
   const label = uniqueName("Spare");
 
   await gotoApp(page, "/admin/users");
+  await page.getByRole("button", { name: "New account" }).click();
   await page.getByLabel("Username").fill(username);
   await page.getByRole("button", { name: "Create account" }).click();
   await page.getByRole("link", { name: username, exact: true }).click();
@@ -180,12 +183,14 @@ test("a channel is created and granted to an account", async ({ page }) => {
   const channel = uniqueName("Channel");
 
   await gotoApp(page, "/admin/users");
+  await page.getByRole("button", { name: "New account" }).click();
   await page.getByLabel("Username").fill(username);
   await page.getByRole("button", { name: "Create account" }).click();
 
   // The bit position is the server's to allocate, so the form does not offer
   // one — it is shown on the row afterwards.
   await gotoApp(page, "/admin/channels");
+  await page.getByRole("button", { name: "New channel" }).click();
   await page.getByLabel("Name").fill(channel);
   await page.getByRole("button", { name: "Create channel" }).click();
 
@@ -200,7 +205,7 @@ test("a channel is created and granted to an account", async ({ page }) => {
   const pickerRow = page.locator(".channel-picker__row").filter({ hasText: channel });
   await expect(pickerRow).toBeVisible();
   await flip(pickerRow, "Write");
-  await expect(pickerRow.getByRole("checkbox", { name: "Write" })).toBeChecked();
+  await expect(pickerRow.getByRole("switch", { name: "Write" })).toBeChecked();
   await page.getByRole("button", { name: "Save channels" }).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
 
@@ -209,8 +214,8 @@ test("a channel is created and granted to an account", async ({ page }) => {
   await page.reload();
   await page.getByRole("tab", { name: "Channels" }).click();
   const reloaded = page.locator(".channel-picker__row").filter({ hasText: channel });
-  await expect(reloaded.getByRole("checkbox", { name: "Write" })).toBeChecked();
-  await expect(reloaded.getByRole("checkbox", { name: "Read" })).not.toBeChecked();
+  await expect(reloaded.getByRole("switch", { name: "Write" })).toBeChecked();
+  await expect(reloaded.getByRole("switch", { name: "Read" })).not.toBeChecked();
 
   // And the channel's own page shows the same membership from the other side.
   // The row's selector is named after the channel and its bit position; the
@@ -221,7 +226,7 @@ test("a channel is created and granted to an account", async ({ page }) => {
     name: `${channel} bit`,
   }).click();
   const member = page.locator(".member-row").filter({ hasText: username });
-  await expect(member.getByRole("checkbox", { name: "Write" })).toBeChecked();
+  await expect(member.getByRole("switch", { name: "Write" })).toBeChecked();
 });
 
 test("a row's menu closes on Escape and outside clicks, and a destructive item asks first", async ({
@@ -233,6 +238,7 @@ test("a row's menu closes on Escape and outside clicks, and a destructive item a
   const channel = uniqueName("Channel");
 
   await gotoApp(page, "/admin/channels");
+  await page.getByRole("button", { name: "New channel" }).click();
   await page.getByLabel("Name").fill(channel);
   await page.getByRole("button", { name: "Create channel" }).click();
 
@@ -248,11 +254,11 @@ test("a row's menu closes on Escape and outside clicks, and a destructive item a
   await page.keyboard.press("Escape");
   await expect(remove).toHaveCount(0);
 
-  // A click anywhere else lands on the backdrop the open menu puts under
-  // itself, and closes it without doing anything to what was clicked.
+  // A click anywhere else closes it without doing anything to what was
+  // clicked.
   await toggle.click();
   await expect(remove).toBeVisible();
-  await page.locator(".split-btn__backdrop").click({ position: { x: 5, y: 5 } });
+  await page.getByRole("heading", { name: "Channels", exact: true }).click();
   await expect(remove).toHaveCount(0);
   await expect(row).toBeVisible();
 
@@ -290,7 +296,7 @@ test("anybody can mint an enrolment token for their own phone", async ({ page })
   await expect(
     page.getByRole("img", { name: "Enrolment QR code for ATAK" }),
   ).toBeVisible();
-  await expect(page.locator(".copyable__value").filter({ hasText: "tak://" })).toBeVisible();
+  await expect(page.locator(".yi-copyable__value").filter({ hasText: "tak://" })).toBeVisible();
 
   await page.getByRole("button", { name: "Done" }).click();
   await expect(

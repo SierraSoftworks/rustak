@@ -27,6 +27,14 @@ stage = "post_build"
 command = "node"
 command_arguments = ["scripts/vendor.mjs"]
 
+# `build.rs` writes the yewi fonts into `fonts/` while cargo runs, which is after
+# Trunk resolves the assets in `index.html`, so a `copy-dir` link fails on a
+# clean checkout. Stage them once the build has finished instead.
+[[hooks]]
+stage = "post_build"
+command = "sh"
+command_arguments = ["-c", "cp -R fonts \"$TRUNK_STAGING_DIR/fonts\""]
+
 [serve]
 port = 8081
 # Proxy admin API, OAuth2 and Marti requests to a locally running server so the

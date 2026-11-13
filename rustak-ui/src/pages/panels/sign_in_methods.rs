@@ -15,7 +15,7 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::auth;
-use crate::components::{Alert, AlertKind, Button, ButtonKind, Card, LoadingNote};
+use crate::components::{Alert, AlertKind, Button, ButtonKind, LoadingNote, Section};
 use crate::pages::load::use_resource;
 
 #[derive(Properties, PartialEq)]
@@ -60,13 +60,13 @@ pub fn sign_in_methods(props: &SignInMethodsProps) -> Html {
 
     let card = |body: Html, actions: Html| {
         html! {
-            <Card
+            <Section
                 title="How you sign in"
                 subtitle="Single sign-on, passkeys, or both. Keep a second way in."
                 {actions}
             >
                 <div class="sign-in-methods">{ body }</div>
-            </Card>
+            </Section>
         }
     };
 

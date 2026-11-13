@@ -49,12 +49,12 @@ test("the first-run wizard turns a token on disk into an administrator who can s
   await expect(create).toBeVisible();
 
   await page.getByLabel("Username").fill("Not A Username!");
-  await expect(page.locator(".field__error")).toBeVisible();
+  await expect(page.locator(".yi-field__message--error")).toBeVisible();
   await expect(create).toBeDisabled();
 
   await page.getByLabel("Username").fill(ADMIN.username);
   await page.getByLabel("Display name").fill(ADMIN.displayName);
-  await expect(page.locator(".field__error")).toHaveCount(0);
+  await expect(page.locator(".yi-field__message--error")).toHaveCount(0);
   await create.click();
 
   // Step 3 — the passkey, which is the only way this account will ever sign in.
