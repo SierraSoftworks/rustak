@@ -17,7 +17,7 @@ use yew_router::prelude::*;
 use crate::api;
 use crate::app::Route;
 use crate::components::{
-    Alert, AlertKind, Button, ButtonKind, Callout, ConfirmButton, Field, LoadingNote, Section,
+    Alert, AlertKind, Button, ButtonKind, ConfirmButton, CreateDrawer, Field, LoadingNote, Section,
     StatusPill, StatusTone, Switch, TextInput,
 };
 use crate::util::{nav_href, short_relative};
@@ -255,7 +255,6 @@ fn create_profile(props: &CreateProfileProps) -> Html {
 
     let actions = html! {
         <Button
-            small=true
             kind={ButtonKind::Primary}
             busy={*busy}
             disabled={name.trim().is_empty()}
@@ -267,7 +266,10 @@ fn create_profile(props: &CreateProfileProps) -> Html {
     };
 
     html! {
-        <Callout
+        <CreateDrawer
+            button="New profile"
+            busy={*busy}
+            failed={error.is_some()}
             title="Create a profile"
             subtitle="Add its preferences and files once it exists."
             {actions}
@@ -331,6 +333,6 @@ fn create_profile(props: &CreateProfileProps) -> Html {
                     />
                 </Field>
             </div>
-        </Callout>
+        </CreateDrawer>
     }
 }

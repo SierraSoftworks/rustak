@@ -21,7 +21,7 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Alert, AlertKind, Button, ButtonKind, Callout, Copyable, Field, Switch, TextInput,
+    Alert, AlertKind, Button, ButtonKind, Copyable, CreateDrawer, Field, Switch, TextInput,
 };
 use crate::util::format_iso8601;
 
@@ -102,7 +102,6 @@ pub fn add_service() -> Html {
 
     let actions = html! {
         <Button
-            small=true
             kind={ButtonKind::Primary}
             busy={*busy}
             disabled={name.trim().is_empty()}
@@ -113,7 +112,10 @@ pub fn add_service() -> Html {
     };
 
     html! {
-        <Callout
+        <CreateDrawer
+            button="New service"
+            busy={*busy}
+            failed={error.is_some()}
             title="Add a service"
             subtitle="Creates the sidecar's account and mints what its deployment needs, in one \
                       step. Every secret is shown once."
@@ -173,7 +175,7 @@ pub fn add_service() -> Html {
                     Callback::from(move |value: bool| rotate.set(value))
                 }
             />
-        </Callout>
+        </CreateDrawer>
     }
 }
 

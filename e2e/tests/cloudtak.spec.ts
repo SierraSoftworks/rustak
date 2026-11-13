@@ -59,6 +59,7 @@ const DEMO_ACCOUNT = "service-weather";
 async function createCloudTakAccount(page: Page, username: string): Promise<void> {
   await gotoApp(page, "/admin/users");
 
+  await page.getByRole("button", { name: "New account" }).click();
   await page.getByLabel("Username").fill(username);
   // The CloudTAK account is the other kind, behind the create button's caret.
   await page.getByRole("button", { name: "Other kinds of account" }).click();

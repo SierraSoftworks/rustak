@@ -17,7 +17,7 @@ use yew::prelude::*;
 use crate::api;
 use crate::api::packages::PackageFilter;
 use crate::components::{
-    Alert, AlertKind, Callout, Field, FileDrop, LoadingNote, Section, Switch, TextInput,
+    Alert, AlertKind, CreateDrawer, Field, FileDrop, LoadingNote, Section, Switch, TextInput,
     use_page_search,
 };
 
@@ -162,7 +162,11 @@ fn upload(props: &UploadProps) -> Html {
     };
 
     html! {
-        <Callout
+        <CreateDrawer
+            button="New package"
+            busy={*busy}
+            failed={error.is_some()}
+            keep_open=true
             title="Add a package"
             subtitle="Channels and the enrolment flag are set on the row once it is here."
         >
@@ -225,6 +229,6 @@ fn upload(props: &UploadProps) -> Html {
                 busy={*busy}
                 {onfiles}
             />
-        </Callout>
+        </CreateDrawer>
     }
 }

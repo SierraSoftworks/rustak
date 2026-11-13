@@ -13,6 +13,7 @@ mod buttons;
 mod chrome;
 mod confirm;
 mod controls;
+mod create_drawer;
 mod feedback;
 mod file_drop;
 mod groups_picker;
@@ -34,6 +35,7 @@ pub use confirm::ConfirmButton;
 pub use controls::{
     Field, NumberInput, SecretInput, Select, SelectOption, Switch, TextArea, TextInput,
 };
+pub use create_drawer::CreateDrawer;
 #[allow(unused_imports)]
 pub use feedback::{
     Alert, AlertKind, Callout, Center, EmptyState, LoadingNote, RefreshButton, Section, Stat,

@@ -57,6 +57,7 @@ test("a profile is created, given a preference, and previewed as the package a d
 
   await gotoApp(page, "/admin/profiles");
 
+  await page.getByRole("button", { name: "New profile" }).click();
   await page.getByLabel("Name").fill(name);
   await page.getByLabel("Description").fill("Created by the end-to-end suite.");
 
@@ -161,6 +162,7 @@ test("a profile with nothing in it says so rather than handing a device an empty
   const name = uniqueName("Empty profile");
 
   await gotoApp(page, "/admin/profiles");
+  await page.getByRole("button", { name: "New profile" }).click();
   await page.getByLabel("Name").fill(name);
   await page.getByRole("button", { name: "Create profile" }).click();
 

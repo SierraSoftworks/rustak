@@ -17,7 +17,7 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Alert, AlertKind, Button, ButtonKind, Callout, Field, LoadingNote, MenuAction, MenuItem,
+    Alert, AlertKind, Button, ButtonKind, CreateDrawer, Field, LoadingNote, MenuAction, MenuItem,
     Section, SplitButton, StatusPill, StatusTone, TextInput,
 };
 
@@ -135,7 +135,6 @@ fn create_channel(props: &CreateChannelProps) -> Html {
 
     let actions = html! {
         <Button
-            small=true
             kind={ButtonKind::Primary}
             busy={*busy}
             disabled={parsed.is_err()}
@@ -147,7 +146,10 @@ fn create_channel(props: &CreateChannelProps) -> Html {
     };
 
     html! {
-        <Callout
+        <CreateDrawer
+            button="New channel"
+            busy={*busy}
+            failed={error.is_some()}
             title="Create a channel"
             subtitle="The bit position is allocated by the server."
             {actions}
@@ -192,7 +194,7 @@ fn create_channel(props: &CreateChannelProps) -> Html {
                     />
                 </Field>
             </div>
-        </Callout>
+        </CreateDrawer>
     }
 }
 

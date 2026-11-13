@@ -36,6 +36,7 @@ test("an administrator adds a service and is shown what its deployment needs, on
   const name = uniqueService("feed");
   await gotoApp(page, SERVICES);
 
+  await page.getByRole("button", { name: "New service" }).click();
   await expect(page.getByRole("heading", { name: "Add a service" })).toBeVisible();
   const add = page.getByRole("button", { name: "Add service", exact: true });
   // Nothing to add until there is a name.
@@ -77,6 +78,7 @@ test("an administrator adds a service and is shown what its deployment needs, on
   await result.getByRole("button", { name: "Done" }).click();
   await expect(result).toHaveCount(0);
   await expect(page.getByText(enrolment)).toHaveCount(0);
+  await page.getByRole("button", { name: "New service" }).click();
   await expect(page.locator("#service-name")).toHaveValue("");
 });
 
@@ -87,6 +89,7 @@ test("adding the same service again mints a fresh enrolment token and keeps its 
   await gotoApp(page, SERVICES);
 
   const addIt = async () => {
+    await page.getByRole("button", { name: "New service" }).click();
     await page.locator("#service-name").fill(name);
     await page.getByRole("button", { name: "Add service", exact: true }).click();
     return page.getByRole("region", { name: `Service ${name}` });
@@ -112,6 +115,7 @@ test("a person's account is refused, and the page says why", async ({ page }) =>
   await gotoApp(page, SERVICES);
 
   // The administrator is a person, and a sidecar cannot enrol as one.
+  await page.getByRole("button", { name: "New service" }).click();
   await page.locator("#service-name").fill(ADMIN.username);
   await page.getByRole("button", { name: "Add service", exact: true }).click();
 

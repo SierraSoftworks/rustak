@@ -9,7 +9,7 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Alert, AlertKind, Button, Callout, LoadingNote, Section, Stat, StatusPill, StatusTone,
+    Alert, AlertKind, Button, LoadingNote, Section, Stat, StatusPill, StatusTone,
 };
 use crate::util::short_duration;
 
@@ -66,22 +66,22 @@ pub fn dashboard() -> Html {
             }
 
             <div class="dashboard">
-                <Callout title="Server">{ health_panel(health.data.as_ref()) }</Callout>
-                <Callout title="Identity">{ settings_panel(settings.data.as_ref()) }</Callout>
-                <Callout
+                <Section title="Server">{ health_panel(health.data.as_ref()) }</Section>
+                <Section title="Identity">{ settings_panel(settings.data.as_ref()) }</Section>
+                <Section
                     title="People"
                     actions={html! { <Button small=true href="/admin/users">{ "See them" }</Button> }}
                 >
                     { users_panel(users.data.as_deref()) }
-                </Callout>
-                <Callout
+                </Section>
+                <Section
                     title="Services"
                     actions={html! {
                         <Button small=true href="/admin/settings/add-ons">{ "See them" }</Button>
                     }}
                 >
                     { services_panel(services.data.as_deref()) }
-                </Callout>
+                </Section>
             </div>
 
             <Section

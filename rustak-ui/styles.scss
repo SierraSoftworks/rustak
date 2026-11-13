@@ -349,14 +349,6 @@ $small: 560px;
   }
 }
 
-footer {
-  margin-top: auto;
-  padding: 1rem 0;
-  text-align: center;
-  font-size: 0.8rem;
-  color: $text-secondary;
-}
-
 // -----------------------------------------------------------------------------
 // 5. Pages
 // -----------------------------------------------------------------------------
@@ -539,13 +531,13 @@ footer {
 .dashboard {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
-  gap: 1.5rem;
-  // The grid owns the spacing between its own cards, so they give theirs up —
-  // but whatever comes after the grid still needs the gap a card would have
-  // left.
+  gap: var(--yi-space-2xl);
+  // The grid owns the spacing between its own sections, so they give theirs
+  // up — but whatever comes after the grid still needs the gap a section
+  // would have left.
   margin-bottom: var(--yi-space-2xl);
 
-  .callout + .callout {
+  .section + .section {
     margin-top: 0;
   }
 }
@@ -783,6 +775,19 @@ footer {
     min-width: 0;
   }
 
+}
+
+// A create form in its drawer: one field under another, at the drawer's width.
+.create-drawer {
+  .inline-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  &__lead {
+    margin: 0 0 var(--yi-space-lg);
+    color: $text-secondary;
+    font-size: var(--yi-text-sm);
+  }
 }
 
 .credential-list {

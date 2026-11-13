@@ -61,6 +61,7 @@ test("an administrator creates an account, and it opens on its own page", async 
 
   await gotoApp(page, "/admin/users");
 
+  await page.getByRole("button", { name: "New account" }).click();
   await page.getByLabel("Username").fill(username);
   await page.getByLabel("Display name").fill(displayName);
   await page.getByLabel("Email").fill(`${username}@example.com`);
@@ -90,6 +91,7 @@ test("minting an enrolment token shows the secret once, with a scannable QR code
   const label = uniqueName("Handset");
 
   await gotoApp(page, "/admin/users");
+  await page.getByRole("button", { name: "New account" }).click();
   await page.getByLabel("Username").fill(username);
   await page.getByRole("button", { name: "Create account" }).click();
   await page.getByRole("link", { name: username, exact: true }).click();
@@ -143,6 +145,7 @@ test("a credential can be revoked, and says so afterwards", async ({ page }) => 
   const label = uniqueName("Spare");
 
   await gotoApp(page, "/admin/users");
+  await page.getByRole("button", { name: "New account" }).click();
   await page.getByLabel("Username").fill(username);
   await page.getByRole("button", { name: "Create account" }).click();
   await page.getByRole("link", { name: username, exact: true }).click();
@@ -180,12 +183,14 @@ test("a channel is created and granted to an account", async ({ page }) => {
   const channel = uniqueName("Channel");
 
   await gotoApp(page, "/admin/users");
+  await page.getByRole("button", { name: "New account" }).click();
   await page.getByLabel("Username").fill(username);
   await page.getByRole("button", { name: "Create account" }).click();
 
   // The bit position is the server's to allocate, so the form does not offer
   // one — it is shown on the row afterwards.
   await gotoApp(page, "/admin/channels");
+  await page.getByRole("button", { name: "New channel" }).click();
   await page.getByLabel("Name").fill(channel);
   await page.getByRole("button", { name: "Create channel" }).click();
 
@@ -233,6 +238,7 @@ test("a row's menu closes on Escape and outside clicks, and a destructive item a
   const channel = uniqueName("Channel");
 
   await gotoApp(page, "/admin/channels");
+  await page.getByRole("button", { name: "New channel" }).click();
   await page.getByLabel("Name").fill(channel);
   await page.getByRole("button", { name: "Create channel" }).click();
 
