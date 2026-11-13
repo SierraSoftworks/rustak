@@ -14,7 +14,7 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::api::ApiError;
-use crate::components::{Alert, AlertKind, LoadingNote, Section, Switch};
+use crate::components::{Alert, AlertKind, LoadingNote, Switch};
 
 use super::load::use_resource;
 
@@ -73,13 +73,14 @@ pub fn group_members(props: &GroupMembersProps) -> Html {
     };
 
     html! {
-        <Section
-            title={format!("Members of {}", props.group.name)}
-            subtitle="Write is permission to send into the channel; read is permission to \
-                receive from it."
-        >
+        <section class="drawer-section" aria-label={format!("Members of {}", props.group.name)}>
+            <h3 class="drawer-section__title">{ "Members" }</h3>
+            <p class="panel-note">
+                { "Write is permission to send into the channel; read is permission to receive \
+                   from it." }
+            </p>
             { body }
-        </Section>
+        </section>
     }
 }
 

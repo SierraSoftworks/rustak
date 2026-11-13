@@ -24,7 +24,7 @@ use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
 use crate::api;
-use crate::components::{Alert, AlertKind, ConfirmButton, LoadingNote, Section, XmlView};
+use crate::components::{Alert, AlertKind, ConfirmButton, DetailDrawer, LoadingNote, XmlView};
 use crate::util::{format_iso8601, short_relative};
 
 use super::load::use_resource;
@@ -37,6 +37,7 @@ const HISTORY_SECONDS: i64 = 3_600;
 pub struct CotDrawerProps {
     pub uid: String,
     pub on_forgotten: Callback<()>,
+    pub on_close: Callback<()>,
 }
 
 #[function_component(CotDrawer)]
@@ -90,10 +91,28 @@ pub fn cot_drawer(props: &CotDrawerProps) -> Html {
         (Some(found), _) => document(found),
     };
 
+    let actions = html! {
+        <ConfirmButton
+            small=false
+            label="Forget"
+            confirm_label="Forget it"
+            question={format!(
+                "Forget '{}'? The latest message and every stored segment for it go, and there \
+                 is no undo.",
+                props.uid,
+            )}
+            busy={*busy}
+            onconfirm={forget}
+        />
+    };
+
     html! {
-        <Section
+        <DetailDrawer
+            wide=true
             title={props.uid.clone()}
             subtitle="The message as its recipients were sent it, and what came before."
+            {actions}
+            on_close={props.on_close.clone()}
         >
             if let Some(message) = &*error {
                 <Alert
@@ -108,18 +127,7 @@ pub fn cot_drawer(props: &CotDrawerProps) -> Html {
             <h3 class="cot-drawer__heading">{ "Earlier, in the last hour" }</h3>
             { history_list(&history.data, &history.error) }
 
-            <ConfirmButton
-                label="Forget"
-                confirm_label="Forget it"
-                question={format!(
-                    "Forget '{}'? The latest message and every stored segment for it go, and \
-                     there is no undo.",
-                    props.uid,
-                )}
-                busy={*busy}
-                onconfirm={forget}
-            />
-        </Section>
+        </DetailDrawer>
     }
 }
 

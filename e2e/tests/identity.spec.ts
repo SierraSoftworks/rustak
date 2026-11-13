@@ -217,10 +217,8 @@ test("a channel is created and granted to an account", async ({ page }) => {
   await expect(reloaded.getByRole("switch", { name: "Write" })).toBeChecked();
   await expect(reloaded.getByRole("switch", { name: "Read" })).not.toBeChecked();
 
-  // And the channel's own page shows the same membership from the other side.
-  // The row's selector is named after the channel and its bit position; the
-  // row's action menu is named after the channel too, so the bit is what tells
-  // the two apart.
+  // And the channel's own drawer shows the same membership from the other
+  // side. The row's button is named after the channel and its bit position.
   await gotoApp(page, "/admin/channels");
   await page.locator(".channel-row").filter({ hasText: channel }).getByRole("button", {
     name: `${channel} bit`,
@@ -229,12 +227,41 @@ test("a channel is created and granted to an account", async ({ page }) => {
   await expect(member.getByRole("switch", { name: "Write" })).toBeChecked();
 });
 
-test("a row's menu closes on Escape and outside clicks, and a destructive item asks first", async ({
+test("a row's menu closes on Escape and outside clicks", async ({ page }) => {
+  // Every row with several actions shares one split button, so one row's
+  // menu stands for all of them. A new account's row is one nothing else in
+  // the suite depends on.
+  const username = uniqueUsername("menu");
+
+  await gotoApp(page, "/admin/users");
+  await page.getByRole("button", { name: "New account" }).click();
+  await page.getByLabel("Username").fill(username);
+  await page.getByRole("button", { name: "Create account" }).click();
+
+  const row = page.locator(".user-row").filter({ hasText: username });
+  await expect(row).toBeVisible();
+  const toggle = row.getByRole("button", { name: `More actions for ${username}` });
+  const suspend = row.getByRole("menuitem", { name: "Suspend" });
+
+  // Opening puts the focus inside the menu, which is what lets Escape reach it.
+  await toggle.click();
+  await expect(suspend).toBeVisible();
+  await expect(suspend).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(suspend).toHaveCount(0);
+
+  // A click anywhere else closes it without doing anything to what was
+  // clicked.
+  await toggle.click();
+  await expect(suspend).toBeVisible();
+  await page.getByRole("heading", { name: "Users", exact: true }).click();
+  await expect(suspend).toHaveCount(0);
+  await expect(row).toContainText("Active");
+});
+
+test("a channel is described and deleted from its drawer, and deleting asks first", async ({
   page,
 }) => {
-  // Every row with several actions shares one split button, so one row's
-  // menu stands for all of them. A channel's is the one with nothing else on
-  // the page to confuse it with.
   const channel = uniqueName("Channel");
 
   await gotoApp(page, "/admin/channels");
@@ -244,37 +271,30 @@ test("a row's menu closes on Escape and outside clicks, and a destructive item a
 
   const row = page.locator(".channel-row").filter({ hasText: channel });
   await expect(row).toBeVisible();
-  const toggle = row.getByRole("button", { name: `More actions for ${channel}` });
-  const remove = row.getByRole("menuitem", { name: "Delete" });
 
-  // Opening puts the focus inside the menu, which is what lets Escape reach it.
-  await toggle.click();
-  await expect(remove).toBeVisible();
-  await expect(remove).toBeFocused();
-  await page.keyboard.press("Escape");
-  await expect(remove).toHaveCount(0);
+  // The row says what the channel is; what can be changed opens beside it.
+  await row.getByRole("button", { name: `${channel} bit` }).click();
+  const drawer = page.getByRole("dialog", { name: channel });
+  await expect(drawer).toBeVisible();
 
-  // A click anywhere else closes it without doing anything to what was
-  // clicked.
-  await toggle.click();
-  await expect(remove).toBeVisible();
-  await page.getByRole("heading", { name: "Channels", exact: true }).click();
-  await expect(remove).toHaveCount(0);
-  await expect(row).toBeVisible();
+  const save = drawer.getByRole("button", { name: "Save", exact: true });
+  await expect(save).toBeDisabled();
+  await drawer.getByLabel("Description").fill("Written by a test.");
+  await save.click();
+  await expect(row).toContainText("Written by a test.");
 
-  // A destructive item asks in place, naming what is about to go, and can be
-  // backed out of — which leaves the button as it was and the row intact.
-  await toggle.click();
-  await remove.click();
-  await expect(row.getByText(`Delete '${channel}'?`)).toBeVisible();
-  await row.getByRole("button", { name: "Cancel" }).click();
-  await expect(toggle).toBeVisible();
-  await expect(row).toBeVisible();
+  // Deleting asks, naming what is about to go, and can be backed out of.
+  await drawer.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(page.getByText(`Delete '${channel}'?`)).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(drawer).toBeVisible();
+  await expect(row).toHaveCount(1);
 
-  await toggle.click();
-  await remove.click();
-  await row.getByRole("button", { name: "Delete it" }).click();
+  await drawer.getByRole("button", { name: "Delete", exact: true }).click();
+  await page.getByRole("button", { name: "Delete it" }).click();
   await expect(row).toHaveCount(0);
+  // The drawer goes with it, rather than describing something that has gone.
+  await expect(drawer).toHaveCount(0);
 
   // Gone on the server too, not just from the list it was removed from.
   await page.reload();

@@ -2,6 +2,7 @@
 
 mod activity;
 mod auth_callback;
+mod channel_drawer;
 mod cot_browser;
 mod cot_drawer;
 mod dashboard;

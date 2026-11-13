@@ -141,8 +141,7 @@ pub fn services() -> Html {
                         let onselect = {
                             let (selected, name) = (selected.clone(), name.clone());
                             Callback::from(move |_: MouseEvent| {
-                                selected.set((selected.as_deref() != Some(name.as_str()))
-                                    .then(|| name.clone()));
+                                selected.set(Some(name.clone()));
                             })
                         };
 
@@ -194,6 +193,10 @@ pub fn services() -> Html {
                             selected.set(None);
                             reload.emit(());
                         })
+                    }
+                    on_close={
+                        let selected = selected.clone();
+                        Callback::from(move |()| selected.set(None))
                     }
                 />
             }
