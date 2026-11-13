@@ -77,10 +77,10 @@ test("clicking straight from one row to another shows the second row's message",
 }) => {
   await gotoApp(page, "/admin/situation?demo");
 
-  // The drawer fetches its document and history when it mounts. Selecting a
-  // second row while the first is open used to hand the same instance new
-  // props, so the heading changed and the bytes under it did not — a marker
-  // being diagnosed under another marker's XML. The two rows differ in
+  // The drawer fetches its document and history when it mounts. Opening a
+  // second row after the first used to hand the same instance new props, so
+  // the heading changed and the bytes under it did not — a marker being
+  // diagnosed under another marker's XML. The two rows differ in
   // everything this asserts on: the uid in the document, and how much history
   // the last hour holds.
   const xml = page.locator("pre.xml");
@@ -91,6 +91,9 @@ test("clicking straight from one row to another shows the second row's message",
   await expect(xml).toContainText("ANDROID-2f1c9a7b4e0d");
   await expect(history).toHaveCount(3);
 
+  // The drawer is modal, so the first is closed before the second is opened.
+  await page.keyboard.press("Escape");
+  await expect(xml).toHaveCount(0);
   await page.locator(".cot-row__select", { hasText: "RAO" }).click();
   await expect(page.getByRole("heading", { name: "IOS-91ac4d55f207" })).toBeVisible();
   await expect(xml).toContainText("IOS-91ac4d55f207");

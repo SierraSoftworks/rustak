@@ -1,5 +1,9 @@
 //! Channels: what this server routes by.
 //!
+//! The list says what each channel is; its description, its members and the
+//! button that deletes it open in a drawer from its row
+//! ([`super::channel_drawer`]).
+//!
 //! A channel is a routing decision rather than a document somebody owns, so
 //! everything here is administrative. Two things it deliberately cannot do:
 //!
@@ -11,17 +15,17 @@
 //!   while anything is still subscribed, because a reused one would hand this
 //!   channel's traffic to the next channel created. It is shown, read-only.
 
-use rustak_api::{CreateGroupRequest, Group, GroupName, GroupPatch};
+use rustak_api::{CreateGroupRequest, Group, GroupName};
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Alert, AlertKind, Button, ButtonKind, CreateDrawer, Field, LoadingNote, MenuAction, MenuItem,
-    Section, SplitButton, StatusPill, StatusTone, TextInput,
+    Alert, AlertKind, Button, ButtonKind, CreateDrawer, Field, LoadingNote, Section, StatusPill,
+    StatusTone, TextInput,
 };
 
-use super::group_members::GroupMembers;
+use super::channel_drawer::ChannelDrawer;
 use super::load::{use_refresh_action, use_resource};
 
 #[function_component(Groups)]
@@ -44,18 +48,14 @@ pub fn groups() -> Html {
             <ul class="channel-list">
                 { for list.iter().map(|group| html! {
                     <li key={group.id.get()}>
-                        <ChannelRow
-                            group={group.clone()}
-                            selected={selected.as_deref() == Some(group.name.as_str())}
-                            onselect={
+                        { channel_row(
+                            group,
+                            selected.as_deref() == Some(group.name.as_str()),
+                            {
                                 let (selected, name) = (selected.clone(), group.name.to_string());
-                                Callback::from(move |_: MouseEvent| {
-                                    selected.set((selected.as_deref() != Some(name.as_str()))
-                                        .then(|| name.clone()));
-                                })
-                            }
-                            on_changed={groups.reload.clone()}
-                        />
+                                Callback::from(move |_: MouseEvent| selected.set(Some(name.clone())))
+                            },
+                        ) }
                     </li>
                 }) }
             </ul>
@@ -72,12 +72,22 @@ pub fn groups() -> Html {
         <>
             <CreateChannel on_created={groups.reload.clone()} />
 
-            <Section title="All channels" subtitle="Select one to see and change who is in it.">
+            <Section title="All channels" subtitle="Open one to describe it and change who is in it.">
                 { body }
             </Section>
 
             if let Some(group) = chosen {
-                <GroupMembers {group} />
+                // Keyed on the name so that another channel is a new drawer
+                // rather than the last one's half-typed description.
+                <ChannelDrawer
+                    key={group.name.to_string()}
+                    group={group.clone()}
+                    on_changed={groups.reload.clone()}
+                    on_close={
+                        let selected = selected.clone();
+                        Callback::from(move |()| selected.set(None))
+                    }
+                />
             }
         </>
     }
@@ -198,133 +208,28 @@ fn create_channel(props: &CreateChannelProps) -> Html {
     }
 }
 
-#[derive(Properties, PartialEq)]
-struct ChannelRowProps {
-    group: Group,
-    selected: bool,
-    onselect: Callback<MouseEvent>,
-    on_changed: Callback<()>,
-}
-
-#[function_component(ChannelRow)]
-fn channel_row(props: &ChannelRowProps) -> Html {
-    let busy = use_state(|| false);
-    let error = use_state(|| None::<String>);
-    let description = use_state(|| None::<String>);
-
-    let current = (*description)
-        .clone()
-        .unwrap_or_else(|| props.group.description.clone().unwrap_or_default());
-
-    let save = {
-        let (busy, error, description) = (busy.clone(), error.clone(), description.clone());
-        let (name, on_changed, value) = (
-            props.group.name.clone(),
-            props.on_changed.clone(),
-            current.clone(),
-        );
-        Callback::from(move |()| {
-            let (busy, error, description) = (busy.clone(), error.clone(), description.clone());
-            let (name, on_changed, value) = (name.clone(), on_changed.clone(), value.clone());
-            let change = GroupPatch {
-                description: Some(value),
-            };
-
-            busy.set(true);
-            spawn_local(async move {
-                match api::groups::patch(&name, &change).await {
-                    Ok(_) => {
-                        error.set(None);
-                        description.set(None);
-                        on_changed.emit(());
-                    }
-                    Err(err) => error.set(Some(err.to_string())),
-                }
-                busy.set(false);
-            });
-        })
-    };
-
-    let remove = {
-        let (busy, error, on_changed) = (busy.clone(), error.clone(), props.on_changed.clone());
-        let name = props.group.name.clone();
-        Callback::from(move |_| {
-            let (busy, error, on_changed) = (busy.clone(), error.clone(), on_changed.clone());
-            let name = name.clone();
-            busy.set(true);
-            spawn_local(async move {
-                match api::groups::remove(&name).await {
-                    Ok(()) => {
-                        error.set(None);
-                        on_changed.emit(());
-                    }
-                    Err(err) => error.set(Some(err.to_string())),
-                }
-                busy.set(false);
-            });
-        })
-    };
-
-    let editable = props.group.source.is_editable();
+/// One channel's row: what it is, and the way into its drawer.
+fn channel_row(group: &Group, selected: bool, onselect: Callback<MouseEvent>) -> Html {
+    let editable = group.source.is_editable();
 
     html! {
-        <div class={classes!("channel-row", props.selected.then_some("channel-row--selected"))}>
-            <button
-                type="button"
-                class="channel-row__select"
-                aria-pressed={props.selected.to_string()}
-                onclick={props.onselect.clone()}
-            >
-                <span class="channel-row__name">{ props.group.name.to_string() }</span>
+        <div class={classes!("channel-row", selected.then_some("channel-row--selected"))}>
+            <button type="button" class="channel-row__select" onclick={onselect}>
+                <span class="channel-row__name">{ group.name.to_string() }</span>
                 <span class="channel-row__bitpos" title="The bit position the router uses">
-                    { format!("bit {}", props.group.bitpos) }
+                    { format!("bit {}", group.bitpos) }
                 </span>
             </button>
 
+            <span class="channel-row__description">
+                { group.description.clone().unwrap_or_default() }
+            </span>
+
             <StatusPill
                 tone={if editable { StatusTone::Ok } else { StatusTone::Neutral }}
-                label={props.group.source.label()}
+                label={group.source.label()}
                 title={(!editable).then_some("This channel is not an administrator's to change.")}
             />
-
-            <TextInput
-                id={format!("channel-description-{}", props.group.bitpos)}
-                value={current}
-                disabled={*busy || !editable}
-                placeholder="No description"
-                onchange={
-                    let description = description.clone();
-                    Callback::from(move |value: String| description.set(Some(value)))
-                }
-            />
-
-            // Saving the description is what the box beside it is for, so it
-            // is the face; deleting the channel is behind the caret, and asks.
-            <SplitButton
-                busy={*busy}
-                menu_label={format!("More actions for {}", props.group.name)}
-                primary={MenuAction::new("Save", save)
-                    .disabled(description.is_none() || !editable)
-                    .title(description.is_none().then_some("Nothing has changed."))}
-                items={vec![MenuItem::Action(
-                    MenuAction::new("Delete", remove)
-                        .danger()
-                        .disabled(!editable)
-                        .title((!editable).then_some("Only a channel created here can be deleted."))
-                        .confirm(
-                            format!(
-                                "Delete '{}'? Everyone in it loses it, and the name cannot be \
-                                 reused with the same bit position.",
-                                props.group.name,
-                            ),
-                            "Delete it",
-                        ),
-                )]}
-            />
-
-            if let Some(message) = &*error {
-                <p class="channel-row__error" role="alert">{ message.clone() }</p>
-            }
         </div>
     }
 }

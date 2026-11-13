@@ -80,8 +80,7 @@ pub fn situation() -> Html {
                             onselect={
                                 let (selected, uid) = (selected.clone(), summary.uid.clone());
                                 Callback::from(move |_: MouseEvent| {
-                                    selected.set((selected.as_deref() != Some(uid.as_str()))
-                                        .then(|| uid.clone()));
+                                    selected.set(Some(uid.clone()));
                                 })
                             }
                         />
@@ -102,13 +101,20 @@ pub fn situation() -> Html {
             </Section>
 
             if let Some(uid) = selected.as_deref() {
-                { drawer(uid, {
-                    let (selected, reload) = (selected.clone(), messages.reload.clone());
-                    Callback::from(move |_| {
-                        selected.set(None);
-                        reload.emit(());
-                    })
-                }) }
+                { drawer(
+                    uid,
+                    {
+                        let (selected, reload) = (selected.clone(), messages.reload.clone());
+                        Callback::from(move |_| {
+                            selected.set(None);
+                            reload.emit(());
+                        })
+                    },
+                    {
+                        let selected = selected.clone();
+                        Callback::from(move |()| selected.set(None))
+                    },
+                ) }
             }
         </>
     }
@@ -121,9 +127,9 @@ pub fn situation() -> Html {
 /// an instance re-used across the selection would keep showing the previous
 /// row's document and history under the new row's heading — the same trap
 /// `services.rs` keys `ServiceDetail` against.
-fn drawer(uid: &str, on_forgotten: Callback<()>) -> Html {
+fn drawer(uid: &str, on_forgotten: Callback<()>, on_close: Callback<()>) -> Html {
     html! {
-        <CotDrawer key={uid.to_string()} uid={uid.to_string()} {on_forgotten} />
+        <CotDrawer key={uid.to_string()} uid={uid.to_string()} {on_forgotten} {on_close} />
     }
 }
 
@@ -288,8 +294,8 @@ mod tests {
 
     #[test]
     fn the_drawer_is_keyed_on_the_identifier_so_a_new_selection_remounts_it() {
-        let first = drawer("ANDROID-1", Callback::noop());
-        let second = drawer("ANDROID-2", Callback::noop());
+        let first = drawer("ANDROID-1", Callback::noop(), Callback::noop());
+        let second = drawer("ANDROID-2", Callback::noop(), Callback::noop());
 
         assert_eq!(
             first.key().map(|key| key.to_string()).as_deref(),

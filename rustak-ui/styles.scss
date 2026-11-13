@@ -853,7 +853,7 @@ $small: 560px;
 
 .channel-row {
   @include entity-row;
-  grid-template-columns: minmax(0, 1.2fr) auto minmax(0, 1.4fr) auto auto;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.6fr) auto;
 
   &--selected {
     background: $brand-tint;
@@ -888,8 +888,16 @@ $small: 560px;
     color: $text-secondary;
   }
 
-  &__error {
-    @include entity-error;
+  &__description {
+    font-size: 0.85rem;
+    color: $text-secondary;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 720px) {
+  .channel-row__description:empty {
+    display: none;
   }
 }
 
@@ -1523,25 +1531,6 @@ $small: 560px;
   &__error {
     @include entity-error;
   }
-
-  // The editor is opened per row rather than on a page of its own: everything
-  // in it is one `PATCH` against the row it sits under, and moving it away
-  // would mean carrying the row's identity to a second place.
-  &__editor {
-    grid-column: 1 / -1;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.85rem;
-    background: $fill-lighter;
-    border: 1px solid $border-lighter;
-    border-radius: $radius;
-
-    .yi-input {
-      max-width: 18rem;
-    }
-  }
 }
 
 .client-list {
@@ -1633,6 +1622,62 @@ $small: 560px;
   // A grid reference is read digit by digit, so it gets the monospace face.
   &__position {
     font-family: $font-mono;
+  }
+}
+
+// What a list item's drawer holds: flat sections under small headings, in a
+// single column whatever the page behind it does.
+.detail-drawer {
+  .inline-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.drawer-section {
+  margin-top: var(--yi-space-xl);
+
+  &:first-child,
+  .create-drawer__lead + & {
+    margin-top: 0;
+  }
+
+  // A button that ends a section's form, such as "Save configuration".
+  > .yi-button {
+    margin-top: var(--yi-space-sm);
+  }
+
+  &__title {
+    display: flex;
+    align-items: center;
+    gap: var(--yi-space-sm);
+    margin: 0 0 var(--yi-space-xs);
+    font-size: var(--yi-text-md);
+    font-weight: 600;
+    color: $text-primary;
+  }
+
+  > .panel-note:first-of-type {
+    margin: 0 0 var(--yi-space-md);
+  }
+}
+
+.package-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--yi-space-lg);
+
+  &__rename {
+    display: flex;
+    gap: var(--yi-space-sm);
+
+    > :first-child {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+  }
+
+  .drawer-section {
+    margin-top: 0;
   }
 }
 
@@ -1796,21 +1841,6 @@ $small: 560px;
   }
 }
 
-.service-detail {
-  &__heading {
-    margin: 1.25rem 0 0;
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: $text-regular;
-  }
-
-  &__actions {
-    margin-top: 1.25rem;
-    padding-top: 1rem;
-    border-top: 1px solid $border-lighter;
-  }
-}
-
 // A heartbeat's `metrics`, as a key/value table. A definition list rather than
 // a `<table>`: these are labelled values, not rows and columns, and a `<dl>`
 // wraps on a narrow screen without a horizontal scrollbar.
@@ -1945,11 +1975,6 @@ $small: 560px;
   .mission-row__state,
   .package-row__state {
     justify-content: flex-start;
-  }
-
-  .package-row__editor {
-    flex-direction: column;
-    align-items: stretch;
   }
 
   .pref-row {

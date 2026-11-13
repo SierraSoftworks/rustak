@@ -39,7 +39,7 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Alert, AlertKind, Button, ButtonKind, Field, LoadingNote, SchemaNode, Section, TextArea,
+    Alert, AlertKind, Button, ButtonKind, Field, LoadingNote, SchemaNode, TextArea,
 };
 
 use super::load::use_resource;
@@ -301,13 +301,15 @@ pub fn service_config_panel(props: &ServiceConfigProps) -> Html {
     };
 
     html! {
-        <Section
-            title="Configuration"
-            subtitle={match props.schema {
-                Some(_) => "Drawn from the schema this service registered. Only an administrator can write it.",
-                None => "A JSON object this service reads. Only an administrator can write it.",
-            }}
-        >
+        <section class="drawer-section" aria-label="Configuration">
+            <h3 class="drawer-section__title">{ "Configuration" }</h3>
+            <p class="panel-note">
+                { match props.schema {
+                    Some(_) => "Drawn from the schema this service registered. Only an \
+                        administrator can write it.",
+                    None => "A JSON object this service reads. Only an administrator can write it.",
+                } }
+            </p>
             if let Some(message) = &*error {
                 <Alert
                     kind={AlertKind::Error}
@@ -320,7 +322,7 @@ pub fn service_config_panel(props: &ServiceConfigProps) -> Html {
             }
 
             { editor }
-        </Section>
+        </section>
     }
 }
 

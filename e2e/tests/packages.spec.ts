@@ -77,14 +77,15 @@ test("a package is uploaded, given a channel, downloaded and deleted", async ({ 
 
   // --- editing -----------------------------------------------------------
 
-  // Downloading is the row's own button; editing is behind the caret beside it.
-  await row.getByRole("button", { name: "More actions for" }).click();
-  await row.getByRole("menuitem", { name: "Edit" }).click();
-
-  // Scoped to the editor: the channel's name appears twice on an open row —
-  // once in the metadata saying where the package is, and once as the switch
-  // that puts it there.
-  const editor = row.locator(".package-row__editor");
+  // Downloading is the row's own button; editing is behind the caret beside
+  // it, and opens in a drawer named after the package.
+  const openEditor = async () => {
+    await row.getByRole("button", { name: "More actions for" }).click();
+    await row.getByRole("menuitem", { name: "Edit" }).click();
+  };
+  await openEditor();
+  const editor = page.getByRole("dialog", { name });
+  await expect(editor).toBeVisible();
 
   // Each channel toggle is its own PATCH carrying the whole set, so the row
   // has to come back from the server with the change on it — and taking the
@@ -100,6 +101,9 @@ test("a package is uploaded, given a channel, downloaded and deleted", async ({ 
 
   // --- the bytes ---------------------------------------------------------
 
+  await page.keyboard.press("Escape");
+  await expect(editor).toHaveCount(0);
+
   const downloading = page.waitForEvent("download");
   await row.getByRole("button", { name: "Download" }).click();
   const download = await downloading;
@@ -107,10 +111,9 @@ test("a package is uploaded, given a channel, downloaded and deleted", async ({ 
 
   // --- and taking it away ------------------------------------------------
 
-  // The editor is still open: the toggle above is what opened it, and it says
-  // "Close" now.
+  await openEditor();
   await editor.getByRole("button", { name: "Delete", exact: true }).click();
-  await editor.getByRole("button", { name: "Delete it" }).click();
+  await page.getByRole("button", { name: "Delete it" }).click();
 
   await expect(page.locator(".package-row").filter({ hasText: name })).toHaveCount(0);
 });

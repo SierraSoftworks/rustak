@@ -20,8 +20,8 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Button, ConfirmButton, MenuAction, MenuItem, SplitButton, StatusPill, StatusTone, Switch,
-    TextInput,
+    Alert, AlertKind, Button, ConfirmButton, DetailDrawer, Field, MenuAction, MenuItem,
+    SplitButton, StatusPill, StatusTone, Switch, TextInput,
 };
 use crate::util::short_relative;
 
@@ -171,52 +171,78 @@ pub fn package_row(props: &PackageRowProps) -> Html {
                 busy={download.busy}
                 menu_label={format!("More actions for {}", package.name)}
                 primary={MenuAction::new("Download", download.start.clone())}
-                items={vec![MenuItem::Action(MenuAction::new(
-                    if *open { "Close" } else { "Edit" },
-                    {
-                        let open = open.clone();
-                        Callback::from(move |()| open.set(!*open))
-                    },
-                ))]}
+                items={vec![MenuItem::Action(MenuAction::new("Edit", {
+                    let open = open.clone();
+                    Callback::from(move |()| open.set(true))
+                }))]}
             />
 
             if let Some(message) = &download.error {
                 <p class="package-row__error" role="alert">{ message.clone() }</p>
             }
-            if let Some(message) = &*error {
-                <p class="package-row__error" role="alert">{ message.clone() }</p>
-            }
-
-            if *open {
-                <div class="package-row__editor">
-                    <TextInput
-                        id={format!("package-name-{}", package.hash)}
-                        value={(*name).clone()}
-                        placeholder="What operators and clients see"
-                        disabled={*busy}
-                        onchange={
-                            let name = name.clone();
-                            Callback::from(move |value: String| name.set(value))
-                        }
-                    />
-
-                    <Button
-                        small=true
+            <DetailDrawer
+                open={*open}
+                title={package.name.clone()}
+                subtitle="What it is called, who may fetch it, and whether a new device gets it."
+                actions={html! {
+                    <ConfirmButton
+                        small=false
+                        label="Delete"
+                        confirm_label="Delete it"
+                        question={format!(
+                            "Delete '{}'? Every row holding these bytes goes, and a device that \
+                             has not fetched it yet never will.",
+                            package.name,
+                        )}
                         busy={*busy}
-                        disabled={!renamed}
-                        title={(!renamed).then_some("Nothing has changed.")}
-                        onclick={
-                            let (apply, name) = (apply.clone(), name.clone());
-                            Callback::from(move |_: MouseEvent| {
-                                apply.emit(PackageUpdate {
-                                    name: Some(name.trim().to_string()),
-                                    ..PackageUpdate::default()
-                                });
-                            })
-                        }
-                    >
-                        { "Rename" }
-                    </Button>
+                        onconfirm={remove}
+                    />
+                }}
+                on_close={
+                    let open = open.clone();
+                    Callback::from(move |()| open.set(false))
+                }
+            >
+                if let Some(message) = &*error {
+                    <Alert
+                        kind={AlertKind::Error}
+                        title="That change could not be made."
+                        message={message.clone()}
+                    />
+                }
+
+                <div class="package-editor">
+                    <Field label="Name" id={format!("package-name-{}", package.hash)}>
+                        <div class="package-editor__rename">
+                            <TextInput
+                                id={format!("package-name-{}", package.hash)}
+                                value={(*name).clone()}
+                                placeholder="What operators and clients see"
+                                disabled={*busy}
+                                onchange={
+                                    let name = name.clone();
+                                    Callback::from(move |value: String| name.set(value))
+                                }
+                            />
+
+                            <Button
+                                busy={*busy}
+                                disabled={!renamed}
+                                title={(!renamed).then_some("Nothing has changed.")}
+                                onclick={
+                                    let (apply, name) = (apply.clone(), name.clone());
+                                    Callback::from(move |_: MouseEvent| {
+                                        apply.emit(PackageUpdate {
+                                            name: Some(name.trim().to_string()),
+                                            ..PackageUpdate::default()
+                                        });
+                                    })
+                                }
+                            >
+                                { "Rename" }
+                            </Button>
+                        </div>
+                    </Field>
 
                     <Switch
                         id={format!("package-enrol-{}", package.hash)}
@@ -234,21 +260,13 @@ pub fn package_row(props: &PackageRowProps) -> Html {
                         }
                     />
 
-                    { channel_chips(&channels.data, package, *busy, &apply) }
-
-                    <ConfirmButton
-                        label="Delete"
-                        confirm_label="Delete it"
-                        question={format!(
-                            "Delete '{}'? Every row holding these bytes goes, and a device that \
-                             has not fetched it yet never will.",
-                            package.name,
-                        )}
-                        busy={*busy}
-                        onconfirm={remove}
-                    />
+                    <section class="drawer-section" aria-label="Channels">
+                        <h3 class="drawer-section__title">{ "Channels" }</h3>
+                        <p class="panel-note">{ "Whose members may fetch it." }</p>
+                        { channel_chips(&channels.data, package, *busy, &apply) }
+                    </section>
                 </div>
-            }
+            </DetailDrawer>
         </div>
     }
 }
