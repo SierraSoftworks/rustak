@@ -21,8 +21,7 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Alert, AlertKind, CreateDrawer, Field, MenuAction, MenuItem, Select, SelectOption, SplitButton,
-    TextInput,
+    Alert, AlertKind, Button, ButtonKind, CreateDrawer, Field, Select, SelectOption, TextInput,
 };
 use crate::util::{nav_href, urlencode, window};
 
@@ -91,22 +90,30 @@ pub fn create_user(props: &CreateUserProps) -> Html {
         .map(|kind| SelectOption::new(kind.as_str(), kind.label()))
         .collect();
 
-    // One button for the two ways to create one: the plain account on its
-    // face, the CloudTAK service account behind the caret.
+    // Two buttons for the two ways to create one: the CloudTAK service account
+    // beside the plain account, which is the drawer's main action.
+    let title = parsed
+        .is_err()
+        .then_some(AttrValue::from("Give it a valid username first."));
     let actions = html! {
-        <SplitButton
-            busy={*busy}
-            menu_label="Other kinds of account"
-            primary={MenuAction::new("Create account", submit)
-                .primary()
-                .disabled(parsed.is_err())
-                .title(parsed.is_err().then_some("Give it a valid username first."))}
-            items={vec![MenuItem::Action(
-                MenuAction::new("Create CloudTAK account", onboard)
-                    .disabled(parsed.is_err())
-                    .title(parsed.is_err().then_some("Give it a valid username first.")),
-            )]}
-        />
+        <>
+            <Button
+                disabled={parsed.is_err() || *busy}
+                title={title.clone()}
+                onclick={onboard.reform(|_| ())}
+            >
+                { "Create CloudTAK account" }
+            </Button>
+            <Button
+                kind={ButtonKind::Primary}
+                disabled={parsed.is_err()}
+                busy={*busy}
+                {title}
+                onclick={submit.reform(|_| ())}
+            >
+                { "Create account" }
+            </Button>
+        </>
     };
 
     html! {

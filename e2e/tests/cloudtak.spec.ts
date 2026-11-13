@@ -61,9 +61,8 @@ async function createCloudTakAccount(page: Page, username: string): Promise<void
 
   await page.getByRole("button", { name: "New account" }).click();
   await page.getByLabel("Username").fill(username);
-  // The CloudTAK account is the other kind, behind the create button's caret.
-  await page.getByRole("button", { name: "Other kinds of account" }).click();
-  await page.getByRole("menuitem", { name: "Create CloudTAK account" }).click();
+  // The CloudTAK account is the other kind, on its own button beside "Create account".
+  await page.getByRole("button", { name: "Create CloudTAK account" }).click();
 
   // It creates the service account and lands on its CloudTAK tab, so the
   // operator does not have to know those are two separate things.

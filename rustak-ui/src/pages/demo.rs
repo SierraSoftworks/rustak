@@ -85,7 +85,7 @@ fn buttons() -> Html {
                 />
                 <SplitButton
                     busy=true
-                    primary={MenuAction::new("Save", Callback::noop())}
+                    primary={MenuAction::new("Save", Callback::noop()).primary()}
                     items={vec![MenuItem::Action(MenuAction::new("Delete", Callback::noop()).danger())]}
                 />
                 <SplitButton primary={MenuAction::new("Alone", Callback::noop())} />
