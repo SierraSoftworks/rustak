@@ -12,7 +12,7 @@ use rustak_api::{Certificate, Device, Username};
 use yew::prelude::*;
 
 use crate::api;
-use crate::components::{Alert, AlertKind, Card, Field, LoadingNote, TextInput};
+use crate::components::{Alert, AlertKind, Field, LoadingNote, Section, TextInput};
 
 use super::super::load::use_resource;
 use super::device_row::DeviceRow;
@@ -119,7 +119,7 @@ pub fn devices_panel(props: &DevicesPanelProps) -> Html {
     };
 
     html! {
-        <Card title={props.title.clone()} subtitle="What has connected, and what it came as.">
+        <Section title={props.title.clone()} subtitle="What has connected, and what it came as.">
             if props.filterable {
                 <Field label="Filter" id="device-filter" help="Matches callsign, identifier or owner.">
                     <TextInput
@@ -131,7 +131,7 @@ pub fn devices_panel(props: &DevicesPanelProps) -> Html {
                 </Field>
             }
             { body }
-        </Card>
+        </Section>
     }
 }
 

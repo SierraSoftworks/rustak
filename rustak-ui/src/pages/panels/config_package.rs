@@ -29,7 +29,7 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Alert, AlertKind, Button, ButtonKind, Card, Field, LoadingNote, Select, SelectOption,
+    Alert, AlertKind, Button, ButtonKind, Field, LoadingNote, Section, Select, SelectOption,
 };
 
 use super::super::load::{use_download, use_resource};
@@ -96,7 +96,7 @@ pub fn config_package_panel(props: &ConfigPackagePanelProps) -> Html {
         .collect();
 
     html! {
-        <Card
+        <Section
             title="Configuration package"
             subtitle="For a client that cannot enrol. Import it to end up with this server \
                       configured."
@@ -181,6 +181,6 @@ pub fn config_package_panel(props: &ConfigPackagePanelProps) -> Html {
             >
                 { "Download package" }
             </Button>
-        </Card>
+        </Section>
     }
 }

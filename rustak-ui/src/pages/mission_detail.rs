@@ -12,12 +12,12 @@
 
 use rustak_api::{MissionDetail, MissionGuid};
 use yew::prelude::*;
-use yew_router::prelude::*;
 
 use crate::api;
-use crate::app::Route;
-use crate::components::{Alert, AlertKind, LoadingNote, StatusPill, StatusTone};
-use crate::util::{format_iso8601, nav_href, short_relative};
+use crate::components::{
+    Alert, AlertKind, LoadingNote, PageHeading, StatusPill, StatusTone, TabBar,
+};
+use crate::util::{format_iso8601, short_relative};
 
 use super::load::{use_refresh_action, use_resource};
 use super::mission_changes::MissionChanges;
@@ -103,12 +103,15 @@ fn detail(props: &DetailProps) -> Html {
         },
         (Some(found), _) => html! {
             <>
-                <Heading mission={found.clone()} />
-                <Tabs current={*tab} onselect={
-                    let tab = tab.clone();
-                    Callback::from(move |chosen: Tab| tab.set(chosen))
-                } />
-                { view(*tab, found, &mission.reload) }
+                { heading(found) }
+                { tabs(
+                    *tab,
+                    {
+                        let tab = tab.clone();
+                        Callback::from(move |chosen: Tab| tab.set(chosen))
+                    },
+                    view(*tab, found, &mission.reload),
+                ) }
             </>
         },
     }
@@ -125,89 +128,56 @@ fn view(tab: Tab, mission: &MissionDetail, reload: &Callback<()>) -> Html {
     }
 }
 
-#[derive(Properties, PartialEq)]
-struct HeadingProps {
-    mission: MissionDetail,
-}
-
-#[function_component(Heading)]
-fn heading(props: &HeadingProps) -> Html {
-    let summary = &props.mission.summary;
+/// Which mission this is, in the shell's title row, with the way back to the
+/// list. A deleted mission says so here, so it is said on every tab.
+fn heading(mission: &MissionDetail) -> Html {
+    let summary = &mission.summary;
+    let subtitle = html! {
+        <>
+            <code>{ summary.guid.to_string() }</code>
+            { " · " }
+            { summary.tool.clone() }
+        </>
+    };
+    let meta = match summary.deleted_at {
+        Some(at) => html! {
+            <StatusPill
+                tone={StatusTone::Neutral}
+                label={format!("Deleted {}", short_relative(at))}
+                title={Some(AttrValue::from(format_iso8601(at)))}
+            />
+        },
+        None => Html::default(),
+    };
 
     html! {
-        <div class="entity-heading">
-            <div>
-                <h2 class="entity-heading__name">{ summary.name.clone() }</h2>
-                <p class="entity-heading__meta">
-                    <span class="entity-heading__username">{ summary.guid.to_string() }</span>
-                    { " · " }
-                    { summary.tool.clone() }
-                    // A mission opened after it was deleted is served as a
-                    // `410` carrying the whole document, so the page shows
-                    // what it was as well as that it went. The Overview tab
-                    // says it at length; the heading says it on every tab,
-                    // because none of the four is about a live mission any
-                    // more.
-                    if let Some(at) = summary.deleted_at {
-                        { " · " }
-                        <StatusPill
-                            tone={StatusTone::Neutral}
-                            label={format!("Deleted {}", short_relative(at))}
-                            title={Some(AttrValue::from(format_iso8601(at)))}
-                        />
-                    }
-                </p>
-            </div>
-            { back_link() }
-        </div>
+        <PageHeading
+            title={summary.name.clone()}
+            {subtitle}
+            {meta}
+            parent="Missions"
+            parent_path="/admin/missions"
+        />
     }
 }
 
-/// Demo mode lives in the query string, which a client-side navigation would
-/// drop — so the way back out of a demo page is a plain link that carries it.
-fn back_link() -> Html {
-    if crate::fixtures::is_demo() {
-        return html! {
-            <a class="btn btn--small" href={nav_href("/admin/missions")}>{ "All missions" }</a>
-        };
-    }
+/// The tab strip, with the chosen tab's view under it.
+fn tabs(current: Tab, onselect: Callback<Tab>, view: Html) -> Html {
+    let onselect = onselect.reform(|label: &'static str| {
+        Tab::ALL
+            .iter()
+            .copied()
+            .find(|tab| tab.label() == label)
+            .unwrap_or(Tab::ALL[0])
+    });
 
     html! {
-        <Link<Route> to={Route::Missions} classes="btn btn--small">{ "All missions" }</Link<Route>>
-    }
-}
-
-#[derive(Properties, PartialEq)]
-struct TabsProps {
-    current: Tab,
-    onselect: Callback<Tab>,
-}
-
-#[function_component(Tabs)]
-fn tabs(props: &TabsProps) -> Html {
-    html! {
-        <div class="tabs" role="tablist">
-            { for Tab::ALL.iter().map(|tab| {
-                let tab = *tab;
-                let active = tab == props.current;
-                let onclick = {
-                    let onselect = props.onselect.clone();
-                    Callback::from(move |_: MouseEvent| onselect.emit(tab))
-                };
-
-                html! {
-                    <button
-                        type="button"
-                        role="tab"
-                        key={tab.label()}
-                        class={classes!("tabs__tab", active.then_some("tabs__tab--active"))}
-                        aria-selected={active.to_string()}
-                        {onclick}
-                    >
-                        { tab.label() }
-                    </button>
-                }
-            }) }
-        </div>
+        <TabBar
+            tabs={Tab::ALL.iter().map(|tab| tab.label()).collect::<Vec<_>>()}
+            current={current.label()}
+            {onselect}
+        >
+            { view }
+        </TabBar>
     }
 }

@@ -23,7 +23,7 @@ use rustak_api::{ClientHistoryEntry, ConnectedClient, Device};
 use yew::prelude::*;
 
 use crate::api;
-use crate::components::{Alert, AlertKind, Card, Field, LoadingNote, Switch, TextInput};
+use crate::components::{Alert, AlertKind, LoadingNote, Section, Switch, use_page_search};
 use crate::util::{format_iso8601, short_relative};
 
 use super::eud_rows::{ConnectedOnlyRow, HistoryRow, empty_reason};
@@ -47,7 +47,8 @@ pub fn euds() -> Html {
 
     let connected_only = use_state(|| true);
     let live = use_state(|| true);
-    let filter = use_state(String::new);
+    // What the app bar's search box holds: callsign, identifier or owner.
+    let filter = use_page_search();
 
     let reload = {
         let reloads = [
@@ -125,11 +126,11 @@ pub fn euds() -> Html {
                 .iter()
                 .filter(|client| !list.iter().any(|d| d.uid.to_string() == client.client_uid))
                 .filter(|client| {
-                    let needle = filter.trim().to_lowercase();
+                    let needle = &filter;
                     needle.is_empty()
                         || [&client.callsign, &client.client_uid, &client.username]
                             .iter()
-                            .any(|field| field.to_lowercase().contains(&needle))
+                            .any(|field| field.to_lowercase().contains(needle.as_str()))
                 })
                 .collect();
 
@@ -197,7 +198,7 @@ pub fn euds() -> Html {
 
     html! {
         <>
-            <Card
+            <Section
                 title="Enrolled devices"
                 subtitle={if *connected_only {
                     "The devices holding a stream connection right now."
@@ -206,17 +207,6 @@ pub fn euds() -> Html {
                 }}
                 {actions}
             >
-                <Field label="Filter" id="device-filter" help="Matches callsign, identifier or owner.">
-                    <TextInput
-                        id="device-filter"
-                        value={(*filter).clone()}
-                        placeholder="QUINN"
-                        onchange={
-                            let filter = filter.clone();
-                            Callback::from(move |value: String| filter.set(value))
-                        }
-                    />
-                </Field>
 
                 if let Some(message) = &clients.error {
                     <Alert
@@ -236,15 +226,15 @@ pub fn euds() -> Html {
                 }
 
                 { body }
-            </Card>
+            </Section>
 
             if !*connected_only {
-                <Card
+                <Section
                     title="Recently disconnected"
                     subtitle="Seen in the last day, but not connected now."
                 >
                     { history_list(&history.data, &history.error) }
-                </Card>
+                </Section>
             }
         </>
     }

@@ -8,10 +8,12 @@ use rustak_api::{Health, ServerSettings, ServiceSummary, User};
 use yew::prelude::*;
 
 use crate::api;
-use crate::components::{Alert, AlertKind, Card, LoadingNote, Stat, StatusPill, StatusTone};
-use crate::util::{nav_href, short_duration};
+use crate::components::{
+    Alert, AlertKind, Button, Callout, LoadingNote, Section, Stat, StatusPill, StatusTone,
+};
+use crate::util::short_duration;
 
-use super::activity::audit_row;
+use super::activity::audit_timeline;
 use super::load::{use_refresh_action, use_resource};
 
 #[function_component(Dashboard)]
@@ -64,39 +66,38 @@ pub fn dashboard() -> Html {
             }
 
             <div class="dashboard">
-                <Card title="Server">{ health_panel(health.data.as_ref()) }</Card>
-                <Card title="Identity">{ settings_panel(settings.data.as_ref()) }</Card>
-                <Card title="People">{ users_panel(users.data.as_deref()) }</Card>
-                <Card
+                <Callout title="Server">{ health_panel(health.data.as_ref()) }</Callout>
+                <Callout title="Identity">{ settings_panel(settings.data.as_ref()) }</Callout>
+                <Callout
+                    title="People"
+                    actions={html! { <Button small=true href="/admin/users">{ "See them" }</Button> }}
+                >
+                    { users_panel(users.data.as_deref()) }
+                </Callout>
+                <Callout
                     title="Services"
                     actions={html! {
-                        <a class="btn btn--small" href={nav_href("/admin/settings/add-ons")}>
-                            { "See them" }
-                        </a>
+                        <Button small=true href="/admin/settings/add-ons">{ "See them" }</Button>
                     }}
                 >
                     { services_panel(services.data.as_deref()) }
-                </Card>
+                </Callout>
             </div>
 
-            <Card
+            <Section
                 title="Recent activity"
                 subtitle="The last few things this server did."
                 actions={html! {
-                    <a class="btn btn--small" href={nav_href("/admin/activity")}>
-                        { "See everything" }
-                    </a>
+                    <Button small=true href="/admin/activity">{ "See everything" }</Button>
                 }}
             >
                 {
                     match activity.data.as_deref() {
                         None => html! { <LoadingNote /> },
-                        Some(records) => html! {
-                            <ul class="audit-list">{ for records.iter().map(audit_row) }</ul>
-                        },
+                        Some(records) => audit_timeline(records),
                     }
                 }
-            </Card>
+            </Section>
         </>
     }
 }
@@ -108,7 +109,7 @@ fn health_panel(health: Option<&Health>) -> Html {
 
     html! {
         <>
-            <div class="card__status">
+            <div class="pill-row">
                 <StatusPill
                     tone={StatusTone::of_component(health.status)}
                     label={health.status.label()}

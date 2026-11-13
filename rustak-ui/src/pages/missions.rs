@@ -20,7 +20,7 @@ use yew_router::prelude::*;
 use crate::api;
 use crate::app::Route;
 use crate::components::{
-    Alert, AlertKind, Card, Field, LoadingNote, RoleBadge, StatusPill, StatusTone, TextInput,
+    Alert, AlertKind, LoadingNote, RoleBadge, Section, StatusPill, StatusTone, use_page_search,
 };
 use crate::util::{nav_href, short_relative};
 
@@ -31,7 +31,8 @@ pub fn missions() -> Html {
     let missions = use_resource(api::missions::list);
     use_refresh_action(missions.reload.clone(), missions.busy);
 
-    let filter = use_state(String::new);
+    // What the app bar's search box holds: name, tool, keyword or channel.
+    let filter = use_page_search();
 
     let body = match (&missions.data, &missions.error) {
         (None, None) => html! { <LoadingNote /> },
@@ -74,28 +75,13 @@ pub fn missions() -> Html {
     };
 
     html! {
-        <Card
+        <Section
             title="All missions"
             subtitle="Open one to see its subscribers, its changes and its layers."
         >
-            <Field
-                label="Filter"
-                id="mission-filter"
-                help="Matches name, tool, keyword or channel."
-            >
-                <TextInput
-                    id="mission-filter"
-                    value={(*filter).clone()}
-                    placeholder="Kettle"
-                    onchange={
-                        let filter = filter.clone();
-                        Callback::from(move |value: String| filter.set(value))
-                    }
-                />
-            </Field>
 
             { body }
-        </Card>
+        </Section>
     }
 }
 

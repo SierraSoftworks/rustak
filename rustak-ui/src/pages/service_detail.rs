@@ -18,7 +18,7 @@ use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
 use crate::api;
-use crate::components::{Alert, AlertKind, Card, ConfirmButton, StatusPill};
+use crate::components::{Alert, AlertKind, ConfirmButton, Section, StatusPill, Tag};
 use crate::util::{format_iso8601, optional_relative, short_relative};
 
 use super::service_config::ServiceConfigPanel;
@@ -69,7 +69,7 @@ pub fn service_detail(props: &ServiceDetailProps) -> Html {
 
     html! {
         <>
-            <Card
+            <Section
                 title={descriptor.display().to_string()}
                 subtitle="What this sidecar says about itself, and what it last reported."
                 actions={html! {
@@ -112,9 +112,9 @@ pub fn service_detail(props: &ServiceDetailProps) -> Html {
                         } else {
                             <span class="detail-list__pills">
                                 { for descriptor.capabilities.iter().map(|capability| html! {
-                                    <span class="tag" key={capability.to_string()}>
+                                    <Tag key={capability.to_string()} mono=true>
                                         { capability.to_string() }
-                                    </span>
+                                    </Tag>
                                 }) }
                             </span>
                         }
@@ -142,7 +142,7 @@ pub fn service_detail(props: &ServiceDetailProps) -> Html {
                         onconfirm={remove}
                     />
                 </div>
-            </Card>
+            </Section>
 
             <ServiceConfigPanel name={name} schema={descriptor.config_schema.clone()} />
         </>

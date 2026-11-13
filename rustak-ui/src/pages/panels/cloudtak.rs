@@ -23,7 +23,7 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Alert, AlertKind, Button, ButtonKind, Card, Field, NumberInput, TextInput,
+    Alert, AlertKind, Button, ButtonKind, Callout, Field, NumberInput, TextInput,
 };
 
 use super::cloudtak_result::CloudTakResult;
@@ -97,7 +97,7 @@ pub fn cloudtak_panel(props: &CloudTakPanelProps) -> Html {
     };
 
     html! {
-        <Card
+        <Callout
             title="Onboard CloudTAK"
             subtitle="Produces the certificate, the password and the three URLs CloudTAK's \
                       Configure Server page asks for."
@@ -163,7 +163,7 @@ pub fn cloudtak_panel(props: &CloudTakPanelProps) -> Html {
                     </div>
                 }
             </div>
-        </Card>
+        </Callout>
     }
 }
 

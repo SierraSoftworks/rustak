@@ -18,10 +18,10 @@ fn group(props: &SchemaNodeProps, body: Html) -> Html {
             <legend class="config-form__legend">{ &props.label }</legend>
 
             if let Some(help) = props.help() {
-                <p class="field__help">{ help }</p>
+                <p class="yi-field__message">{ help }</p>
             }
             if let Some(error) = props.error() {
-                <p class="field__error" role="alert">{ error }</p>
+                <p class="yi-field__message yi-field__message--error" role="alert">{ error }</p>
             }
 
             { body }

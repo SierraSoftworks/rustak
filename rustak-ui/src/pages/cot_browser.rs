@@ -15,8 +15,8 @@ use yew::prelude::*;
 use crate::api;
 use crate::api::cot::CotFilter;
 use crate::components::{
-    Alert, AlertKind, Card, Field, LoadingNote, Select, SelectOption, StatusPill, StatusTone,
-    TextInput,
+    Alert, AlertKind, Field, LoadingNote, Section, Select, SelectOption, StatusPill, StatusTone,
+    TextInput, use_page_search,
 };
 use crate::util::{format_iso8601, mgrs, short_relative};
 
@@ -25,8 +25,15 @@ use super::load::{use_refresh_action, use_resource};
 
 #[function_component(Situation)]
 pub fn situation() -> Html {
+    // The callsign comes from the app bar's search box; the type and the
+    // channel are this page's own, beside the list they narrow.
+    let callsign = use_page_search();
     let filter = use_state(CotFilter::default);
-    let wanted = (*filter).clone();
+    let wanted = CotFilter {
+        callsign,
+        ..(*filter).clone()
+    };
+    let applied = wanted.clone();
 
     let messages = use_resource(move || {
         let wanted = wanted.clone();
@@ -42,7 +49,7 @@ pub fn situation() -> Html {
     // would send.
     {
         let reload = messages.reload.clone();
-        use_effect_with((*filter).clone(), move |_| {
+        use_effect_with(applied, move |_| {
             reload.emit(());
             || ()
         });
@@ -86,13 +93,13 @@ pub fn situation() -> Html {
 
     html! {
         <>
-            <Card
+            <Section
                 title="Latest message per identifier"
                 subtitle="What this server last received from each device, and who it reached."
             >
                 { filters(&filter, &channels.data) }
                 { body }
-            </Card>
+            </Section>
 
             if let Some(uid) = selected.as_deref() {
                 { drawer(uid, {
@@ -145,20 +152,6 @@ fn filters(filter: &UseStateHandle<CotFilter>, channels: &Option<Vec<Group>>) ->
                         let filter = filter.clone();
                         Callback::from(move |value: String| {
                             filter.set(CotFilter { kind: value, ..(*filter).clone() });
-                        })
-                    }
-                />
-            </Field>
-
-            <Field label="Callsign" id="cot-callsign" help="Part of one, ignoring case.">
-                <TextInput
-                    id="cot-callsign"
-                    value={filter.callsign.clone()}
-                    placeholder="QUINN"
-                    onchange={
-                        let filter = filter.clone();
-                        Callback::from(move |value: String| {
-                            filter.set(CotFilter { callsign: value, ..(*filter).clone() });
                         })
                     }
                 />

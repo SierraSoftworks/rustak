@@ -17,12 +17,9 @@
 
 use rustak_api::{User, Username};
 use yew::prelude::*;
-use yew_router::prelude::*;
 
 use crate::api;
-use crate::app::Route;
-use crate::components::{Alert, AlertKind, LoadingNote};
-use crate::util::nav_href;
+use crate::components::{Alert, AlertKind, LoadingNote, PageHeading, TabBar};
 
 use super::load::{use_refresh_action, use_resource};
 use super::panels::{
@@ -126,12 +123,15 @@ fn detail(props: &DetailProps) -> Html {
         },
         (Some(found), _) => html! {
             <>
-                <Heading user={found.clone()} />
-                <Tabs current={*tab} onselect={
-                    let tab = tab.clone();
-                    Callback::from(move |chosen: Tab| tab.set(chosen))
-                } />
-                { view(*tab, found, &user.reload) }
+                { heading(found) }
+                { tabs(
+                    *tab,
+                    {
+                        let tab = tab.clone();
+                        Callback::from(move |chosen: Tab| tab.set(chosen))
+                    },
+                    view(*tab, found, &user.reload),
+                ) }
             </>
         },
     }
@@ -166,77 +166,43 @@ fn opening_tab() -> Tab {
         .unwrap_or(Tab::Profile)
 }
 
-#[derive(Properties, PartialEq)]
-struct HeadingProps {
-    user: User,
-}
+/// Whose page this is, in the shell's title row, with the way back to the list.
+fn heading(user: &User) -> Html {
+    let subtitle = html! {
+        <>
+            <code>{ user.username.to_string() }</code>
+            { " · " }
+            { user.kind.label() }
+        </>
+    };
 
-/// Who this page is about, and the way back to the list.
-#[function_component(Heading)]
-fn heading(props: &HeadingProps) -> Html {
     html! {
-        <div class="entity-heading">
-            <div>
-                <h2 class="entity-heading__name">{ props.user.display().to_string() }</h2>
-                <p class="entity-heading__meta">
-                    <span class="entity-heading__username">
-                        { props.user.username.to_string() }
-                    </span>
-                    { " · " }
-                    { props.user.kind.label() }
-                </p>
-            </div>
-            { back_link() }
-        </div>
+        <PageHeading
+            title={user.display().to_string()}
+            {subtitle}
+            parent="Users"
+            parent_path="/admin/users"
+        />
     }
 }
 
-/// Demo mode lives in the query string and a client-side navigation replaces the
-/// whole URL, so a `Link` out of a demo page would land on one talking to a
-/// server that is not there.
-fn back_link() -> Html {
-    if crate::fixtures::is_demo() {
-        return html! {
-            <a class="btn btn--small" href={nav_href("/admin/users")}>{ "All accounts" }</a>
-        };
-    }
+/// The tab strip, with the chosen tab's view under it.
+fn tabs(current: Tab, onselect: Callback<Tab>, view: Html) -> Html {
+    let onselect = onselect.reform(|label: &'static str| {
+        Tab::ALL
+            .iter()
+            .copied()
+            .find(|tab| tab.label() == label)
+            .unwrap_or(Tab::ALL[0])
+    });
 
     html! {
-        <Link<Route> to={Route::Users} classes="btn btn--small">{ "All accounts" }</Link<Route>>
-    }
-}
-
-#[derive(Properties, PartialEq)]
-struct TabsProps {
-    current: Tab,
-    onselect: Callback<Tab>,
-}
-
-#[function_component(Tabs)]
-fn tabs(props: &TabsProps) -> Html {
-    html! {
-        <div class="tabs" role="tablist">
-            { for Tab::ALL.iter().map(|tab| {
-                let tab = *tab;
-                let active = tab == props.current;
-                let onclick = {
-                    let onselect = props.onselect.clone();
-                    Callback::from(move |_: MouseEvent| onselect.emit(tab))
-                };
-
-                html! {
-                    <button
-                        type="button"
-                        role="tab"
-                        key={tab.label()}
-                        class={classes!("tabs__tab", active.then_some("tabs__tab--active"))}
-                        aria-selected={active.to_string()}
-                        {onclick}
-                    >
-                        { tab.label() }
-                    </button>
-                }
-            }) }
-        </div>
+        <TabBar
+            tabs={Tab::ALL.iter().map(|tab| tab.label()).collect::<Vec<_>>()}
+            current={current.label()}
+            {onselect}
+        >
+            { view }
+        </TabBar>
     }
 }

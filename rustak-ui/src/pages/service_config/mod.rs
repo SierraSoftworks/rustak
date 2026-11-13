@@ -39,7 +39,7 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Alert, AlertKind, Button, ButtonKind, Card, Field, LoadingNote, SchemaNode, TextArea,
+    Alert, AlertKind, Button, ButtonKind, Field, LoadingNote, SchemaNode, Section, TextArea,
 };
 
 use super::load::use_resource;
@@ -301,7 +301,7 @@ pub fn service_config_panel(props: &ServiceConfigProps) -> Html {
     };
 
     html! {
-        <Card
+        <Section
             title="Configuration"
             subtitle={match props.schema {
                 Some(_) => "Drawn from the schema this service registered. Only an administrator can write it.",
@@ -320,7 +320,7 @@ pub fn service_config_panel(props: &ServiceConfigProps) -> Html {
             }
 
             { editor }
-        </Card>
+        </Section>
     }
 }
 

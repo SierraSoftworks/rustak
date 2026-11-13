@@ -24,7 +24,7 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Alert, AlertKind, Button, ButtonKind, Card, Field, LoadingNote, NumberInput,
+    Alert, AlertKind, Button, ButtonKind, Field, LoadingNote, NumberInput, Section,
 };
 
 use super::load::use_resource;
@@ -96,13 +96,13 @@ struct FilesCardFrameProps {
 #[function_component(FilesCardFrame)]
 fn files_card_frame(props: &FilesCardFrameProps) -> Html {
     html! {
-        <Card
+        <Section
             title="Enterprise Sync"
             subtitle="What clients may upload, and what this server tells them about itself."
             actions={props.actions.clone()}
         >
             { props.children.clone() }
-        </Card>
+        </Section>
     }
 }
 

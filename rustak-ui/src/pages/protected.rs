@@ -3,8 +3,7 @@
 use yew::prelude::*;
 
 use crate::app::{AuthHandle, AuthStatus};
-use crate::components::{Alert, AlertKind, LoadingNote};
-use crate::util::nav_href;
+use crate::components::{Alert, AlertKind, Button, ButtonKind, LoadingNote};
 
 use super::Login;
 
@@ -32,9 +31,9 @@ pub fn protected(props: &ProtectedProps) -> Html {
                 message="There is no administrator and no certificate authority, so there is \
                     nobody to sign in as. The first-run wizard creates both."
             >
-                <a class="btn btn--primary btn--small" href={nav_href("/setup")}>
+                <Button kind={ButtonKind::Primary} small=true href="/setup">
                     { "Open the setup wizard" }
-                </a>
+                </Button>
             </Alert>
         },
 
@@ -59,9 +58,9 @@ pub fn protected(props: &ProtectedProps) -> Html {
                         `[auth]` configuration, judged against what the provider said about \
                         you when you last signed in."
                 >
-                    <button class="btn btn--small btn--primary" onclick={on_signout}>
+                    <Button kind={ButtonKind::Primary} small=true onclick={on_signout}>
                         { "Sign out" }
-                    </button>
+                    </Button>
                 </Alert>
             }
         }
@@ -78,7 +77,7 @@ pub fn protected(props: &ProtectedProps) -> Html {
                     title="We could not check your session"
                     message={message}
                 >
-                    <button class="btn btn--small btn--primary" {onclick}>{ "Reload" }</button>
+                    <Button kind={ButtonKind::Primary} small=true {onclick}>{ "Reload" }</Button>
                 </Alert>
             }
         }

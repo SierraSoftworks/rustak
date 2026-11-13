@@ -12,7 +12,8 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Alert, AlertKind, Button, ButtonKind, Card, Field, NumberInput, Select, SelectOption, TextInput,
+    Alert, AlertKind, Button, ButtonKind, Callout, Field, NumberInput, Select, SelectOption,
+    TextInput,
 };
 
 use super::credentials::request;
@@ -105,7 +106,7 @@ pub fn mint_form(props: &MintFormProps) -> Html {
     };
 
     html! {
-        <Card
+        <Callout
             title="Mint a credential"
             subtitle="Shown once, and only at the moment it is made."
             {actions}
@@ -162,7 +163,7 @@ pub fn mint_form(props: &MintFormProps) -> Html {
                     message={message.clone()}
                 />
             }
-        </Card>
+        </Callout>
     }
 }
 

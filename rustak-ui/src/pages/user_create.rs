@@ -21,7 +21,7 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Alert, AlertKind, Card, Field, MenuAction, MenuItem, Select, SelectOption, SplitButton,
+    Alert, AlertKind, Callout, Field, MenuAction, MenuItem, Select, SelectOption, SplitButton,
     TextInput,
 };
 use crate::util::{nav_href, urlencode, window};
@@ -110,7 +110,7 @@ pub fn create_user(props: &CreateUserProps) -> Html {
     };
 
     html! {
-        <Card
+        <Callout
             title="Add an account"
             subtitle="No password is set here, because there are none to set."
             {actions}
@@ -190,7 +190,7 @@ pub fn create_user(props: &CreateUserProps) -> Html {
                 </Field>
 
             </div>
-        </Card>
+        </Callout>
     }
 }
 

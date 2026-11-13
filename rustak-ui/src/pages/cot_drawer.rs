@@ -24,7 +24,7 @@ use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
 use crate::api;
-use crate::components::{Alert, AlertKind, Card, ConfirmButton, LoadingNote, XmlView};
+use crate::components::{Alert, AlertKind, ConfirmButton, LoadingNote, Section, XmlView};
 use crate::util::{format_iso8601, short_relative};
 
 use super::load::use_resource;
@@ -91,7 +91,7 @@ pub fn cot_drawer(props: &CotDrawerProps) -> Html {
     };
 
     html! {
-        <Card
+        <Section
             title={props.uid.clone()}
             subtitle="The message as its recipients were sent it, and what came before."
         >
@@ -119,7 +119,7 @@ pub fn cot_drawer(props: &CotDrawerProps) -> Html {
                 busy={*busy}
                 onconfirm={forget}
             />
-        </Card>
+        </Section>
     }
 }
 

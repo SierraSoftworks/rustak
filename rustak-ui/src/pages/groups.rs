@@ -17,8 +17,8 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Alert, AlertKind, Button, ButtonKind, Card, Field, LoadingNote, MenuAction, MenuItem,
-    SplitButton, StatusPill, StatusTone, TextInput,
+    Alert, AlertKind, Button, ButtonKind, Callout, Field, LoadingNote, MenuAction, MenuItem,
+    Section, SplitButton, StatusPill, StatusTone, TextInput,
 };
 
 use super::group_members::GroupMembers;
@@ -72,9 +72,9 @@ pub fn groups() -> Html {
         <>
             <CreateChannel on_created={groups.reload.clone()} />
 
-            <Card title="All channels" subtitle="Select one to see and change who is in it.">
+            <Section title="All channels" subtitle="Select one to see and change who is in it.">
                 { body }
-            </Card>
+            </Section>
 
             if let Some(group) = chosen {
                 <GroupMembers {group} />
@@ -147,7 +147,7 @@ fn create_channel(props: &CreateChannelProps) -> Html {
     };
 
     html! {
-        <Card
+        <Callout
             title="Create a channel"
             subtitle="The bit position is allocated by the server."
             {actions}
@@ -192,7 +192,7 @@ fn create_channel(props: &CreateChannelProps) -> Html {
                     />
                 </Field>
             </div>
-        </Card>
+        </Callout>
     }
 }
 

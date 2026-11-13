@@ -21,7 +21,7 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    Alert, AlertKind, Button, ButtonKind, Card, Copyable, Field, Switch, TextInput,
+    Alert, AlertKind, Button, ButtonKind, Callout, Copyable, Field, Switch, TextInput,
 };
 use crate::util::format_iso8601;
 
@@ -113,7 +113,7 @@ pub fn add_service() -> Html {
     };
 
     html! {
-        <Card
+        <Callout
             title="Add a service"
             subtitle="Creates the sidecar's account and mints what its deployment needs, in one \
                       step. Every secret is shown once."
@@ -173,7 +173,7 @@ pub fn add_service() -> Html {
                     Callback::from(move |value: bool| rotate.set(value))
                 }
             />
-        </Card>
+        </Callout>
     }
 }
 

@@ -11,7 +11,7 @@ use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
 use crate::api;
-use crate::components::{Alert, AlertKind, Button, ButtonKind, Card, GroupsPicker, LoadingNote};
+use crate::components::{Alert, AlertKind, Button, ButtonKind, GroupsPicker, LoadingNote, Section};
 
 use super::super::load::use_resource;
 
@@ -119,7 +119,7 @@ pub fn channels_panel(props: &ChannelsPanelProps) -> Html {
     };
 
     html! {
-        <Card
+        <Section
             title="Channels"
             subtitle="What this account may write into, and read out of."
         >
@@ -131,6 +131,6 @@ pub fn channels_panel(props: &ChannelsPanelProps) -> Html {
                 />
             }
             { body }
-        </Card>
+        </Section>
     }
 }

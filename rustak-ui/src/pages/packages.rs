@@ -16,15 +16,25 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::api::packages::PackageFilter;
-use crate::components::{Alert, AlertKind, Card, Field, FileDrop, LoadingNote, Switch, TextInput};
+use crate::components::{
+    Alert, AlertKind, Callout, Field, FileDrop, LoadingNote, Section, Switch, TextInput,
+    use_page_search,
+};
 
 use super::load::{use_refresh_action, use_resource};
 use super::package_row::PackageRow;
 
 #[function_component(Packages)]
 pub fn packages() -> Html {
-    let filter = use_state(PackageFilter::default);
-    let wanted = (*filter).clone();
+    // The app bar's search box is the query: a name or a keyword, matched by
+    // the server, ignoring case.
+    let query = use_page_search();
+    let mission_only = use_state(|| false);
+    let wanted = PackageFilter {
+        query,
+        mission_package: *mission_only,
+    };
+    let filter = wanted.clone();
 
     let packages = use_resource(move || {
         let wanted = wanted.clone();
@@ -37,7 +47,7 @@ pub fn packages() -> Html {
     // would send.
     {
         let reload = packages.reload.clone();
-        use_effect_with((*filter).clone(), move |_| {
+        use_effect_with(filter.clone(), move |_| {
             reload.emit(());
             || ()
         });
@@ -76,42 +86,23 @@ pub fn packages() -> Html {
         <>
             <Upload on_created={packages.reload.clone()} />
 
-            <Card
+            <Section
                 title="All packages"
                 subtitle="What this server holds, and who may fetch each one."
             >
-                <Field
-                    label="Filter"
-                    id="package-filter"
-                    help="Matches a name or a keyword, ignoring case."
-                >
-                    <TextInput
-                        id="package-filter"
-                        value={filter.query.clone()}
-                        placeholder="patrol"
-                        onchange={
-                            let filter = filter.clone();
-                            Callback::from(move |value: String| {
-                                filter.set(PackageFilter { query: value, ..(*filter).clone() });
-                            })
-                        }
-                    />
-                </Field>
 
                 <Switch
                     id="package-mission-only"
                     checked={filter.mission_package}
                     label="Mission packages only — what a client's data-package browser lists"
                     onchange={
-                        let filter = filter.clone();
-                        Callback::from(move |on: bool| {
-                            filter.set(PackageFilter { mission_package: on, ..(*filter).clone() });
-                        })
+                        let mission_only = mission_only.clone();
+                        Callback::from(move |on: bool| mission_only.set(on))
                     }
                 />
 
                 { body }
-            </Card>
+            </Section>
         </>
     }
 }
@@ -171,7 +162,7 @@ fn upload(props: &UploadProps) -> Html {
     };
 
     html! {
-        <Card
+        <Callout
             title="Add a package"
             subtitle="Channels and the enrolment flag are set on the row once it is here."
         >
@@ -234,6 +225,6 @@ fn upload(props: &UploadProps) -> Html {
                 busy={*busy}
                 {onfiles}
             />
-        </Card>
+        </Callout>
     }
 }

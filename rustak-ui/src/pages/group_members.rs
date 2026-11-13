@@ -14,7 +14,7 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::api::ApiError;
-use crate::components::{Alert, AlertKind, Card, LoadingNote, Switch};
+use crate::components::{Alert, AlertKind, LoadingNote, Section, Switch};
 
 use super::load::use_resource;
 
@@ -73,13 +73,13 @@ pub fn group_members(props: &GroupMembersProps) -> Html {
     };
 
     html! {
-        <Card
+        <Section
             title={format!("Members of {}", props.group.name)}
             subtitle="Write is permission to send into the channel; read is permission to \
                 receive from it."
         >
             { body }
-        </Card>
+        </Section>
     }
 }
 

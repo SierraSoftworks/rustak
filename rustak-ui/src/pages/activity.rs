@@ -6,38 +6,56 @@
 
 use rustak_api::{AuditCategory, AuditRecord};
 use yew::prelude::*;
+use yewi::{Timeline, TimelineItem, Timestamp};
 
 use crate::api;
-use crate::components::{Alert, AlertKind, Card, EmptyState, LoadingNote, StatusPill, StatusTone};
-use crate::util::{format_iso8601, short_relative};
+use crate::components::{
+    Alert, AlertKind, EmptyState, LoadingNote, Section, Select, SelectOption, StatusTone, Tag,
+    use_page_controls,
+};
 
 use super::load::{use_refresh_action, use_resource};
 
-/// One audit record, as both this page and the dashboard show it.
-pub fn audit_row(record: &AuditRecord) -> Html {
+/// One audit record, as an event on a timeline: what was done, to whom, how
+/// it turned out, and when.
+///
+/// Shared with the dashboard's "Recent activity", so the two can never
+/// disagree about what a record looks like.
+fn audit_event(record: &AuditRecord) -> Html {
     let who = match (&record.actor, &record.subject) {
         (Some(actor), Some(subject)) if actor != subject => format!("{actor} → {subject}"),
         (Some(actor), _) => actor.clone(),
         (None, Some(subject)) => subject.clone(),
         (None, None) => "the server".to_string(),
     };
+    let title = html! {
+        <span class="audit-event__title">
+            <code class="audit-event__action">{ record.action.clone() }</code>
+            <Tag>{ record.category.label() }</Tag>
+        </span>
+    };
 
     html! {
-        <li class="audit-row" key={record.id}>
-            <span class="audit-row__when" title={format_iso8601(record.occurred_at)}>
-                { short_relative(record.occurred_at) }
-            </span>
-            <span class="audit-row__category">{ record.category.label() }</span>
-            <span class="audit-row__action">{ record.action.clone() }</span>
-            <span class="audit-row__who">{ who }</span>
-            <span class="audit-row__message">
-                { record.message.clone().unwrap_or_default() }
-            </span>
-            <StatusPill
-                tone={StatusTone::of_outcome(record.outcome)}
-                label={record.outcome.label()}
-            />
-        </li>
+        <TimelineItem
+            key={record.id}
+            class="audit-event"
+            {title}
+            tone={StatusTone::of_outcome(record.outcome).tone()}
+            tone_label={record.outcome.label()}
+            meta={html! { <>{ who }{ " · " }{ record.outcome.label() }</> }}
+            aside={html! { <Timestamp at={record.occurred_at} /> }}
+        >
+            { record.message.clone() }
+        </TimelineItem>
+    }
+}
+
+/// A list of audit records, newest first, as the server returned them.
+pub fn audit_timeline(records: &[AuditRecord]) -> Html {
+    html! {
+        <Timeline class="audit-timeline" label="Audit records, newest first">
+            { for records.iter().map(audit_event) }
+        </Timeline>
     }
 }
 
@@ -45,39 +63,39 @@ pub fn audit_row(record: &AuditRecord) -> Html {
 pub fn activity() -> Html {
     let category = use_state(|| None::<AuditCategory>);
     let selected = *category;
-
     let records = use_resource(move || api::audit::list(selected, api::audit::DEFAULT_LIMIT));
     use_refresh_action(records.reload.clone(), records.busy);
 
-    let on_category = {
+    // Changing the category asks the server again: the log is filtered where
+    // it is kept, so a rare category is not lost behind the page limit.
+    {
+        let reload = records.reload.clone();
+        use_effect_with(selected, move |_| {
+            reload.emit(());
+            || ()
+        });
+    }
+
+    let onchange = {
         let category = category.clone();
-        Callback::from(move |value: Option<AuditCategory>| category.set(value))
+        Callback::from(move |value: Option<String>| {
+            category.set(value.as_deref().and_then(AuditCategory::parse));
+        })
     };
-
-    let filters = {
-        let chip = |value: Option<AuditCategory>, label: &str| {
-            let active = value == selected;
-            let on_category = on_category.clone();
-            let onclick = Callback::from(move |_: MouseEvent| on_category.emit(value));
-            html! {
-                <button
-                    type="button"
-                    class={classes!("chip", active.then_some("chip--active"))}
-                    aria-pressed={active.to_string()}
-                    {onclick}
-                >
-                    { label.to_string() }
-                </button>
-            }
-        };
-
-        html! {
-            <div class="chip-row">
-                { chip(None, "Everything") }
-                { for AuditCategory::ALL.iter().map(|value| chip(Some(*value), value.label())) }
-            </div>
-        }
-    };
+    use_page_controls(html! {
+        <Select
+            id="activity-category"
+            label="Category"
+            value={selected.map(|category| AttrValue::from(category.as_str()))}
+            options={AuditCategory::ALL
+                .iter()
+                .map(|category| SelectOption::new(category.as_str(), category.label()))
+                .collect::<Vec<_>>()}
+            placeholder="Every category"
+            clearable=true
+            {onchange}
+        />
+    });
 
     let body = match (&records.data, &records.error) {
         (None, None) => html! { <LoadingNote /> },
@@ -103,18 +121,11 @@ pub fn activity() -> Html {
                         message="No audit records match this filter yet."
                     />
                 } else {
-                    <ul class="audit-list">
-                        { for list.iter().map(audit_row) }
-                    </ul>
+                    { audit_timeline(list) }
                 }
             </>
         },
     };
 
-    html! {
-        <>
-            { filters }
-            <Card>{ body }</Card>
-        </>
-    }
+    html! { <Section>{ body }</Section> }
 }

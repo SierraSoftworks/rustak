@@ -5,132 +5,249 @@
 // component shapes are drawn from Element Plus's neutrals, re-branded green,
 // and everything else is written here so that a control looks the same wherever
 // it is dropped. Organised top-down:
-//   1. Design tokens (variables, mixins)
-//   2. Base / reset
-//   3. Primitives (buttons, fields, alerts, pills, chips)
-//   4. Layout chrome (app bar, sidebar navigation, shell, footer)
+//   1. Design tokens (yewi's, under this stylesheet's names)
+//   2. Base: what goes in yewi's shell, sections, and the adapters' own rules
 //   5. Pages (landing, auth, wizard, dashboard, lists, control gallery)
 //   6. Responsive
 // =============================================================================
 
 // -----------------------------------------------------------------------------
 // 1. Design tokens
+//
+// The look comes from yewi (its stylesheet is installed by `main`), so every
+// colour, space and radius a rule here uses is one of its `--yi-*` tokens and
+// follows its light and dark themes. The names below are this stylesheet's
+// own vocabulary for them. What yewi cannot know about is declared on `:root`:
+// rustak's green accent.
 // -----------------------------------------------------------------------------
 
+:root {
+  --yi-accent: light-dark(#14664f, #4cb695);
+}
+
 // Brand
-$brand: #14664f;
-$brand-light: #1b8468;
-$brand-dark: #0f4c3b;
-$brand-tint: #eef7f3;
-$brand-tint-border: #d3e8de;
+$brand: var(--yi-accent);
+$brand-light: var(--yi-accent-text);
+$brand-dark: var(--yi-accent-text);
+$brand-tint: var(--yi-accent-soft);
+$brand-tint-border: var(--yi-accent-line);
 
-// Element-Plus inspired neutrals
-$text-primary: #303133;
-$text-regular: #606266;
-$text-secondary: #909399;
-$text-placeholder: #a8abb2;
+// Text, lines and surfaces
+$text-primary: var(--yi-fg);
+$text-regular: var(--yi-fg-muted);
+$text-secondary: var(--yi-fg-muted);
+$text-placeholder: var(--yi-fg-subtle);
 
-$border-base: #dcdfe6;
-$border-light: #e4e7ed;
-$border-lighter: #ebeef5;
+$border-base: var(--yi-line-strong);
+$border-light: var(--yi-line);
+$border-lighter: var(--yi-line);
 
-$bg-page: #f5f7fa;
-$bg-white: #ffffff;
-$fill-light: #f5f7fa;
-$fill-lighter: #fafafa;
+$bg-page: var(--yi-bg);
+$bg-white: var(--yi-surface);
+$fill-light: var(--yi-neutral-tint);
+$fill-lighter: var(--yi-neutral-tint);
 
 // Status colours
-$success: #67c23a;
-$success-bg: #f0f9eb;
-$success-border: #e1f3d8;
-$warning: #e6a23c;
-$warning-bg: #fdf6ec;
-$warning-border: #faecd8;
-$danger: #f56c6c;
-$danger-bg: #fef0f0;
-$danger-border: #fbc4c4;
-$info: #909399;
-$info-bg: #f4f4f5;
-$info-border: #e9e9eb;
+$success: var(--yi-ok);
+$success-bg: var(--yi-ok-soft);
+$success-border: color-mix(in srgb, var(--yi-ok) 30%, transparent);
+$warning: var(--yi-warn);
+$warning-bg: var(--yi-warn-soft);
+$warning-border: color-mix(in srgb, var(--yi-warn) 30%, transparent);
+$danger: var(--yi-danger);
+$danger-bg: var(--yi-danger-soft);
+$danger-border: color-mix(in srgb, var(--yi-danger) 30%, transparent);
+$info: var(--yi-neutral);
+$info-bg: var(--yi-neutral-soft);
+$info-border: var(--yi-line);
 
 // Shape & motion
-$radius-sm: 4px;
-$radius: 6px;
-$radius-lg: 8px;
-$shadow-sm: 0 1px 4px rgba(0, 0, 0, 0.06);
-$shadow-md: 0 4px 14px rgba(20, 102, 79, 0.12);
-$transition: 120ms ease;
+$radius-sm: var(--yi-radius-sm);
+$radius: var(--yi-radius-control);
+$radius-lg: var(--yi-radius-card);
+$shadow-sm: var(--yi-shadow-card);
+$shadow-md: var(--yi-shadow-overlay);
+$transition: var(--yi-duration-fast) var(--yi-ease);
 
-$container-width: 1280px;
+$font-sans: var(--yi-font-body);
+$font-mono: var(--yi-font-mono);
 
-$font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
-  Arial, sans-serif;
-$font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+// The widths the layout changes at.
+$narrow: 860px;
+$small: 560px;
 
 @mixin card {
   background: $bg-white;
-  border: 1px solid $border-lighter;
+  border: 1px solid var(--yi-card-line);
   border-radius: $radius-lg;
   box-shadow: $shadow-sm;
 }
 
 @mixin focus-ring {
-  outline: none;
-  border-color: $brand;
-  box-shadow: 0 0 0 2px rgba(20, 102, 79, 0.18);
+  outline: 2px solid var(--yi-focus);
+  outline-offset: 2px;
 }
 
 // -----------------------------------------------------------------------------
-// 2. Base / reset
+// 2. Base
 // -----------------------------------------------------------------------------
 
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
+// The shell itself (app bar, sidebar, drawer) is yewi's AppShell; this lays
+// out what goes in it.
+
+// rustak's mark in the app bar.
+.yi-app-bar__logo img {
+  width: var(--yi-app-bar-logo-size);
+  height: var(--yi-app-bar-logo-size);
 }
 
-html {
-  font-family: $font-sans;
-  color: $text-primary;
-  -webkit-font-smoothing: antialiased;
+// The search box takes the middle of the app bar, up to a comfortable
+// reading width, the way a browser's address bar does.
+.shell__search {
+  flex: 1;
+  min-width: 0;
+  max-width: 44rem;
+  margin-inline: auto;
 }
 
-body {
-  margin: 0;
-  min-height: 100vh;
-  background: $bg-page;
+// Every page but the map is a column that reads best at a fixed measure.
+.shell:not(.shell--immersive) .yi-app-shell__main {
   display: flex;
   flex-direction: column;
-  line-height: 1.5;
+  max-width: 1280px;
+  min-height: 100%;
 }
 
-h1,
-h2,
-h3 {
-  margin: 0;
-  font-weight: 600;
-  color: $text-primary;
-}
+// Room between the page's title and what it is the title of.
+.page-head {
+  margin-bottom: var(--yi-space-xl);
 
-a {
-  color: $brand;
-  text-decoration: none;
+  // A short title keeps its actions beside it on a phone, and actions that
+  // do wrap under the title stay at the end of their row.
+  .yi-page-header__heading {
+    flex-basis: 8rem;
+  }
 
-  &:hover {
-    color: $brand-light;
+  .yi-page-header__actions {
+    margin-inline-start: auto;
+    flex-wrap: nowrap;
+
+    // A page's filter sits beside its actions, at its own width.
+    > .yi-native-select {
+      flex: 0 1 12rem;
+      width: auto;
+    }
+  }
+
+  // An identifier in the line under an entity's name.
+  code {
+    font-family: $font-mono;
+    font-size: 0.9em;
   }
 }
 
-code,
-pre {
-  font-family: $font-mono;
+.app-footer {
+  margin-top: auto;
+  padding: var(--yi-space-2xl) 0 0;
+  text-align: center;
+  font-size: var(--yi-text-xs);
+  color: $text-secondary;
+
+  p {
+    margin: 0;
+  }
 }
 
-.loading-note {
-  color: $text-secondary;
-  font-size: 0.95rem;
-  padding: 1.5rem 0;
+// A page's sections sit flat on it, a heading and then the content, with
+// room between one and the next. A card (`.callout`) is for the one thing
+// that should stand apart.
+.section {
+  --yi-panel-padding-inline: 0;
+  --yi-panel-padding-block: 0;
+
+  & + &,
+  .callout + &,
+  .yi-alert + &,
+  .yi-secret-reveal + & {
+    margin-top: var(--yi-space-2xl);
+  }
+
+  // With no card around it, the heading is what sets a section apart: a
+  // step below the page's title rather than the size of body text.
+  > .yi-panel__header .yi-panel__title {
+    font-size: var(--yi-text-2xl);
+    font-weight: 500;
+    line-height: 1.3;
+  }
+
+  > .yi-panel__body {
+    padding-block-start: var(--yi-space-md);
+  }
+}
+
+.callout + .callout,
+.section + .callout,
+.tab-bar + .section,
+.tab-bar + .callout {
+  margin-top: var(--yi-space-2xl);
+}
+
+// The views of one thing: room between the tab strip and the chosen view.
+.tab-bar > .yi-tabs__panel {
+  padding-block-start: var(--yi-space-xl);
+}
+
+// One field after another in a form.
+.yi-field {
+  margin-bottom: var(--yi-space-lg);
+}
+
+// A message above the content it is about.
+.yi-alert {
+  margin-bottom: var(--yi-space-lg);
+}
+
+// Several states side by side.
+.pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--yi-space-xs);
+  margin-bottom: var(--yi-space-md);
+}
+
+// A labelled value with its copy button.
+.copyable {
+  display: flex;
+  flex-direction: column;
+  gap: var(--yi-space-2xs);
+  min-width: 0;
+
+  &__label {
+    font-size: var(--yi-text-sm);
+    font-weight: 500;
+    color: $text-regular;
+  }
+}
+
+// A split button whose face cannot be used while its menu can.
+.split-button--face-off .yi-split-button__face {
+  opacity: var(--yi-disabled-opacity);
+  cursor: not-allowed;
+}
+
+// One audit record on the activity timeline.
+.audit-event {
+  &__title {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--yi-space-xs);
+  }
+
+  &__action {
+    font-family: $font-mono;
+    font-weight: 500;
+  }
 }
 
 // A quiet line of explanation: what a panel has to say when there is nothing
@@ -166,419 +283,6 @@ pre {
   }
 }
 
-// -----------------------------------------------------------------------------
-// 3. Primitives
-// -----------------------------------------------------------------------------
-
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.4rem;
-  font-family: inherit;
-  font-size: 0.875rem;
-  font-weight: 500;
-  line-height: 1;
-  padding: 0.6rem 1.1rem;
-  border-radius: $radius-sm;
-  border: 1px solid $border-base;
-  background: $bg-white;
-  color: $text-regular;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: color $transition, background $transition, border-color $transition,
-    box-shadow $transition, opacity $transition;
-
-  &:hover:not(:disabled) {
-    color: $brand;
-    border-color: $brand-tint-border;
-    background: $brand-tint;
-  }
-
-  &:focus-visible {
-    @include focus-ring;
-  }
-
-  &:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  &--small {
-    font-size: 0.75rem;
-    padding: 0.4rem 0.7rem;
-  }
-
-  &--lg {
-    font-size: 0.95rem;
-    padding: 0.8rem 1.6rem;
-  }
-
-  &--primary {
-    color: #fff;
-    background: $brand;
-    border-color: $brand;
-
-    &:hover:not(:disabled) {
-      color: #fff;
-      background: $brand-light;
-      border-color: $brand-light;
-    }
-  }
-
-  &--danger {
-    color: $danger;
-    background: $danger-bg;
-    border-color: $danger-border;
-
-    &:hover:not(:disabled) {
-      color: #fff;
-      background: $danger;
-      border-color: $danger;
-    }
-  }
-
-  // Available without drawing the eye: no border or fill until pointed at.
-  &--subtle {
-    border-color: transparent;
-    background: transparent;
-    color: $text-secondary;
-
-    &:hover:not(:disabled) {
-      background: $fill-light;
-      border-color: transparent;
-      color: $text-regular;
-    }
-  }
-
-  // A request is in flight. The button is already disabled, so this only has to
-  // say why it stopped responding.
-  &--busy {
-    position: relative;
-    color: transparent;
-
-    &::after {
-      content: "";
-      position: absolute;
-      width: 0.85em;
-      height: 0.85em;
-      border: 2px solid currentColor;
-      border-top-color: transparent;
-      border-radius: 50%;
-      color: $text-secondary;
-      animation: spin 640ms linear infinite;
-    }
-  }
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-// Several actions on one thing, joined into a single control. Sharing an edge
-// says they belong together and costs a pair of borders instead of a gap.
-.btn-group {
-  display: inline-flex;
-
-  > .btn {
-    position: relative;
-    border-radius: 0;
-    margin-left: -1px;
-
-    &:first-child {
-      margin-left: 0;
-      border-radius: $radius-sm 0 0 $radius-sm;
-    }
-
-    &:last-child {
-      border-radius: 0 $radius-sm $radius-sm 0;
-    }
-
-    &:only-child {
-      border-radius: $radius-sm;
-    }
-
-    // The button being pointed at draws its whole outline, including the edge
-    // its neighbour is otherwise overlapping.
-    &:hover:not(:disabled),
-    &:focus-visible {
-      z-index: 1;
-    }
-  }
-}
-
-// One action on its face and the rest behind a caret. `position: relative` is
-// what the menu hangs off; the backdrop is what closes it when anything else
-// on the page is clicked, without a document-wide listener to forget.
-.split-btn {
-  position: relative;
-  display: inline-flex;
-
-  > .btn {
-    position: relative;
-
-    &:first-child {
-      border-radius: $radius-sm 0 0 $radius-sm;
-    }
-
-    &:only-child {
-      border-radius: $radius-sm;
-    }
-
-    &:hover:not(:disabled),
-    &:focus-visible {
-      z-index: 1;
-    }
-  }
-
-  &__toggle {
-    margin-left: -1px;
-    border-radius: 0 $radius-sm $radius-sm 0;
-    padding-left: 0.45rem;
-    padding-right: 0.45rem;
-  }
-
-  &__backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 19;
-  }
-}
-
-.menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
-  min-width: 13rem;
-  padding: 0.3rem;
-  @include card;
-  box-shadow: $shadow-md;
-
-  &__item {
-    appearance: none;
-    width: 100%;
-    padding: 0.45rem 0.7rem;
-    border: none;
-    border-radius: $radius-sm;
-    background: none;
-    font: inherit;
-    font-size: 0.82rem;
-    text-align: left;
-    white-space: nowrap;
-    color: $text-regular;
-    cursor: pointer;
-
-    &:hover:not(:disabled),
-    &:focus-visible {
-      outline: none;
-      background: $brand-tint;
-      color: $brand;
-    }
-
-    &:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-
-    &--danger {
-      color: $danger;
-
-      &:hover:not(:disabled),
-      &:focus-visible {
-        background: $danger-bg;
-        color: $danger;
-      }
-    }
-  }
-
-  &__separator {
-    height: 1px;
-    margin: 0.3rem 0;
-    background: $border-lighter;
-  }
-}
-
-.refresh-btn__icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-
-  &--spin svg {
-    transform-origin: center;
-    animation: spin 0.8s linear infinite;
-  }
-}
-
-// -----------------------------------------------------------------------------
-// Form fields
-//
-// The row shape is defined once: label, control, then either help text or an
-// error — never both, because an error is the more urgent of the two and
-// stacking them makes the following field jump as somebody types.
-// -----------------------------------------------------------------------------
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  margin-bottom: 1.1rem;
-
-  &__label {
-    font-size: 0.8125rem;
-    font-weight: 600;
-    color: $text-regular;
-  }
-
-  &__required {
-    margin-left: 0.2rem;
-    color: $danger;
-  }
-
-  // Usually one control. When a field holds several — the switches under
-  // "Delivered" on a profile — they are stacked with the rhythm the rest of
-  // the form has, rather than touching, and each switch keeps its own width
-  // so that the space beside its label is not a second place to click it.
-  &__control {
-    display: flex;
-    flex-direction: column;
-    gap: 0.6rem;
-
-    > .switch {
-      align-self: flex-start;
-    }
-  }
-
-  &__help,
-  &__error {
-    margin: 0;
-    font-size: 0.75rem;
-    line-height: 1.45;
-  }
-
-  &__help {
-    color: $text-secondary;
-  }
-
-  &__error {
-    color: $danger;
-  }
-
-  &__input {
-    width: 100%;
-    box-sizing: border-box;
-    font-family: inherit;
-    font-size: 0.875rem;
-    line-height: 1.4;
-    padding: 0.55rem 0.7rem;
-    color: $text-primary;
-    background: $bg-white;
-    border: 1px solid $border-base;
-    border-radius: $radius-sm;
-    transition: border-color $transition, box-shadow $transition;
-
-    &::placeholder {
-      color: $text-placeholder;
-    }
-
-    &:hover:not(:disabled) {
-      border-color: $text-placeholder;
-    }
-
-    &:focus-visible {
-      @include focus-ring;
-    }
-
-    &:disabled {
-      background: $fill-light;
-      color: $text-secondary;
-      cursor: not-allowed;
-    }
-
-    &--invalid {
-      border-color: $danger;
-
-      &:focus-visible {
-        outline: none;
-        border-color: $danger;
-        box-shadow: 0 0 0 2px rgba(245, 108, 108, 0.18);
-      }
-    }
-  }
-
-  &__textarea {
-    resize: vertical;
-    min-height: 4.5rem;
-
-    &--mono {
-      font-family: $font-mono;
-      font-size: 0.8125rem;
-    }
-  }
-
-  &__select {
-    // The browser draws its own arrow, which sits badly against our padding.
-    appearance: none;
-    padding-right: 2rem;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23909399' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 0.6rem center;
-    background-size: 1rem;
-    cursor: pointer;
-  }
-}
-
-// A masked value with the control that reveals it, laid over the right-hand end
-// of the input so the row stays the height of a single field.
-.secret-input {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-
-  // Room for the button, reserved whether or not it is currently drawn, so that
-  // typing the first character does not reflow the text.
-  &__input {
-    padding-right: 2.4rem;
-  }
-
-  &__actions {
-    position: absolute;
-    top: 0;
-    right: 0.3rem;
-    height: 100%;
-    display: flex;
-    align-items: center;
-  }
-
-  &__action {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.7rem;
-    height: 1.7rem;
-    padding: 0;
-    color: $text-secondary;
-    background: none;
-    border: none;
-    border-radius: $radius-sm;
-    cursor: pointer;
-    transition: color $transition, background $transition;
-
-    &:hover:not(:disabled) {
-      color: $text-primary;
-      background: $fill-light;
-    }
-
-    &:focus-visible {
-      @include focus-ring;
-    }
-  }
-}
-
 // A service's configuration, drawn from the JSON Schema it registered. Nested
 // objects and tagged unions are fieldsets, so the nesting is visible and the
 // markup says what it is to a screen reader.
@@ -590,9 +294,8 @@ pre {
     border-radius: $radius;
     background: $fill-lighter;
 
-    > .field__help,
-    > .field__error,
-    > .switch {
+    > .yi-field__message,
+    > .yi-switch {
       margin-bottom: 0.85rem;
     }
   }
@@ -633,501 +336,6 @@ pre {
   }
 }
 
-.switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.6rem;
-  cursor: pointer;
-  user-select: none;
-
-  &--disabled {
-    cursor: not-allowed;
-    opacity: 0.5;
-  }
-
-  // Kept in the accessibility tree and focusable, but visually replaced by the
-  // track below, so keyboard and screen-reader use are unaffected.
-  &__input {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    opacity: 0;
-    margin: 0;
-  }
-
-  &__track {
-    position: relative;
-    flex: none;
-    width: 2.4rem;
-    height: 1.35rem;
-    border-radius: 999px;
-    background: $border-base;
-    transition: background $transition;
-  }
-
-  &__thumb {
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: calc(1.35rem - 4px);
-    height: calc(1.35rem - 4px);
-    border-radius: 50%;
-    background: $bg-white;
-    box-shadow: $shadow-sm;
-    transition: transform $transition;
-  }
-
-  &__input:checked + &__track {
-    background: $brand;
-  }
-
-  &__input:checked + &__track &__thumb {
-    transform: translateX(1.05rem);
-  }
-
-  &__input:focus-visible + &__track {
-    @include focus-ring;
-  }
-
-  &__label {
-    font-size: 0.875rem;
-    color: $text-regular;
-  }
-}
-
-.alert {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.75rem;
-  padding: 1rem 1.1rem;
-  border-radius: $radius;
-  border: 1px solid transparent;
-  margin-bottom: 1.5rem;
-  text-align: left;
-
-  &__icon {
-    display: inline-flex;
-    flex-shrink: 0;
-    margin-top: 0.05rem;
-  }
-
-  &__body {
-    flex: 1;
-    min-width: 0;
-  }
-
-  &__title {
-    display: block;
-    font-weight: 600;
-    font-size: 0.95rem;
-  }
-
-  &__message {
-    margin: 0.35rem 0 0;
-    font-size: 0.875rem;
-    color: $text-regular;
-    word-break: break-word;
-  }
-
-  &__actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    margin-top: 0.85rem;
-  }
-
-  &__close {
-    flex-shrink: 0;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0.15rem;
-    border: none;
-    background: none;
-    color: $text-secondary;
-    cursor: pointer;
-    border-radius: $radius-sm;
-
-    &:hover {
-      color: $text-primary;
-    }
-  }
-
-  &--error {
-    background: $danger-bg;
-    border-color: $danger-border;
-
-    .alert__title,
-    .alert__icon {
-      color: $danger;
-    }
-  }
-
-  &--warning {
-    background: $warning-bg;
-    border-color: $warning-border;
-
-    .alert__title,
-    .alert__icon {
-      color: $warning;
-    }
-  }
-
-  &--info {
-    background: $info-bg;
-    border-color: $info-border;
-
-    .alert__title,
-    .alert__icon {
-      color: $info;
-    }
-  }
-
-  &--success {
-    background: $success-bg;
-    border-color: $success-border;
-
-    .alert__title,
-    .alert__icon {
-      color: $success;
-    }
-  }
-}
-
-.status-pill {
-  flex: none;
-  font-size: 0.75rem;
-  font-weight: 600;
-  padding: 0.2rem 0.55rem;
-  border-radius: 999px;
-  white-space: nowrap;
-
-  &--ok {
-    color: $success;
-    background: $success-bg;
-    border: 1px solid $success-border;
-  }
-
-  &--warning {
-    color: $warning;
-    background: $warning-bg;
-    border: 1px solid $warning-border;
-  }
-
-  &--error {
-    color: $danger;
-    background: $danger-bg;
-    border: 1px solid $danger-border;
-  }
-
-  &--neutral {
-    color: $text-secondary;
-    background: $fill-light;
-    border: 1px solid $border-light;
-  }
-}
-
-// A row of toggles that narrow a list. Pressed state carries the filter, so it
-// has to be visible without colour alone — hence the border as well as the fill.
-.chip-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  margin-bottom: 1.25rem;
-}
-
-.chip {
-  font-family: inherit;
-  font-size: 0.78rem;
-  padding: 0.3rem 0.7rem;
-  border-radius: 999px;
-  border: 1px solid $border-base;
-  background: $bg-white;
-  color: $text-regular;
-  cursor: pointer;
-  transition: color $transition, background $transition, border-color $transition;
-
-  &:hover {
-    color: $brand;
-    border-color: $brand-tint-border;
-    background: $brand-tint;
-  }
-
-  &:focus-visible {
-    @include focus-ring;
-  }
-
-  &--active {
-    color: #fff;
-    background: $brand;
-    border-color: $brand;
-
-    &:hover {
-      color: #fff;
-      background: $brand-light;
-      border-color: $brand-light;
-    }
-  }
-}
-
-// -----------------------------------------------------------------------------
-// 4. Layout chrome
-// -----------------------------------------------------------------------------
-
-.app-shell {
-  display: flex;
-  flex-direction: column;
-  min-height: 100vh;
-}
-
-.app-bar {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: saturate(180%) blur(8px);
-  border-bottom: 1px solid $border-lighter;
-
-  &__inner {
-    width: 100%;
-    padding: 0 1.5rem;
-    height: 60px;
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-  }
-
-  // Shows and hides the navigation: slides the drawer in on a phone, folds
-  // the column away beside the page anywhere wider.
-  &__menu {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 38px;
-    height: 38px;
-    margin-left: -0.5rem;
-    padding: 0;
-    border: 1px solid transparent;
-    border-radius: $radius-sm;
-    background: none;
-    color: $text-regular;
-    cursor: pointer;
-
-    &:hover {
-      background: $fill-light;
-      color: $brand;
-    }
-
-    &:focus-visible {
-      @include focus-ring;
-    }
-  }
-
-  &__brand {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.6rem;
-    color: $text-primary;
-
-    &:hover {
-      color: $text-primary;
-    }
-
-    img {
-      height: 26px;
-      aspect-ratio: 1;
-    }
-  }
-
-  &__brand-name {
-    font-weight: 600;
-    font-size: 1.05rem;
-    letter-spacing: -0.01em;
-  }
-}
-
-// Everything under the bar: the sidebar down the left, the page beside it.
-.app-body {
-  display: flex;
-  flex: 1;
-  align-items: stretch;
-}
-
-// The navigation, down the left. Fourteen destinations are more than a bar
-// can hold and more than a flat list is easy to scan, so they are grouped by
-// what somebody is there to do — and the column has the height for it.
-.sidebar {
-  flex: none;
-  width: 15rem;
-  background: $bg-white;
-  border-right: 1px solid $border-lighter;
-
-  // Sits under the sticky bar and stays put while the page scrolls.
-  &__inner {
-    position: sticky;
-    top: 60px;
-    max-height: calc(100vh - 60px);
-    overflow-y: auto;
-  }
-
-  &__backdrop {
-    display: none;
-  }
-
-  // Folded away on demand, where it is a column. Where it is a drawer the
-  // fold means nothing: the drawer is already out of the way.
-  @media (min-width: 861px) {
-    &--folded {
-      display: none;
-    }
-  }
-}
-
-.admin-nav {
-  display: flex;
-  flex-direction: column;
-  gap: 1.1rem;
-  padding: 1.25rem 0.75rem;
-
-  &__group {
-    display: flex;
-    flex-direction: column;
-    gap: 0.1rem;
-  }
-
-  &__heading {
-    padding: 0 0.75rem 0.35rem;
-    font-size: 0.7rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: $text-placeholder;
-  }
-
-  &__link {
-    display: flex;
-    align-items: center;
-    padding: 0.45rem 0.75rem;
-    border-radius: $radius;
-    font-size: 0.85rem;
-    font-weight: 500;
-    color: $text-regular;
-    text-decoration: none;
-    transition: color $transition, background $transition;
-
-    &:hover {
-      color: $brand;
-      background: $fill-light;
-    }
-
-    &--active {
-      color: $brand;
-      background: $brand-tint;
-    }
-  }
-}
-
-.user-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.6rem;
-  margin-left: auto;
-
-  &__avatar {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 34px;
-    height: 34px;
-    flex-shrink: 0;
-    border-radius: 50%;
-    background: $brand;
-    color: #fff;
-    font-size: 0.8rem;
-    font-weight: 600;
-  }
-
-  &__meta {
-    display: flex;
-    flex-direction: column;
-    line-height: 1.25;
-  }
-
-  &__name {
-    font-size: 0.85rem;
-    font-weight: 600;
-    color: $text-primary;
-  }
-
-  &__email {
-    font-size: 0.75rem;
-    color: $text-secondary;
-  }
-
-  &__signout {
-    margin-left: 0.5rem;
-    font-size: 0.75rem;
-    color: $text-secondary;
-    background: none;
-    border: none;
-    cursor: pointer;
-    text-decoration: underline;
-
-    &:hover {
-      color: $danger;
-    }
-  }
-}
-
-.app-main {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-width: 0;
-}
-
-.app-container {
-  width: 100%;
-  max-width: $container-width;
-  margin: 0 auto;
-  padding: 2.5rem;
-}
-
-.app-footer {
-  margin-top: auto;
-  padding: 1.5rem 0;
-  text-align: center;
-  font-size: 0.8rem;
-  color: $text-secondary;
-}
-
-.page-title {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: 2rem;
-  padding-bottom: 1.25rem;
-  border-bottom: 1px solid $border-lighter;
-
-  &__heading {
-    font-size: 1.5rem;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-  }
-
-  &__subtitle {
-    margin: 0.35rem 0 0;
-    font-size: 0.9rem;
-    color: $text-secondary;
-  }
-
-  &__actions {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-  }
-}
 
 // Public chrome (landing, wizard, 404)
 .header {
@@ -1308,7 +516,7 @@ footer {
       .stepper__marker {
         background: $brand;
         border-color: $brand;
-        color: #fff;
+        color: var(--yi-on-solid);
       }
     }
   }
@@ -1328,60 +536,17 @@ footer {
   }
 }
 
-// Cards, the container everything inside the console sits in.
-.card {
-  margin-bottom: 1.5rem;
-  @include card;
-
-  &__header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 1rem;
-    padding: 1rem 1.25rem;
-    border-bottom: 1px solid $border-lighter;
-  }
-
-  &__title {
-    font-size: 1rem;
-  }
-
-  &__subtitle {
-    margin: 0.25rem 0 0;
-    font-size: 0.82rem;
-    color: $text-secondary;
-  }
-
-  &__actions {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex: none;
-  }
-
-  &__body {
-    padding: 1.25rem;
-  }
-
-  &__status {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.4rem;
-    margin-bottom: 1rem;
-  }
-}
-
 .dashboard {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
   gap: 1.5rem;
   // The grid owns the spacing between its own cards, so they give theirs up —
   // but whatever comes after the grid still needs the gap a card would have
   // left.
-  margin-bottom: 1.5rem;
+  margin-bottom: var(--yi-space-2xl);
 
-  .card {
-    margin-bottom: 0;
+  .callout + .callout {
+    margin-top: 0;
   }
 }
 
@@ -1407,96 +572,6 @@ footer {
   display: flex;
   flex-wrap: wrap;
   gap: 1.5rem;
-}
-
-.stat {
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-
-  &__label {
-    font-size: 0.75rem;
-    color: $text-secondary;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-
-  &__value {
-    font-size: 1.6rem;
-    font-weight: 600;
-    line-height: 1.2;
-  }
-
-  &__detail {
-    font-size: 0.75rem;
-    color: $text-secondary;
-  }
-}
-
-.empty-state {
-  padding: 2rem 0;
-  text-align: center;
-
-  &__title {
-    margin: 0;
-    font-size: 0.95rem;
-    font-weight: 600;
-    color: $text-regular;
-  }
-
-  &__message {
-    margin: 0.4rem auto 1rem;
-    max-width: 32rem;
-    font-size: 0.85rem;
-    line-height: 1.6;
-    color: $text-secondary;
-  }
-}
-
-// The audit log, on both the activity page and the dashboard.
-.audit-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.audit-row {
-  display: grid;
-  grid-template-columns: 5rem 7rem 9rem 10rem minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.6rem 0;
-  font-size: 0.82rem;
-  border-bottom: 1px solid $border-lighter;
-
-  &:last-child {
-    border-bottom: none;
-  }
-
-  &__when {
-    color: $text-secondary;
-  }
-
-  &__category {
-    color: $text-regular;
-  }
-
-  &__action {
-    font-family: $font-mono;
-    font-size: 0.78rem;
-    color: $brand;
-    overflow-wrap: anywhere;
-  }
-
-  &__who {
-    color: $text-regular;
-    overflow-wrap: anywhere;
-  }
-
-  &__message {
-    color: $text-secondary;
-    overflow-wrap: anywhere;
-  }
 }
 
 // Accounts
@@ -1538,7 +613,7 @@ footer {
   &__meta {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.9rem;
+    gap: 0.25rem 0.9rem;
     font-size: 0.8rem;
     color: $text-secondary;
   }
@@ -1590,7 +665,7 @@ footer {
   display: inline-flex;
   align-items: stretch;
 
-  .field__input {
+  .yi-input {
     width: 13rem;
     min-width: 0;
     font-size: 0.8rem;
@@ -1598,7 +673,7 @@ footer {
     border-radius: $radius-sm 0 0 $radius-sm;
   }
 
-  > .btn {
+  > .yi-button {
     margin-left: -1px;
     padding-left: 0.55rem;
     padding-right: 0.55rem;
@@ -1637,7 +712,8 @@ footer {
 @mixin entity-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.9rem;
+  align-items: center;
+  gap: 0.25rem 0.9rem;
   font-size: 0.8rem;
   color: $text-secondary;
   min-width: 0;
@@ -1691,63 +767,6 @@ footer {
   color: $text-secondary;
 }
 
-// Whose page this is, above the tabs.
-.entity-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: 1rem;
-
-  &__name {
-    margin: 0;
-    font-size: 1.15rem;
-    font-weight: 600;
-  }
-
-  &__meta {
-    margin: 0.2rem 0 0;
-    font-size: 0.8rem;
-    color: $text-secondary;
-  }
-
-  &__username {
-    font-family: $font-mono;
-  }
-}
-
-.tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.25rem;
-  margin-bottom: 1.25rem;
-  border-bottom: 1px solid $border-light;
-
-  &__tab {
-    appearance: none;
-    background: none;
-    border: none;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-    padding: 0.55rem 0.9rem;
-    font: inherit;
-    font-size: 0.875rem;
-    color: $text-regular;
-    cursor: pointer;
-    transition: color $transition, border-color $transition;
-
-    &:hover {
-      color: $brand;
-    }
-
-    &--active {
-      color: $brand;
-      font-weight: 600;
-      border-bottom-color: $brand;
-    }
-  }
-}
-
 // A form laid out as a row of fields with the action at its end, for the
 // "create one of these" panels that sit above a list.
 .inline-form,
@@ -1760,7 +779,7 @@ footer {
   align-items: start;
   gap: 0 1rem;
 
-  .field {
+  .yi-field {
     min-width: 0;
   }
 
@@ -1960,149 +979,24 @@ footer {
   font-family: $font-mono;
 }
 
-// A destructive action that asks first: the question replaces the button, in
-// place, so the answer stays next to the thing it is about.
-.confirm {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 0.5rem;
-
-  &__question {
-    font-size: 0.8rem;
-    color: $text-regular;
-    text-align: right;
-  }
-}
-
-// -----------------------------------------------------------------------------
-// Secrets shown once: the panel, the copyable values and the QR code
-// -----------------------------------------------------------------------------
-
-.secret-reveal {
-  @include card;
-  border-color: $brand-tint-border;
-  background: $brand-tint;
-  margin-bottom: 1.5rem;
-  padding: 1.25rem;
-
-  &__header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 1rem;
-  }
+// The control gallery (debug builds only).
+.gallery {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 4rem var(--yi-space-xl) var(--yi-space-2xl);
 
   &__title {
     margin: 0;
-    font-size: 1rem;
-    font-weight: 600;
+    font-family: var(--yi-font-heading, inherit);
+    font-size: var(--yi-text-3xl);
+    font-weight: 400;
   }
 
-  &__warning {
-    margin: 0.3rem 0 0;
-    max-width: 44rem;
-    font-size: 0.82rem;
-    line-height: 1.6;
-    color: $text-regular;
-  }
-
-  &__body {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: flex-start;
-    gap: 1.5rem;
-    margin-top: 1rem;
-  }
-
-  &__values {
-    flex: 1 1 22rem;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-  }
-
-  &__qr {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.5rem;
-    max-width: 16rem;
-  }
-
-  &__qr-note {
-    margin: 0;
-    font-size: 0.75rem;
-    line-height: 1.5;
-    color: $text-secondary;
-    text-align: center;
-  }
-}
-
-.copyable {
-  &__header {
-    display: flex;
-    align-items: baseline;
-    gap: 0.6rem;
-    margin-bottom: 0.25rem;
-  }
-
-  &__label {
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+  &__lead {
+    margin: var(--yi-space-xs) 0 var(--yi-space-xl);
     color: $text-secondary;
   }
 
-  &__note {
-    font-size: 0.75rem;
-    color: $success;
-
-    &--error {
-      color: $danger;
-    }
-  }
-
-  &__row {
-    display: flex;
-    align-items: stretch;
-    gap: 0.5rem;
-  }
-
-  &__value {
-    flex: 1;
-    min-width: 0;
-    padding: 0.45rem 0.6rem;
-    background: $bg-white;
-    border: 1px solid $border-base;
-    border-radius: $radius;
-    font-size: 0.8rem;
-    line-height: 1.5;
-    overflow-wrap: anywhere;
-
-    &--mono {
-      font-family: $font-mono;
-    }
-  }
-}
-
-.qr-code {
-  display: block;
-  border: 1px solid $border-base;
-  border-radius: $radius;
-  background: $bg-white;
-
-  &__error {
-    margin: 0;
-    font-size: 0.8rem;
-    color: $danger;
-  }
-}
-
-// The control gallery (debug builds only).
-.gallery {
   &__row {
     display: flex;
     flex-wrap: wrap;
@@ -2414,7 +1308,7 @@ footer {
     padding-top: 1rem;
     border-top: 1px solid $border-lighter;
 
-    > .field {
+    > .yi-field {
       align-self: stretch;
       max-width: 32rem;
       margin-bottom: 0;
@@ -2439,16 +1333,16 @@ footer {
   }
 
   // Level with the control, not with the label above it.
-  > .btn {
+  > .yi-button {
     margin-top: 1.55rem;
   }
 
-  .field {
+  .yi-field {
     margin-bottom: 0;
   }
 
   // Every entry has a value, so a marker saying so on each one says nothing.
-  .field__required {
+  .yi-field__required {
     display: none;
   }
 
@@ -2508,7 +1402,7 @@ footer {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .pref-row > .btn {
+  .pref-row > .yi-button {
     margin-top: 0;
   }
 }
@@ -2536,65 +1430,6 @@ footer {
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
-}
-
-// Choosing a file. The zone is a `<label>` around a real file input, so the
-// keyboard, the focus ring and the accessible name come from the browser and
-// the drop handler is an addition rather than a replacement.
-.file-drop {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 1.5rem 1rem;
-  border: 1px dashed $border-base;
-  border-radius: $radius;
-  background: $fill-lighter;
-  cursor: pointer;
-  text-align: center;
-  transition: border-color $transition, background $transition;
-
-  &:hover,
-  &--over {
-    border-color: $brand;
-    background: $brand-tint;
-  }
-
-  &--disabled {
-    cursor: progress;
-    opacity: 0.6;
-  }
-
-  // Visually hidden rather than `display: none`, which would take the input
-  // out of the focus order and leave the zone unreachable from a keyboard.
-  &__input {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
-    border: 0;
-  }
-
-  &__input:focus-visible + .file-drop__label {
-    outline: 2px solid $brand;
-    outline-offset: 3px;
-    border-radius: $radius-sm;
-  }
-
-  &__label {
-    font-weight: 600;
-    font-size: 0.875rem;
-    color: $text-regular;
-  }
-
-  &__help {
-    font-size: 0.78rem;
-    color: $text-secondary;
-  }
 }
 
 // An XML document, shown verbatim and coloured. Every run below is a Yew text
@@ -2698,7 +1533,7 @@ footer {
     border: 1px solid $border-lighter;
     border-radius: $radius;
 
-    .field__input {
+    .yi-input {
       max-width: 18rem;
     }
   }
@@ -2766,7 +1601,7 @@ footer {
     color: inherit;
 
     &:hover {
-      background: rgba(20, 102, 79, 0.06);
+      background: var(--yi-accent-soft);
     }
 
     &:focus-visible {
@@ -2858,19 +1693,6 @@ footer {
 // 5.12 Services (sidecars)
 // -----------------------------------------------------------------------------
 
-// A capability, an endpoint kind — a short, unactionable label. Distinct from
-// `.chip`, which is a button that narrows a list; nothing here is pressable.
-.tag {
-  font-family: $font-mono;
-  font-size: 0.72rem;
-  padding: 0.15rem 0.45rem;
-  border-radius: $radius-sm;
-  background: $fill-light;
-  border: 1px solid $border-lighter;
-  color: $text-regular;
-  white-space: nowrap;
-}
-
 // What "Add a service" produced: two secrets and two blocks to paste. A column,
 // as the CloudTAK result is, and the blocks keep their line breaks — a
 // `[service]` fragment folded onto one line is not one a deployment can use.
@@ -2881,7 +1703,7 @@ footer {
   min-width: 0;
   margin-top: 1rem;
 
-  .copyable__value {
+  .yi-copyable__value {
     white-space: pre-wrap;
   }
 
@@ -3051,106 +1873,32 @@ footer {
 // -----------------------------------------------------------------------------
 
 @media (max-width: 860px) {
-  .app-bar__inner,
-  .app-container {
-    padding-left: 1.25rem;
-    padding-right: 1.25rem;
-  }
-
-  .app-bar__brand-name,
-  .user-chip__meta {
-    display: none;
-  }
-
-  .app-bar__menu {
-    display: inline-flex;
-  }
-
-  // The sidebar becomes a drawer: off the left edge until the bar's button
-  // slides it in, over the page rather than beside it, with a backdrop that
-  // closes it when the page is tapped.
-  .sidebar {
-    position: fixed;
-    top: 60px;
-    bottom: 0;
-    left: 0;
-    z-index: 15;
-    width: min(18rem, 85vw);
-    border-right: none;
-    transform: translateX(-100%);
-    // Off-screen is not enough: a translated drawer is still in the tab order
-    // and the accessibility tree, ahead of the page it covers. Hidden takes it
-    // out of both, and waits for the slide to finish before doing so.
-    visibility: hidden;
-    transition: transform 160ms ease, visibility 0s linear 160ms;
-
-    &--open {
-      transform: none;
-      visibility: visible;
-      transition: transform 160ms ease, visibility 0s;
-      box-shadow: $shadow-md;
-    }
-
-    &__inner {
-      position: static;
-      max-height: 100%;
-    }
-
-    &__backdrop {
-      display: block;
-      position: fixed;
-      inset: 60px 0 0;
-      z-index: 14;
-      background: rgba(48, 49, 51, 0.3);
-    }
-  }
-
-  // A row's action sits at the row's left edge here, so a menu hanging off
-  // its right edge would open off the screen.
-  .split-btn .menu {
-    right: auto;
-    left: 0;
-  }
-
-  // A heading row's action (a button, or the passkey box) drops under the
-  // title once there is no room beside it.
-  .card__header {
-    flex-wrap: wrap;
-  }
-
-  .page-title {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .audit-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-
-    &__category,
-    &__action,
-    &__who {
-      grid-column: 1;
-    }
-
-    &__message {
-      grid-column: 1 / -1;
-    }
-  }
-
+  // Two lines a person: who and their standing, then the detail and the action.
   .user-row {
     grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.4rem 0.75rem;
 
-    &__meta {
-      grid-column: 1 / -1;
+    &__identity {
+      grid-area: 1 / 1;
     }
 
-    // A grid item stretches to its column by default, which turns a pill into a
-    // banner; both of these want to sit at their own width.
-    .status-pill,
-    .btn-group,
-    .split-btn {
-      grid-column: 1 / -1;
-      justify-self: start;
+    &__meta {
+      grid-area: 2 / 1;
+    }
+
+    .status-pill {
+      grid-area: 1 / 2;
+      justify-self: end;
+    }
+
+    .yi-button-group,
+    .yi-split-button {
+      grid-area: 2 / 2;
+      justify-self: end;
+    }
+
+    &__error {
+      grid-row: 3;
     }
   }
 
@@ -3171,31 +1919,19 @@ footer {
   .cot-row,
   .service-row {
     grid-template-columns: minmax(0, 1fr);
+    gap: 0.5rem;
 
     // A grid item stretches to its column by default, which turns a pill into a
     // banner and a button into a bar; these want their own width.
-    > .btn,
+    > .yi-button,
     > .status-pill,
-    > .btn-group,
-    > .split-btn,
-    > .confirm,
-    > .switch {
+    > .yi-button-group,
+    > .yi-split-button,
+    > .yi-switch {
       justify-self: start;
     }
-
-    .confirm {
-      justify-content: flex-start;
-    }
   }
 
-  .entity-heading {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .secret-reveal__body {
-    flex-direction: column;
-  }
 
   .wizard {
     padding-top: 4rem;
@@ -3234,17 +1970,6 @@ footer {
   border: 0;
 }
 
-// The one page that wants every pixel: see `AdminShell`. No title, no
-// footer, no measure — the map is the main area, and everything the page has
-// to say is laid over it.
-.app-container--immersive {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  max-width: none;
-  min-height: 0;
-  padding: 0;
-}
 
 .map-page {
   position: relative;
@@ -3322,14 +2047,14 @@ footer {
     padding: 0.4rem 0.75rem;
     border: 1px solid $border-light;
     border-radius: $radius;
-    background: rgba(255, 255, 255, 0.94);
+    background: color-mix(in srgb, var(--yi-surface-raised) 94%, transparent);
     box-shadow: $shadow-sm;
     font-size: 0.8rem;
     text-align: center;
     color: $text-regular;
 
     &--shown {
-      color: darken($warning, 15%);
+      color: color-mix(in srgb, var(--yi-warn) 75%, var(--yi-fg));
     }
   }
 
@@ -3433,7 +2158,7 @@ footer {
   width: 100%;
   border: 1px solid $border-light;
   border-radius: $radius-lg;
-  background: rgba(255, 255, 255, 0.96);
+  background: color-mix(in srgb, var(--yi-surface-raised) 96%, transparent);
   box-shadow: $shadow-md;
   font-family: $font-sans;
 }
@@ -3447,7 +2172,7 @@ footer {
   padding: 0.3rem;
   border: 1px solid $border-light;
   border-radius: $radius-lg;
-  background: rgba(255, 255, 255, 0.96);
+  background: color-mix(in srgb, var(--yi-surface-raised) 96%, transparent);
   box-shadow: $shadow-md;
 
   &__group {
@@ -3533,7 +2258,7 @@ footer {
   padding: 0.35rem 0.5rem 0.35rem 0.75rem;
   border: 1px solid $brand-tint-border;
   border-radius: $radius;
-  background: rgba(255, 255, 255, 0.96);
+  background: color-mix(in srgb, var(--yi-surface-raised) 96%, transparent);
   box-shadow: $shadow-sm;
 
   &__hint {
@@ -3813,192 +2538,18 @@ footer {
     color: $text-secondary;
 
     &--stale {
-      color: darken($warning, 15%);
+      color: color-mix(in srgb, var(--yi-warn) 75%, var(--yi-fg));
     }
   }
 
   &__hint {
     margin: 0 0 0.75rem;
     font-size: 0.8rem;
-    color: darken($warning, 15%);
+    color: color-mix(in srgb, var(--yi-warn) 75%, var(--yi-fg));
   }
 }
 
 // The fields of a marker somebody placed.
-// A picker for one thing out of a large hierarchy: see `components::tree_select`.
-// The panel opens in the flow of the form rather than floating over it, so it
-// is never clipped by a panel that scrolls and never off the edge of a phone.
-.tree-select {
-  position: relative;
-  min-width: 0;
-
-  &--open {
-    z-index: 31;
-  }
-
-  &__trigger,
-  &__row {
-    display: flex;
-    align-items: center;
-    gap: 0.45rem;
-    min-width: 0;
-    text-align: left;
-  }
-
-  &__trigger {
-    width: 100%;
-    cursor: pointer;
-
-    &:disabled {
-      cursor: not-allowed;
-    }
-  }
-
-  &__icon {
-    flex: 0 0 1.75rem;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    height: 1.75rem;
-
-    img {
-      max-width: 100%;
-      max-height: 100%;
-    }
-  }
-
-  &__label {
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: $text-primary;
-
-    small {
-      display: block;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      font-size: 0.7rem;
-      color: $text-secondary;
-    }
-  }
-
-  &__detail {
-    flex: 0 1 auto;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-family: $font-mono;
-    font-size: 0.68rem;
-    color: $text-secondary;
-  }
-
-  &__chevron {
-    flex: 0 0 auto;
-    color: $text-placeholder;
-  }
-
-  // Catches the click that means "somewhere else", under the panel and over
-  // everything else.
-  &__backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: -1;
-  }
-
-  &__panel {
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-    margin-top: 0.3rem;
-    padding: 0.4rem;
-    background: $bg-white;
-    border: 1px solid $border-base;
-    border-radius: $radius;
-    box-shadow: $shadow-md;
-  }
-
-  &__trail {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.15rem 0.1rem;
-    font-size: 0.72rem;
-
-    button {
-      padding: 0.1rem 0.25rem;
-      color: $brand;
-      background: none;
-      border: 0;
-      border-radius: $radius-sm;
-      cursor: pointer;
-
-      &:hover {
-        background: $brand-tint;
-      }
-
-      &:not(:last-child)::after {
-        content: "›";
-        margin-left: 0.35rem;
-        color: $text-placeholder;
-      }
-
-      // Where the list already is: a name, not a way to get there.
-      &:last-child {
-        color: $text-regular;
-        pointer-events: none;
-      }
-    }
-  }
-
-  &__list {
-    max-height: 15rem;
-    margin: 0;
-    padding: 0;
-    overflow-y: auto;
-    list-style: none;
-  }
-
-  &__row {
-    padding: 0.2rem 0.3rem;
-    font-size: 0.8rem;
-    border-radius: $radius-sm;
-    cursor: pointer;
-
-    &:hover,
-    &--active {
-      background: $brand-tint;
-    }
-
-    &[aria-selected="true"] .tree-select__label {
-      font-weight: 600;
-      color: $brand-dark;
-    }
-  }
-
-  &__inside {
-    flex: 0 0 auto;
-    width: 1.6rem;
-    height: 1.6rem;
-    color: $text-regular;
-    background: none;
-    border: 1px solid transparent;
-    border-radius: $radius-sm;
-    cursor: pointer;
-
-    &:hover {
-      background: $bg-white;
-      border-color: $brand-tint-border;
-    }
-  }
-
-  &__none {
-    padding: 0.4rem 0.3rem;
-    font-size: 0.78rem;
-    color: $text-secondary;
-  }
-}
-
 .map-editor {
   display: flex;
   flex-direction: column;
@@ -4048,7 +2599,7 @@ footer {
     color: $text-secondary;
 
     &--moved {
-      color: darken($warning, 15%);
+      color: color-mix(in srgb, var(--yi-warn) 75%, var(--yi-fg));
     }
   }
 
@@ -4116,7 +2667,7 @@ footer {
   padding: 0.5rem 0.75rem;
   border: 1px solid $border-light;
   border-radius: $radius-lg;
-  background: rgba(255, 255, 255, 0.94);
+  background: color-mix(in srgb, var(--yi-surface-raised) 94%, transparent);
   box-shadow: $shadow-md;
   font-family: $font-sans;
   font-size: 0.8rem;
@@ -4358,7 +2909,7 @@ footer {
     color: $text-secondary;
 
     &--stale {
-      color: darken($warning, 15%);
+      color: color-mix(in srgb, var(--yi-warn) 75%, var(--yi-fg));
     }
   }
 }

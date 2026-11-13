@@ -68,7 +68,7 @@ test("the situational-awareness browser is empty rather than broken", async ({ p
   // The three filters are the three the endpoint takes. Narrowing an empty
   // list is still a real request, so this asserts the page survives one.
   await page.getByLabel("Type").fill("a-f");
-  await page.getByLabel("Callsign").fill("ALPHA");
+  await page.getByRole("searchbox").fill("ALPHA");
   await expect(page.getByText("Nothing matches.", { exact: false })).toBeVisible();
 });
 

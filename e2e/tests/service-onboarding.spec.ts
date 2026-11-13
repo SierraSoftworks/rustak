@@ -55,9 +55,9 @@ test("an administrator adds a service and is shown what its deployment needs, on
   await expect(result.getByText("The enrolment token expires at", { exact: false })).toBeVisible();
 
   // Two secrets and two blocks to paste, each with its own copy button.
-  const values = result.locator(".copyable__value");
+  const values = result.locator(".yi-copyable__value");
   await expect(values).toHaveCount(4);
-  await expect(result.getByRole("button", { name: "Copy", exact: true })).toHaveCount(4);
+  await expect(result.getByRole("button", { name: /^Copy / })).toHaveCount(4);
 
   const enrolment = (await values.nth(0).textContent()) ?? "";
   expect(enrolment.length).toBeGreaterThan(20);
@@ -93,7 +93,7 @@ test("adding the same service again mints a fresh enrolment token and keeps its 
   };
 
   const first = await addIt();
-  const token = (await first.locator(".copyable__value").nth(0).textContent()) ?? "";
+  const token = (await first.locator(".yi-copyable__value").nth(0).textContent()) ?? "";
   await first.getByRole("button", { name: "Done" }).click();
 
   const second = await addIt();
@@ -101,7 +101,7 @@ test("adding the same service again mints a fresh enrolment token and keeps its 
   // Nothing in use was revoked, and the response says the token was kept.
   await expect(second.getByText("existing service token was kept", { exact: false })).toBeVisible();
 
-  const values = second.locator(".copyable__value");
+  const values = second.locator(".yi-copyable__value");
   await expect(values).toHaveCount(3);
   await expect(values.nth(0)).not.toHaveText(token);
   await expect(values.nth(2)).not.toContainText("RUSTAK_SERVICE_TOKEN=rsk_");
@@ -117,5 +117,5 @@ test("a person's account is refused, and the page says why", async ({ page }) =>
 
   await expect(page.getByText("That service could not be added.")).toBeVisible();
   await expect(page.getByText("is a person's account", { exact: false })).toBeVisible();
-  await expect(page.locator(".copyable__value")).toHaveCount(0);
+  await expect(page.locator(".yi-copyable__value")).toHaveCount(0);
 });

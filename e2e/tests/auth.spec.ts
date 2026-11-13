@@ -22,6 +22,7 @@ import {
   gotoApp,
   registerPasskey,
   signIn,
+  signOut,
   storedSession,
   test,
   uniqueName,
@@ -129,7 +130,7 @@ test("an administrator signs in with a passkey, and signing out ends the session
     "every passkey this server registers has to be discoverable",
   ).toBe(true);
 
-  await page.getByRole("button", { name: "Sign out" }).click();
+  await signOut(page);
   await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
   expect(
     await storedSession(page),
@@ -179,7 +180,7 @@ test("a passkey the browser cannot offer on its own is reached by naming the acc
     "there should have been a discoverable credential to convert",
   ).toBeGreaterThan(0);
 
-  await page.getByRole("button", { name: "Sign out" }).click();
+  await signOut(page);
   await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
 
   // Folded away by default, so that a username field is never the first thing

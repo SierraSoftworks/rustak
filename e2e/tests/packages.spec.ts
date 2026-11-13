@@ -67,9 +67,9 @@ test("a package is uploaded, given a channel, downloaded and deleted", async ({ 
 
   // --- the filter --------------------------------------------------------
 
-  await page.getByLabel("Filter").fill("a name no package could have");
+  await page.getByRole("searchbox").fill("a name no package could have");
   await expect(page.locator(".package-row")).toHaveCount(0);
-  await page.getByLabel("Filter").fill(name);
+  await page.getByRole("searchbox").fill(name);
   await expect(page.locator(".package-row")).toHaveCount(1);
 
   // --- editing -----------------------------------------------------------

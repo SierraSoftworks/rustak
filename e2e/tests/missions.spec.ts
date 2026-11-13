@@ -60,7 +60,7 @@ test("a mission a client created is listed, opened, and deleted", async ({ page 
 
   await gotoApp(page, "/admin/missions");
 
-  await page.getByLabel("Filter").fill(name);
+  await page.getByRole("searchbox").fill(name);
 
   const link = page.getByRole("link", { name, exact: true });
   await expect(link).toBeVisible();
@@ -145,7 +145,7 @@ test("a mission a client created is listed, opened, and deleted", async ({ page 
     page.getByText("This mission has been deleted.", { exact: false }),
   ).toBeVisible();
   await expect(
-    page.locator(".entity-heading .status-pill"),
+    page.locator(".page-head .status-pill"),
     "the heading says so on every tab, not only on Overview",
   ).toContainText("Deleted");
   await expect(
@@ -157,7 +157,7 @@ test("a mission a client created is listed, opened, and deleted", async ({ page 
   // — and `?include_deleted=true` is what shows an operator that the deletion
   // happened at all, which is most of the value of keeping the row.
   await gotoApp(page, "/admin/missions");
-  await page.getByLabel("Filter").fill(name);
+  await page.getByRole("searchbox").fill(name);
   await expect(page.getByRole("link", { name, exact: true })).toHaveCount(0);
   await expect(page.locator(".mission-row")).toHaveCount(0);
 

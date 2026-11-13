@@ -8,7 +8,6 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{Alert, AlertKind, Button, ButtonKind, Field, TextInput};
-use crate::util::nav_href;
 
 #[derive(Properties, PartialEq)]
 pub struct ServerStepProps {
@@ -163,9 +162,9 @@ pub fn done_step(props: &DoneStepProps) -> Html {
                     message="The wizard is closed: its routes now answer 410 for good, so it \
                         cannot be used to take this installation over."
                 />
-                <a class="btn btn--primary btn--lg" href={nav_href("/admin")}>
+                <Button kind={ButtonKind::Primary} large=true href="/admin">
                     { "Open the console" }
-                </a>
+                </Button>
             </>
         };
     }
