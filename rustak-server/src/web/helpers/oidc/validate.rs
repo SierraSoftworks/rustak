@@ -244,7 +244,7 @@ mod tests {
                 "iss": "https://id.example.com",
                 "exp": chrono::Utc::now().timestamp() + 3600,
             }),
-            &jsonwebtoken::EncodingKey::from_secret(b"the-public-modulus"),
+            &jsonwebtoken::EncodingKey::from_secret(b"the-public-modulus").unwrap(),
         )
         .unwrap()
     }
