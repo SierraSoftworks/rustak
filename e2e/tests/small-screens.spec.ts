@@ -91,8 +91,15 @@ test("on a phone the navigation is a drawer the same button opens and closes", a
 
   // Turned on its side, or the window let out: the navigation is a column
   // again, there without being asked for, and the button says it is open.
+  //
+  // The drawer still holds its own copy of the navigation until the shell's
+  // resize listener has seen the breakpoint go by and shut it, which is a
+  // render after the viewport changed. Until then there are two "Admin
+  // sections", and the column is only the one that is left once the drawer
+  // has gone — so wait for that, which is itself part of the promise.
   await toggle.click();
   await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(page.getByRole("dialog", { name: "Navigation" })).toBeHidden();
   await expect(nav).toBeVisible();
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
 });
