@@ -20,7 +20,7 @@
  * tested as a deep link instead.
  */
 
-import { bootstrapAdmin, expect, gotoApp, signIn, test, waitForApp } from "./helpers";
+import { ADMIN, bootstrapAdmin, expect, gotoApp, signIn, test, waitForApp } from "./helpers";
 
 /**
  * The navigation sidebar's label, and the heading the page it opens announces
@@ -73,7 +73,11 @@ test("an account's own page is a deep link, and the sidebar still says where it 
   expect(response?.status()).toBe(200);
 
   await waitForApp(page);
-  await expect(page.getByRole("heading", { name: "Account", exact: true })).toBeVisible();
+  // The page names itself after the account it shows, not after the route:
+  // "Account" is only the shell's heading while the account is still loading,
+  // so waiting for it raced the request and failed whenever that came back
+  // before the first look.
+  await expect(page.getByRole("heading", { name: ADMIN.displayName, exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Profile" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Channels" })).toBeVisible();
 

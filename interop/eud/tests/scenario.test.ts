@@ -79,15 +79,25 @@ negotiation = "refuse"
     "example.toml",
   );
 
-  assert.deepEqual(scenario.config, { stream: { negotiation: "refuse" } });
+  // smol-toml builds every table with `Object.create(null)` (so a `__proto__`
+  // key in a scenario cannot reach Object.prototype), and the strict
+  // deepEqual compares prototypes as well as contents. structuredClone gives
+  // an ordinary-object copy of the same tables, so this asserts what the
+  // scenario says rather than which constructor the parser used.
+  assert.deepEqual(structuredClone(scenario.config), { stream: { negotiation: "refuse" } });
 });
 
 test("the negotiation scenarios set the knob they exist to exercise", () => {
   const scenarios = loadScenarios(path.join(suiteRoot, "scenarios"));
   const byName = new Map(scenarios.map((scenario) => [scenario.name, scenario]));
 
-  assert.deepEqual(byName.get("negotiate-refused")?.config, { stream: { negotiation: "refuse" } });
-  assert.deepEqual(byName.get("negotiate-silent")?.config, { stream: { negotiation: "silent" } });
+  // structuredClone for the reason given in the test above.
+  assert.deepEqual(structuredClone(byName.get("negotiate-refused")?.config), {
+    stream: { negotiation: "refuse" },
+  });
+  assert.deepEqual(structuredClone(byName.get("negotiate-silent")?.config), {
+    stream: { negotiation: "silent" },
+  });
 });
 
 test("a script that does not end in quit is refused", () => {
