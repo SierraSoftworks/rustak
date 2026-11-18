@@ -15,6 +15,7 @@
 //! | [`service`] | A sidecar's own identity — its token and certificate paths |
 //! | [`errors`] | The advice slices rustak repeats, and the one place a binary gives up |
 //! | [`prelude`] | The imports every module starts with |
+//! | [`time`] | [`Timestamp`](time::Timestamp), the chrono-compatible jiff instant (re-exported from `rustak-api`) |
 //!
 //! # Start-up order
 //!
@@ -64,3 +65,6 @@ pub mod prelude;
 pub mod runtime;
 pub mod service;
 pub mod telemetry;
+
+/// The shared instant type; defined in `rustak-api` so the browser UI has it too.
+pub use rustak_api::time;

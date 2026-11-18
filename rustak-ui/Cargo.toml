@@ -22,6 +22,8 @@ rustak-api = { path = "../rustak-api" }
 # wasm32 has no OS randomness; `js` routes uuid through the browser (rustak-api leaves the choice to the target).
 # `v4` is for the uid a marker placed on the map is given.
 uuid = { version = "1", features = ["js", "v4"] }
+# Likewise no OS clock: `js` makes `rustak_api::time::Timestamp::now()` read the browser's.
+jiff = { version = "1.0.1", default-features = false, features = ["std", "js"] }
 
 yew = { version = "0.23", features = ["csr"] }
 yew-router = "0.20"

@@ -17,6 +17,7 @@ workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
+jiff = { workspace = true }
 # The one dependency this crate cannot inherit from the workspace table.
 #
 # That table turns on `uuid/v4` for the crates that mint identifiers
@@ -32,3 +33,6 @@ chrono = { workspace = true }
 # table and let rustak-server ask for it. That is not this brief's file to
 # change, so this override stands until it is.
 uuid = { workspace = true }
+
+[dev-dependencies]
+rstest = { workspace = true }
