@@ -15,13 +15,13 @@
 //! why [`enroll_url_template`] exists beside [`enroll_url`] — after the minting
 //! response there is nothing left to compose a working link from.
 
-use chrono::{DateTime, Utc};
 use rustak_api::{Credential, CredentialId, CredentialKind, ENROLL_URL};
 use rustak_core::identity::{
     DEFAULT_PASSWORD_GROUPS, DEFAULT_TOKEN_BYTES, Secret, generate_password, generate_token,
     hash_blocking, lookup_hint,
 };
 use rustak_core::prelude::*;
+use rustak_core::time::{SignedDuration, Timestamp};
 
 use crate::config::AuthConfig;
 use crate::db::{
@@ -56,7 +56,7 @@ pub struct MintRequest<'a> {
     pub label: &'a str,
 
     /// How long it should last. [`None`] means the default for its kind.
-    pub expires_in: Option<chrono::Duration>,
+    pub expires_in: Option<SignedDuration>,
 
     /// How many times it may be used. [`None`] means the default for its kind,
     /// and an enrolment token is one-time whatever this says.
@@ -384,8 +384,8 @@ fn generate(kind: CredentialKind) -> Secret {
 fn expires_at(
     config: &AuthConfig,
     kind: CredentialKind,
-    requested: Option<chrono::Duration>,
-) -> Option<DateTime<Utc>> {
+    requested: Option<SignedDuration>,
+) -> Option<Timestamp> {
     let lifetime = match (requested, kind) {
         (Some(requested), _) => Some(requested),
         (None, CredentialKind::EnrollmentToken) => Some(config.enrollment_token_ttl),
@@ -395,7 +395,7 @@ fn expires_at(
         (None, CredentialKind::ServiceToken) => None,
     }?;
 
-    Some(Utc::now() + lifetime)
+    Some(Timestamp::now() + lifetime)
 }
 
 /// How many uses a credential of this kind gets.

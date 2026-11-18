@@ -14,15 +14,15 @@
 //! whose identity is the row id SQLite assigns on insert. The row is therefore
 //! inserted empty and filled in, and an empty row is treated as "no account".
 
-use chrono::Utc;
 use instant_acme::{Account, AccountCredentials, NewAccount};
+use rustak_core::time::Timestamp;
 
 use rustak_core::prelude::*;
 
 use crate::config::AcmeConfig;
 use crate::crypto::{Sealed, SecretContext, SecretStore};
 use crate::db::Database;
-use crate::db::row::{Timestamp, json_col, to_json};
+use crate::db::row::{DbTime, json_col, to_json};
 
 use super::transport::SharedClient;
 
@@ -145,7 +145,7 @@ async fn reserve(db: &Database, directory: &str, contact: &str) -> Result<Stored
             "INSERT INTO acme_accounts (directory_url, contact, account_url, credentials_sealed, created_at) \
              VALUES (?1, ?2, '', '{}', ?3) \
              ON CONFLICT (directory_url, contact) DO NOTHING",
-            rusqlite::params![directory, contact, Timestamp::from(Utc::now())],
+            rusqlite::params![directory, contact, DbTime::from(Timestamp::now())],
         )?;
 
         tx.query_one(

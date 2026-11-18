@@ -48,8 +48,8 @@
 //! another shape aborted the whole sweep (R-01 M8).
 
 use base64::Engine as _;
-use chrono::{DateTime, Duration, Utc};
 use rand::Rng as _;
+use rustak_core::time::{SignedDuration, Timestamp};
 use sha2::{Digest as _, Sha256};
 
 use crate::db::Database;
@@ -148,7 +148,7 @@ pub struct PendingAuth {
     pub binding: String,
 
     /// When this stops being claimable.
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
 }
 
 impl std::fmt::Debug for PendingAuth {
@@ -246,7 +246,7 @@ pub async fn claim(db: &Database, state_hash: &str) -> Result<PendingAuth, Error
         return Err(expired());
     };
 
-    if pending.expires_at <= Utc::now() {
+    if pending.expires_at <= Timestamp::now() {
         return Err(expired());
     }
 
@@ -254,8 +254,8 @@ pub async fn claim(db: &Database, state_hash: &str) -> Result<PendingAuth, Error
 }
 
 /// When a sign-in started now stops being claimable.
-pub fn expiry() -> DateTime<Utc> {
-    Utc::now() + Duration::minutes(PENDING_TTL_MINUTES)
+pub fn expiry() -> Timestamp {
+    Timestamp::now() + SignedDuration::from_mins(PENDING_TTL_MINUTES)
 }
 
 /// Removes every pending sign-in that has expired.
@@ -264,7 +264,7 @@ pub fn expiry() -> DateTime<Utc> {
 ///
 /// A [`human_errors::Kind::System`] error if a read or write fails.
 pub async fn sweep(db: &Database) -> Result<usize, Error> {
-    let now = Utc::now();
+    let now = Timestamp::now();
     let stored: Vec<(String, PendingAuth)> = db.list(PENDING_PARTITION).await?;
     let mut removed = 0;
 
@@ -406,7 +406,7 @@ mod tests {
             &db,
             &state,
             PendingAuth {
-                expires_at: Utc::now() - Duration::seconds(1),
+                expires_at: Timestamp::now() - SignedDuration::from_secs(1),
                 ..pending()
             },
         )
@@ -437,7 +437,7 @@ mod tests {
             &db,
             &stale,
             PendingAuth {
-                expires_at: Utc::now() - Duration::minutes(1),
+                expires_at: Timestamp::now() - SignedDuration::from_mins(1),
                 ..pending()
             },
         )

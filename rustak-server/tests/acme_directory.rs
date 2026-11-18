@@ -19,6 +19,7 @@
 //! - the renewal decision: a second run against a fresh certificate places no
 //!   order, a forced one does, and a refusal backs off instead of hammering.
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -139,7 +140,6 @@ impl Authority {
 /// here rather than silently.
 fn sign(body: &[u8]) -> String {
     use base64::Engine as _;
-    use chrono::Datelike as _;
 
     let envelope: serde_json::Value = serde_json::from_slice(body).expect("JOSE JSON");
     let payload = base64::prelude::BASE64_URL_SAFE_NO_PAD
@@ -162,10 +162,18 @@ fn sign(body: &[u8]) -> String {
     let authority = rcgen::CertifiedIssuer::self_signed(authority_params, authority_key).unwrap();
 
     let mut leaf = request;
-    let now = chrono::Utc::now();
-    let end = now + chrono::Duration::days(90);
-    leaf.params.not_before = rcgen::date_time_ymd(now.year(), now.month() as u8, now.day() as u8);
-    leaf.params.not_after = rcgen::date_time_ymd(end.year(), end.month() as u8, end.day() as u8);
+    let now = Timestamp::now();
+    let end = now + SignedDuration::from_hours(24 * 90);
+    leaf.params.not_before = rcgen::date_time_ymd(
+        i32::from(now.civil().year()),
+        now.civil().month() as u8,
+        now.civil().day() as u8,
+    );
+    leaf.params.not_after = rcgen::date_time_ymd(
+        i32::from(end.civil().year()),
+        end.civil().month() as u8,
+        end.civil().day() as u8,
+    );
 
     // Leaf first, then the issuer, which is the order a chain is served in.
     format!(
@@ -523,8 +531,8 @@ async fn an_authority_that_refuses_the_order_is_recorded_rather_than_retried_at_
     assert!(matches!(
         acme::decide(
             Some(&stored),
-            chrono::Duration::days(30),
-            chrono::Utc::now()
+            SignedDuration::from_hours(24 * 30),
+            Timestamp::now()
         ),
         acme::Decision::BackOff { .. },
     ));

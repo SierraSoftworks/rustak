@@ -6,11 +6,11 @@
 //! recognise reads the same way — a row written by a newer server must never be
 //! the reason an older one cannot answer `/me`.
 
-use chrono::{DateTime, Utc};
 use rustak_api::{Symbology, UserPreferences, UserPreferencesPatch};
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 
-use crate::db::{Database, row::Timestamp};
+use crate::db::{Database, row::DbTime};
 
 /// The key [`UserPreferences::symbology`] is stored under.
 const SYMBOLOGY: &str = "symbology";
@@ -62,8 +62,8 @@ impl<'a> UserPreferencesRepo<'a> {
     pub async fn chosen(
         &self,
         user_id: UserId,
-    ) -> Result<Option<(UserPreferencesPatch, DateTime<Utc>)>, Error> {
-        let rows: Vec<(String, String, Timestamp)> = self
+    ) -> Result<Option<(UserPreferencesPatch, Timestamp)>, Error> {
+        let rows: Vec<(String, String, DbTime)> = self
             .db
             .read(move |c| {
                 c.prepare("SELECT key, value, updated_at FROM user_preferences WHERE user_id = ?1")?
@@ -75,7 +75,7 @@ impl<'a> UserPreferencesRepo<'a> {
             .await?;
 
         let mut chosen = UserPreferencesPatch::default();
-        let mut newest = None::<DateTime<Utc>>;
+        let mut newest = None::<Timestamp>;
 
         for (key, value, at) in rows {
             if key == SYMBOLOGY {
@@ -112,7 +112,7 @@ impl<'a> UserPreferencesRepo<'a> {
                          VALUES (?1, ?2, ?3, ?4) \
                          ON CONFLICT (user_id, key) \
                          DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-                        rusqlite::params![user_id.get(), key, value, Timestamp::now()],
+                        rusqlite::params![user_id.get(), key, value, DbTime::now()],
                     )?;
                 }
 
@@ -190,7 +190,7 @@ mod tests {
             tx.execute(
                 "INSERT INTO user_preferences (user_id, key, value, updated_at) \
                  VALUES (?1, 'symbology', 'app6e', ?2), (?1, 'a-key-from-the-future', 'x', ?2)",
-                rusqlite::params![ada.get(), Timestamp::now()],
+                rusqlite::params![ada.get(), DbTime::now()],
             )?;
             Ok(())
         })

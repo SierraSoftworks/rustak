@@ -12,10 +12,10 @@ pub mod profile;
 
 pub use oidc::OidcProfile;
 
-use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension as _;
 use rustak_api::{UserKind, UserSource};
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 
 use crate::db::{
     Database,
@@ -47,10 +47,10 @@ pub struct UserRow {
     /// The provider's filterable claims as of the last sign-in, as JSON. What
     /// the access-control expressions are evaluated against between sign-ins.
     pub oidc_claims: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    pub last_seen_at: Option<DateTime<Utc>>,
-    pub last_login_at: Option<DateTime<Utc>>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+    pub last_seen_at: Option<Timestamp>,
+    pub last_login_at: Option<Timestamp>,
 }
 
 impl UserRow {
@@ -138,7 +138,7 @@ impl<'a> UsersRepo<'a> {
     pub async fn create(&self, new: NewUser) -> Result<UserRow, Error> {
         self.db
             .write(move |tx| {
-                let now = crate::db::row::Timestamp::now();
+                let now = crate::db::row::DbTime::now();
 
                 tx.query_one(
                     &format!(
@@ -292,7 +292,7 @@ impl<'a> UsersRepo<'a> {
                     rusqlite::params![
                         id.get(),
                         admin.map(i64::from),
-                        crate::db::row::Timestamp::now()
+                        crate::db::row::DbTime::now()
                     ],
                 )
             })
@@ -311,7 +311,7 @@ impl<'a> UsersRepo<'a> {
             .write(move |tx| {
                 tx.execute(
                     "UPDATE users SET last_seen_at = ?2 WHERE id = ?1",
-                    rusqlite::params![id.get(), crate::db::row::Timestamp::now()],
+                    rusqlite::params![id.get(), crate::db::row::DbTime::now()],
                 )
             })
             .await?;
@@ -345,7 +345,7 @@ impl<'a> UsersRepo<'a> {
             .write(move |tx| {
                 tx.execute(
                     &format!("UPDATE users SET {assignment}, updated_at = ?3 WHERE id = ?1"),
-                    rusqlite::params![id.get(), value, crate::db::row::Timestamp::now()],
+                    rusqlite::params![id.get(), value, crate::db::row::DbTime::now()],
                 )
             })
             .await?;

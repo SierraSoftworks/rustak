@@ -16,9 +16,9 @@
 //! announced, the repeats are `debug`, and a reminder every five minutes says
 //! how many there have been.
 
+use rustak_core::time::Timestamp;
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Utc};
 use rustak_core::prelude::*;
 
 use rustak_client::feed::upstream::{Repeated, Report, humanised};
@@ -138,7 +138,7 @@ impl Tokens {
             return;
         }
 
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         match refresh(client, &self.url, credentials).await {
             Ok(token) => {
@@ -154,7 +154,7 @@ impl Tokens {
 
     /// Says what a renewal is worth saying: the first one, and the end of a run
     /// of failed ones.
-    fn renewed(&mut self, token: &Token, now: DateTime<Utc>) {
+    fn renewed(&mut self, token: &Token, now: Timestamp) {
         let seconds = token.lifetime.as_secs();
 
         match self.trouble.cleared(now) {
@@ -172,7 +172,7 @@ impl Tokens {
     }
 
     /// The same for a renewal that did not work.
-    fn refused(&mut self, err: &Error, now: DateTime<Utc>) {
+    fn refused(&mut self, err: &Error, now: Timestamp) {
         match self.trouble.happened(now) {
             Report::First => {
                 warn!("Could not renew the OpenSky token; continuing anonymously. {err}");

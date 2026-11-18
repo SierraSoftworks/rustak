@@ -9,9 +9,9 @@
 //! has to do it. [`Queue::try_dequeue_any`] polls instead, and every wait in
 //! this file is a `select!` against the shutdown token.
 
+use rustak_core::time::{DurationExt, SignedDuration, Timestamp};
 use std::collections::HashMap;
 
-use chrono::{TimeDelta, Utc};
 use futures::FutureExt as _;
 use rustak_core::prelude::*;
 use tokio::task::JoinSet;
@@ -30,10 +30,10 @@ use crate::{
 const ERROR_BACKOFF: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The longest a failing message is held back before it is retried.
-const MAX_BACKOFF: TimeDelta = TimeDelta::minutes(15);
+const MAX_BACKOFF: SignedDuration = SignedDuration::from_mins(15);
 
 /// The reservation taken when no job declares a timeout at all.
-const FALLBACK_RESERVATION: TimeDelta = TimeDelta::minutes(5);
+const FALLBACK_RESERVATION: SignedDuration = SignedDuration::from_mins(5);
 
 /// Runs queued work until the shutdown token is cancelled.
 pub struct JobHost;
@@ -243,7 +243,7 @@ impl JobHost {
     ) {
         let queue = context.queue();
         let name = handler.partition();
-        let delay = Utc::now() - item.scheduled_at;
+        let delay = Timestamp::now() - item.scheduled_at;
 
         // Narrow the generous dequeue reservation to this job's own timeout. The
         // reservation window doubles as the retry backoff, so a job that fails —
@@ -255,7 +255,7 @@ impl JobHost {
             parent: None,
             "job.run",
             job.name = name,
-            job.delay = delay.num_milliseconds(),
+            job.delay = delay.whole_millis(),
             job.attempts = item.attempts,
             otel.kind = ?OpenTelemetrySpanKind::Consumer,
         );
@@ -332,7 +332,7 @@ impl JobHost {
     async fn hold(
         context: &AppContext,
         item: &QueueMessage<serde_json::Value>,
-        how_long: TimeDelta,
+        how_long: SignedDuration,
     ) {
         let held = context
             .queue()
@@ -383,7 +383,7 @@ impl JobHost {
     /// should not be the reason the log is unreadable. A job that wants to be
     /// retried at once says so with a timeout in the past, which stays in the
     /// past however many times it is doubled.
-    fn backoff(attempts: u32, timeout: TimeDelta) -> TimeDelta {
+    fn backoff(attempts: u32, timeout: SignedDuration) -> SignedDuration {
         // Capped before the shift so it cannot overflow the exponent; `1 << 16`
         // is already far beyond `MAX_BACKOFF` for any sane timeout.
         let doublings = attempts.saturating_sub(1).min(16);
@@ -482,8 +482,8 @@ mod tests {
             "test/failing"
         }
 
-        fn timeout(&self) -> TimeDelta {
-            TimeDelta::seconds(-1)
+        fn timeout(&self) -> SignedDuration {
+            SignedDuration::from_secs(-1)
         }
 
         async fn handle(
@@ -513,8 +513,8 @@ mod tests {
             "test/panicking"
         }
 
-        fn timeout(&self) -> TimeDelta {
-            TimeDelta::seconds(-1)
+        fn timeout(&self) -> SignedDuration {
+            SignedDuration::from_secs(-1)
         }
 
         async fn handle(
@@ -569,7 +569,7 @@ mod tests {
 
         let item = context
             .queue()
-            .try_dequeue_any(TimeDelta::seconds(60))
+            .try_dequeue_any(SignedDuration::from_secs(60))
             .await
             .unwrap()
             .unwrap();
@@ -583,7 +583,7 @@ mod tests {
         assert!(
             context
                 .queue()
-                .try_dequeue_any(TimeDelta::seconds(60))
+                .try_dequeue_any(SignedDuration::from_secs(60))
                 .await
                 .unwrap()
                 .is_none(),
@@ -603,7 +603,7 @@ mod tests {
         for _ in 0..2 {
             let item = context
                 .queue()
-                .try_dequeue_any(TimeDelta::seconds(60))
+                .try_dequeue_any(SignedDuration::from_secs(60))
                 .await
                 .unwrap()
                 .unwrap();
@@ -629,7 +629,7 @@ mod tests {
 
         let item = context
             .queue()
-            .try_dequeue_any(TimeDelta::seconds(60))
+            .try_dequeue_any(SignedDuration::from_secs(60))
             .await
             .unwrap()
             .unwrap();
@@ -640,7 +640,7 @@ mod tests {
         assert!(
             context
                 .queue()
-                .try_dequeue_any(TimeDelta::seconds(60))
+                .try_dequeue_any(SignedDuration::from_secs(60))
                 .await
                 .unwrap()
                 .is_none(),
@@ -676,7 +676,7 @@ mod tests {
 
         let item = context
             .queue()
-            .try_dequeue_any(TimeDelta::seconds(60))
+            .try_dequeue_any(SignedDuration::from_secs(60))
             .await
             .unwrap()
             .unwrap();
@@ -710,7 +710,7 @@ mod tests {
         // minute instead of becoming retriable at once.
         let item = context
             .queue()
-            .try_dequeue_any(TimeDelta::seconds(60))
+            .try_dequeue_any(SignedDuration::from_secs(60))
             .await
             .unwrap()
             .unwrap();
@@ -720,7 +720,7 @@ mod tests {
 
         let retried = context
             .queue()
-            .try_dequeue_any(TimeDelta::seconds(60))
+            .try_dequeue_any(SignedDuration::from_secs(60))
             .await
             .unwrap()
             .expect("a failed job whose window has elapsed should be retriable at once");
@@ -736,7 +736,7 @@ mod tests {
 
         let item = context
             .queue()
-            .try_dequeue_any(TimeDelta::seconds(60))
+            .try_dequeue_any(SignedDuration::from_secs(60))
             .await
             .unwrap()
             .unwrap();
@@ -755,11 +755,11 @@ mod tests {
 
     #[test]
     fn the_backoff_doubles_per_attempt_up_to_its_cap() {
-        let timeout = TimeDelta::minutes(1);
+        let timeout = SignedDuration::from_mins(1);
 
-        assert_eq!(JobHost::backoff(1, timeout), TimeDelta::minutes(1));
-        assert_eq!(JobHost::backoff(2, timeout), TimeDelta::minutes(2));
-        assert_eq!(JobHost::backoff(4, timeout), TimeDelta::minutes(8));
+        assert_eq!(JobHost::backoff(1, timeout), SignedDuration::from_mins(1));
+        assert_eq!(JobHost::backoff(2, timeout), SignedDuration::from_mins(2));
+        assert_eq!(JobHost::backoff(4, timeout), SignedDuration::from_mins(8));
         assert_eq!(JobHost::backoff(10, timeout), MAX_BACKOFF);
         assert_eq!(JobHost::backoff(u32::MAX, timeout), MAX_BACKOFF);
     }
@@ -768,7 +768,7 @@ mod tests {
     fn a_job_asking_to_be_retried_at_once_still_is() {
         // A window in the past stays in the past however often it is doubled,
         // which is what keeps the failing-job test above honest.
-        assert!(JobHost::backoff(5, TimeDelta::seconds(-1)) < TimeDelta::zero());
+        assert!(JobHost::backoff(5, SignedDuration::from_secs(-1)) < SignedDuration::ZERO);
     }
 
     /// The property the shutdown-aware loop exists for: the host has to be back

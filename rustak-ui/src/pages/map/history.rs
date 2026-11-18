@@ -310,18 +310,18 @@ pub fn shown_note(session: &Session) -> Option<String> {
     Some(format!(
         "Showing where {} was at {}. Everything else is hidden until you return to live.",
         replay.track.name(),
-        at.format("%H:%M:%SZ"),
+        at.strftime("%H:%M:%SZ"),
     ))
 }
 
 #[cfg(test)]
 mod tests {
-    use chrono::{DateTime, Duration, Utc};
     use rustak_api::MapPoint;
+    use rustak_api::time::{SignedDuration, Timestamp};
 
     use super::*;
 
-    fn at(time: &str) -> DateTime<Utc> {
+    fn at(time: &str) -> Timestamp {
         format!("2026-09-18T{time}Z").parse().unwrap()
     }
 
@@ -334,7 +334,7 @@ mod tests {
             team: None,
             role: None,
             time: at(time),
-            stale: at(time) + Duration::minutes(2),
+            stale: at(time) + SignedDuration::from_mins(2),
             received_at: at(time),
             point: MapPoint {
                 lat: 51.5,

@@ -8,6 +8,7 @@
 //! one explicitly is how an installation puts the blobs on a different volume
 //! from the database.
 
+use rustak_core::time::SignedDuration;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -27,13 +28,13 @@ fn default_reader_connections() -> usize {
 }
 
 /// How long a statement waits for the writer before giving up.
-fn default_busy_timeout() -> chrono::Duration {
-    chrono::Duration::seconds(5)
+fn default_busy_timeout() -> SignedDuration {
+    SignedDuration::from_secs(5)
 }
 
 /// How often the WAL is checkpointed.
-fn default_checkpoint_interval() -> chrono::Duration {
-    chrono::Duration::minutes(5)
+fn default_checkpoint_interval() -> SignedDuration {
+    SignedDuration::from_mins(5)
 }
 
 /// How many per-device CoT history logs stay open at once.
@@ -82,7 +83,7 @@ pub struct StorageConfig {
         default = "default_busy_timeout",
         with = "rustak_core::config::duration::humane"
     )]
-    pub busy_timeout: chrono::Duration,
+    pub busy_timeout: SignedDuration,
 
     /// How often the PASSIVE WAL checkpoint job runs.
     ///
@@ -92,7 +93,7 @@ pub struct StorageConfig {
         default = "default_checkpoint_interval",
         with = "rustak_core::config::duration::humane"
     )]
-    pub checkpoint_interval: chrono::Duration,
+    pub checkpoint_interval: SignedDuration,
 
     /// How many per-device CoT history logs the writer keeps open at once.
     ///
@@ -162,8 +163,8 @@ mod tests {
 
         assert_eq!(parsed, StorageConfig::default());
         assert_eq!(parsed.reader_connections, 2);
-        assert_eq!(parsed.busy_timeout, chrono::Duration::seconds(5));
-        assert_eq!(parsed.checkpoint_interval, chrono::Duration::minutes(5));
+        assert_eq!(parsed.busy_timeout, SignedDuration::from_secs(5));
+        assert_eq!(parsed.checkpoint_interval, SignedDuration::from_mins(5));
         assert_eq!(parsed.open_history_logs, 4096);
     }
 
@@ -218,8 +219,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(storage.busy_timeout, chrono::Duration::seconds(30));
-        assert_eq!(storage.checkpoint_interval, chrono::Duration::hours(1));
+        assert_eq!(storage.busy_timeout, SignedDuration::from_secs(30));
+        assert_eq!(storage.checkpoint_interval, SignedDuration::from_hours(1));
     }
 
     #[test]

@@ -29,9 +29,8 @@
 //! thing has to *stop* happening before the run counts as finished; the
 //! [`Default`] is [`Duration::ZERO`], a run that ends on the first clear.
 
+use rustak_core::time::{DurationExt, Timestamp};
 use std::time::Duration;
-
-use chrono::{DateTime, Utc};
 
 /// How often a run that is still going is mentioned again.
 pub const REMIND_EVERY: Duration = Duration::from_secs(300);
@@ -72,13 +71,13 @@ pub struct Repeated {
     settle: Duration,
 
     /// When the current run started; [`None`] while nothing is happening.
-    since: Option<DateTime<Utc>>,
+    since: Option<Timestamp>,
 
     /// When it last happened.
-    last: Option<DateTime<Utc>>,
+    last: Option<Timestamp>,
 
     /// When this run was last mentioned above `debug`.
-    mentioned_at: Option<DateTime<Utc>>,
+    mentioned_at: Option<Timestamp>,
 
     /// How many there have been in this run.
     count: u64,
@@ -104,7 +103,7 @@ impl Repeated {
     }
 
     /// Records one occurrence, and answers what to say about it.
-    pub fn happened(&mut self, now: DateTime<Utc>) -> Report {
+    pub fn happened(&mut self, now: Timestamp) -> Report {
         self.count = self.count.saturating_add(1);
         self.unmentioned = self.unmentioned.saturating_add(1);
         self.last = Some(now);
@@ -137,7 +136,7 @@ impl Repeated {
     ///
     /// [`Report::Recovered`] once, at the end of a run that has settled;
     /// [`Report::Quiet`] whenever there was no run, or the run is still going.
-    pub fn cleared(&mut self, now: DateTime<Utc>) -> Report {
+    pub fn cleared(&mut self, now: Timestamp) -> Report {
         let (Some(since), Some(last)) = (self.since, self.last) else {
             return Report::Quiet;
         };
@@ -176,7 +175,7 @@ impl Default for Repeated {
 
 /// `now - before`, never negative — a clock that stepped backwards is not a
 /// negative run.
-fn elapsed(before: DateTime<Utc>, now: DateTime<Utc>) -> Duration {
+fn elapsed(before: Timestamp, now: Timestamp) -> Duration {
     (now - before).to_std().unwrap_or_default()
 }
 
@@ -197,8 +196,8 @@ mod tests {
     use super::*;
 
     /// The clock these tests move by hand, so that nothing here waits.
-    fn at(seconds: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(1_789_646_400 + seconds, 0).expect("an instant")
+    fn at(seconds: i64) -> Timestamp {
+        Timestamp::new(1_789_646_400 + seconds, 0).expect("an instant")
     }
 
     fn outage() -> Repeated {

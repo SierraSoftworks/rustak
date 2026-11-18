@@ -14,6 +14,7 @@
 //! [`issue_client_cert`]: crate::pki::issue::issue_client_cert
 
 use rustak_core::prelude::*;
+use rustak_core::time::SignedDuration;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
 use super::ca::{CaMaterial, load_or_create_root_ca};
@@ -104,8 +105,8 @@ impl TestAuthority {
         let request = adjust(IssueRequest {
             username: &user,
             client_uid: None,
-            validity: chrono::Duration::days(365),
-            not_before_skew: chrono::Duration::minutes(5),
+            validity: SignedDuration::from_hours(24 * 365),
+            not_before_skew: SignedDuration::from_mins(5),
             channels_marker: false,
         });
 

@@ -15,9 +15,9 @@
 //! see anybody needs to know which of the two is empty, so both are rendered
 //! rather than the single list the TAK wire format carries.
 
+use crate::time::Timestamp;
 use std::net::IpAddr;
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::identity::GroupName;
@@ -54,10 +54,10 @@ pub struct ConnectedClient {
     /// one host apart.
     pub port: u16,
 
-    pub connected_at: DateTime<Utc>,
+    pub connected_at: Timestamp,
 
     /// When it was last heard from, which is what a stalled client looks like.
-    pub last_event_at: DateTime<Utc>,
+    pub last_event_at: Timestamp,
 
     /// Whether it has asked to be invisible to implicit broadcast.
     pub incognito: bool,
@@ -108,7 +108,7 @@ pub struct StreamStatus {
     /// list that is shorter than it should be is asking the second one.
     /// [`None`] when nothing has bound.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bound_at: Option<DateTime<Utc>>,
+    pub bound_at: Option<Timestamp>,
 
     /// How many connections are open right now.
     pub connections: u32,
@@ -155,9 +155,9 @@ pub struct ClientHistoryEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub takv: Option<String>,
 
-    pub first_seen_at: DateTime<Utc>,
+    pub first_seen_at: Timestamp,
 
-    pub last_seen_at: DateTime<Utc>,
+    pub last_seen_at: Timestamp,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_ip: Option<IpAddr>,

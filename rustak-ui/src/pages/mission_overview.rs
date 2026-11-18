@@ -17,6 +17,7 @@
 //! still finds them.
 
 use rustak_api::MissionDetail;
+use rustak_api::time::Timestamp;
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
@@ -64,7 +65,7 @@ pub fn overview(props: &OverviewProps) -> Html {
                 match api::missions::remove(&guid, deep).await {
                     Ok(()) => {
                         error.set(None);
-                        deleted.set(Some(chrono::Utc::now()));
+                        deleted.set(Some(Timestamp::now()));
                     }
                     Err(err) => error.set(Some(err.to_string())),
                 }

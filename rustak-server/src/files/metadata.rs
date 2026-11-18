@@ -200,6 +200,7 @@ pub fn resource_json(resource: &ResourceRow) -> ResourceJson {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::Timestamp;
 
     fn row(submitter: &str, groups: &[&str]) -> ResourceRow {
         ResourceRow {
@@ -214,7 +215,7 @@ mod tests {
             creator_uid: None,
             submitter_id: None,
             submitter: Some(submitter.to_string()),
-            submission_time: chrono::Utc::now(),
+            submission_time: Timestamp::now(),
             expiration: None,
             is_mission_package: true,
             groups: groups.iter().map(|g| (*g).to_string()).collect(),
@@ -229,7 +230,7 @@ mod tests {
             plugin_class_name: None,
             install_on_enrollment: false,
             deleted_at: None,
-            created_at: chrono::Utc::now(),
+            created_at: Timestamp::now(),
             keywords: vec!["missionpackage".to_string()],
         }
     }

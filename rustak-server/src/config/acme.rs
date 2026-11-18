@@ -15,6 +15,7 @@
 //! [`Config::validate`](super::Config::validate) refuses a combination that
 //! could never complete rather than letting the first renewal discover it.
 
+use rustak_core::time::SignedDuration;
 use std::fmt;
 use std::str::FromStr;
 
@@ -36,8 +37,8 @@ const LETSENCRYPT_ALIAS: &str = "letsencrypt";
 const LETSENCRYPT_STAGING_ALIAS: &str = "letsencrypt-staging";
 
 /// How long before expiry a certificate is renewed.
-fn default_renew_before() -> chrono::Duration {
-    chrono::Duration::days(30)
+fn default_renew_before() -> SignedDuration {
+    SignedDuration::from_hours(24 * 30)
 }
 
 /// `[acme]`.
@@ -83,7 +84,7 @@ pub struct AcmeConfig {
         default = "default_renew_before",
         with = "rustak_core::config::duration::humane"
     )]
-    pub renew_before: chrono::Duration,
+    pub renew_before: SignedDuration,
 }
 
 impl Default for AcmeConfig {
@@ -322,7 +323,7 @@ mod tests {
         assert!(!parsed.accept_tos);
         assert_eq!(parsed.directory, AcmeDirectory::LetsEncrypt);
         assert_eq!(parsed.challenge, AcmeChallenge::TlsAlpn01);
-        assert_eq!(parsed.renew_before, chrono::Duration::days(30));
+        assert_eq!(parsed.renew_before, SignedDuration::from_hours(24 * 30));
     }
 
     #[test]

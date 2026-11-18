@@ -3,10 +3,9 @@
 //! Everything here runs at injected instants with a fixed hash key, so every
 //! number is the same on every run and every host; nothing is timed.
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::net::IpAddr;
 use std::sync::Arc;
-
-use chrono::{DateTime, Utc};
 
 use super::clock::Clock;
 use super::sketch::{DEPTH, WIDTH};
@@ -21,8 +20,8 @@ fn config(attempts: u32) -> RateLimitConfig {
     }
 }
 
-fn limiter(config: &RateLimitConfig, width: usize) -> (RateLimiter, DateTime<Utc>) {
-    let at = Utc::now();
+fn limiter(config: &RateLimitConfig, width: usize) -> (RateLimiter, Timestamp) {
+    let at = Timestamp::now();
 
     (
         RateLimiter::build(config, width, KeyedHash::fixed(0x5EED, 0xC0FFEE), at),
@@ -38,12 +37,7 @@ fn address(index: u32) -> Option<IpAddr> {
 }
 
 /// The pair's estimate, as the sketch has it.
-fn estimate(
-    limiter: &RateLimiter,
-    at: DateTime<Utc>,
-    client: Option<IpAddr>,
-    subject: &str,
-) -> u16 {
+fn estimate(limiter: &RateLimiter, at: Timestamp, client: Option<IpAddr>, subject: &str) -> u16 {
     let stamp = limiter.clock.stamp(at);
 
     limiter.pairs.estimate(
@@ -68,8 +62,12 @@ fn false_refusals_are_rare_and_as_rare_as_the_arithmetic_says() {
     const PROBES: u32 = 50_000;
     const ALLOWANCE: u16 = 10;
 
-    let clock = Clock::new(Utc::now(), Duration::minutes(1), Duration::minutes(15));
-    let now = clock.stamp(Utc::now());
+    let clock = Clock::new(
+        Timestamp::now(),
+        SignedDuration::from_mins(1),
+        SignedDuration::from_mins(15),
+    );
+    let now = clock.stamp(Timestamp::now());
     let until = clock.lockout_ends(now);
     let (locked, noisy) = (Table::new(WIDTH), Table::new(WIDTH));
     // A hash key each, so the two columns are two experiments, not one twice.

@@ -7,7 +7,7 @@
 //!
 //! None of it is a captured payload from anywhere: every value here is ours.
 
-use chrono::{DateTime, Duration, Utc};
+use rustak_api::time::{SignedDuration, Timestamp};
 use rustak_api::{
     AuditCategory, AuditOutcome, AuditRecord, AuthMetadata, AuthMode, AuthVia, CaSummary,
     CertificateId, ComponentStatus, Credential, CredentialId, CredentialKind, Device, DeviceId,
@@ -17,8 +17,8 @@ use rustak_api::{
 };
 
 /// A timestamp relative to now, so the fixtures never look stale.
-pub fn ago(minutes: i64) -> DateTime<Utc> {
-    Utc::now() - Duration::minutes(minutes)
+pub fn ago(minutes: i64) -> Timestamp {
+    Timestamp::now() - SignedDuration::from_mins(minutes)
 }
 
 fn username(value: &str) -> Username {

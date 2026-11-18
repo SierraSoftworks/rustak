@@ -51,9 +51,9 @@ mod cadence;
 mod probe;
 mod wording;
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use rustak_client::feed::upstream::{self, Rules};
 use rustak_core::prelude::*;
 
@@ -102,12 +102,12 @@ impl SourceState {
     /// A source that has not been asked anything yet, and may be asked now.
     #[must_use]
     pub fn new(name: impl Into<String>, interval: Duration) -> Self {
-        Self::new_at(name, interval, Utc::now())
+        Self::new_at(name, interval, Timestamp::now())
     }
 
     /// [`new`](Self::new), at an instant of the caller's choosing.
     #[must_use]
-    pub fn new_at(name: impl Into<String>, interval: Duration, now: DateTime<Utc>) -> Self {
+    pub fn new_at(name: impl Into<String>, interval: Duration, now: Timestamp) -> Self {
         Self {
             state: upstream::SourceState::new_at(name, interval, now),
             cadence: Cadence::new(interval),
@@ -179,23 +179,23 @@ impl SourceState {
 
     /// [`ready`](Self::ready), at an instant of the caller's choosing.
     #[must_use]
-    pub fn ready_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn ready_at(&self, now: Timestamp) -> bool {
         self.state.ready_at(now)
     }
 
     /// When the next request is due.
     #[must_use]
-    pub const fn next_attempt(&self) -> DateTime<Utc> {
+    pub const fn next_attempt(&self) -> Timestamp {
         self.state.next_attempt()
     }
 
     /// Records an answer, and schedules the next attempt one interval away.
     pub fn succeeded(&mut self) {
-        self.succeeded_at(Utc::now());
+        self.succeeded_at(Timestamp::now());
     }
 
     /// [`succeeded`](Self::succeeded), at an instant of the caller's choosing.
-    pub fn succeeded_at(&mut self, now: DateTime<Utc>) {
+    pub fn succeeded_at(&mut self, now: Timestamp) {
         if let Some(change) = self.cadence.succeeded() {
             self.announce(change);
         }
@@ -209,11 +209,11 @@ impl SourceState {
     /// `error` is already a message fit for an administrator to read: nothing
     /// here redacts, because nothing here should ever be handed a credential.
     pub fn failed(&mut self, error: impl Into<String>) {
-        self.failed_at(error, Utc::now());
+        self.failed_at(error, Timestamp::now());
     }
 
     /// [`failed`](Self::failed), at an instant of the caller's choosing.
-    pub fn failed_at(&mut self, error: impl Into<String>, now: DateTime<Utc>) {
+    pub fn failed_at(&mut self, error: impl Into<String>, now: Timestamp) {
         self.cadence.failed();
         self.state.set_interval(self.interval());
         self.state.failed_at(error, now);
@@ -225,11 +225,11 @@ impl SourceState {
     /// failure: an upstream saying "not so fast" is one that is working, so the
     /// connection state is left alone and only the schedule moves.
     pub fn wait_for(&mut self, asked: Option<Duration>) {
-        self.wait_for_at(asked, Utc::now());
+        self.wait_for_at(asked, Timestamp::now());
     }
 
     /// [`wait_for`](Self::wait_for), at an instant of the caller's choosing.
-    pub fn wait_for_at(&mut self, asked: Option<Duration>, now: DateTime<Utc>) {
+    pub fn wait_for_at(&mut self, asked: Option<Duration>, now: Timestamp) {
         // The cadence moves first, so that the wait — and the line that names
         // it — are about the interval that is now in use.
         if let Some(change) = self
@@ -271,13 +271,13 @@ impl SourceState {
 
     /// When the current condition began.
     #[must_use]
-    pub const fn since(&self) -> DateTime<Utc> {
+    pub const fn since(&self) -> Timestamp {
         self.state.since()
     }
 
     /// How long it has been failing, or [`None`] while it is working.
     #[must_use]
-    pub fn reconnecting_for(&self) -> Option<chrono::Duration> {
+    pub fn reconnecting_for(&self) -> Option<SignedDuration> {
         self.state.reconnecting_for()
     }
 
@@ -291,15 +291,16 @@ impl SourceState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::DurationExt;
 
     /// `now - before`, never negative.
-    fn elapsed(before: DateTime<Utc>, now: DateTime<Utc>) -> Duration {
+    fn elapsed(before: Timestamp, now: Timestamp) -> Duration {
         (now - before).to_std().unwrap_or_default()
     }
 
     /// The clock these tests move by hand, so that nothing here waits.
-    fn at(seconds: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(1_789_646_400 + seconds, 0).expect("an instant")
+    fn at(seconds: i64) -> Timestamp {
+        Timestamp::new(1_789_646_400 + seconds, 0).expect("an instant")
     }
 
     fn state() -> SourceState {
@@ -315,7 +316,7 @@ mod tests {
     /// deployment met it, with the number nobody publishes written down.
     struct Grudging {
         tolerates: Duration,
-        answered_at: Option<DateTime<Utc>>,
+        answered_at: Option<Timestamp>,
     }
 
     impl Grudging {
@@ -326,7 +327,7 @@ mod tests {
             }
         }
 
-        fn answers(&mut self, now: DateTime<Utc>) -> bool {
+        fn answers(&mut self, now: Timestamp) -> bool {
             let answers = self
                 .answered_at
                 .is_none_or(|at| elapsed(at, now) >= self.tolerates);

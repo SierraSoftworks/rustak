@@ -31,12 +31,12 @@
 //! both endpoints then answer an empty list rather than a `500` — nobody can be
 //! connected, so an empty answer is the true one.
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::collections::HashMap;
 
 use actix_web::HttpResponse;
 use actix_web::http::header::CONTENT_TYPE;
 use actix_web::web;
-use chrono::{DateTime, Duration, Utc};
 use rustak_api::{Direction, GroupName};
 use rustak_core::identity::can_reach;
 
@@ -153,7 +153,7 @@ pub async fn client_endpoints(
     }
 
     let wanted = filter(&context, &who, &query).await?;
-    let since = (sec_ago > 0).then(|| Utc::now() - Duration::seconds(sec_ago));
+    let since = (sec_ago > 0).then(|| Timestamp::now() - SignedDuration::from_secs(sec_ago));
 
     let mut rows: Vec<ClientEndpointJson> =
         reachable(&context, &resolved.principal, who.is_admin())
@@ -281,7 +281,7 @@ async fn disconnected(
     context: &AppContext,
     who: &MartiPrincipal,
     wanted: Option<&[String]>,
-    since: Option<DateTime<Utc>>,
+    since: Option<Timestamp>,
     live: &[String],
 ) -> Result<Vec<ClientEndpointJson>, MartiError> {
     let db = context.db();

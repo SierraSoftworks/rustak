@@ -12,8 +12,8 @@
 //! for something running every few minutes. The `TRUNCATE` that leaves the data
 //! directory tidy happens once, in [`Database::close`](crate::db::Database).
 
-use chrono::TimeDelta;
 use rustak_core::prelude::*;
+use rustak_core::time::SignedDuration;
 
 use crate::{
     db::Checkpoint,
@@ -55,8 +55,8 @@ impl Job for WalCheckpointJob {
 
     /// A checkpoint should never be the reason a message is retried; one
     /// interval is plenty.
-    fn timeout(&self) -> TimeDelta {
-        TimeDelta::minutes(1)
+    fn timeout(&self) -> SignedDuration {
+        SignedDuration::from_mins(1)
     }
 
     /// Arms the schedule, the first run one interval out, leaving a checkpoint
@@ -97,13 +97,14 @@ impl Job for WalCheckpointJob {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::Timestamp;
 
     use crate::{jobs::JobRunnable, prelude::*, services::AppContext};
 
     #[tokio::test]
     async fn setting_up_arms_the_schedule_one_interval_out() {
         let context = AppContext::new_mock(|config| {
-            config.storage.checkpoint_interval = TimeDelta::minutes(5);
+            config.storage.checkpoint_interval = SignedDuration::from_mins(5);
         })
         .await
         .unwrap();
@@ -120,7 +121,7 @@ mod tests {
 
         assert_eq!(armed.len(), 1);
         assert!(
-            armed[0].hidden_until > chrono::Utc::now() + TimeDelta::minutes(4),
+            armed[0].hidden_until > Timestamp::now() + SignedDuration::from_mins(4),
             "the first checkpoint should be an interval away, not immediate",
         );
     }
@@ -128,14 +129,14 @@ mod tests {
     #[tokio::test]
     async fn a_restart_does_not_postpone_a_checkpoint_that_is_already_armed() {
         let context = AppContext::new_mock(|config| {
-            config.storage.checkpoint_interval = TimeDelta::minutes(5);
+            config.storage.checkpoint_interval = SignedDuration::from_mins(5);
         })
         .await
         .unwrap();
         WalCheckpointJob::dispatch_delayed(
             WalCheckpointTask {},
             Some(WAL_CHECKPOINT_PARTITION.into()),
-            TimeDelta::minutes(2),
+            SignedDuration::from_mins(2),
             &context,
         )
         .await
@@ -160,14 +161,14 @@ mod tests {
     #[tokio::test]
     async fn a_run_checkpoints_and_re_arms_itself() {
         let context = AppContext::new_mock(|config| {
-            config.storage.checkpoint_interval = TimeDelta::minutes(7);
+            config.storage.checkpoint_interval = SignedDuration::from_mins(7);
         })
         .await
         .unwrap();
 
         JobRunnable::handle(
             &WalCheckpointJob,
-            JobContext::new(context.clone(), chrono::Utc::now(), None, None),
+            JobContext::new(context.clone(), Timestamp::now(), None, None),
             &serde_json::json!({}),
         )
         .await
@@ -180,7 +181,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(armed.len(), 1, "the run should have re-armed itself");
-        assert!(armed[0].hidden_until > chrono::Utc::now() + TimeDelta::minutes(6));
+        assert!(armed[0].hidden_until > Timestamp::now() + SignedDuration::from_mins(6));
     }
 
     #[tokio::test]
@@ -188,14 +189,14 @@ mod tests {
         // The interval is never baked into the message: a run re-arms with
         // what the configuration this process started with says.
         let context = AppContext::new_mock(|config| {
-            config.storage.checkpoint_interval = TimeDelta::minutes(1);
+            config.storage.checkpoint_interval = SignedDuration::from_mins(1);
         })
         .await
         .unwrap();
 
         Job::handle(
             &WalCheckpointJob,
-            JobContext::new(context.clone(), chrono::Utc::now(), None, None),
+            JobContext::new(context.clone(), Timestamp::now(), None, None),
             &WalCheckpointTask {},
         )
         .await
@@ -207,6 +208,6 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(armed[0].hidden_until < chrono::Utc::now() + TimeDelta::minutes(2));
+        assert!(armed[0].hidden_until < Timestamp::now() + SignedDuration::from_mins(2));
     }
 }

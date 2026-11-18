@@ -7,6 +7,7 @@
 //! it once is what makes "enrol my own phone" and "enrol somebody's phone" the
 //! same flow rather than two that could drift apart.
 
+use rustak_api::time::Timestamp;
 use rustak_api::{CreateCredentialRequest, Credential, CredentialId, CredentialKind, Username};
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
@@ -208,7 +209,7 @@ fn state_of(credential: &Credential) -> (StatusTone, &'static str) {
         (StatusTone::Neutral, "Revoked")
     } else if credential.is_exhausted() {
         (StatusTone::Neutral, "Spent")
-    } else if !credential.is_usable_at(chrono::Utc::now()) {
+    } else if !credential.is_usable_at(Timestamp::now()) {
         (StatusTone::Warning, "Expired")
     } else {
         (StatusTone::Ok, "Active")

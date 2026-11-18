@@ -26,10 +26,10 @@
 //!
 //! [`AppendLog::remove_paged`]: crate::store::AppendLog::remove_paged
 
-use chrono::{DateTime, Utc};
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 
-use crate::db::row::Timestamp;
+use crate::db::row::DbTime;
 
 use super::{COLUMNS, StreamSegmentRow, StreamSegmentsRepo};
 
@@ -133,10 +133,10 @@ impl StreamSegmentsRepo<'_> {
     /// A [`human_errors::Kind::System`] error if the read fails.
     pub async fn expired_before(
         &self,
-        before: DateTime<Utc>,
+        before: Timestamp,
         limit: usize,
     ) -> Result<Vec<StreamSegmentRow>, Error> {
-        let before = Timestamp::from(before);
+        let before = DbTime::from(before);
 
         self.db
             .read(move |c| {
@@ -246,6 +246,7 @@ impl StreamSegmentsRepo<'_> {
 mod tests {
     use super::*;
     use crate::db::{Database, repos::NewStreamSegment};
+    use rustak_core::time::SignedDuration;
 
     /// A sealed segment of `key` holding `records` records, `age` minutes old.
     async fn sealed(db: &Database, key: &str, index: u32, records: u64, age: i64) {
@@ -262,7 +263,7 @@ mod tests {
         began: i64,
         ended: i64,
     ) {
-        let minutes_ago = |age: i64| Utc::now() - chrono::TimeDelta::minutes(age);
+        let minutes_ago = |age: i64| Timestamp::now() - SignedDuration::from_mins(age);
         let segments = db.stream_segments();
         let row = segments
             .create(NewStreamSegment {
@@ -328,7 +329,7 @@ mod tests {
 
         let by_rows = segments.over_row_cap("cot", 10, 4).await.unwrap();
         let by_bytes = segments.over_byte_cap("cot", 1_000, 4).await.unwrap();
-        let by_age = segments.expired_before(Utc::now(), 4).await.unwrap();
+        let by_age = segments.expired_before(Timestamp::now(), 4).await.unwrap();
 
         assert_eq!(by_rows.len(), 4);
         assert_eq!(by_bytes.len(), 4);

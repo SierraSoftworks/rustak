@@ -475,9 +475,9 @@ fn short(fingerprint: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use rustak_core::time::{SignedDuration, Timestamp};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use chrono::{Duration, Utc};
     use rustak_api::{CertificateKind, CertificateSource};
 
     use super::*;
@@ -488,7 +488,7 @@ mod tests {
     }
 
     async fn certificate(db: &Database, fingerprint: &str) -> crate::db::repos::CertificateRow {
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         db.certificates()
             .create(NewCertificate {
@@ -506,8 +506,8 @@ mod tests {
                 issuer_id: None,
                 der: vec![1, 2, 3],
                 key_sealed: None,
-                not_before: now - Duration::minutes(5),
-                not_after: now + Duration::days(1),
+                not_before: now - SignedDuration::from_mins(5),
+                not_after: now + SignedDuration::from_hours(24),
             })
             .await
             .unwrap()

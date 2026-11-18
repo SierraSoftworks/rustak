@@ -28,6 +28,7 @@
 //! setting is taking effect, but a client cannot flood the audit log by posting
 //! in a loop.
 
+use rustak_core::time::Timestamp;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use actix_web::http::StatusCode;
@@ -143,7 +144,7 @@ pub async fn home(who: MartiPrincipal) -> MartiResult {
 pub async fn get_time() -> MartiResult {
     Ok(response::text(
         StatusCode::OK,
-        time::cot_date(chrono::Utc::now()),
+        time::cot_date(Timestamp::now()),
     ))
 }
 
@@ -151,7 +152,7 @@ pub async fn get_time() -> MartiResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredErrorLog {
     /// When it arrived.
-    pub received_at: chrono::DateTime<chrono::Utc>,
+    pub received_at: Timestamp,
 
     /// Who sent it, when they were identified.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -192,7 +193,7 @@ pub async fn error_log(
     }
 
     let entry = StoredErrorLog {
-        received_at: chrono::Utc::now(),
+        received_at: Timestamp::now(),
         username: who.username().map(str::to_string),
         client_uid: query.get("clientUid").map(str::to_string),
         size: body.len(),
@@ -224,7 +225,7 @@ async fn store(
 ) -> Result<(), Error> {
     let key = format!(
         "{}-{:06}",
-        entry.received_at.format("%Y%m%d%H%M%S%3f"),
+        entry.received_at.strftime("%Y%m%d%H%M%S%3f"),
         SEQUENCE.fetch_add(1, Ordering::Relaxed) % 1_000_000,
     );
 
@@ -415,10 +416,7 @@ mod tests {
         let body = body_of(&server, test::TestRequest::get().uri("/Marti/GetTime")).await;
 
         let parsed = time::parse_date(&body).expect("our own formatter round-trips");
-        assert!(
-            (chrono::Utc::now() - parsed).num_seconds().abs() < 5,
-            "{body}",
-        );
+        assert!((Timestamp::now() - parsed).as_secs().abs() < 5, "{body}",);
         assert_eq!(time::cot_date(parsed), body, "padded millis, literal Z");
     }
 

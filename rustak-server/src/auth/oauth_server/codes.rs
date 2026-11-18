@@ -36,12 +36,12 @@
 //! nothing for a reader of the database to learn.
 
 use base64::Engine as _;
-use chrono::{DateTime, Utc};
 use rand::Rng as _;
 use rusqlite::OptionalExtension as _;
+use rustak_core::time::{SignedDuration, Timestamp};
 use sha2::{Digest as _, Sha256};
 
-use crate::db::{Database, row::Timestamp};
+use crate::db::{Database, row::DbTime};
 use crate::prelude::*;
 use crate::web::helpers::oidc::pkce;
 
@@ -99,7 +99,7 @@ pub struct Redemption {
     pub nonce: Option<String>,
     /// When the code was issued, which is when the account's session was last
     /// confirmed at `/oauth/authorize` — an ID token's `auth_time`.
-    pub authorized_at: DateTime<Utc>,
+    pub authorized_at: Timestamp,
 }
 
 /// Why a code was not redeemed.
@@ -133,7 +133,7 @@ pub async fn issue(db: &Database, new: NewCode) -> Result<String, Error> {
     rand::rng().fill_bytes(&mut bytes);
 
     let code = B64.encode(bytes);
-    let expires_at = Utc::now() + chrono::Duration::minutes(CODE_TTL_MINUTES);
+    let expires_at = Timestamp::now() + SignedDuration::from_mins(CODE_TTL_MINUTES);
     let hash = hash(&code);
 
     let method = new.code_challenge.as_ref().map(|_| S256);
@@ -154,8 +154,8 @@ pub async fn issue(db: &Database, new: NewCode) -> Result<String, Error> {
                 new.nonce,
                 new.code_challenge,
                 method,
-                Timestamp::now(),
-                Timestamp::from(expires_at),
+                DbTime::now(),
+                DbTime::from(expires_at),
             ],
         )
     })
@@ -210,8 +210,8 @@ pub async fn redeem(
             return Ok(None);
         };
 
-        let now = Utc::now();
-        let spent: Option<DateTime<Utc>> = row.consumed_at;
+        let now = Timestamp::now();
+        let spent: Option<Timestamp> = row.consumed_at;
 
         if spent.is_some() || row.expires_at <= now {
             return Ok(None);
@@ -232,7 +232,7 @@ pub async fn redeem(
         let marked = tx.execute(
             "UPDATE oauth_codes SET consumed_at = ?2 \
              WHERE code_hash = ?1 AND consumed_at IS NULL",
-            rusqlite::params![&hash, Timestamp::from(now)],
+            rusqlite::params![&hash, DbTime::from(now)],
         )?;
 
         if marked == 0 {
@@ -258,11 +258,11 @@ struct Stored {
     code_challenge: Option<String>,
     user_id: UserId,
     scope: String,
-    expires_at: DateTime<Utc>,
-    consumed_at: Option<DateTime<Utc>>,
+    expires_at: Timestamp,
+    consumed_at: Option<Timestamp>,
     oidc_scope: Option<String>,
     nonce: Option<String>,
-    created_at: DateTime<Utc>,
+    created_at: Timestamp,
 }
 
 /// Whether the proof key a code was issued with is satisfied.
@@ -285,8 +285,8 @@ fn proof_key_holds(registered: Option<&str>, presented: Option<&str>) -> bool {
 /// # Errors
 ///
 /// A [`human_errors::Kind::System`] error when the write fails.
-pub async fn prune(db: &Database, before: DateTime<Utc>) -> Result<usize, Error> {
-    let before = Timestamp::from(before);
+pub async fn prune(db: &Database, before: Timestamp) -> Result<usize, Error> {
+    let before = DbTime::from(before);
 
     db.write(move |tx| tx.execute("DELETE FROM oauth_codes WHERE expires_at < ?1", [before]))
         .await
@@ -439,7 +439,9 @@ mod tests {
         db.write(move |tx| {
             tx.execute(
                 "UPDATE oauth_codes SET expires_at = ?1",
-                [Timestamp::from(Utc::now() - chrono::Duration::minutes(1))],
+                [DbTime::from(
+                    Timestamp::now() - SignedDuration::from_mins(1),
+                )],
             )
         })
         .await
@@ -449,7 +451,7 @@ mod tests {
             redeemed(&db, &code, &verifier).await,
             Err(CodeError::Invalid)
         ));
-        assert_eq!(prune(&db, Utc::now()).await.unwrap(), 2);
+        assert_eq!(prune(&db, Timestamp::now()).await.unwrap(), 2);
     }
 
     #[tokio::test]

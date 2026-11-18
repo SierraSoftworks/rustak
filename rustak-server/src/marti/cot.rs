@@ -41,7 +41,7 @@
 
 use actix_web::http::header::CONTENT_TYPE;
 use actix_web::{HttpResponse, web};
-use chrono::{DateTime, Utc};
+use rustak_core::time::Timestamp;
 use rustak_cot::Event;
 
 use crate::cot_store::latest::LatestRow;
@@ -329,7 +329,7 @@ fn rendered(event: &Event) -> Option<String> {
 }
 
 /// The `start`/`end` pair `/cot/sa` requires, bounded to a day.
-fn required_window(query: &CiQuery) -> Result<(DateTime<Utc>, DateTime<Utc>), MartiError> {
+fn required_window(query: &CiQuery) -> Result<(Timestamp, Timestamp), MartiError> {
     let (Some(start), Some(end)) = (query.get("start"), query.get("end")) else {
         return Err(MartiError::InvalidRequest(
             "start and end are required".to_string(),

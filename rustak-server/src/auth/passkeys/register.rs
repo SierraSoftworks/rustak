@@ -218,6 +218,7 @@ fn unusable_name(why: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::Timestamp;
 
     /// The ceremony itself is exercised end to end against a real software
     /// authenticator in [`crate::web::api::passkey`]. What is here is the shape
@@ -317,7 +318,7 @@ mod tests {
             label: "Phone".to_string(),
             backup_eligible: false,
             backup_state: false,
-            created_at: chrono::Utc::now(),
+            created_at: Timestamp::now(),
             last_used_at: None,
         };
 

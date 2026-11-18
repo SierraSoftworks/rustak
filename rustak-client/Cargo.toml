@@ -29,7 +29,7 @@ rustak-core = { workspace = true }
 rustak-cot = { workspace = true }
 rustak-api = { workspace = true }
 async-trait = { workspace = true }
-chrono = { workspace = true }
+jiff = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
 tokio-rustls = { workspace = true }

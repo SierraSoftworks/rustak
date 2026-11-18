@@ -15,6 +15,7 @@
 //! was registered against an account that already exists here, so the decision
 //! was made when it was registered.
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::sync::Arc;
 
 use actix_web::{HttpRequest, HttpResponse, web};
@@ -265,10 +266,10 @@ pub async fn logout(context: web::Data<AppContext>, caller: Authenticated) -> Ap
         return Ok(HttpResponse::NoContent().finish());
     };
 
-    let expires_at = chrono::DateTime::from_timestamp(claims.exp, 0).unwrap_or_else(
+    let expires_at = Timestamp::new(claims.exp, 0).unwrap_or_else(
         // A token whose expiry we cannot read is still one to list; an hour is
         // longer than any we issue.
-        || chrono::Utc::now() + chrono::Duration::hours(1),
+        || Timestamp::now() + SignedDuration::from_hours(1),
     );
 
     tokens::revoke(context.get_ref(), &claims.jti, expires_at, caller.user.id)
@@ -307,12 +308,12 @@ pub(super) fn not_configured() -> ApiError {
 }
 
 /// The failure for somebody who has been guessing.
-pub(super) fn too_many(retry_after: chrono::Duration) -> ApiError {
+pub(super) fn too_many(retry_after: SignedDuration) -> ApiError {
     ApiError::new(
         actix_web::http::StatusCode::TOO_MANY_REQUESTS,
         format!(
             "Too many attempts. Try again in {} minutes.",
-            retry_after.num_minutes().max(1)
+            retry_after.as_mins().max(1)
         ),
     )
     .with_code("rate_limited")

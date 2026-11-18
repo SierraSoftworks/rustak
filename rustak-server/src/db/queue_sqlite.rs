@@ -5,6 +5,7 @@
 //! same message. Everything else follows from that: a consumer that dies simply
 //! stops extending its reservation and the message becomes due again.
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::{borrow::Cow, collections::HashMap};
 
 use rusqlite::OptionalExtension as _;
@@ -13,7 +14,7 @@ use rustak_core::prelude::*;
 use super::{
     Database,
     queue::{POLL_INTERVAL, PeekedMessage, Queue, QueueMessage, QueuedMessage},
-    row::{Timestamp, to_json, ts},
+    row::{DbTime, to_json, ts},
 };
 
 /// The columns a reservation reads, in the order the row mapper expects.
@@ -32,7 +33,7 @@ impl Queue for Database {
         partition: P,
         job: T,
         idempotency_key: Option<Cow<'static, str>>,
-        delay: Option<chrono::Duration>,
+        delay: Option<SignedDuration>,
     ) -> Result<QueuedMessage, Error> {
         let mut trace_headers = HashMap::new();
         get_text_map_propagator(|propagator| {
@@ -49,8 +50,8 @@ impl Queue for Database {
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let idempotency_key = idempotency_key.map(|key| key.into_owned());
 
-        let now = chrono::Utc::now();
-        let hidden_until = Timestamp::from(delay.map_or(now, |delay| now + delay));
+        let now = Timestamp::now();
+        let hidden_until = DbTime::from(delay.map_or(now, |delay| now + delay));
         let (bound_partition, bound_key) = (partition.clone(), key.clone());
 
         let created = self
@@ -77,7 +78,7 @@ impl Queue for Database {
                         bound_partition,
                         bound_key,
                         to_json(&job)?,
-                        Timestamp::from(now),
+                        DbTime::from(now),
                         hidden_until,
                         trace_headers.get("traceparent"),
                         trace_headers.get("tracestate"),
@@ -100,7 +101,7 @@ impl Queue for Database {
     async fn dequeue<P: Into<Cow<'static, str>> + Send, T: DeserializeOwned + Send + 'static>(
         &self,
         partition: P,
-        reserve_for: chrono::Duration,
+        reserve_for: SignedDuration,
     ) -> Result<QueueMessage<T>, Error> {
         let partition = partition.into().into_owned();
 
@@ -116,7 +117,7 @@ impl Queue for Database {
     #[instrument("db.queue.dequeue_any", skip_all, fields(otel.kind = ?OpenTelemetrySpanKind::Consumer), err(Display))]
     async fn dequeue_any(
         &self,
-        reserve_for: chrono::Duration,
+        reserve_for: SignedDuration,
     ) -> Result<QueueMessage<serde_json::Value>, Error> {
         loop {
             if let Some(message) = reserve_next(self, None, reserve_for).await? {
@@ -130,7 +131,7 @@ impl Queue for Database {
     #[instrument("db.queue.try_dequeue_any", skip_all, fields(otel.kind = ?OpenTelemetrySpanKind::Consumer), err(Display))]
     async fn try_dequeue_any(
         &self,
-        reserve_for: chrono::Duration,
+        reserve_for: SignedDuration,
     ) -> Result<Option<QueueMessage<serde_json::Value>>, Error> {
         reserve_next(self, None, reserve_for).await
     }
@@ -166,12 +167,12 @@ impl Queue for Database {
         partition: P,
         key: K,
         reservation_id: R,
-        reserve_for: chrono::Duration,
+        reserve_for: SignedDuration,
     ) -> Result<(), Error> {
         let partition = partition.into().into_owned();
         let key = key.into().into_owned();
         let reservation = reservation_id.into().into_owned();
-        let hidden_until = Timestamp::from(chrono::Utc::now() + reserve_for);
+        let hidden_until = DbTime::from(Timestamp::now() + reserve_for);
 
         self.write(move |tx| {
             tx.execute(
@@ -264,12 +265,12 @@ impl Queue for Database {
 async fn reserve_next(
     db: &Database,
     partition: Option<String>,
-    reserve_for: chrono::Duration,
+    reserve_for: SignedDuration,
 ) -> Result<Option<QueueMessage<serde_json::Value>>, Error> {
     let reservation_id = uuid::Uuid::new_v4().to_string();
-    let now = chrono::Utc::now();
-    let hidden_until = Timestamp::from(now + reserve_for);
-    let now = Timestamp::from(now);
+    let now = Timestamp::now();
+    let hidden_until = DbTime::from(now + reserve_for);
+    let now = DbTime::from(now);
     let held = reservation_id.clone();
 
     db.write(move |tx| {
@@ -365,7 +366,7 @@ mod tests {
         step: u32,
     }
 
-    const RESERVE: chrono::TimeDelta = chrono::TimeDelta::seconds(30);
+    const RESERVE: SignedDuration = SignedDuration::from_secs(30);
 
     async fn queue() -> Database {
         Database::open_in_memory().await.unwrap()
@@ -477,7 +478,7 @@ mod tests {
             "pki",
             Job { step: 1 },
             None,
-            Some(chrono::TimeDelta::hours(1)),
+            Some(SignedDuration::from_hours(1)),
         )
         .await
         .unwrap();
@@ -498,7 +499,7 @@ mod tests {
             "pki",
             held.key.clone(),
             held.reservation_id.clone(),
-            chrono::TimeDelta::seconds(-1),
+            SignedDuration::from_secs(-1),
         )
         .await
         .unwrap();

@@ -36,12 +36,12 @@
 
 #![cfg(feature = "testing")]
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::sync::Arc;
 
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
 use base64::Engine as _;
-use chrono::{Duration, Utc};
 use p12_keystore::{KeyStore, Pkcs12ImportPolicy};
 use rustak_api::cloudtak::ISSUED_VIA;
 use rustak_api::{
@@ -184,9 +184,9 @@ async fn one_action_produces_everything_cloudtaks_setup_page_asks_for() {
         "{}",
         onboarding.p12_download_url,
     );
-    assert!(onboarding.expires_at > Utc::now());
+    assert!(onboarding.expires_at > Timestamp::now());
     assert!(
-        onboarding.expires_at < Utc::now() + Duration::minutes(11),
+        onboarding.expires_at < Timestamp::now() + SignedDuration::from_mins(11),
         "the window is minutes, not hours",
     );
 }
@@ -328,9 +328,12 @@ async fn a_bundle_that_has_expired_is_swept_and_refused() {
     let onboarding = prepared!(app, &token, "cloudtak");
 
     // Well past the ten-minute window, which is what a sweep run tomorrow sees.
-    let swept = cloudtak::sweep(server.db(), Utc::now() + Duration::hours(1))
-        .await
-        .unwrap();
+    let swept = cloudtak::sweep(
+        server.db(),
+        Timestamp::now() + SignedDuration::from_hours(1),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(swept, 1);
     assert_eq!(
@@ -423,7 +426,7 @@ async fn the_scheduled_sweep_removes_a_bundle_nobody_ever_came_back_for() {
     // this handler can read.
     JobRunnable::handle(
         &CloudTakSweepJob,
-        JobContext::new(server.context.clone(), Utc::now(), None, None),
+        JobContext::new(server.context.clone(), Timestamp::now(), None, None),
         &serde_json::json!({}),
     )
     .await
@@ -936,7 +939,7 @@ async fn backdate(server: &TestServer, id: &str) {
         .unwrap()
         .expect("the bundle is waiting");
 
-    stored["expires_at"] = serde_json::json!(Utc::now() - Duration::minutes(1));
+    stored["expires_at"] = serde_json::json!(Timestamp::now() - SignedDuration::from_mins(1));
 
     server
         .db()

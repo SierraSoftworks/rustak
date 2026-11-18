@@ -10,8 +10,7 @@
 //! can therefore land up to twice the allowance less one before it locks —
 //! which the old per-key window allowed too, at its own boundary.
 
-use chrono::{DateTime, Duration, Utc};
-
+use rustak_core::time::{DurationExt, SignedDuration, Timestamp};
 /// A moment, as a cell records it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Stamp {
@@ -24,7 +23,7 @@ pub(super) struct Stamp {
 /// Converts between the caller's time and the sketch's.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Clock {
-    epoch: DateTime<Utc>,
+    epoch: Timestamp,
     /// The window, in whole seconds, at least one.
     window: u32,
     /// The lockout, in whole seconds rounded up, at least one.
@@ -33,9 +32,9 @@ pub(super) struct Clock {
 
 impl Clock {
     /// A clock whose second zero is `epoch`.
-    pub fn new(epoch: DateTime<Utc>, window: Duration, lockout: Duration) -> Self {
-        let seconds = |duration: Duration, round_up: bool| {
-            let millis = duration.num_milliseconds().max(0);
+    pub fn new(epoch: Timestamp, window: SignedDuration, lockout: SignedDuration) -> Self {
+        let seconds = |duration: SignedDuration, round_up: bool| {
+            let millis = duration.whole_millis().max(0);
             let whole = if round_up {
                 millis.saturating_add(999) / 1000
             } else {
@@ -53,8 +52,8 @@ impl Clock {
     }
 
     /// `now` as a cell records it. A moment before the epoch is second zero.
-    pub fn stamp(&self, now: DateTime<Utc>) -> Stamp {
-        let secs = u32::try_from((now - self.epoch).num_seconds().max(0)).unwrap_or(u32::MAX);
+    pub fn stamp(&self, now: Timestamp) -> Stamp {
+        let secs = u32::try_from((now - self.epoch).as_secs().max(0)).unwrap_or(u32::MAX);
         let window = (secs / self.window) & u32::from(u16::MAX);
 
         Stamp {
@@ -75,8 +74,8 @@ impl Clock {
     }
 
     /// A sketch second as the caller's time.
-    pub fn at(&self, secs: u32) -> DateTime<Utc> {
-        self.epoch + Duration::seconds(i64::from(secs))
+    pub fn at(&self, secs: u32) -> Timestamp {
+        self.epoch + SignedDuration::from_secs(i64::from(secs))
     }
 }
 
@@ -84,11 +83,15 @@ impl Clock {
 mod tests {
     use super::*;
 
-    fn clock() -> (Clock, DateTime<Utc>) {
-        let epoch = Utc::now();
+    fn clock() -> (Clock, Timestamp) {
+        let epoch = Timestamp::now();
 
         (
-            Clock::new(epoch, Duration::minutes(1), Duration::minutes(15)),
+            Clock::new(
+                epoch,
+                SignedDuration::from_mins(1),
+                SignedDuration::from_mins(15),
+            ),
             epoch,
         )
     }
@@ -98,27 +101,27 @@ mod tests {
         let (clock, epoch) = clock();
 
         assert_eq!(clock.stamp(epoch), Stamp { secs: 0, window: 0 });
-        assert_eq!(clock.stamp(epoch + Duration::seconds(59)).window, 0);
-        assert_eq!(clock.stamp(epoch + Duration::seconds(60)).window, 1);
-        assert_eq!(clock.stamp(epoch - Duration::hours(1)).secs, 0);
+        assert_eq!(clock.stamp(epoch + SignedDuration::from_secs(59)).window, 0);
+        assert_eq!(clock.stamp(epoch + SignedDuration::from_secs(60)).window, 1);
+        assert_eq!(clock.stamp(epoch - SignedDuration::from_hours(1)).secs, 0);
     }
 
     #[test]
     fn a_lockout_ends_a_whole_lockout_after_it_began_and_converts_back() {
         let (clock, epoch) = clock();
-        let stamp = clock.stamp(epoch + Duration::milliseconds(10_500));
+        let stamp = clock.stamp(epoch + SignedDuration::from_millis(10_500));
 
         assert_eq!(stamp.secs, 10);
         assert_eq!(clock.lockout_ends(stamp), 910);
-        assert_eq!(clock.at(910), epoch + Duration::seconds(910));
+        assert_eq!(clock.at(910), epoch + SignedDuration::from_secs(910));
     }
 
     #[test]
     fn a_sub_second_setting_is_a_second_and_a_lockout_rounds_up() {
         let clock = Clock::new(
-            Utc::now(),
-            Duration::milliseconds(30),
-            Duration::milliseconds(1_200),
+            Timestamp::now(),
+            SignedDuration::from_millis(30),
+            SignedDuration::from_millis(1_200),
         );
 
         assert_eq!(clock.window, 1);

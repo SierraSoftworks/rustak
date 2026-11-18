@@ -11,6 +11,7 @@
 //! changed where it is drawn, on the map.
 
 use rustak_api::MapFeature;
+use rustak_api::time::Timestamp;
 use yew::prelude::*;
 
 use crate::components::{Alert, AlertKind, Button, ButtonKind, ConfirmButton, TextArea, TextInput};
@@ -50,7 +51,7 @@ pub fn properties(props: &PropertiesProps) -> Html {
         .callsign
         .clone()
         .unwrap_or_else(|| feature.uid.clone());
-    let stale = feature.stale < chrono::Utc::now();
+    let stale = feature.stale < Timestamp::now();
 
     let onclose = {
         let onclose = props.onclose.clone();

@@ -2,13 +2,11 @@
 //!
 //! # Why this module exists
 //!
-//! [`chrono`] ships a family of serde adapters for putting a *timestamp* on the
-//! wire in whatever unit the other end expects ([`chrono::serde::ts_seconds`]
-//! and friends) and nothing at all for [`chrono::Duration`]: `chrono::serde` is
-//! a re-export of its `datetime::serde` module. What `Duration` does have is a
-//! `Serialize`/`Deserialize` pair that writes a `(seconds, nanoseconds)` tuple
-//! — `[300, 0]` for five minutes — which is a fine thing for one program to
-//! hand another and an impossible thing to put in a file somebody edits.
+//! [`SignedDuration`] has no serde shape of its own that a person would type:
+//! jiff's optional serde support writes ISO 8601 (`PT5M`), and chrono's old
+//! `TimeDelta` wrote a `(seconds, nanoseconds)` tuple — `[300, 0]` for five
+//! minutes. Both are fine things for one program to hand another and poor
+//! things to put in a file somebody edits.
 //!
 //! automate solved the same problem with a whole number of minutes, because
 //! every duration it stored was an answer to "how long should we wait". rustak's
@@ -51,20 +49,22 @@
 //!
 //! ```
 //! # use serde::{Deserialize, Serialize};
+//! # use rustak_core::time::SignedDuration;
 //! #[derive(Debug, Serialize, Deserialize)]
 //! struct StreamConfig {
 //!     #[serde(with = "rustak_core::config::duration::humane")]
-//!     idle_timeout: chrono::Duration,
+//!     idle_timeout: SignedDuration,
 //!
 //!     #[serde(default, with = "rustak_core::config::duration::humane_option")]
-//!     drain_timeout: Option<chrono::Duration>,
+//!     drain_timeout: Option<SignedDuration>,
 //! }
 //!
 //! let parsed: StreamConfig = toml::from_str("idle_timeout = \"90s\"").unwrap();
-//! assert_eq!(parsed.idle_timeout, chrono::Duration::seconds(90));
+//! assert_eq!(parsed.idle_timeout, SignedDuration::from_secs(90));
 //! assert_eq!(parsed.drain_timeout, None);
 //! ```
 
+use crate::time::SignedDuration;
 use std::fmt;
 
 use serde::de::{self, Unexpected, Visitor};
@@ -73,7 +73,7 @@ use serde::de::{self, Unexpected, Visitor};
 const NEGATIVE: &str =
     "A duration cannot be negative; give a span such as \"90s\", \"15m\", \"12h\" or \"30d\".";
 
-/// The refusal shown for a span too large for [`chrono::Duration`] to hold.
+/// The refusal shown for a span too large for [`SignedDuration`] to hold.
 const TOO_LARGE: &str = "That is longer than we could ever represent; give a smaller duration.";
 
 /// The refusal shown for a fractional span.
@@ -88,7 +88,7 @@ const UNITS: &[(char, i64)] = &[('d', 86_400), ('h', 3_600), ('m', 60), ('s', 1)
 ///
 /// Returns the refusal text on failure so that both the serde adapters and any
 /// caller validating a value by hand report the same wording.
-pub fn parse(text: &str) -> Result<chrono::Duration, String> {
+pub fn parse(text: &str) -> Result<SignedDuration, String> {
     let text = text.trim();
     if text.is_empty() {
         return Err(
@@ -118,12 +118,12 @@ pub fn parse(text: &str) -> Result<chrono::Duration, String> {
 
 /// Rebuilds a duration from a whole number of seconds, refusing the negative
 /// and unrepresentable spans documented at the module level.
-fn from_seconds(seconds: i64) -> Result<chrono::Duration, String> {
+fn from_seconds(seconds: i64) -> Result<SignedDuration, String> {
     if seconds < 0 {
         return Err(NEGATIVE.to_string());
     }
 
-    chrono::Duration::try_seconds(seconds).ok_or_else(|| TOO_LARGE.to_string())
+    Ok(SignedDuration::from_secs(seconds))
 }
 
 /// Renders a duration in the largest unit it divides evenly into.
@@ -133,8 +133,8 @@ fn from_seconds(seconds: i64) -> Result<chrono::Duration, String> {
 /// Refuses a negative span, and one carrying sub-second precision that the
 /// written form cannot hold — see the [module documentation](self) for why a
 /// value we cannot read back is one we decline to write.
-pub fn format(value: chrono::Duration) -> Result<String, String> {
-    if value < chrono::Duration::zero() {
+pub fn format(value: SignedDuration) -> Result<String, String> {
+    if value < SignedDuration::ZERO {
         return Err(NEGATIVE.to_string());
     }
 
@@ -142,7 +142,7 @@ pub fn format(value: chrono::Duration) -> Result<String, String> {
         return Err(FRACTIONAL.to_string());
     }
 
-    let seconds = value.num_seconds();
+    let seconds = value.as_secs();
     if seconds == 0 {
         return Ok("0s".to_string());
     }
@@ -162,7 +162,7 @@ pub fn format(value: chrono::Duration) -> Result<String, String> {
 struct HumaneVisitor;
 
 impl Visitor<'_> for HumaneVisitor {
-    type Value = chrono::Duration;
+    type Value = SignedDuration;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(
@@ -190,20 +190,22 @@ impl Visitor<'_> for HumaneVisitor {
     }
 }
 
-/// A [`chrono::Duration`] written the way a person would write one.
+/// A [`SignedDuration`] written the way a person would write one.
 ///
 /// ```
 /// # use serde::Deserialize;
+/// # use rustak_core::time::SignedDuration;
 /// #[derive(Deserialize)]
 /// struct Retention {
 ///     #[serde(with = "rustak_core::config::duration::humane")]
-///     audit: chrono::Duration,
+///     audit: SignedDuration,
 /// }
 ///
 /// let retention: Retention = toml::from_str(r#"audit = "90d""#).unwrap();
-/// assert_eq!(retention.audit, chrono::Duration::days(90));
+/// assert_eq!(retention.audit, SignedDuration::from_hours(24 * 90));
 /// ```
 pub mod humane {
+    use crate::time::SignedDuration;
     use serde::{Deserializer, Serializer};
 
     /// Writes the duration in the largest unit it divides evenly into.
@@ -213,7 +215,7 @@ pub mod humane {
     /// Refuses a negative or sub-second span; see the
     /// [module documentation](super).
     pub fn serialize<S: Serializer>(
-        value: &chrono::Duration,
+        value: &SignedDuration,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         let text = super::format(*value).map_err(serde::ser::Error::custom)?;
@@ -227,12 +229,12 @@ pub mod humane {
     /// Refuses a blank, negative, fractional or unrepresentable span.
     pub fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
-    ) -> Result<chrono::Duration, D::Error> {
+    ) -> Result<SignedDuration, D::Error> {
         deserializer.deserialize_any(super::HumaneVisitor)
     }
 }
 
-/// An `Option<`[`chrono::Duration`]`>`, or absent.
+/// An `Option<`[`SignedDuration`]`>`, or absent.
 ///
 /// `#[serde(with = ...)]` makes a field mandatory even when its type is an
 /// `Option` — serde's "a missing `Option` field is `None`" shortcut applies only
@@ -241,19 +243,21 @@ pub mod humane {
 ///
 /// ```
 /// # use serde::Deserialize;
+/// # use rustak_core::time::SignedDuration;
 /// #[derive(Deserialize)]
 /// struct Acme {
 ///     #[serde(default, with = "rustak_core::config::duration::humane_option")]
-///     renew_before: Option<chrono::Duration>,
+///     renew_before: Option<SignedDuration>,
 /// }
 ///
 /// let absent: Acme = toml::from_str("").unwrap();
 /// assert_eq!(absent.renew_before, None);
 ///
 /// let present: Acme = toml::from_str(r#"renew_before = "30d""#).unwrap();
-/// assert_eq!(present.renew_before, Some(chrono::Duration::days(30)));
+/// assert_eq!(present.renew_before, Some(SignedDuration::from_hours(24 * 30)));
 /// ```
 pub mod humane_option {
+    use crate::time::SignedDuration;
     use serde::{Deserialize, Deserializer, Serializer};
 
     /// Writes the duration as [`humane`](super::humane) does, or `null`.
@@ -263,7 +267,7 @@ pub mod humane_option {
     /// Refuses a negative or sub-second span; see the
     /// [module documentation](super).
     pub fn serialize<S: Serializer>(
-        value: &Option<chrono::Duration>,
+        value: &Option<SignedDuration>,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         match value {
@@ -283,13 +287,13 @@ pub mod humane_option {
     /// Refuses a blank, negative, fractional or unrepresentable span.
     pub fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
-    ) -> Result<Option<chrono::Duration>, D::Error> {
+    ) -> Result<Option<SignedDuration>, D::Error> {
         Option::<Humane>::deserialize(deserializer).map(|held| held.map(|Humane(span)| span))
     }
 
     /// Carries [`super::HumaneVisitor`] through serde's `Option` handling,
     /// which needs a type to deserialize rather than a bare visitor.
-    struct Humane(chrono::Duration);
+    struct Humane(SignedDuration);
 
     impl<'de> Deserialize<'de> for Humane {
         fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -300,6 +304,7 @@ pub mod humane_option {
 
 #[cfg(test)]
 mod tests {
+    use crate::time::SignedDuration;
     use rstest::rstest;
     use serde::{Deserialize, Serialize};
 
@@ -307,26 +312,26 @@ mod tests {
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
     struct Section {
         #[serde(with = "super::humane")]
-        span: chrono::Duration,
+        span: SignedDuration,
     }
 
     /// Stands in for a section whose span may be absent entirely.
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
     struct MaybeSection {
         #[serde(default, with = "super::humane_option")]
-        span: Option<chrono::Duration>,
+        span: Option<SignedDuration>,
     }
 
     #[rstest]
-    #[case("45s", chrono::Duration::seconds(45))]
-    #[case("15m", chrono::Duration::minutes(15))]
-    #[case("12h", chrono::Duration::hours(12))]
-    #[case("30d", chrono::Duration::days(30))]
-    #[case("3650d", chrono::Duration::days(3650))]
-    #[case("0s", chrono::Duration::zero())]
+    #[case("45s", SignedDuration::from_secs(45))]
+    #[case("15m", SignedDuration::from_mins(15))]
+    #[case("12h", SignedDuration::from_hours(12))]
+    #[case("30d", SignedDuration::from_hours(24 * 30))]
+    #[case("3650d", SignedDuration::from_hours(24 * 3650))]
+    #[case("0s", SignedDuration::ZERO)]
     fn every_unit_in_the_documented_table_is_understood(
         #[case] written: &str,
-        #[case] expected: chrono::Duration,
+        #[case] expected: SignedDuration,
     ) {
         let section: Section =
             toml::from_str(&format!("span = \"{written}\"")).expect("{written} should parse");
@@ -340,21 +345,21 @@ mod tests {
         // teach nothing, so it is accepted even though we never write it.
         let section: Section = toml::from_str("span = 5").unwrap();
 
-        assert_eq!(section.span, chrono::Duration::seconds(5));
+        assert_eq!(section.span, SignedDuration::from_secs(5));
     }
 
     #[test]
     fn a_span_is_written_in_the_largest_unit_it_divides_evenly_into() {
         // The point of the module is the shape of the written value, not merely
         // that it survives a round trip — a round trip would still pass if we
-        // emitted chrono's `[seconds, nanos]` pair, which is exactly the form
+        // emitted a `[seconds, nanos]` pair, which is exactly the form
         // nobody can type. So assert on the text.
         for (span, expected) in [
-            (chrono::Duration::days(30), "30d"),
-            (chrono::Duration::hours(12), "12h"),
-            (chrono::Duration::minutes(15), "15m"),
-            (chrono::Duration::seconds(90), "90s"),
-            (chrono::Duration::zero(), "0s"),
+            (SignedDuration::from_hours(24 * 30), "30d"),
+            (SignedDuration::from_hours(12), "12h"),
+            (SignedDuration::from_mins(15), "15m"),
+            (SignedDuration::from_secs(90), "90s"),
+            (SignedDuration::ZERO, "0s"),
         ] {
             let written = toml::to_string(&Section { span }).unwrap();
             assert_eq!(written.trim(), format!("span = \"{expected}\""));
@@ -367,12 +372,12 @@ mod tests {
         // directly: for every span that encodes at all, decoding succeeds and
         // gives back what went in.
         for span in [
-            chrono::Duration::zero(),
-            chrono::Duration::seconds(1),
-            chrono::Duration::seconds(90),
-            chrono::Duration::minutes(15),
-            chrono::Duration::hours(12),
-            chrono::Duration::days(3650),
+            SignedDuration::ZERO,
+            SignedDuration::from_secs(1),
+            SignedDuration::from_secs(90),
+            SignedDuration::from_mins(15),
+            SignedDuration::from_hours(12),
+            SignedDuration::from_hours(24 * 3650),
         ] {
             let original = Section { span };
             let written =
@@ -388,7 +393,7 @@ mod tests {
     fn an_optional_span_round_trips_in_both_of_its_states() {
         for original in [
             MaybeSection {
-                span: Some(chrono::Duration::days(30)),
+                span: Some(SignedDuration::from_hours(24 * 30)),
             },
             MaybeSection { span: None },
         ] {
@@ -433,7 +438,7 @@ mod tests {
 
     #[test]
     fn a_span_too_large_to_hold_is_refused_by_name() {
-        // `i64` days overflows `chrono::Duration` long before it overflows
+        // `i64` days overflows `SignedDuration` long before it overflows
         // itself, so the bound has to be checked rather than assumed.
         let Err(err) = toml::from_str::<Section>(&format!("span = \"{}d\"", i64::MAX)) else {
             panic!("an unrepresentable span should not load");
@@ -448,7 +453,7 @@ mod tests {
         // declines to load, which is a configuration that cannot be recovered
         // without hand-editing the database.
         let Err(err) = toml::to_string(&Section {
-            span: chrono::Duration::minutes(-5),
+            span: SignedDuration::from_mins(-5),
         }) else {
             panic!("a negative span should not be written");
         };
@@ -461,7 +466,7 @@ mod tests {
         // Truncating would write a value that reads back as a different span,
         // breaking the round-trip property asserted above. No configuration key
         // in rustak is finer than a second, so refusing costs nothing.
-        let Err(err) = super::format(chrono::Duration::milliseconds(1_500)) else {
+        let Err(err) = super::format(SignedDuration::from_millis(1_500)) else {
             panic!("a sub-second span should not be written");
         };
 

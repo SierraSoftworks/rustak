@@ -43,7 +43,7 @@ fn audit_event(record: &AuditRecord) -> Html {
             tone={StatusTone::of_outcome(record.outcome).tone()}
             tone_label={record.outcome.label()}
             meta={html! { <>{ who }{ " · " }{ record.outcome.label() }</> }}
-            aside={html! { <Timestamp at={record.occurred_at} /> }}
+            aside={html! { <Timestamp at={crate::util::to_chrono(record.occurred_at)} /> }}
         >
             { record.message.clone() }
         </TimelineItem>

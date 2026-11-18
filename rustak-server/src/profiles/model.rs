@@ -8,8 +8,8 @@
 //!
 //! The SQL that reads and writes these rows is in [`super::repo`].
 
-use chrono::{DateTime, Utc};
 use rustak_api::{GroupName, ProfileId};
+use rustak_core::time::Timestamp;
 
 use crate::db::row::{bool_col, id_col, ts};
 
@@ -34,8 +34,8 @@ pub struct ProfileRow {
     pub kind: Option<String>,
     /// Empty means everybody.
     pub groups: Vec<GroupName>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
 }
 
 impl ProfileRow {
@@ -77,7 +77,7 @@ pub struct ProfileFileRow {
     pub hash: String,
     pub size: u64,
     pub mime_type: Option<String>,
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
 }
 
 impl ProfileFileRow {
@@ -145,8 +145,8 @@ mod tests {
             tool: None,
             kind: None,
             groups: Vec::new(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: Timestamp::now(),
+            updated_at: Timestamp::now(),
         };
 
         assert!(row.visible_to(&[]));

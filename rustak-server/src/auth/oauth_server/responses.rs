@@ -18,6 +18,7 @@
 use actix_web::http::StatusCode;
 use actix_web::http::header::RETRY_AFTER;
 use actix_web::{HttpResponse, http::header};
+use rustak_core::time::{SignedDuration, Timestamp};
 
 use crate::marti::response;
 
@@ -31,7 +32,7 @@ pub const TOKEN_TYPE: &str = "Bearer";
 /// token that expired while the response was being built must not become
 /// eighteen quintillion seconds.
 pub fn expires_in(exp: i64) -> u64 {
-    u64::try_from(exp - chrono::Utc::now().timestamp()).unwrap_or(0)
+    u64::try_from(exp - Timestamp::now().as_second()).unwrap_or(0)
 }
 
 /// A successful grant: exactly `application/json`, and never cached.
@@ -91,8 +92,8 @@ pub fn bad_credentials() -> HttpResponse {
 }
 
 /// Too many attempts, and when to come back.
-pub fn rate_limited(retry_after: chrono::Duration) -> HttpResponse {
-    let seconds = retry_after.num_seconds().max(1);
+pub fn rate_limited(retry_after: SignedDuration) -> HttpResponse {
+    let seconds = retry_after.as_secs().max(1);
     let mut response = oauth_error(
         StatusCode::TOO_MANY_REQUESTS,
         "invalid_grant",
@@ -145,7 +146,7 @@ mod tests {
 
     #[test]
     fn a_lockout_says_when_to_come_back() {
-        let response = rate_limited(chrono::Duration::minutes(15));
+        let response = rate_limited(SignedDuration::from_mins(15));
 
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(response.headers().get(RETRY_AFTER).unwrap(), "900");
@@ -153,8 +154,8 @@ mod tests {
 
     #[test]
     fn an_expiry_in_the_past_is_zero_rather_than_an_enormous_number() {
-        assert_eq!(expires_in(chrono::Utc::now().timestamp() - 60), 0);
-        assert!(expires_in(chrono::Utc::now().timestamp() + 60) > 0);
+        assert_eq!(expires_in(Timestamp::now().as_second() - 60), 0);
+        assert!(expires_in(Timestamp::now().as_second() + 60) > 0);
     }
 
     #[test]

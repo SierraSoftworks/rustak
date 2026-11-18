@@ -9,6 +9,7 @@
 
 #![cfg(feature = "testing")]
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::sync::Arc;
 
 use std::pin::Pin;
@@ -17,7 +18,6 @@ use std::time::Duration as StdDuration;
 use actix_web::body::MessageBody;
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
-use chrono::{DateTime, Duration, Utc};
 use rustak_api::{MapFeature, MapPoint, MapShape, MapStyle, PublishFeature};
 use rustak_cot::codec::EncodedEvent;
 use rustak_cot::detail::{Chat, Contact, Element, Group};
@@ -54,7 +54,7 @@ fn sender(bits: &[u32]) -> Principal {
 }
 
 /// A message of `kind`, sent now and stale at `stale`.
-fn message(uid: &str, kind: &str, stale: DateTime<Utc>) -> Arc<EncodedEvent> {
+fn message(uid: &str, kind: &str, stale: Timestamp) -> Arc<EncodedEvent> {
     Arc::new(EncodedEvent::new(
         Event::builder(kind, uid)
             .how("m-g")
@@ -83,14 +83,14 @@ async fn store(server: &TestServer, encoded: Arc<EncodedEvent>, bits: &[u32]) {
 }
 
 /// One fix of a track: where `uid` was at `time`, heading `course`.
-fn fix(uid: &str, time: DateTime<Utc>, lon: f64, course: u32) -> Arc<EncodedEvent> {
+fn fix(uid: &str, time: Timestamp, lon: f64, course: u32) -> Arc<EncodedEvent> {
     Arc::new(EncodedEvent::new(
         Event::builder("a-f-G-U-C", uid)
             .how("m-g")
             .point(51.5, lon)
             .time(CotTime::from_datetime(time))
             .start(CotTime::from_datetime(time))
-            .stale(CotTime::from_datetime(time + Duration::minutes(2)))
+            .stale(CotTime::from_datetime(time + SignedDuration::from_mins(2)))
             .typed(&Contact::new("ALPHA"))
             .push(
                 Element::new("track")
@@ -212,12 +212,16 @@ async fn watched(
 async fn the_snapshot_is_what_is_current_and_worth_drawing() {
     let server = TestServer::start().await;
     let (_, admin) = server.signed_in("grace", true).await;
-    let soon = Utc::now() + Duration::minutes(2);
+    let soon = Timestamp::now() + SignedDuration::from_mins(2);
 
     store(&server, message("ANDROID-1", "a-f-G-U-C", soon), &[2]).await;
     store(
         &server,
-        message("LONG-GONE", "a-f-G-U-C", Utc::now() - Duration::hours(1)),
+        message(
+            "LONG-GONE",
+            "a-f-G-U-C",
+            Timestamp::now() - SignedDuration::from_hours(1),
+        ),
         &[2],
     )
     .await;
@@ -247,11 +251,11 @@ async fn the_snapshot_is_what_is_current_and_worth_drawing() {
 async fn a_track_is_the_history_read_back_oldest_first_and_narrowed_to_a_window() {
     let server = TestServer::start().await;
     let (_, admin) = server.signed_in("grace", true).await;
-    let now = Utc::now();
+    let now = Timestamp::now();
 
     store(
         &server,
-        message("ANDROID-1", "a-f-G-U-C", now + Duration::minutes(2)),
+        message("ANDROID-1", "a-f-G-U-C", now + SignedDuration::from_mins(2)),
         &[2],
     )
     .await;
@@ -259,8 +263,8 @@ async fn a_track_is_the_history_read_back_oldest_first_and_narrowed_to_a_window(
         &server,
         "ANDROID-1",
         &[
-            fix("ANDROID-1", now - Duration::seconds(120), -0.12, 90),
-            fix("ANDROID-1", now - Duration::seconds(60), -0.11, 95),
+            fix("ANDROID-1", now - SignedDuration::from_secs(120), -0.12, 90),
+            fix("ANDROID-1", now - SignedDuration::from_secs(60), -0.11, 95),
             fix("ANDROID-1", now, -0.10, 100),
         ],
     )
@@ -295,11 +299,11 @@ async fn a_track_is_the_history_read_back_oldest_first_and_narrowed_to_a_window(
 async fn what_a_map_does_not_draw_does_not_use_up_a_tracks_fixes() {
     let server = TestServer::start().await;
     let (_, admin) = server.signed_in("grace", true).await;
-    let now = Utc::now();
+    let now = Timestamp::now();
 
     store(
         &server,
-        message("ANDROID-1", "a-f-G-U-C", now + Duration::minutes(2)),
+        message("ANDROID-1", "a-f-G-U-C", now + SignedDuration::from_mins(2)),
         &[2],
     )
     .await;
@@ -307,8 +311,10 @@ async fn what_a_map_does_not_draw_does_not_use_up_a_tracks_fixes() {
     let chat = |seconds: i64| {
         Arc::new(EncodedEvent::new(
             Event::builder("b-t-f", "ANDROID-1")
-                .time(CotTime::from_datetime(now - Duration::seconds(seconds)))
-                .stale(CotTime::from_datetime(now + Duration::minutes(2)))
+                .time(CotTime::from_datetime(
+                    now - SignedDuration::from_secs(seconds),
+                ))
+                .stale(CotTime::from_datetime(now + SignedDuration::from_mins(2)))
                 .typed(&Chat::default())
                 .build(),
         ))
@@ -317,8 +323,8 @@ async fn what_a_map_does_not_draw_does_not_use_up_a_tracks_fixes() {
         &server,
         "ANDROID-1",
         &[
-            fix("ANDROID-1", now - Duration::seconds(120), -0.12, 90),
-            fix("ANDROID-1", now - Duration::seconds(60), -0.11, 95),
+            fix("ANDROID-1", now - SignedDuration::from_secs(120), -0.12, 90),
+            fix("ANDROID-1", now - SignedDuration::from_secs(60), -0.11, 95),
             chat(30),
             chat(10),
         ],
@@ -344,12 +350,16 @@ async fn a_track_is_gated_the_way_the_snapshot_is() {
     let server = TestServer::start().await;
     let (_, admin) = server.signed_in("grace", true).await;
     let (_, ordinary) = server.signed_in("ada", false).await;
-    let now = Utc::now();
+    let now = Timestamp::now();
 
     // Bit 9 is a channel nobody in this test holds in the `OUT` direction.
     store(
         &server,
-        message("UID-SECRET", "a-f-G-U-C", now + Duration::minutes(2)),
+        message(
+            "UID-SECRET",
+            "a-f-G-U-C",
+            now + SignedDuration::from_mins(2),
+        ),
         &[9],
     )
     .await;
@@ -422,7 +432,7 @@ async fn a_marker_published_from_the_console_is_relayed_recorded_and_can_be_forg
         published.remarks.as_deref(),
         Some("Placed from the console.")
     );
-    assert!(published.stale > Utc::now() + Duration::hours(23));
+    assert!(published.stale > Timestamp::now() + SignedDuration::from_hours(23));
 
     // What every open map was told is what was answered.
     let relayed = seen.try_recv().expect("the tap saw the marker");
@@ -636,7 +646,7 @@ async fn the_snapshot_is_narrowed_to_the_channels_the_reader_receives() {
     let (_, ordinary) = server.signed_in("ada", false).await;
 
     // Bit 9 is a channel nobody in this test holds in the `OUT` direction.
-    let soon = Utc::now() + Duration::minutes(2);
+    let soon = Timestamp::now() + SignedDuration::from_mins(2);
     store(&server, message("UID-SECRET", "a-f-G-U-C", soon), &[9]).await;
 
     assert!(features(&server, &ordinary).await.is_empty());
@@ -663,7 +673,7 @@ async fn the_feed_carries_what_is_relayed_and_what_is_deleted() {
     let server = TestServer::start().await;
     let (_, admin) = server.signed_in("grace", true).await;
     let router = streaming(&server).await;
-    let soon = Utc::now() + Duration::minutes(2);
+    let soon = Timestamp::now() + SignedDuration::from_mins(2);
 
     let body = watched(&server, &admin, || {
         let tap = router.tap();
@@ -694,7 +704,7 @@ async fn the_feed_is_narrowed_the_way_the_snapshot_is() {
     let server = TestServer::start().await;
     let (_, ordinary) = server.signed_in("ada", false).await;
     let router = streaming(&server).await;
-    let soon = Utc::now() + Duration::minutes(2);
+    let soon = Timestamp::now() + SignedDuration::from_mins(2);
 
     let body = watched(&server, &ordinary, || {
         router
@@ -751,7 +761,7 @@ async fn a_map_whose_account_is_still_good_carries_on_after_being_checked() {
     let (user, admin) = server.signed_in("grace", true).await;
     let router = streaming(&server).await;
     let app = app!(server);
-    let soon = Utc::now() + Duration::minutes(2);
+    let soon = Timestamp::now() + SignedDuration::from_mins(2);
 
     let response = test::TestRequest::get()
         .uri("/api/v1/map/events")
@@ -785,7 +795,7 @@ async fn a_map_that_falls_behind_is_told_to_start_again() {
     let server = TestServer::start().await;
     let (_, admin) = server.signed_in("grace", true).await;
     let router = streaming(&server).await;
-    let soon = Utc::now() + Duration::minutes(2);
+    let soon = Timestamp::now() + SignedDuration::from_mins(2);
 
     // More than the tap's ring holds, before the page reads any of it.
     let body = watched(&server, &admin, || {

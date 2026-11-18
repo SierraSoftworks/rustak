@@ -23,6 +23,7 @@
 //! rather than against an actix request, so it can be exercised without a
 //! server and reused by the listeners that are not actix at all.
 
+use rustak_core::time::SignedDuration;
 use std::sync::Arc;
 
 use actix_web::http::header::HeaderMap;
@@ -93,7 +94,7 @@ pub enum AuthFailure {
     /// another one.
     Forbidden(&'static str),
     /// Too many failures from this caller, and how long until the next try.
-    RateLimited(chrono::Duration),
+    RateLimited(SignedDuration),
     /// Something of ours failed.
     Unavailable(Error),
 }
@@ -327,10 +328,10 @@ fn enrollment_purpose(path: &str) -> Purpose {
 /// Anything else is [`None`], which is the behaviour every other credential
 /// gets. The uid itself is returned owned, because the [`Grace`] borrows it and
 /// the query string it came from is percent-encoded.
-fn grace_uid(request: &HttpRequest, purpose: Purpose, window: chrono::Duration) -> Option<String> {
+fn grace_uid(request: &HttpRequest, purpose: Purpose, window: SignedDuration) -> Option<String> {
     if purpose != Purpose::EnrollmentProfile
         || request.method() != actix_web::http::Method::GET
-        || window <= chrono::Duration::zero()
+        || window <= SignedDuration::ZERO
     {
         return None;
     }
@@ -485,6 +486,7 @@ pub async fn resolve_principal<S: Services>(
 #[cfg(test)]
 mod tests {
     use actix_web::test::TestRequest;
+    use rustak_core::time::Timestamp;
 
     use super::*;
     use crate::db::repos::OidcProfile;
@@ -575,7 +577,7 @@ mod tests {
 
     #[actix_web::test]
     async fn a_grace_is_offered_only_to_a_get_on_a_profile_route() {
-        let window = chrono::Duration::minutes(10);
+        let window = SignedDuration::from_mins(10);
         let get = TestRequest::get()
             .uri("/Marti/api/tls/profile/enrollment?clientUid=ANDROID-1")
             .to_http_request();
@@ -589,7 +591,7 @@ mod tests {
         // enough to leave a spent token refused.
         assert_eq!(grace_uid(&get, Purpose::Enrollment, window), None);
         assert_eq!(
-            grace_uid(&get, Purpose::EnrollmentProfile, chrono::Duration::zero()),
+            grace_uid(&get, Purpose::EnrollmentProfile, SignedDuration::ZERO),
             None,
         );
 
@@ -628,7 +630,7 @@ mod tests {
         crate::auth::tokens::revoke(
             &server.context,
             &claims.jti,
-            chrono::DateTime::from_timestamp(claims.exp, 0).unwrap(),
+            Timestamp::new(claims.exp, 0).unwrap(),
             user.id,
         )
         .await

@@ -23,6 +23,7 @@
 
 #![cfg(feature = "testing")]
 
+use rustak_core::time::SignedDuration;
 use std::net::{IpAddr, Ipv4Addr, TcpListener};
 use std::sync::Arc;
 use std::time::Duration;
@@ -1015,7 +1016,7 @@ const ATAK_UID: &str = "ANDROID-7e0bf5df978a87d8";
 /// in-process; only the tests that prove a certificate completes a real
 /// handshake need [`harness`] and its socket. `grace` is `[auth]
 /// enrollment_grace`, which a test closes to nothing to watch the window shut.
-async fn enrolment_server(grace: chrono::Duration) -> TestServer {
+async fn enrolment_server(grace: SignedDuration) -> TestServer {
     let server = TestServer::start_with(move |config| {
         config.pki.key_type = KeyType::EcdsaP256;
         config.auth.enrollment_grace = grace;
@@ -1069,7 +1070,7 @@ async fn atak_walks_its_three_calls_with_one_token_and_none_of_them_is_refused()
     // `tls/config`, `signClient/v2` — which spends the token — and then the
     // enrolment profile 0.4 s later, which used to be a 401 and a device that
     // reported "TAK server registration failed" (M2-15).
-    let server = enrolment_server(chrono::Duration::minutes(10)).await;
+    let server = enrolment_server(SignedDuration::from_mins(10)).await;
     let token = credential(&server, "notheotherben", CredentialKind::EnrollmentToken).await;
     let credential = basic("notheotherben", &token);
     let app = test::init_service(App::new().configure(server.app())).await;
@@ -1111,7 +1112,7 @@ async fn atak_walks_its_three_calls_with_one_token_and_none_of_them_is_refused()
 async fn a_spent_token_buys_the_profile_and_nothing_else() {
     // Every relaxation, negated: the window is one route for one device, not a
     // token that works again.
-    let server = enrolment_server(chrono::Duration::minutes(10)).await;
+    let server = enrolment_server(SignedDuration::from_mins(10)).await;
     let token = credential(&server, "ada", CredentialKind::EnrollmentToken).await;
     let credential = basic("ada", &token);
     let app = test::init_service(App::new().configure(server.app())).await;
@@ -1186,7 +1187,7 @@ async fn a_spent_token_buys_the_profile_and_nothing_else() {
 #[actix_web::test]
 async fn the_grace_window_closes_and_the_token_is_spent_again() {
     // One millisecond of window, and a device that took longer than that.
-    let server = enrolment_server(chrono::Duration::milliseconds(1)).await;
+    let server = enrolment_server(SignedDuration::from_millis(1)).await;
     let token = credential(&server, "ada", CredentialKind::EnrollmentToken).await;
     let credential = basic("ada", &token);
     let app = test::init_service(App::new().configure(server.app())).await;
@@ -1213,7 +1214,7 @@ async fn the_grace_window_closes_and_the_token_is_spent_again() {
 
 #[actix_web::test]
 async fn revoking_a_token_inside_the_window_ends_its_grace() {
-    let server = enrolment_server(chrono::Duration::minutes(10)).await;
+    let server = enrolment_server(SignedDuration::from_mins(10)).await;
     let token = credential(&server, "ada", CredentialKind::EnrollmentToken).await;
     let credential = basic("ada", &token);
     let app = test::init_service(App::new().configure(server.app())).await;

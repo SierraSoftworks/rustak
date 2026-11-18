@@ -33,10 +33,10 @@
 //! credential was refused: the difference between "no such account" and "wrong
 //! secret" is an oracle, and the log is where it belongs.
 
-use chrono::{DateTime, Utc};
 use rustak_api::CredentialKind;
 use rustak_core::identity::{Secret, lookup_hint, verify_blocking, verify_dummy_blocking};
 use rustak_core::prelude::*;
+use rustak_core::time::{SignedDuration, Timestamp};
 
 use crate::db::{
     Database,
@@ -110,7 +110,7 @@ pub struct Grace<'a> {
 
     /// How long after the spend the window stays open. Zero switches the
     /// whole relaxation off.
-    pub window: chrono::Duration,
+    pub window: SignedDuration,
 }
 
 impl Grace<'_> {
@@ -123,13 +123,13 @@ impl Grace<'_> {
     /// enrolment token lasts 15 minutes by default, and re-applying that to a
     /// device fetching its profile one second later is how a person who
     /// scanned the code at 14:59 gets stranded.
-    fn covers(&self, candidate: &CredentialRow, now: DateTime<Utc>) -> bool {
+    fn covers(&self, candidate: &CredentialRow, now: Timestamp) -> bool {
         let Some(spent_at) = candidate.spent_at else {
             return false;
         };
 
         candidate.kind.is_single_use()
-            && self.window > chrono::Duration::zero()
+            && self.window > SignedDuration::ZERO
             && candidate.spent_uid.as_deref() == Some(self.client_uid)
             && now < spent_at + self.window
     }
@@ -245,7 +245,7 @@ pub async fn verify_with_grace(
         return Err(VerifyError::Disabled);
     }
 
-    let now = Utc::now();
+    let now = Timestamp::now();
     let hint = lookup_hint(secret);
 
     // A spent row is revoked, and `find_by_hint` does not return revoked rows —
@@ -323,7 +323,7 @@ async fn matched(
 fn usable(
     candidate: &CredentialRow,
     purpose: Purpose,
-    now: DateTime<Utc>,
+    now: Timestamp,
     grace: Option<Grace<'_>>,
 ) -> Result<(), VerifyError> {
     if !purpose.accepts(candidate.kind) {
@@ -534,7 +534,7 @@ mod tests {
             &config,
             &user,
             MintRequest {
-                expires_in: Some(chrono::Duration::milliseconds(-1)),
+                expires_in: Some(SignedDuration::from_millis(-1)),
                 ..MintRequest::new(CredentialKind::ClientPassword, "Old laptop", &actor())
             },
         )
@@ -626,7 +626,7 @@ mod tests {
     fn grace(client_uid: &str) -> Grace<'_> {
         Grace {
             client_uid,
-            window: chrono::Duration::minutes(10),
+            window: SignedDuration::from_mins(10),
         }
     }
 
@@ -718,7 +718,7 @@ mod tests {
         let (db, config, user, cache) = fixture().await;
         let (secret, _) = spent(&db, &config, &user, Some(UID), &cache).await;
 
-        for window in [chrono::Duration::milliseconds(1), chrono::Duration::zero()] {
+        for window in [SignedDuration::from_millis(1), SignedDuration::ZERO] {
             tokio::time::sleep(Duration::from_millis(5)).await;
 
             let refused = verify_with_grace(

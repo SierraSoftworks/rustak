@@ -286,6 +286,7 @@ fn unusable_origin(base_url: &str, why: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::Timestamp;
 
     /// The ceremonies themselves are exercised end to end against a real
     /// software authenticator in [`crate::web::api::passkey`], because the only
@@ -385,7 +386,7 @@ mod tests {
             label: "Security key".to_string(),
             backup_eligible: false,
             backup_state: false,
-            created_at: chrono::Utc::now(),
+            created_at: Timestamp::now(),
             last_used_at: None,
         };
 

@@ -11,6 +11,7 @@
 //! [`archive`] is the only edit that route needs.
 
 use actix_web::web;
+use rustak_core::time::Timestamp;
 
 use crate::marti::{CiQuery, MissionRef, response, response::kind};
 use crate::missions::model::KeywordTarget;
@@ -44,7 +45,7 @@ pub async fn add(
             &mission,
             &content,
             query.get("creatorUid"),
-            chrono::Utc::now(),
+            Timestamp::now(),
         )
         .await?;
 

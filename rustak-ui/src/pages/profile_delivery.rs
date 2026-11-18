@@ -314,6 +314,7 @@ fn difference(original: &Profile, draft: &Profile) -> ProfileUpdate {
 
 #[cfg(test)]
 mod tests {
+    use rustak_api::time::Timestamp;
     use rustak_api::{GroupName, ProfileId};
 
     use super::*;
@@ -329,7 +330,7 @@ mod tests {
             tool: None,
             kind: None,
             groups: Vec::new(),
-            updated: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+            updated: Timestamp::from_second(1_700_000_000).unwrap(),
             file_count: 0,
             pref_count: 0,
         }

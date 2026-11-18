@@ -2,6 +2,7 @@
 
 use rstest::rstest;
 use rustak_client::feed::Area;
+use rustak_core::time::{SignedDuration, Timestamp};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -168,7 +169,7 @@ async fn a_rate_limited_list_holds_the_details_back_too() {
         .await
         .expect("the list, and the one detail a tick allows");
 
-    feed.state.due_at(Utc::now());
+    feed.state.due_at(Timestamp::now());
     let held = feed.poll().await.expect("a 429 is not an error");
 
     assert_eq!(held.len(), 2, "and the second detail was not asked for");
@@ -253,7 +254,7 @@ async fn an_outage_whose_type_changes_has_its_detail_asked_for_again() {
     let mut feed = feed(&server, Scope::default());
     let _ = feed.poll().await.expect("the fault, with its detail");
 
-    feed.state.due_at(Utc::now());
+    feed.state.due_at(Timestamp::now());
     let outages = feed.poll().await.expect("the restoration");
 
     let restored = find(&outages, "2826455");
@@ -270,7 +271,7 @@ async fn an_upstream_that_stops_answering_does_not_clear_the_map() {
 
     server.reset().await;
     serve(&server, "/outages", ResponseTemplate::new(503)).await;
-    feed.state.due_at(Utc::now());
+    feed.state.due_at(Timestamp::now());
 
     assert!(feed.poll().await.is_err(), "the failure is reported once");
     assert!(feed.state().last_error().is_some());
@@ -381,7 +382,7 @@ async fn an_upstream_that_has_been_gone_for_hours_does_clear_the_map() {
 
     // The last answer three hours ago, so the next request is long due.
     feed.state
-        .succeeded_at(Utc::now() - chrono::Duration::hours(3));
+        .succeeded_at(Timestamp::now() - SignedDuration::from_hours(3));
     server.reset().await;
     serve(&server, "/outages", ResponseTemplate::new(503)).await;
     let _ = feed.poll().await.expect_err("the upstream has gone");
@@ -401,7 +402,7 @@ async fn a_rejected_key_stops_the_source_rather_than_hammering_esb() {
     let mut feed = feed(&server, Scope::default());
 
     for _ in 0..DENIED_LIMIT {
-        feed.state.due_at(Utc::now());
+        feed.state.due_at(Timestamp::now());
         let _ = feed.poll().await;
     }
 
@@ -457,17 +458,17 @@ async fn an_explicit_poll_is_a_floor_that_a_stated_retry_after_raises() {
     )
     .expect("it opens");
     let requests = async || server.received_requests().await.map(|all| all.len());
-    let start = Utc::now();
+    let start = Timestamp::now();
 
     for seconds in [0, 60, 120, 599] {
-        feed.poll_at(start + chrono::Duration::seconds(seconds))
+        feed.poll_at(start + SignedDuration::from_secs(seconds))
             .await
             .expect("a 429 is not an error");
     }
 
     assert_eq!(requests().await, Some(1), "not once a minute");
 
-    let _ = feed.poll_at(start + chrono::Duration::seconds(600)).await;
+    let _ = feed.poll_at(start + SignedDuration::from_secs(600)).await;
 
     assert_eq!(requests().await, Some(2), "and at once when ESB said");
 }

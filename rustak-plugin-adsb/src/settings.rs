@@ -3,6 +3,7 @@
 //! Every key is documented with its default in `config.example.toml`, which
 //! this crate's test suite loads so that the two cannot drift apart.
 
+use rustak_core::time::{DurationExt, SignedDuration};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -63,7 +64,7 @@ pub enum Source {
 
         /// How often to read it. Default: `"1s"`.
         #[serde(default = "readsb_poll", with = "duration::humane")]
-        poll: chrono::Duration,
+        poll: SignedDuration,
     },
 
     /// A public aggregator's point endpoint.
@@ -83,7 +84,7 @@ pub enum Source {
         /// two minutes at most), and sixty clean polls in a row earn one step
         /// back towards this value.
         #[serde(default, with = "duration::humane_option")]
-        poll: Option<chrono::Duration>,
+        poll: Option<SignedDuration>,
 
         /// The longest a faster interval the provider refused is left alone
         /// before it is tried again. Default: `"3h"`.
@@ -95,7 +96,7 @@ pub enum Source {
         /// `"24h"`; anything else is refused. An administrator can change it
         /// from the Services page while the sidecar runs.
         #[serde(default, with = "duration::humane_option")]
-        probe_max_wait: Option<chrono::Duration>,
+        probe_max_wait: Option<SignedDuration>,
     },
 
     /// The OpenSky Network's state vectors, anonymously or with an OAuth2
@@ -113,12 +114,12 @@ pub enum Source {
         /// How often to ask. Default: `"10s"` anonymously, `"5s"` with a
         /// credential — OpenSky's own two resolutions.
         #[serde(default, with = "duration::humane_option")]
-        poll: Option<chrono::Duration>,
+        poll: Option<SignedDuration>,
 
         /// As for an aggregator: the longest a refused faster interval is left
         /// alone. Default: `"3h"`.
         #[serde(default, with = "duration::humane_option")]
-        probe_max_wait: Option<chrono::Duration>,
+        probe_max_wait: Option<SignedDuration>,
     },
 }
 
@@ -294,16 +295,16 @@ pub fn default_publish() -> PublishPolicy {
     }
 }
 
-/// A [`chrono::Duration`] as a [`std::time::Duration`], falling back rather
+/// A [`SignedDuration`] as a [`std::time::Duration`], falling back rather
 /// than failing: a negative interval in a file is a typo, not a reason to
 /// refuse to start.
-fn std(value: chrono::Duration, fallback: Duration) -> Duration {
+fn std(value: SignedDuration, fallback: Duration) -> Duration {
     value.to_std().unwrap_or(fallback)
 }
 
 /// The default for [`Source::Readsb`]'s `poll`.
-fn readsb_poll() -> chrono::Duration {
-    chrono::Duration::from_std(READSB_POLL).unwrap_or_else(|_| chrono::Duration::seconds(1))
+fn readsb_poll() -> SignedDuration {
+    SignedDuration::try_from(READSB_POLL).unwrap_or_else(|_| SignedDuration::from_secs(1))
 }
 
 /// Reads `[settings.source]`, and refuses a `probe_max_wait` out of range
@@ -349,7 +350,7 @@ mod tests {
         match &settings.source {
             Source::Readsb { url_or_path, poll } => {
                 assert_eq!(url_or_path, "/run/readsb/aircraft.json");
-                assert_eq!(*poll, chrono::Duration::seconds(2));
+                assert_eq!(*poll, SignedDuration::from_secs(2));
             }
             other => panic!("expected a readsb source, got {other:?}"),
         }
@@ -362,7 +363,7 @@ mod tests {
         );
 
         match &settings.source {
-            Source::Readsb { poll, .. } => assert_eq!(*poll, chrono::Duration::seconds(1)),
+            Source::Readsb { poll, .. } => assert_eq!(*poll, SignedDuration::from_secs(1)),
             other => panic!("expected a readsb source, got {other:?}"),
         }
     }

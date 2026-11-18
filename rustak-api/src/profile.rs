@@ -14,7 +14,7 @@
 //! therefore part of the value everywhere it travels: in the editor, in the
 //! API, in storage and on the wire.
 
-use chrono::{DateTime, Utc};
+use crate::time::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::identity::{GroupName, ProfileId};
@@ -159,7 +159,7 @@ pub struct Profile {
     #[serde(default)]
     pub groups: Vec<GroupName>,
 
-    pub updated: DateTime<Utc>,
+    pub updated: Timestamp,
 
     pub file_count: u32,
     pub pref_count: u32,
@@ -228,7 +228,7 @@ pub struct ProfileFile {
     pub size: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
-    pub updated: DateTime<Utc>,
+    pub updated: Timestamp,
 }
 
 #[cfg(test)]
@@ -282,7 +282,7 @@ mod tests {
             tool: Some("public".to_string()),
             kind: None,
             groups: vec![GroupName::parse("Blue").unwrap()],
-            updated: DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+            updated: Timestamp::new(1_700_000_000, 0).unwrap(),
             file_count: 2,
             pref_count: 3,
         };
@@ -326,7 +326,7 @@ mod tests {
             name: "maps/source.xml".to_string(),
             size: 40,
             mime_type: Some("application/xml".to_string()),
-            updated: DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+            updated: Timestamp::new(1_700_000_000, 0).unwrap(),
         };
 
         let json = serde_json::to_string(&file).unwrap();

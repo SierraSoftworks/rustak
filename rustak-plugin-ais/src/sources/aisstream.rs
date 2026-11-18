@@ -29,9 +29,9 @@
 mod frames;
 mod wire;
 
+use rustak_core::time::Timestamp;
 use std::time::Duration;
 
-use chrono::Utc;
 use futures::{SinkExt, StreamExt};
 use rustak_client::feed::upstream::{Repeated, Report, humanised};
 use rustak_client::feed::{Feed, Track};
@@ -170,7 +170,7 @@ impl Announced {
     /// words with the key taken out of them: the subscription payload, which
     /// holds the key, is never part of it.
     fn unavailable(&mut self, reason: &str, retry_in: Duration) {
-        match self.trouble.happened(Utc::now()) {
+        match self.trouble.happened(Timestamp::now()) {
             Report::First => warn!(
                 source = NAME,
                 retry_in = ?retry_in,
@@ -192,7 +192,7 @@ impl Announced {
 
     /// One connection that subscribed.
     fn subscribed(&mut self) {
-        match self.trouble.cleared(Utc::now()) {
+        match self.trouble.cleared(Timestamp::now()) {
             Report::Recovered { count, over } => info!(
                 source = NAME,
                 "Subscribed to the AIS stream again after {} and {count} failed attempts.",

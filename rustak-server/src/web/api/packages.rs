@@ -28,6 +28,7 @@ use actix_web::http::StatusCode;
 use actix_web::http::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
 use actix_web::{HttpResponse, web};
 use rustak_api::{PackageSummary, PackageUpdate};
+use rustak_core::time::Timestamp;
 
 use crate::db::repos::{ResourceFilter, ResourceRow};
 use crate::files::metadata::Viewer;
@@ -291,10 +292,10 @@ pub(super) fn summarise(row: &ResourceRow) -> PackageSummary {
 /// know the convention. A value SQLite cannot hold as a date — which would take
 /// a row written outside this server — reads as "never" rather than failing the
 /// listing it appears in.
-fn expires_at(millis: Option<i64>) -> Option<chrono::DateTime<chrono::Utc>> {
+fn expires_at(millis: Option<i64>) -> Option<Timestamp> {
     millis
         .filter(|at| *at >= 0)
-        .and_then(chrono::DateTime::from_timestamp_millis)
+        .and_then(Timestamp::from_millisecond)
 }
 
 /// Whether a free-text search matches a row.
@@ -379,7 +380,7 @@ mod tests {
             creator_uid: None,
             submitter_id: None,
             submitter: Some("grace".to_string()),
-            submission_time: chrono::Utc::now(),
+            submission_time: Timestamp::now(),
             expiration: None,
             is_mission_package: true,
             groups: vec!["Blue".to_string()],
@@ -394,7 +395,7 @@ mod tests {
             plugin_class_name: None,
             install_on_enrollment: false,
             deleted_at: None,
-            created_at: chrono::Utc::now(),
+            created_at: Timestamp::now(),
             keywords: keywords.iter().map(|k| (*k).to_string()).collect(),
         }
     }

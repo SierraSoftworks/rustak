@@ -15,7 +15,7 @@
 
 use rustak_core::prelude::*;
 
-use crate::db::row::Timestamp;
+use crate::db::row::DbTime;
 
 use super::UsersRepo;
 
@@ -61,7 +61,7 @@ impl UsersRepo<'_> {
                         change.display_name.flatten(),
                         change.email.is_some(),
                         change.email.flatten(),
-                        Timestamp::now(),
+                        DbTime::now(),
                     ],
                 )
             })

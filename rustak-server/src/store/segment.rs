@@ -6,9 +6,9 @@
 //! easy to get quietly wrong — the filesystem-safe naming and the reconciliation
 //! of a file against its index row — in one place with their own tests.
 
+use rustak_core::time::Timestamp;
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
 use rand::Rng as _;
 use rustak_core::prelude::*;
 use tokio::io::AsyncWriteExt as _;
@@ -117,8 +117,8 @@ pub(super) struct Segment {
     file: tokio::fs::File,
     /// Bytes in the file, including everything not yet reported to the index.
     bytes: u64,
-    first_time: DateTime<Utc>,
-    last_time: DateTime<Utc>,
+    first_time: Timestamp,
+    last_time: Timestamp,
     /// Records appended since the index was last caught up.
     pending_records: u64,
     /// Bytes appended since the index was last caught up.
@@ -138,7 +138,7 @@ impl Segment {
         kind: &str,
         key: &str,
         directory: &str,
-        first_time: DateTime<Utc>,
+        first_time: Timestamp,
     ) -> Result<Self, Error> {
         let relative = format!("{directory}/{}", segment_name(first_time));
         let path = root.join(&relative);
@@ -268,7 +268,7 @@ impl Segment {
     ///
     /// Answered from what the writer knows rather than from the index row,
     /// which lags by up to one flush.
-    pub(super) fn touches(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> bool {
+    pub(super) fn touches(&self, from: Timestamp, to: Timestamp) -> bool {
         self.first_time < to && self.last_time >= from
     }
 
@@ -281,7 +281,7 @@ impl Segment {
     /// # Errors
     ///
     /// A [`human_errors::Kind::User`] error when the write fails.
-    pub(super) async fn write(&mut self, frame: &[u8], time: DateTime<Utc>) -> Result<(), Error> {
+    pub(super) async fn write(&mut self, frame: &[u8], time: Timestamp) -> Result<(), Error> {
         let failed = || {
             format!(
                 "We could not append to the stream segment '{}'.",
@@ -314,7 +314,7 @@ impl Segment {
     }
 
     /// Takes what has not been reported to the index yet, if anything has.
-    pub(super) fn take_pending(&mut self) -> Option<(DateTime<Utc>, u64, u64)> {
+    pub(super) fn take_pending(&mut self) -> Option<(Timestamp, u64, u64)> {
         if self.pending_records == 0 && self.pending_bytes == 0 {
             return None;
         }
@@ -335,13 +335,13 @@ impl Segment {
 /// segment file has been lost, because the number it used is still spoken for
 /// in the index and reusing it collides. A listing still sorts in write order,
 /// and an operator can see at a glance which file holds which hour.
-fn segment_name(opened: DateTime<Utc>) -> String {
+fn segment_name(opened: Timestamp) -> String {
     let mut nonce = [0u8; SEGMENT_NONCE_BYTES];
     rand::rng().fill_bytes(&mut nonce);
 
     format!(
         "{}-{}{SEGMENT_SUFFIX}",
-        opened.format("%Y%m%dT%H%M%S%.3fZ"),
+        opened.strftime("%Y%m%dT%H%M%S%.3fZ"),
         hex::encode(nonce)
     )
 }
@@ -398,12 +398,11 @@ fn hex_digit(nibble: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::SignedDuration;
 
-    fn at(seconds: i64) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2026-09-18T10:00:00.000Z")
-            .unwrap()
-            .with_timezone(&Utc)
-            + chrono::TimeDelta::seconds(seconds)
+    fn at(seconds: i64) -> Timestamp {
+        "2026-09-18T10:00:00.000Z".parse::<Timestamp>().unwrap()
+            + SignedDuration::from_secs(seconds)
     }
 
     #[test]

@@ -24,9 +24,9 @@
 //! [`jwt`]: super::jwt
 
 use base64::Engine as _;
-use chrono::Utc;
 use rand::Rng as _;
 use rustak_api::TokenResponse;
+use rustak_core::time::Timestamp;
 use sha2::{Digest as _, Sha256};
 
 use crate::db::repos::{Exchange, NewRefreshToken, UserRow};
@@ -203,7 +203,7 @@ pub async fn rotate<S: Services>(
 pub async fn revoke<S: Services>(
     services: &S,
     jti: &str,
-    expires_at: chrono::DateTime<Utc>,
+    expires_at: Timestamp,
     user_id: UserId,
 ) -> Result<(), Error> {
     let db = services.db();
@@ -232,7 +232,7 @@ pub async fn revoke<S: Services>(
 pub async fn revoke_session<S: Services>(
     services: &S,
     jti: &str,
-    expires_at: chrono::DateTime<Utc>,
+    expires_at: Timestamp,
 ) -> Result<(), Error> {
     services.db().revoked_jtis().revoke(jti, expires_at).await
 }
@@ -265,7 +265,7 @@ async fn mint<S: Services>(
             family,
             scope: scope.to_string(),
             client: client.map(str::to_string),
-            expires_at: Utc::now() + config.auth.refresh_token_ttl,
+            expires_at: Timestamp::now() + config.auth.refresh_token_ttl,
             jti: Some(jti.to_string()),
             oidc_scope: oidc_scope.map(str::to_string),
         })
@@ -276,9 +276,9 @@ async fn mint<S: Services>(
 
 /// How long the access token has left, in whole seconds.
 fn expires_in(config: &crate::config::Config, exp: i64) -> u64 {
-    let remaining = exp - Utc::now().timestamp();
+    let remaining = exp - Timestamp::now().as_second();
 
-    u64::try_from(remaining).unwrap_or(config.auth.access_token_ttl.num_seconds().max(0) as u64)
+    u64::try_from(remaining).unwrap_or(config.auth.access_token_ttl.as_secs().max(0) as u64)
 }
 
 /// The stored form of a refresh token.
@@ -502,7 +502,7 @@ mod tests {
         revoke(
             &context,
             &claims.jti,
-            chrono::DateTime::from_timestamp(claims.exp, 0).unwrap(),
+            Timestamp::new(claims.exp, 0).unwrap(),
             user.id,
         )
         .await

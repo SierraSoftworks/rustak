@@ -17,6 +17,7 @@
 //! passkey-registered admin is authorised by the `users.is_admin` column
 //! instead, so a fresh installation is administrable without writing a filter.
 
+use rustak_core::time::SignedDuration;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -37,27 +38,27 @@ fn default_audience() -> String {
     "rustak".to_string()
 }
 
-fn default_access_token_ttl() -> chrono::Duration {
-    chrono::Duration::hours(1)
+fn default_access_token_ttl() -> SignedDuration {
+    SignedDuration::from_hours(1)
 }
 
-fn default_refresh_token_ttl() -> chrono::Duration {
-    chrono::Duration::days(30)
+fn default_refresh_token_ttl() -> SignedDuration {
+    SignedDuration::from_hours(24 * 30)
 }
 
-fn default_enrollment_token_ttl() -> chrono::Duration {
-    chrono::Duration::minutes(15)
+fn default_enrollment_token_ttl() -> SignedDuration {
+    SignedDuration::from_mins(15)
 }
 
-fn default_client_password_ttl() -> chrono::Duration {
-    chrono::Duration::days(90)
+fn default_client_password_ttl() -> SignedDuration {
+    SignedDuration::from_hours(24 * 90)
 }
 
 /// Ten minutes: ATAK fetches its enrolment profile within a second of the
 /// certificate, and the margin is for a device that lost its link in between
 /// rather than for anything that could be planned around.
-fn default_enrollment_grace() -> chrono::Duration {
-    chrono::Duration::minutes(10)
+fn default_enrollment_grace() -> SignedDuration {
+    SignedDuration::from_mins(10)
 }
 
 fn default_true() -> bool {
@@ -93,7 +94,7 @@ pub struct AuthConfig {
         default = "default_access_token_ttl",
         with = "rustak_core::config::duration::humane"
     )]
-    pub access_token_ttl: chrono::Duration,
+    pub access_token_ttl: SignedDuration,
 
     /// How long a refresh token is valid. Refresh tokens rotate, and reuse of a
     /// consumed one revokes the whole family.
@@ -101,7 +102,7 @@ pub struct AuthConfig {
         default = "default_refresh_token_ttl",
         with = "rustak_core::config::duration::humane"
     )]
-    pub refresh_token_ttl: chrono::Duration,
+    pub refresh_token_ttl: SignedDuration,
 
     /// Who may sign in at all. Denies everybody when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -126,7 +127,7 @@ pub struct AuthConfig {
         default = "default_enrollment_token_ttl",
         with = "rustak_core::config::duration::humane"
     )]
-    pub enrollment_token_ttl: chrono::Duration,
+    pub enrollment_token_ttl: SignedDuration,
 
     /// How long a **spent** enrolment token may still fetch the enrolment
     /// device profile.
@@ -145,7 +146,7 @@ pub struct AuthConfig {
         default = "default_enrollment_grace",
         with = "rustak_core::config::duration::humane"
     )]
-    pub enrollment_grace: chrono::Duration,
+    pub enrollment_grace: SignedDuration,
 
     /// Whether long-lived client passwords may be minted at all.
     ///
@@ -165,7 +166,7 @@ pub struct AuthConfig {
         default = "default_client_password_ttl",
         with = "rustak_core::config::duration::humane"
     )]
-    pub client_password_ttl: chrono::Duration,
+    pub client_password_ttl: SignedDuration,
 
     /// Whether `/token/access` may hand a caller its own access token.
     ///
@@ -341,14 +342,14 @@ pub struct RateLimitConfig {
         default = "default_window",
         with = "rustak_core::config::duration::humane"
     )]
-    pub window: chrono::Duration,
+    pub window: SignedDuration,
 
     /// How long the key is refused once `attempts` is exceeded.
     #[serde(
         default = "default_lockout",
         with = "rustak_core::config::duration::humane"
     )]
-    pub lockout: chrono::Duration,
+    pub lockout: SignedDuration,
 }
 
 fn default_attempts() -> u32 {
@@ -363,12 +364,12 @@ fn default_network_attempts() -> u32 {
     3_000
 }
 
-fn default_window() -> chrono::Duration {
-    chrono::Duration::minutes(1)
+fn default_window() -> SignedDuration {
+    SignedDuration::from_mins(1)
 }
 
-fn default_lockout() -> chrono::Duration {
-    chrono::Duration::minutes(15)
+fn default_lockout() -> SignedDuration {
+    SignedDuration::from_mins(15)
 }
 
 impl Default for RateLimitConfig {
@@ -396,11 +397,17 @@ mod tests {
 
         assert_eq!(parsed, AuthConfig::default());
         assert_eq!(parsed.audience, "rustak");
-        assert_eq!(parsed.access_token_ttl, chrono::Duration::hours(1));
-        assert_eq!(parsed.refresh_token_ttl, chrono::Duration::days(30));
-        assert_eq!(parsed.enrollment_token_ttl, chrono::Duration::minutes(15));
-        assert_eq!(parsed.enrollment_grace, chrono::Duration::minutes(10));
-        assert_eq!(parsed.client_password_ttl, chrono::Duration::days(90));
+        assert_eq!(parsed.access_token_ttl, SignedDuration::from_hours(1));
+        assert_eq!(
+            parsed.refresh_token_ttl,
+            SignedDuration::from_hours(24 * 30)
+        );
+        assert_eq!(parsed.enrollment_token_ttl, SignedDuration::from_mins(15));
+        assert_eq!(parsed.enrollment_grace, SignedDuration::from_mins(10));
+        assert_eq!(
+            parsed.client_password_ttl,
+            SignedDuration::from_hours(24 * 90)
+        );
         assert!(parsed.client_passwords_enabled);
         assert!(parsed.anon_group_default);
         assert!(parsed.allow_access_token_retrieval);
@@ -452,8 +459,8 @@ mod tests {
         assert_eq!(parsed.rate_limit.attempts, 10);
         assert_eq!(parsed.rate_limit.address_attempts, 300);
         assert_eq!(parsed.rate_limit.network_attempts, 3_000);
-        assert_eq!(parsed.rate_limit.window, chrono::Duration::minutes(1));
-        assert_eq!(parsed.rate_limit.lockout, chrono::Duration::minutes(15));
+        assert_eq!(parsed.rate_limit.window, SignedDuration::from_mins(1));
+        assert_eq!(parsed.rate_limit.lockout, SignedDuration::from_mins(15));
     }
 
     #[test]
@@ -466,7 +473,7 @@ mod tests {
         assert_eq!(parsed.rate_limit.attempts, 5);
         assert_eq!(parsed.rate_limit.address_attempts, 50);
         assert_eq!(parsed.rate_limit.network_attempts, 500);
-        assert_eq!(parsed.rate_limit.window, chrono::Duration::minutes(1));
+        assert_eq!(parsed.rate_limit.window, SignedDuration::from_mins(1));
 
         let Err(err) = toml::from_str::<AuthConfig>("rate_limit = { address_attempt = 50 }") else {
             panic!("an unknown key should be refused");
@@ -481,8 +488,8 @@ mod tests {
                 .unwrap();
 
         assert_eq!(parsed.rate_limit.attempts, 3);
-        assert_eq!(parsed.rate_limit.window, chrono::Duration::minutes(5));
-        assert_eq!(parsed.rate_limit.lockout, chrono::Duration::hours(1));
+        assert_eq!(parsed.rate_limit.window, SignedDuration::from_mins(5));
+        assert_eq!(parsed.rate_limit.lockout, SignedDuration::from_hours(1));
     }
 
     #[test]

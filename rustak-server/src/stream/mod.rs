@@ -72,6 +72,7 @@ pub mod subscription;
 pub mod tap;
 pub mod writer;
 
+use rustak_core::time::{DurationExt, SignedDuration};
 use std::sync::Arc;
 
 use crate::config::stream::NegotiationMode;
@@ -365,7 +366,7 @@ fn server_version(config: &crate::config::Config) -> String {
 /// A negative value cannot be a timeout, and refusing to start over one an
 /// operator typed a minus sign into would be disproportionate — so it falls
 /// back to a minute, which is long enough never to be the surprising part.
-fn to_std(duration: chrono::Duration) -> std::time::Duration {
+fn to_std(duration: SignedDuration) -> std::time::Duration {
     duration
         .to_std()
         .unwrap_or(std::time::Duration::from_secs(60))

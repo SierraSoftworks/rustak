@@ -152,6 +152,7 @@ mod tests {
     use actix_web::http::header::CONTENT_TYPE;
     use actix_web::test::TestRequest;
     use actix_web::{App, test};
+    use rustak_core::time::Timestamp;
 
     use super::*;
     use crate::testing::TestServer;
@@ -284,7 +285,7 @@ mod tests {
         crate::auth::tokens::revoke(
             &server.context,
             &claims.jti,
-            chrono::DateTime::from_timestamp(claims.exp, 0).unwrap(),
+            Timestamp::new(claims.exp, 0).unwrap(),
             user.id,
         )
         .await

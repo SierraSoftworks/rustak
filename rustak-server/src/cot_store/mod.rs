@@ -24,10 +24,10 @@ pub mod query;
 pub mod retention;
 pub mod writer;
 
+use rustak_core::time::Timestamp;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use chrono::{DateTime, Utc};
 use rustak_cot::codec::EncodedEvent;
 use tokio::sync::mpsc;
 
@@ -60,11 +60,11 @@ pub struct CotRecord {
     /// was allowed to see it without re-deriving historical memberships.
     pub group_bits: Vec<u8>,
     /// The event's own three times.
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     /// When the sender says the report starts being valid.
-    pub start: DateTime<Utc>,
+    pub start: Timestamp,
     /// When it goes stale.
-    pub stale: DateTime<Utc>,
+    pub stale: Timestamp,
     /// Where it says it is.
     pub point: (f64, f64, f64, f64, f64),
     /// The message itself, exactly as the recipients were sent it.
@@ -83,7 +83,7 @@ pub struct CotRecord {
     /// pressure. R-03 M7.
     pub encoded: Arc<EncodedEvent>,
     /// When this server handled it.
-    pub received_at: DateTime<Utc>,
+    pub received_at: Timestamp,
 }
 
 impl CotRecord {
@@ -116,7 +116,7 @@ impl CotRecord {
                 event.point.ce,
                 event.point.le,
             ),
-            received_at: Utc::now(),
+            received_at: Timestamp::now(),
             encoded,
         }
     }
@@ -144,12 +144,12 @@ impl CotRecord {
 
 /// A CoT time as a wall clock, falling back to now.
 ///
-/// `CotTime` is milliseconds since the epoch and `chrono` refuses a value
+/// `CotTime` is milliseconds since the epoch and [`Timestamp`] refuses a value
 /// outside its own range, which a client can produce by sending a `time` a
 /// hundred thousand years from now. Storing "now" for one is better than
 /// refusing to record the message: the event's own time is still in the XML.
-fn at(time: rustak_cot::CotTime) -> DateTime<Utc> {
-    time.to_datetime().unwrap_or_else(Utc::now)
+fn at(time: rustak_cot::CotTime) -> Timestamp {
+    time.to_datetime().unwrap_or_else(Timestamp::now)
 }
 
 /// The routing path's end of the store.

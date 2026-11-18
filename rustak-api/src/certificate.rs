@@ -1,6 +1,6 @@
 //! The certificates this server's authority has issued.
 
-use chrono::{DateTime, Utc};
+use crate::time::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::identity::{CertificateId, DeviceUid, Username};
@@ -153,8 +153,8 @@ pub struct Certificate {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub san: Vec<String>,
 
-    pub not_before: DateTime<Utc>,
-    pub not_after: DateTime<Utc>,
+    pub not_before: Timestamp,
+    pub not_after: Timestamp,
 
     /// The device this certificate was issued to, where the enrolment named
     /// one. Lets the UI go from a certificate to the phone holding it without
@@ -165,7 +165,7 @@ pub struct Certificate {
     /// When it was revoked. A revoked certificate fails the handshake and its
     /// live connections are dropped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub revoked_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<Timestamp>,
 
     /// Why it was revoked, as [`RevocationReason::as_str`] spells it. Kept as
     /// a string rather than the enum because the column is free text and a
@@ -184,7 +184,7 @@ impl Certificate {
     }
 
     /// Whether this certificate is usable at `now`.
-    pub fn is_valid_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_valid_at(&self, now: Timestamp) -> bool {
         !self.is_revoked() && now >= self.not_before && now < self.not_after
     }
 
@@ -192,7 +192,7 @@ impl Certificate {
     ///
     /// Revocation outranks expiry: an administrator asking which certificates
     /// were taken back wants the one that has since also run out.
-    pub fn state(&self, now: DateTime<Utc>) -> CertificateState {
+    pub fn state(&self, now: Timestamp) -> CertificateState {
         if self.is_revoked() {
             return CertificateState::Revoked;
         }
@@ -416,9 +416,9 @@ mod tests {
     #[test]
     fn validity_accounts_for_revocation_as_well_as_dates() {
         let certificate = a_certificate();
-        let during: DateTime<Utc> = "2026-12-01T00:00:00Z".parse().unwrap();
-        let after: DateTime<Utc> = "2028-01-01T00:00:00Z".parse().unwrap();
-        let before: DateTime<Utc> = "2026-01-01T00:00:00Z".parse().unwrap();
+        let during: Timestamp = "2026-12-01T00:00:00Z".parse().unwrap();
+        let after: Timestamp = "2028-01-01T00:00:00Z".parse().unwrap();
+        let before: Timestamp = "2026-01-01T00:00:00Z".parse().unwrap();
 
         assert!(certificate.is_valid_at(during));
         assert!(!certificate.is_valid_at(after));
@@ -439,8 +439,8 @@ mod tests {
         // an administrator took back a year ago, which is exactly the one an
         // audit is looking for.
         let certificate = a_certificate();
-        let during: DateTime<Utc> = "2026-12-01T00:00:00Z".parse().unwrap();
-        let after: DateTime<Utc> = "2028-01-01T00:00:00Z".parse().unwrap();
+        let during: Timestamp = "2026-12-01T00:00:00Z".parse().unwrap();
+        let after: Timestamp = "2028-01-01T00:00:00Z".parse().unwrap();
 
         assert_eq!(certificate.state(during), CertificateState::Active);
         assert_eq!(certificate.state(after), CertificateState::Expired);

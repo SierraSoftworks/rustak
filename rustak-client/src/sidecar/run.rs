@@ -479,6 +479,7 @@ async fn ask_within(
 mod tests {
     use super::*;
     use crate::sidecar::{NoSettings, ServerConfig, ServiceConfig, SidecarEvent, async_trait};
+    use rustak_core::time::SignedDuration;
 
     /// A sidecar that counts what it was asked to do and stops itself after
     /// `stop_after` ticks, so that these tests never depend on a wall clock.
@@ -592,8 +593,8 @@ mod tests {
                 ..ServerConfig::default()
             },
             sidecar: crate::sidecar::HarnessConfig {
-                tick: chrono::Duration::milliseconds(tick_ms),
-                shutdown_grace: chrono::Duration::milliseconds(grace_ms),
+                tick: SignedDuration::from_millis(tick_ms),
+                shutdown_grace: SignedDuration::from_millis(grace_ms),
             },
             settings: NoSettings {},
         };

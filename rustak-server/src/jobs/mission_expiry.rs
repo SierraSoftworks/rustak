@@ -18,12 +18,11 @@
 //! purge horizon — `[retention] missions_purge_after` — decides when the
 //! tombstone itself goes.
 
-use chrono::{DateTime, TimeDelta, Utc};
-
 use crate::db::Database;
-use crate::db::row::Timestamp;
+use crate::db::row::DbTime;
 use crate::prelude::*;
 use crate::register_job;
+use rustak_core::time::{SignedDuration, Timestamp};
 
 /// The queue partition this job owns.
 pub const MISSION_EXPIRY_PARTITION: &str = "housekeeping/mission-expiry";
@@ -33,7 +32,7 @@ pub const MISSION_EXPIRY_PARTITION: &str = "housekeeping/mission-expiry";
 /// Hourly: `expiration` is an epoch-second field a client sets deliberately, so
 /// an operator who set one for the end of an exercise expects it to take effect
 /// that hour rather than the next day. Not configurable — the horizon is.
-pub const EXPIRY_INTERVAL: TimeDelta = TimeDelta::hours(1);
+pub const EXPIRY_INTERVAL: SignedDuration = SignedDuration::from_hours(1);
 
 /// What one sweep retired.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -105,7 +104,7 @@ impl Job for MissionExpiryJob {
         )
         .await?;
 
-        let now = Utc::now();
+        let now = Timestamp::now();
         let purge_before = now - services.config().retention.missions_purge_after;
 
         sweep(services.db(), now, purge_before).await?;
@@ -124,8 +123,8 @@ impl Job for MissionExpiryJob {
 #[instrument("jobs.mission_expiry.sweep", skip_all, err(Display))]
 pub async fn sweep(
     db: &Database,
-    now: DateTime<Utc>,
-    purge_before: DateTime<Utc>,
+    now: Timestamp,
+    purge_before: Timestamp,
 ) -> Result<Retired, Error> {
     let retired = Retired {
         expired: expire_due(db, now).await?,
@@ -147,9 +146,9 @@ pub async fn sweep(
 ///
 /// `expiration` is epoch **seconds** and TAK spells "never" as `-1`, so a row
 /// with a non-positive value is one nobody asked to expire.
-async fn expire_due(db: &Database, now: DateTime<Utc>) -> Result<usize, Error> {
-    let seconds = now.timestamp();
-    let at = Timestamp::from(now);
+async fn expire_due(db: &Database, now: Timestamp) -> Result<usize, Error> {
+    let seconds = now.as_second();
+    let at = DbTime::from(now);
 
     db.write(move |tx| {
         tx.execute(
@@ -167,8 +166,8 @@ async fn expire_due(db: &Database, now: DateTime<Utc>) -> Result<usize, Error> {
 /// The child tables go with the row: every one of them declares
 /// `ON DELETE CASCADE`, so subscriptions, changes, contents, uids, layers, logs
 /// and invitations are removed in the same statement.
-async fn purge_tombstones(db: &Database, before: DateTime<Utc>) -> Result<usize, Error> {
-    let before = Timestamp::from(before);
+async fn purge_tombstones(db: &Database, before: Timestamp) -> Result<usize, Error> {
+    let before = DbTime::from(before);
 
     db.write(move |tx| {
         tx.execute(
@@ -203,12 +202,24 @@ mod tests {
         // A client still holding a token has to be told 410, which means the
         // row has to survive the expiry that made it unreachable.
         let db = Database::open_in_memory().await.unwrap();
-        let now = Utc::now();
-        let due = mission(&db, "Ended", Some((now - TimeDelta::hours(1)).timestamp())).await;
-        let later = mission(&db, "Running", Some((now + TimeDelta::days(1)).timestamp())).await;
+        let now = Timestamp::now();
+        let due = mission(
+            &db,
+            "Ended",
+            Some((now - SignedDuration::from_hours(1)).as_second()),
+        )
+        .await;
+        let later = mission(
+            &db,
+            "Running",
+            Some((now + SignedDuration::from_hours(24)).as_second()),
+        )
+        .await;
         let forever = mission(&db, "Standing", None).await;
 
-        let retired = sweep(&db, now, now - TimeDelta::days(14)).await.unwrap();
+        let retired = sweep(&db, now, now - SignedDuration::from_hours(24 * 14))
+            .await
+            .unwrap();
 
         assert_eq!(
             retired,
@@ -250,9 +261,13 @@ mod tests {
         let db = Database::open_in_memory().await.unwrap();
         let standing = mission(&db, "Standing", Some(-1)).await;
 
-        let retired = sweep(&db, Utc::now(), Utc::now() - TimeDelta::days(14))
-            .await
-            .unwrap();
+        let retired = sweep(
+            &db,
+            Timestamp::now(),
+            Timestamp::now() - SignedDuration::from_hours(24 * 14),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(retired.expired, 0);
         assert!(
@@ -268,17 +283,19 @@ mod tests {
     #[tokio::test]
     async fn a_tombstone_past_the_horizon_is_removed_with_everything_under_it() {
         let db = Database::open_in_memory().await.unwrap();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let old = mission(&db, "Ancient", None).await;
         let recent = mission(&db, "Recent", None).await;
 
         db.missions()
-            .soft_delete(old, now - TimeDelta::days(30))
+            .soft_delete(old, now - SignedDuration::from_hours(24 * 30))
             .await
             .unwrap();
         db.missions().soft_delete(recent, now).await.unwrap();
 
-        let retired = sweep(&db, now, now - TimeDelta::days(14)).await.unwrap();
+        let retired = sweep(&db, now, now - SignedDuration::from_hours(24 * 14))
+            .await
+            .unwrap();
 
         assert_eq!(retired.purged, 1);
         assert!(db.missions().by_id(old).await.unwrap().is_none());
@@ -292,9 +309,13 @@ mod tests {
     async fn a_sweep_with_nothing_to_do_is_not_a_failure() {
         let db = Database::open_in_memory().await.unwrap();
 
-        let retired = sweep(&db, Utc::now(), Utc::now() - TimeDelta::days(14))
-            .await
-            .unwrap();
+        let retired = sweep(
+            &db,
+            Timestamp::now(),
+            Timestamp::now() - SignedDuration::from_hours(24 * 14),
+        )
+        .await
+        .unwrap();
 
         assert!(retired.is_empty());
     }

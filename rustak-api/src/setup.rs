@@ -12,9 +12,9 @@
 //! server's filesystem, so it is a proof of possession rather than a secret in
 //! its own right.
 
+use crate::time::Timestamp;
 use core::fmt;
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::identity::Username;
@@ -176,8 +176,8 @@ pub struct CaSummary {
     /// device.
     pub fingerprint: String,
 
-    pub not_before: DateTime<Utc>,
-    pub not_after: DateTime<Utc>,
+    pub not_before: Timestamp,
+    pub not_after: Timestamp,
 
     /// The authority's own certificate, PEM encoded.
     ///

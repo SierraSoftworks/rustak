@@ -6,14 +6,14 @@
 //! row is what the control API and the admin UI read, and either can change
 //! without the other.
 
-use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension as _;
 use rustak_api::{Capability, ServiceEndpoints, ServiceState};
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 
 use crate::db::{
     Database,
-    row::{Timestamp, bool_col, enum_col, id_col, json_col, opt_json_col, opt_ts, to_json, ts},
+    row::{DbTime, bool_col, enum_col, id_col, json_col, opt_json_col, opt_ts, to_json, ts},
 };
 
 /// The columns [`ServiceRow::from_row`] expects, in order.
@@ -37,10 +37,10 @@ pub struct ServiceRow {
     pub config: serde_json::Value,
     pub status: ServiceState,
     pub status_message: Option<String>,
-    pub last_heartbeat_at: Option<DateTime<Utc>>,
+    pub last_heartbeat_at: Option<Timestamp>,
     pub enabled: bool,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
     /// The latest numbers the service reported with its heartbeat, whatever it
     /// decided those were. Replaced rather than accumulated; `{}` until the
     /// first heartbeat carries any.
@@ -127,7 +127,7 @@ impl<'a> ServicesRepo<'a> {
     pub async fn register(&self, new: NewService) -> Result<ServiceRow, Error> {
         self.db
             .write(move |tx| {
-                let now = Timestamp::now();
+                let now = DbTime::now();
 
                 tx.query_one(
                     &format!(
@@ -260,7 +260,7 @@ impl<'a> ServicesRepo<'a> {
                         id.get(),
                         state.as_str(),
                         message,
-                        Timestamp::now(),
+                        DbTime::now(),
                         to_json(&metrics)?,
                     ],
                 )
@@ -278,8 +278,8 @@ impl<'a> ServicesRepo<'a> {
     /// # Errors
     ///
     /// A [`human_errors::Kind::System`] error if the write fails.
-    pub async fn mark_silent_before(&self, cutoff: DateTime<Utc>) -> Result<usize, Error> {
-        let cutoff = Timestamp::from(cutoff);
+    pub async fn mark_silent_before(&self, cutoff: Timestamp) -> Result<usize, Error> {
+        let cutoff = DbTime::from(cutoff);
 
         self.db
             .write(move |tx| {
@@ -308,7 +308,7 @@ impl<'a> ServicesRepo<'a> {
             .write(move |tx| {
                 tx.execute(
                     "UPDATE services SET config = ?2, updated_at = ?3 WHERE id = ?1",
-                    rusqlite::params![id.get(), to_json(&config)?, Timestamp::now()],
+                    rusqlite::params![id.get(), to_json(&config)?, DbTime::now()],
                 )
             })
             .await?;
@@ -327,7 +327,7 @@ impl<'a> ServicesRepo<'a> {
             .write(move |tx| {
                 tx.execute(
                     "UPDATE services SET enabled = ?2, updated_at = ?3 WHERE id = ?1",
-                    rusqlite::params![id.get(), i64::from(enabled), Timestamp::now()],
+                    rusqlite::params![id.get(), i64::from(enabled), DbTime::now()],
                 )
             })
             .await?;
@@ -354,6 +354,7 @@ impl<'a> ServicesRepo<'a> {
 mod tests {
     use super::*;
     use crate::db::repos::NewUser;
+    use rustak_core::time::SignedDuration;
 
     async fn fixture() -> (Database, UserId) {
         let db = Database::open_in_memory().await.unwrap();
@@ -476,7 +477,7 @@ mod tests {
 
         let swept = db
             .services()
-            .mark_silent_before(Utc::now() + chrono::TimeDelta::seconds(1))
+            .mark_silent_before(Timestamp::now() + SignedDuration::from_secs(1))
             .await
             .unwrap();
 
@@ -488,7 +489,7 @@ mod tests {
         // Nothing left to sweep.
         assert_eq!(
             db.services()
-                .mark_silent_before(Utc::now() + chrono::TimeDelta::seconds(1))
+                .mark_silent_before(Timestamp::now() + SignedDuration::from_secs(1))
                 .await
                 .unwrap(),
             0

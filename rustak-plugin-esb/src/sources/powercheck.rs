@@ -26,10 +26,10 @@
 //! list that worked, for up to [`HOLD`]: during a storm, stale markers beat an
 //! empty map.
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::collections::HashMap;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use reqwest::StatusCode;
 use reqwest::header::{HeaderMap, HeaderValue};
 use rustak_client::feed::upstream::{RETRY_AFTER, retry_after};
@@ -87,7 +87,7 @@ enum Fetched {
 #[derive(Debug)]
 struct Entry {
     outage: Outage,
-    detailed_at: Option<DateTime<Utc>>,
+    detailed_at: Option<Timestamp>,
 }
 
 /// The PowerCheck API, read over a [`Scope`].
@@ -99,7 +99,7 @@ pub struct PowerCheckFeed {
     state: SourceState,
     entries: HashMap<String, Entry>,
     details_per_tick: usize,
-    details_after: DateTime<Utc>,
+    details_after: Timestamp,
     denied: u32,
     stopped: bool,
 }
@@ -162,7 +162,7 @@ impl PowerCheckFeed {
             state: SourceState::new(NAME, interval),
             entries: HashMap::new(),
             details_per_tick,
-            details_after: Utc::now(),
+            details_after: Timestamp::now(),
             denied: 0,
             stopped: false,
         })
@@ -203,7 +203,7 @@ impl PowerCheckFeed {
     }
 
     /// Asks for the list, and folds it into what is already known.
-    async fn list(&mut self, now: DateTime<Utc>) -> Result<(), Error> {
+    async fn list(&mut self, now: Timestamp) -> Result<(), Error> {
         match self.get(format!("{}/outages", self.base)).await? {
             Fetched::Body(body) => {
                 let listing: Listing = serde_json::from_str(&body).wrap_user_err(
@@ -261,7 +261,7 @@ impl PowerCheckFeed {
     }
 
     /// Counts a refusal, and stops asking once there have been enough.
-    fn refused(&mut self, status: StatusCode, now: DateTime<Utc>) {
+    fn refused(&mut self, status: StatusCode, now: Timestamp) {
         self.denied = self.denied.saturating_add(1);
         self.state.failed_at(
             format!("{NAME} refused the subscription key ({status}); ESB may have rotated it."),
@@ -280,8 +280,8 @@ impl PowerCheckFeed {
     }
 
     /// Forgets the last list once the upstream has been failing for [`HOLD`].
-    fn release(&mut self, now: DateTime<Utc>) {
-        let hold = chrono::Duration::from_std(HOLD).unwrap_or_default();
+    fn release(&mut self, now: Timestamp) {
+        let hold = SignedDuration::try_from(HOLD).unwrap_or_default();
         let held_too_long = self.state.last_success().is_none_or(|at| now - at > hold);
 
         if !self.state.is_connected() && held_too_long && !self.entries.is_empty() {
@@ -300,7 +300,7 @@ impl PowerCheckFeed {
     /// # Errors
     ///
     /// The list request's failure, already recorded in the state.
-    pub async fn poll_at(&mut self, now: DateTime<Utc>) -> Result<Vec<Outage>, Error> {
+    pub async fn poll_at(&mut self, now: Timestamp) -> Result<Vec<Outage>, Error> {
         if !self.stopped
             && self.state.ready_at(now)
             && let Err(err) = self.list(now).await
@@ -331,7 +331,7 @@ impl OutageFeed for PowerCheckFeed {
     }
 
     async fn poll(&mut self) -> Result<Vec<Outage>, Error> {
-        self.poll_at(Utc::now()).await
+        self.poll_at(Timestamp::now()).await
     }
 
     fn rescope(&mut self, scope: Scope) {

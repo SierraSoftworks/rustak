@@ -15,6 +15,7 @@
 use crate::config::OidcConfig;
 use crate::prelude::*;
 use crate::services::http::{MAX_JSON_BYTES, body_within};
+use rustak_core::time::SignedDuration;
 
 /// Where a cached discovery document lives.
 pub const DISCOVERY_PARTITION: &str = "oidc:discovery";
@@ -70,7 +71,7 @@ pub async fn discovery<S: Services>(
             DISCOVERY_PARTITION,
             endpoint,
             move || Box::pin(async move { fetch(&http, &url, "discovery document").await }),
-            chrono::Duration::hours(DISCOVERY_TTL_HOURS),
+            SignedDuration::from_hours(DISCOVERY_TTL_HOURS),
         )
         .await
 }
@@ -107,7 +108,7 @@ pub async fn jwks<S: Services>(
             JWKS_PARTITION,
             uri,
             move || Box::pin(async move { fetch(&http, &url, "signing keys").await }),
-            chrono::Duration::hours(JWKS_TTL_HOURS),
+            SignedDuration::from_hours(JWKS_TTL_HOURS),
         )
         .await
 }

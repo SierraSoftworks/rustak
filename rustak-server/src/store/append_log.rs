@@ -39,9 +39,9 @@
 //!
 //! [`stream_segments`]: crate::db::repos::stream_segments
 
+use rustak_core::time::Timestamp;
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
 use rustak_core::prelude::*;
 
 use super::frame::{Frames, MAX_RECORD_BYTES, encode_frame};
@@ -159,7 +159,7 @@ impl AppendLog {
     /// A [`human_errors::Kind::System`] error for a payload larger than a
     /// record may be, and a [`human_errors::Kind::User`] error when the segment
     /// cannot be written.
-    pub async fn append(&mut self, time: DateTime<Utc>, payload: &[u8]) -> Result<(), Error> {
+    pub async fn append(&mut self, time: Timestamp, payload: &[u8]) -> Result<(), Error> {
         if payload.len() as u64 > MAX_RECORD_BYTES {
             return Err(human_errors::system(
                 format!(
@@ -293,11 +293,7 @@ impl AppendLog {
     /// and a [`human_errors::Kind::System`] error when the index cannot be
     /// queried.
     #[instrument("store.log.read_range", skip_all, err(Display))]
-    pub async fn read_range(
-        &self,
-        from: DateTime<Utc>,
-        to: DateTime<Utc>,
-    ) -> Result<Vec<Vec<u8>>, Error> {
+    pub async fn read_range(&self, from: Timestamp, to: Timestamp) -> Result<Vec<Vec<u8>>, Error> {
         let mut rows = self
             .db
             .stream_segments()
@@ -421,6 +417,7 @@ impl AppendLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::SignedDuration;
 
     const KIND: &str = "cot";
     const KEY: &str = "ANDROID-1";
@@ -429,11 +426,9 @@ mod tests {
         Database::open_in_memory().await.unwrap()
     }
 
-    fn at(seconds: i64) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2026-09-18T10:00:00.000Z")
-            .unwrap()
-            .with_timezone(&Utc)
-            + chrono::TimeDelta::seconds(seconds)
+    fn at(seconds: i64) -> Timestamp {
+        "2026-09-18T10:00:00.000Z".parse::<Timestamp>().unwrap()
+            + SignedDuration::from_secs(seconds)
     }
 
     fn tiny() -> AppendLogOptions {

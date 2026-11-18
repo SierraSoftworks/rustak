@@ -23,10 +23,10 @@
 //! to different actions. It is stored on the row, written to the audit log and
 //! returned on the certificate.
 
+use rustak_core::time::Timestamp;
 use std::collections::HashMap;
 
 use actix_web::web;
-use chrono::Utc;
 use rustak_api::{
     Certificate, CertificateId, CertificateKind, CertificateState, RevocationReason,
     RevokeCertificateRequest,
@@ -121,7 +121,7 @@ pub async fn list(
     let rows = context
         .db()
         .certificates()
-        .list(filter, Utc::now(), query.page())
+        .list(filter, Timestamp::now(), query.page())
         .await
         .map_err(|err| failed(&context, &err))?;
 
@@ -408,7 +408,11 @@ mod tests {
         let serial = server
             .db()
             .certificates()
-            .list(CertificateFilter::default(), Utc::now(), Page::first(500))
+            .list(
+                CertificateFilter::default(),
+                Timestamp::now(),
+                Page::first(500),
+            )
             .await
             .unwrap()
             .len();
@@ -542,7 +546,10 @@ mod tests {
             taken_back[0].revocation_reason.as_deref(),
             Some("device_lost")
         );
-        assert_eq!(taken_back[0].state(Utc::now()), CertificateState::Revoked);
+        assert_eq!(
+            taken_back[0].state(Timestamp::now()),
+            CertificateState::Revoked
+        );
 
         let ran_out: Vec<Certificate> = test::call_and_read_body_json(
             &app,
@@ -750,7 +757,7 @@ mod tests {
 
         assert!(revoked.revoked_at.is_some());
         assert_eq!(revoked.revocation_reason.as_deref(), Some("device_lost"));
-        assert_eq!(revoked.state(Utc::now()), CertificateState::Revoked);
+        assert_eq!(revoked.state(Timestamp::now()), CertificateState::Revoked);
 
         assert_eq!(
             pki.revocations().is_acceptable(&row.fingerprint),

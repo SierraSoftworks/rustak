@@ -45,6 +45,7 @@ use actix_web::HttpRequest;
 use rustak_api::{CredentialKind, UserKind};
 use rustak_core::identity::{AuthMethod, lookup_hint, verify_blocking};
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 
 use crate::auth::acl::{AuthRequestFilter, evaluate};
 use crate::auth::resolve::{AuthFailure, RequestFacts, Resolved, bearer};
@@ -314,7 +315,7 @@ fn allowed_by_acl(
 /// `find_by_hint` already excludes revoked rows; what is left is the lifetime
 /// and the use count, which a service token normally has neither of.
 fn usable(candidate: &CredentialRow) -> bool {
-    let now = chrono::Utc::now();
+    let now = Timestamp::now();
 
     candidate.expires_at.is_none_or(|expires| expires > now)
         && candidate.max_uses.is_none_or(|max| candidate.uses < max)

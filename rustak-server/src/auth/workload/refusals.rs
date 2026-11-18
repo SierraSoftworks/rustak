@@ -28,17 +28,16 @@
 //! assertion, its signature and every other claim stay out of the log, as they
 //! always have.
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
-
-use chrono::{DateTime, Duration, Utc};
 
 use crate::prelude::*;
 
 use super::Refusal;
 
 /// How often a refusal that keeps happening is mentioned again.
-const REMIND_EVERY: Duration = Duration::minutes(5);
+const REMIND_EVERY: SignedDuration = SignedDuration::from_mins(5);
 
 /// The most `(issuer, subject, reason)` triples counted at once.
 ///
@@ -82,7 +81,7 @@ pub(super) enum Notice {
 /// When a refusal was last mentioned, and how often since.
 #[derive(Clone, Copy, Debug)]
 struct Seen {
-    mentioned_at: DateTime<Utc>,
+    mentioned_at: Timestamp,
     repeats: u32,
 }
 
@@ -93,7 +92,7 @@ static SEEN: LazyLock<Mutex<HashMap<Key, Seen>>> = LazyLock::new(|| Mutex::new(H
 ///
 /// The pure half, so the cadence can be tested by moving the clock rather than
 /// by reading a log back.
-fn note(seen: &mut HashMap<Key, Seen>, key: Key, now: DateTime<Utc>) -> Notice {
+fn note(seen: &mut HashMap<Key, Seen>, key: Key, now: Timestamp) -> Notice {
     if let Some(held) = seen.get_mut(&key) {
         if now - held.mentioned_at < REMIND_EVERY {
             held.repeats = held.repeats.saturating_add(1);
@@ -126,7 +125,7 @@ fn note(seen: &mut HashMap<Key, Seen>, key: Key, now: DateTime<Utc>) -> Notice {
 /// thing that grows the map. A map that is still full afterwards is emptied:
 /// losing a throttle is a few extra lines, and keeping one is unbounded memory
 /// under something that is already misbehaving.
-fn prune(seen: &mut HashMap<Key, Seen>, now: DateTime<Utc>) {
+fn prune(seen: &mut HashMap<Key, Seen>, now: Timestamp) {
     if seen.len() < MAX_KEYS {
         return;
     }
@@ -166,7 +165,7 @@ pub(super) fn announce(token: &str, refusal: &Refusal, presented: Presented) {
     let key = (issuer.clone(), subject.clone(), reason);
 
     let notice = match SEEN.lock() {
-        Ok(mut seen) => note(&mut seen, key, Utc::now()),
+        Ok(mut seen) => note(&mut seen, key, Timestamp::now()),
         // A poisoned lock is not a reason to swallow a refusal.
         Err(_) => Notice::First,
     };
@@ -207,16 +206,16 @@ pub(super) fn announce(token: &str, refusal: &Refusal, presented: Presented) {
 /// spent 45 minutes presenting an expired assertion earned a lockout that
 /// outlived the process, and the *next* start's first exchange was refused with
 /// `429` while this server logged nothing at all. Same throttle, same shape.
-pub(super) fn throttled(token: &str, retry_after: chrono::Duration) {
+pub(super) fn throttled(token: &str, retry_after: SignedDuration) {
     let (issuer, subject) = whose(token);
     let key = (issuer.clone(), subject.clone(), "rate-limited");
 
     let notice = match SEEN.lock() {
-        Ok(mut seen) => note(&mut seen, key, Utc::now()),
+        Ok(mut seen) => note(&mut seen, key, Timestamp::now()),
         Err(_) => Notice::First,
     };
 
-    let seconds = retry_after.num_seconds().max(0);
+    let seconds = retry_after.as_secs().max(0);
 
     match notice {
         Notice::Repeat => debug!(
@@ -284,8 +283,8 @@ mod tests {
     use super::*;
 
     /// The clock these tests move by hand, so that nothing here waits.
-    fn at(seconds: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(1_789_646_400 + seconds, 0).expect("an instant")
+    fn at(seconds: i64) -> Timestamp {
+        Timestamp::new(1_789_646_400 + seconds, 0).expect("an instant")
     }
 
     fn key(subject: &str) -> Key {

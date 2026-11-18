@@ -20,7 +20,8 @@ prost-types = { workspace = true }
 # generated protobuf types, one of which carries a `bytes::Bytes` payload.
 bytes = { workspace = true, features = ["serde"] }
 quick-xml = { workspace = true }
-chrono = { workspace = true }
+rustak-api = { workspace = true }   # `time::Timestamp` only
+jiff = { workspace = true }
 serde = { workspace = true }
 memchr = { workspace = true }
 tokio-util = { workspace = true }   # `codec::{Decoder, Encoder}` traits only — this crate does no I/O

@@ -39,9 +39,9 @@
 //! already dead, rather than finding out from a server that will only say
 //! "refused".
 
+use rustak_core::time::{Precision, Timestamp};
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, SecondsFormat, Utc};
 use rustak_core::prelude::*;
 
 pub use super::assertion::{Assertion, unverified_issuer, unverified_subject};
@@ -300,7 +300,7 @@ fn identity_line(source: &str, account: &str) -> String {
 pub(crate) fn control_identity_line(
     source: &Source,
     account: &str,
-    expires_at: Option<DateTime<Utc>>,
+    expires_at: Option<Timestamp>,
 ) -> String {
     format!(
         "Identity: authenticating to the control API as '{account}' with the workload identity from {source} ({}).",
@@ -309,9 +309,9 @@ pub(crate) fn control_identity_line(
 }
 
 /// When the credential runs out, and whether anything will replace it.
-fn credential_note(source: &Source, expires_at: Option<DateTime<Utc>>) -> String {
+fn credential_note(source: &Source, expires_at: Option<Timestamp>) -> String {
     let expiry = match expires_at {
-        Some(at) => format!("expires {}", at.to_rfc3339_opts(SecondsFormat::Secs, true)),
+        Some(at) => format!("expires {}", at.to_rfc3339(Precision::Secs)),
         None => "no expiry this end can read".to_string(),
     };
 
@@ -329,7 +329,7 @@ pub(crate) fn report_control_identity(
     source: &Source,
     issuer: Option<&str>,
     account: &str,
-    expires_at: Option<DateTime<Utc>>,
+    expires_at: Option<Timestamp>,
 ) {
     tracing::info!(
         identity_source = %source,
@@ -531,7 +531,7 @@ mod tests {
         // from NOMAD_TOKEN_rustak" — which says that a sidecar is an endpoint.
         // It is not. It is an account, authenticating *to* that endpoint with a
         // credential that has an expiry an operator needs to see.
-        let expires_at = DateTime::from_timestamp(1_790_054_367, 0);
+        let expires_at = Timestamp::new(1_790_054_367, 0);
         let rendered = control_identity_line(
             &Source::File(PathBuf::from("/secrets/nomad_rustak.jwt")),
             "adsb",
@@ -550,7 +550,7 @@ mod tests {
 
     #[test]
     fn an_environment_credential_says_in_the_identity_line_that_it_is_a_dead_end() {
-        let expires_at = DateTime::from_timestamp(1_790_054_367, 0);
+        let expires_at = Timestamp::new(1_790_054_367, 0);
         let rendered = control_identity_line(
             &Source::Env(NOMAD_TOKEN_ENV.to_string()),
             "adsb",

@@ -1,8 +1,8 @@
 //! The clients that have enrolled with this server.
 
+use crate::time::Timestamp;
 use std::net::IpAddr;
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::identity::{CertificateId, DeviceId, DeviceUid, Username};
@@ -42,8 +42,8 @@ pub struct Device {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_model: Option<String>,
 
-    pub first_seen_at: DateTime<Utc>,
-    pub last_seen_at: DateTime<Utc>,
+    pub first_seen_at: Timestamp,
+    pub last_seen_at: Timestamp,
 
     /// Where we last saw it connect from.
     #[serde(default, skip_serializing_if = "Option::is_none")]

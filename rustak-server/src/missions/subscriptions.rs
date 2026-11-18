@@ -14,9 +14,9 @@
 //! so a caller with none of the first three gets nothing at all rather than
 //! read access — which is the whole point of those two flags.
 
+use rustak_core::time::Timestamp;
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Utc};
 use rustak_core::identity::password;
 use uuid::Uuid;
 
@@ -51,7 +51,7 @@ pub struct MissionSubscription {
     pub client_uid: String,
     pub username: Option<String>,
     pub role: Role,
-    pub create_time: DateTime<Utc>,
+    pub create_time: Timestamp,
     /// Present on a subscribe and on the singular read; never on the plural
     /// role listing.
     pub token: Option<String>,

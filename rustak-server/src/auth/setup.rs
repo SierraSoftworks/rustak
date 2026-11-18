@@ -19,10 +19,10 @@
 //! time, and neither survives the wizard: [`consume`] removes the record and
 //! deletes the file, and after that `/api/v1/setup/*` answers `410`.
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
-use chrono::{DateTime, Duration, Utc};
 use rand::Rng as _;
 use sha2::{Digest as _, Sha256};
 
@@ -68,14 +68,14 @@ const B64: base64::engine::general_purpose::GeneralPurpose =
 #[derive(Clone, Serialize, Deserialize)]
 struct SetupRecord {
     hash: String,
-    created_at: DateTime<Utc>,
+    created_at: Timestamp,
 }
 
 /// What is stored for a registration token.
 #[derive(Clone, Serialize, Deserialize)]
 struct RegistrationRecord {
     user_id: UserId,
-    expires_at: DateTime<Utc>,
+    expires_at: Timestamp,
 }
 
 /// A freshly written setup token, so start-up can log where it went.
@@ -145,7 +145,7 @@ pub async fn ensure(db: &Database, path: &Path) -> Result<Option<SetupToken>, Er
         SETUP_TOKEN_KEY,
         SetupRecord {
             hash: digest(&token),
-            created_at: Utc::now(),
+            created_at: Timestamp::now(),
         },
     )
     .await?;
@@ -219,7 +219,7 @@ pub async fn issue_registration(db: &Database, user_id: UserId) -> Result<String
         format!("{REGISTRATION_PREFIX}{}", digest(&token)),
         RegistrationRecord {
             user_id,
-            expires_at: Utc::now() + Duration::minutes(REGISTRATION_TTL_MINUTES),
+            expires_at: Timestamp::now() + SignedDuration::from_mins(REGISTRATION_TTL_MINUTES),
         },
     )
     .await?;
@@ -250,7 +250,7 @@ pub async fn claim_registration(db: &Database, presented: &str) -> Result<UserId
         return Err(registration_refused());
     };
 
-    if record.expires_at <= Utc::now() {
+    if record.expires_at <= Timestamp::now() {
         return Err(registration_refused());
     }
 

@@ -23,6 +23,7 @@
 //! well-known `atakatak` passphrase, because it is the one every TAK client
 //! tries first and the file is handed over out of band anyway.
 
+use rustak_core::time::SignedDuration;
 use std::fmt;
 use std::net::IpAddr;
 
@@ -60,23 +61,23 @@ fn default_organization() -> String {
     "rustak".to_string()
 }
 
-fn default_ca_validity() -> chrono::Duration {
-    chrono::Duration::days(3650)
+fn default_ca_validity() -> SignedDuration {
+    SignedDuration::from_hours(24 * 3650)
 }
 
-fn default_client_cert_validity() -> chrono::Duration {
-    chrono::Duration::days(365)
+fn default_client_cert_validity() -> SignedDuration {
+    SignedDuration::from_hours(24 * 365)
 }
 
 /// 397 days: the longest a public certificate authority will issue for, kept
 /// here so that an internal certificate and a public one expire on the same
 /// rhythm.
-fn default_server_cert_validity() -> chrono::Duration {
-    chrono::Duration::days(397)
+fn default_server_cert_validity() -> SignedDuration {
+    SignedDuration::from_hours(24 * 397)
 }
 
-fn default_server_cert_renew_before() -> chrono::Duration {
-    chrono::Duration::days(30)
+fn default_server_cert_renew_before() -> SignedDuration {
+    SignedDuration::from_hours(24 * 30)
 }
 
 /// The smallest RSA key we will accept in a certificate signing request.
@@ -127,7 +128,7 @@ pub struct PkiConfig {
         default = "default_ca_validity",
         with = "rustak_core::config::duration::humane"
     )]
-    pub ca_validity: chrono::Duration,
+    pub ca_validity: SignedDuration,
 
     /// How long an issued client certificate is valid. A device re-enrols when
     /// its certificate expires.
@@ -135,21 +136,21 @@ pub struct PkiConfig {
         default = "default_client_cert_validity",
         with = "rustak_core::config::duration::humane"
     )]
-    pub client_cert_validity: chrono::Duration,
+    pub client_cert_validity: SignedDuration,
 
     /// How long an internally issued server certificate is valid.
     #[serde(
         default = "default_server_cert_validity",
         with = "rustak_core::config::duration::humane"
     )]
-    pub server_cert_validity: chrono::Duration,
+    pub server_cert_validity: SignedDuration,
 
     /// How long before expiry a server certificate is reissued.
     #[serde(
         default = "default_server_cert_renew_before",
         with = "rustak_core::config::duration::humane"
     )]
-    pub server_cert_renew_before: chrono::Duration,
+    pub server_cert_renew_before: SignedDuration,
 
     /// Extra host names for the internal server certificate.
     ///
@@ -435,9 +436,15 @@ mod tests {
         assert_eq!(parsed, PkiConfig::default());
         assert_eq!(parsed.ca_common_name, "rustak CA");
         assert_eq!(parsed.key_type, KeyType::Rsa2048);
-        assert_eq!(parsed.ca_validity, chrono::Duration::days(3650));
-        assert_eq!(parsed.client_cert_validity, chrono::Duration::days(365));
-        assert_eq!(parsed.server_cert_validity, chrono::Duration::days(397));
+        assert_eq!(parsed.ca_validity, SignedDuration::from_hours(24 * 3650));
+        assert_eq!(
+            parsed.client_cert_validity,
+            SignedDuration::from_hours(24 * 365)
+        );
+        assert_eq!(
+            parsed.server_cert_validity,
+            SignedDuration::from_hours(24 * 397)
+        );
         assert_eq!(parsed.csr_min_rsa_bits, 2048);
         assert!(parsed.require_known_cert);
         assert!(parsed.csr_allow_ecdsa);

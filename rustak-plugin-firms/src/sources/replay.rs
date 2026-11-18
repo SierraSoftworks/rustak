@@ -11,10 +11,10 @@
 //! would be a new object every tick. A replay therefore lasts one `max_age`;
 //! restart the sidecar to play it again.
 
+use rustak_core::time::Timestamp;
 use std::path::Path;
 use std::time::Duration;
 
-use chrono::Utc;
 use rustak_client::sidecar::async_trait;
 use rustak_core::prelude::*;
 
@@ -59,7 +59,7 @@ impl ReplayFeed {
     #[must_use]
     pub fn over(mut detections: Vec<Detection>) -> Self {
         if let Some(newest) = detections.iter().map(|d| d.acquired_at).max() {
-            let shift = Utc::now() - newest;
+            let shift = Timestamp::now() - newest;
 
             for detection in &mut detections {
                 detection.acquired_at += shift;
@@ -119,9 +119,9 @@ mod tests {
         let second = feed.poll().await.expect("a file always answers");
 
         assert_eq!(first, second, "a re-stamped detection would be a new uid");
-        assert!((Utc::now() - first[0].acquired_at).num_seconds() < 5);
+        assert!((Timestamp::now() - first[0].acquired_at).as_secs() < 5);
         assert_eq!(
-            (first[0].acquired_at - first[1].acquired_at).num_hours(),
+            (first[0].acquired_at - first[1].acquired_at).as_hours(),
             3,
             "the rows keep their distance from each other",
         );

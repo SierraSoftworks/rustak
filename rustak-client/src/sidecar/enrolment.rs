@@ -44,6 +44,7 @@
 //! or fall back to something it was not configured for, and an operator would
 //! find out about it from an empty map rather than from a start-up message.
 
+use rustak_core::time::Timestamp;
 use std::path::{Path, PathBuf};
 
 use rustak_core::prelude::*;
@@ -485,8 +486,8 @@ fn summarise(certificate_pem: &str) -> Result<(String, String), Error> {
         .or_system_err(ADVICE_UNREADABLE)?;
     let certificate = pem.parse_x509().or_system_err(ADVICE_UNREADABLE)?;
     let not_after = certificate.validity().not_after;
-    let expires = chrono::DateTime::from_timestamp(not_after.timestamp(), 0)
-        .map_or_else(|| not_after.to_string(), |at| at.to_rfc3339());
+    let expires = Timestamp::new(not_after.timestamp(), 0)
+        .map_or_else(|| not_after.to_string(), |at| at.to_string());
 
     Ok((certificate.subject().to_string(), expires))
 }

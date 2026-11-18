@@ -21,11 +21,11 @@
 //! treats a failure as a failure of the whole page. A caller with no
 //! invitations gets an empty array.
 
-use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension as _;
+use rustak_core::time::Timestamp;
 
 use crate::auth::TokenType;
-use crate::db::row::{Timestamp, ts};
+use crate::db::row::{DbTime, ts};
 use crate::marti::MartiError;
 
 use super::invitees::InviteTarget;
@@ -50,7 +50,7 @@ pub struct MissionInvitation {
     pub invitee: String,
     pub creator_uid: Option<String>,
     pub role: Role,
-    pub create_time: DateTime<Utc>,
+    pub create_time: Timestamp,
     /// The whole `INVITATION` JWT, which is what an invited client replays and
     /// what `role_from_token` matches against.
     pub token: Option<String>,
@@ -112,14 +112,7 @@ impl MissionService {
                            creator_uid = excluded.creator_uid, role = excluded.role \
                          RETURNING {COLUMNS}"
                     ),
-                    rusqlite::params![
-                        mission_id,
-                        kind,
-                        invitee,
-                        creator,
-                        role_name,
-                        Timestamp::now()
-                    ],
+                    rusqlite::params![mission_id, kind, invitee, creator, role_name, DbTime::now()],
                     MissionInvitation::from_row,
                 )
             })
@@ -286,7 +279,7 @@ mod tests {
             invitee: invitee.to_string(),
             creator_uid: None,
             role: Role::Subscriber,
-            create_time: DateTime::UNIX_EPOCH,
+            create_time: Timestamp::UNIX_EPOCH,
             token: None,
         }
     }

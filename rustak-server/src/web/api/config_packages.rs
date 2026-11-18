@@ -28,6 +28,7 @@ use rustak_api::{
     AuditCategory, AuditOutcome, ConfigPackageRequest, ConfigPackageVariant, CredentialKind,
     Username,
 };
+use rustak_core::time::Timestamp;
 
 use crate::db::AuditEntry;
 use crate::prelude::*;
@@ -166,7 +167,7 @@ async fn check_credential(
     if credential.revoked_at.is_some()
         || credential
             .expires_at
-            .is_some_and(|at| at <= chrono::Utc::now())
+            .is_some_and(|at| at <= Timestamp::now())
     {
         return Err(ApiError::bad_request(
             "That credential has expired or been revoked; issue another one first.",

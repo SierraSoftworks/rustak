@@ -22,8 +22,8 @@
 //! map doing two hundred knots due north. [`heading`], [`course`] and
 //! [`speed_mps`] are where they become [`None`].
 
-use chrono::{DateTime, Utc};
 use rustak_client::feed::{Track, TrackKind, VesselClass};
+use rustak_core::time::Timestamp;
 
 /// A true heading of 511 means the transmitter has none to give.
 const HEADING_UNAVAILABLE: f64 = 511.0;
@@ -63,7 +63,7 @@ pub struct Position {
     /// The navigational status code (0–15). Class B reports carry none.
     pub nav_status: Option<u8>,
     /// When the vessel was there, as its source said.
-    pub observed_at: DateTime<Utc>,
+    pub observed_at: Timestamp,
 }
 
 impl Position {

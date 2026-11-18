@@ -25,6 +25,7 @@
 //! `rustak-plugin-example` loads its own `config.example.toml` in a unit test,
 //! which is the cheapest way to keep the example file honest.
 
+use rustak_core::time::{DurationExt, SignedDuration};
 use std::path::PathBuf;
 
 use rustak_core::config::{duration, env};
@@ -53,13 +54,13 @@ const ADVICE_HALF_A_CERTIFICATE: &[&str] = &[
 pub const ENROLLMENT_TOKEN_ENV: &str = "RUSTAK_ENROLLMENT_TOKEN";
 
 /// How often [`tick`](super::Sidecar::tick) runs when the file does not say.
-fn default_tick() -> chrono::Duration {
-    chrono::Duration::seconds(30)
+fn default_tick() -> SignedDuration {
+    SignedDuration::from_secs(30)
 }
 
 /// How long [`stop`](super::Sidecar::stop) is given when the file does not say.
-fn default_shutdown_grace() -> chrono::Duration {
-    chrono::Duration::seconds(10)
+fn default_shutdown_grace() -> SignedDuration {
+    SignedDuration::from_secs(10)
 }
 
 /// A sidecar's whole configuration file.
@@ -393,12 +394,12 @@ pub struct HarnessConfig {
     /// How often [`tick`](super::Sidecar::tick) is called. The first call
     /// happens as soon as the sidecar has started, not one interval later.
     #[serde(default = "default_tick", with = "duration::humane")]
-    pub tick: chrono::Duration,
+    pub tick: SignedDuration,
 
     /// How long [`stop`](super::Sidecar::stop) is given before the harness gives
     /// up waiting and reports the overrun as a bug.
     #[serde(default = "default_shutdown_grace", with = "duration::humane")]
-    pub shutdown_grace: chrono::Duration,
+    pub shutdown_grace: SignedDuration,
 }
 
 impl Default for HarnessConfig {
@@ -438,11 +439,11 @@ pub struct NoSettings {}
 /// Converts a configured span for the standard library, falling back rather than
 /// panicking.
 ///
-/// [`chrono::Duration::to_std`] fails only on a negative span, which
+/// [`SignedDuration::to_std`] fails only on a negative span, which
 /// [`duration::humane`] already refuses at both ends — so the fallback is
 /// unreachable through the configuration file, and is here because a sidecar
 /// that will not start is worse than one that ticks at its default rate.
-fn to_std(value: chrono::Duration, fallback: chrono::Duration) -> std::time::Duration {
+fn to_std(value: SignedDuration, fallback: SignedDuration) -> std::time::Duration {
     value
         .to_std()
         .or_else(|_| fallback.to_std())

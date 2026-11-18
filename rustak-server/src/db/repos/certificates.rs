@@ -12,15 +12,15 @@
 
 pub mod list;
 
-use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension as _;
 use rustak_api::{CertificateKind, CertificateSource};
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 
 use crate::db::{
     Database,
     repos::Page,
-    row::{Timestamp, enum_col, id_col, json_col, opt_id_col, opt_ts, to_json, ts},
+    row::{DbTime, enum_col, id_col, json_col, opt_id_col, opt_ts, to_json, ts},
 };
 
 /// The columns [`CertificateRow::from_row`] expects, in order.
@@ -53,13 +53,13 @@ pub struct CertificateRow {
     pub der: Vec<u8>,
     /// The sealed private key, for the certificates we generated the key for.
     pub key_sealed: Option<String>,
-    pub not_before: DateTime<Utc>,
-    pub not_after: DateTime<Utc>,
-    pub last_seen_at: Option<DateTime<Utc>>,
-    pub revoked_at: Option<DateTime<Utc>>,
+    pub not_before: Timestamp,
+    pub not_after: Timestamp,
+    pub last_seen_at: Option<Timestamp>,
+    pub revoked_at: Option<Timestamp>,
     pub revocation_reason: Option<String>,
     pub revoked_by: Option<String>,
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
 }
 
 impl CertificateRow {
@@ -91,7 +91,7 @@ impl CertificateRow {
     }
 
     /// Whether this certificate should be accepted at `now`.
-    pub fn is_valid_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_valid_at(&self, now: Timestamp) -> bool {
         self.revoked_at.is_none() && self.not_before <= now && now < self.not_after
     }
 }
@@ -113,8 +113,8 @@ pub struct NewCertificate {
     pub issuer_id: Option<CertificateId>,
     pub der: Vec<u8>,
     pub key_sealed: Option<String>,
-    pub not_before: DateTime<Utc>,
-    pub not_after: DateTime<Utc>,
+    pub not_before: Timestamp,
+    pub not_after: Timestamp,
 }
 
 /// Why a certificate was taken back, and by whom.
@@ -167,9 +167,9 @@ impl<'a> CertificatesRepo<'a> {
                         new.issuer_id.map(CertificateId::get),
                         new.der,
                         new.key_sealed,
-                        Timestamp::from(new.not_before),
-                        Timestamp::from(new.not_after),
-                        Timestamp::now(),
+                        DbTime::from(new.not_before),
+                        DbTime::from(new.not_after),
+                        DbTime::now(),
                     ],
                     CertificateRow::from_row,
                 )
@@ -305,9 +305,9 @@ impl<'a> CertificatesRepo<'a> {
     pub async fn expiring_before(
         &self,
         kind: CertificateKind,
-        before: DateTime<Utc>,
+        before: Timestamp,
     ) -> Result<Vec<CertificateRow>, Error> {
-        let before = Timestamp::from(before);
+        let before = DbTime::from(before);
 
         self.db
             .read(move |c| {
@@ -345,7 +345,7 @@ impl<'a> CertificatesRepo<'a> {
                      WHERE id = ?1 AND revoked_at IS NULL",
                     rusqlite::params![
                         id.get(),
-                        Timestamp::now(),
+                        DbTime::now(),
                         details.reason,
                         details.by.map(|by| by.into_inner()),
                     ],
@@ -374,7 +374,7 @@ impl<'a> CertificatesRepo<'a> {
                      WHERE credential_id = ?1 AND revoked_at IS NULL",
                     rusqlite::params![
                         credential_id.get(),
-                        Timestamp::now(),
+                        DbTime::now(),
                         details.reason,
                         details.by.map(|by| by.into_inner()),
                     ],
@@ -393,7 +393,7 @@ impl<'a> CertificatesRepo<'a> {
             .write(move |tx| {
                 tx.execute(
                     "UPDATE certificates SET last_seen_at = ?2 WHERE id = ?1",
-                    rusqlite::params![id.get(), Timestamp::now()],
+                    rusqlite::params![id.get(), DbTime::now()],
                 )
             })
             .await?;
@@ -406,6 +406,7 @@ impl<'a> CertificatesRepo<'a> {
 mod tests {
     use super::*;
     use crate::db::repos::{NewDevice, NewUser};
+    use rustak_core::time::SignedDuration;
 
     async fn fixture() -> (Database, UserId, DeviceId) {
         let db = Database::open_in_memory().await.unwrap();
@@ -442,8 +443,8 @@ mod tests {
             issuer_id: None,
             der: b"\x30\x82fake".to_vec(),
             key_sealed: None,
-            not_before: Utc::now() - chrono::TimeDelta::minutes(5),
-            not_after: Utc::now() + chrono::TimeDelta::days(365),
+            not_before: Timestamp::now() - SignedDuration::from_mins(5),
+            not_after: Timestamp::now() + SignedDuration::from_hours(24 * 365),
         }
     }
 
@@ -460,7 +461,7 @@ mod tests {
         assert_eq!(created.kind, CertificateKind::Client);
         assert_eq!(created.issued_via.as_deref(), Some("enroll_v2_json"));
         assert_eq!(created.der, b"\x30\x82fake".to_vec());
-        assert!(created.is_valid_at(Utc::now()));
+        assert!(created.is_valid_at(Timestamp::now()));
         assert_eq!(
             db.certificates().get(created.id).await.unwrap().unwrap(),
             created
@@ -545,7 +546,7 @@ mod tests {
             .unwrap();
         assert_eq!(read.revocation_reason.as_deref(), Some("device-lost"));
         assert_eq!(read.revoked_by.as_deref(), Some("admin"));
-        assert!(!read.is_valid_at(Utc::now()));
+        assert!(!read.is_valid_at(Timestamp::now()));
     }
 
     #[tokio::test]
@@ -634,7 +635,7 @@ mod tests {
         let (db, user, _device) = fixture().await;
         db.certificates()
             .create(NewCertificate {
-                not_after: Utc::now() + chrono::TimeDelta::days(3),
+                not_after: Timestamp::now() + SignedDuration::from_hours(24 * 3),
                 ..issued(user, "aa11", "0102")
             })
             .await
@@ -648,7 +649,7 @@ mod tests {
             .certificates()
             .expiring_before(
                 CertificateKind::Client,
-                Utc::now() + chrono::TimeDelta::days(30),
+                Timestamp::now() + SignedDuration::from_hours(24 * 30),
             )
             .await
             .unwrap();

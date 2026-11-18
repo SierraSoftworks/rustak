@@ -13,11 +13,11 @@
 //! ([`crate::missions::changes`]), which is testable against a naive model and
 //! costs nothing at these volumes.
 
-use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension as _;
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 
-use crate::db::{Database, row::Timestamp, row::bool_col, row::opt_json_col, row::ts};
+use crate::db::{Database, row::DbTime, row::bool_col, row::opt_json_col, row::ts};
 
 /// Every column [`MissionChangeRow::from_row`] reads, in order.
 const COLUMNS: &str = "id, mission_id, type, timestamp, server_time, creator_uid, content_uid, \
@@ -32,9 +32,9 @@ pub struct MissionChangeRow {
     /// `DELETE_MISSION`, `CREATE_DATA_FEED` or `DELETE_DATA_FEED`.
     pub kind: String,
     /// When the change happened, as the client dated it.
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: Timestamp,
     /// When we recorded it, which is what a time window is applied to.
-    pub server_time: DateTime<Utc>,
+    pub server_time: Timestamp,
     pub creator_uid: Option<String>,
     /// The map item this change is about.
     pub content_uid: Option<String>,
@@ -80,7 +80,7 @@ impl MissionChangeRow {
 pub struct NewChange {
     pub mission_id: i64,
     pub kind: String,
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: Timestamp,
     pub creator_uid: Option<String>,
     pub content_uid: Option<String>,
     pub content_hash: Option<String>,
@@ -92,7 +92,7 @@ pub struct NewChange {
 
 impl NewChange {
     /// A change of one kind against one mission, for a caller to fill in.
-    pub fn new(mission_id: i64, kind: impl Into<String>, at: DateTime<Utc>) -> Self {
+    pub fn new(mission_id: i64, kind: impl Into<String>, at: Timestamp) -> Self {
         Self {
             mission_id,
             kind: kind.into(),
@@ -179,7 +179,7 @@ impl<'a> MissionChangesRepo<'a> {
 
         self.db
             .write(move |tx| {
-                let now = Timestamp::now();
+                let now = DbTime::now();
                 let mut written = Vec::with_capacity(changes.len());
 
                 for change in changes {
@@ -194,7 +194,7 @@ impl<'a> MissionChangesRepo<'a> {
                         rusqlite::params![
                             change.mission_id,
                             change.kind,
-                            Timestamp::from(change.timestamp),
+                            DbTime::from(change.timestamp),
                             now,
                             change.creator_uid,
                             change.content_uid,
@@ -225,8 +225,8 @@ impl<'a> MissionChangesRepo<'a> {
     pub async fn window(
         &self,
         mission_id: i64,
-        start: DateTime<Utc>,
-        end: DateTime<Utc>,
+        start: Timestamp,
+        end: Timestamp,
     ) -> Result<Vec<MissionChangeRow>, Error> {
         self.db
             .read(move |c| {
@@ -238,7 +238,7 @@ impl<'a> MissionChangesRepo<'a> {
 
                 statement
                     .query_map(
-                        rusqlite::params![mission_id, Timestamp::from(start), Timestamp::from(end)],
+                        rusqlite::params![mission_id, DbTime::from(start), DbTime::from(end)],
                         MissionChangeRow::from_row,
                     )?
                     .collect()
@@ -276,6 +276,7 @@ impl<'a> MissionChangesRepo<'a> {
 #[cfg(test)]
 mod tests {
     use crate::db::repos::missions::NewMission;
+    use rustak_core::time::SignedDuration;
 
     use super::*;
 
@@ -291,7 +292,7 @@ mod tests {
     async fn changes_come_back_newest_first_inside_the_window() {
         let db = Database::open_in_memory().await.unwrap();
         let id = mission(&db).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         db.mission_changes()
             .record_all(vec![
@@ -306,8 +307,8 @@ mod tests {
             .mission_changes()
             .window(
                 id,
-                now - chrono::Duration::hours(1),
-                now + chrono::Duration::hours(1),
+                now - SignedDuration::from_hours(1),
+                now + SignedDuration::from_hours(1),
             )
             .await
             .unwrap();
@@ -322,7 +323,7 @@ mod tests {
     async fn a_window_that_ended_before_the_change_is_empty() {
         let db = Database::open_in_memory().await.unwrap();
         let id = mission(&db).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         db.mission_changes()
             .record(NewChange::new(id, "ADD_CONTENT", now).about_uid("a"))
@@ -333,8 +334,8 @@ mod tests {
             .mission_changes()
             .window(
                 id,
-                now - chrono::Duration::days(2),
-                now - chrono::Duration::days(1),
+                now - SignedDuration::from_hours(24 * 2),
+                now - SignedDuration::from_hours(24),
             )
             .await
             .unwrap();
@@ -351,7 +352,7 @@ mod tests {
         let written = db
             .mission_changes()
             .record(
-                NewChange::new(id, "ADD_CONTENT", Utc::now())
+                NewChange::new(id, "ADD_CONTENT", Timestamp::now())
                     .about_uid("a")
                     .with_detail(Some(detail.clone())),
             )

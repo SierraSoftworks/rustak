@@ -37,9 +37,9 @@
 //! still attempted *before* each opening, because a feed held open for hours
 //! outlives the token that opened it and a reopening has to carry a live one.
 
+use rustak_core::time::Timestamp;
 use std::sync::Arc;
 
-use chrono::Utc;
 use futures::StreamExt;
 use rustak_core::prelude::*;
 use tokio::sync::mpsc;
@@ -119,7 +119,7 @@ pub(crate) async fn run(
 
                     // Whether this was the feed being cut or the link going
                     // down is only known once the reopening succeeds or fails.
-                    reopenings.closed(health.link(), Utc::now());
+                    reopenings.closed(health.link(), Timestamp::now());
                     tracing::debug!("The server-event feed ended; it will be reopened.");
                 }
                 Err(err) => {
@@ -168,7 +168,7 @@ fn wait_for(health: &LinkHealth, workload: Option<&AccessTokens>) -> std::time::
 fn announce_open(reopenings: &mut Reopenings, report: Report, link: Link) {
     let recovered = matches!(report, Report::Recovered { .. });
 
-    match reopenings.opened(recovered, link, Utc::now()) {
+    match reopenings.opened(recovered, link, Timestamp::now()) {
         Opened::Announce => tracing::info!("The server-event feed is open."),
         Opened::Quiet => tracing::debug!("The server-event feed is open again."),
         Opened::Churning { closes, within } => tracing::warn!(

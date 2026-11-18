@@ -6,6 +6,7 @@
 //! state the detail page has to render and a listing that never contains one
 //! would never show it.
 
+use rustak_api::time::Timestamp;
 use std::cell::RefCell;
 
 use rustak_api::{
@@ -460,7 +461,7 @@ pub fn delete_mission(wanted: &MissionGuid) -> Result<(), ApiError> {
             return Err(ApiError::Gone);
         }
 
-        mission.deleted_at = Some(chrono::Utc::now());
+        mission.deleted_at = Some(Timestamp::now());
         mission.subscriber_count = 0;
 
         if let Some(held) = state

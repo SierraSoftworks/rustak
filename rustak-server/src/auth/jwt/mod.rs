@@ -40,10 +40,10 @@
 
 mod keys;
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::sync::LazyLock;
 
 use base64::Engine as _;
-use chrono::{Duration, Utc};
 use jsonwebtoken::{Algorithm, Validation};
 use rustak_core::prelude::*;
 
@@ -114,7 +114,7 @@ pub struct JwtIssuer {
     previous: Vec<SigningKey>,
     issuer: String,
     audience: String,
-    ttl: Duration,
+    ttl: SignedDuration,
     validation: Validation,
 }
 
@@ -244,16 +244,16 @@ impl JwtIssuer {
         subject: &Username,
         scope: &str,
         device: Option<&DeviceUid>,
-        ttl: Option<Duration>,
+        ttl: Option<SignedDuration>,
     ) -> Result<(String, AccessClaims), Error> {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let claims = AccessClaims {
             sub: subject.as_str().to_owned(),
             aud: self.audience.clone(),
             iss: self.issuer.clone(),
-            iat: now.timestamp(),
-            nbf: now.timestamp(),
-            exp: (now + ttl.unwrap_or(self.ttl)).timestamp(),
+            iat: now.as_second(),
+            nbf: now.as_second(),
+            exp: (now + ttl.unwrap_or(self.ttl)).as_second(),
             jti: uuid::Uuid::new_v4().to_string(),
             scope: scope.to_owned(),
             dev: device.map(|uid| uid.as_str().to_owned()),
@@ -563,7 +563,12 @@ mod tests {
         let (_db, _secrets, jwt) = issuer().await;
 
         let (token, _) = jwt
-            .issue(&user(), "admin", None, Some(Duration::seconds(-120)))
+            .issue(
+                &user(),
+                "admin",
+                None,
+                Some(SignedDuration::from_secs(-120)),
+            )
             .unwrap();
 
         assert!(jwt.verify(&token).is_err());
@@ -574,7 +579,7 @@ mod tests {
         let (_db, _secrets, jwt) = issuer().await;
 
         let (token, _) = jwt
-            .issue(&user(), "admin", None, Some(Duration::seconds(-30)))
+            .issue(&user(), "admin", None, Some(SignedDuration::from_secs(-30)))
             .unwrap();
 
         assert!(

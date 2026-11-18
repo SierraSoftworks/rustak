@@ -15,7 +15,7 @@
 //! and so that an item whose event has since aged out of the store still
 //! renders.
 
-use chrono::{DateTime, Utc};
+use rustak_core::time::Timestamp;
 use rustak_cot::Event;
 
 use crate::db::repos::{MissionContentRow, MissionUidRow, NewChange};
@@ -42,7 +42,7 @@ impl MissionService {
         mission: &Mission,
         body: &MissionContentBody,
         creator_uid: Option<&str>,
-        at: DateTime<Utc>,
+        at: Timestamp,
     ) -> Result<Vec<crate::db::repos::MissionChangeRow>, MartiError> {
         if body.is_empty() {
             return Err(MartiError::InvalidRequest(
@@ -78,7 +78,7 @@ impl MissionService {
         hash: &str,
         layer: Option<String>,
         creator_uid: Option<&str>,
-        at: DateTime<Utc>,
+        at: Timestamp,
     ) -> Result<NewChange, MartiError> {
         let resource = self
             .db()
@@ -108,7 +108,7 @@ impl MissionService {
         uid: &str,
         layer: Option<String>,
         creator_uid: Option<&str>,
-        at: DateTime<Utc>,
+        at: Timestamp,
     ) -> Result<NewChange, MartiError> {
         let details = self.cached_details(uid).await?;
 
@@ -159,7 +159,7 @@ impl MissionService {
             ));
         }
 
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut changes = Vec::new();
 
         if let Some(hash) = hash {

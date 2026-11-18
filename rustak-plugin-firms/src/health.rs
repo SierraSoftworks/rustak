@@ -17,6 +17,7 @@
 //! redacted of the MAP_KEY before they are recorded.
 
 use rustak_api::{Heartbeat, ServiceState};
+use rustak_core::time::SignedDuration;
 
 use crate::hotspots::Counters;
 use crate::sources::SourceState;
@@ -64,8 +65,7 @@ pub fn service_state(state: &SourceState) -> ServiceState {
     }
 
     // Two poll intervals: one missed poll is a bad minute, two is an outage.
-    let grace = chrono::Duration::from_std(state.interval() * 2)
-        .unwrap_or_else(|_| chrono::Duration::zero());
+    let grace = SignedDuration::try_from(state.interval() * 2).unwrap_or(SignedDuration::ZERO);
 
     match state.reconnecting_for() {
         Some(elapsed) if elapsed > grace => ServiceState::Degraded,

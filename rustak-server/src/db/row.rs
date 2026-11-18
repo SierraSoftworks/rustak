@@ -6,42 +6,43 @@
 //!
 //! # Timestamps
 //!
-//! [`Timestamp`] is the only way a time reaches or leaves the database. It
+//! [`DbTime`] is the only way a time reaches or leaves the database. It
 //! writes RFC 3339 with exactly three fractional digits and a `Z` suffix
 //! (`2026-09-18T10:00:00.123Z`), which sorts lexicographically in the same
 //! order it sorts chronologically — the property every `ORDER BY`, `BETWEEN`
 //! and retention sweep in the schema depends on.
 //!
-//! `rusqlite`'s `chrono` feature would happily bind a [`DateTime<Utc>`]
-//! directly, and must not be used to: it writes `%F %T%.f%:z`, which is a space
-//! instead of the `T`, a `+00:00` instead of the `Z`, and nanoseconds instead of
-//! milliseconds. Two rows written through the two paths would not compare.
+//! `rusqlite`'s `chrono` and `jiff` features would happily bind a time
+//! directly, and must not be used to: `chrono` writes `%F %T%.f%:z` (a space
+//! instead of the `T`, `+00:00` instead of `Z`) and both write nanoseconds
+//! instead of milliseconds. Two rows written through the two paths would not
+//! compare.
 
-use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
+use rustak_core::time::{ParseError, Precision, Timestamp};
 
 /// A UTC instant in the one representation the schema stores.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Timestamp(DateTime<Utc>);
+pub struct DbTime(Timestamp);
 
-impl Timestamp {
+impl DbTime {
     /// The current instant, truncated to the millisecond the column holds.
     ///
     /// Truncating here rather than on the way out means a value read back
     /// equals the value written, which is what a test comparing the two
     /// expects.
     pub fn now() -> Self {
-        Self::from(Utc::now())
+        Self::from(Timestamp::now())
     }
 
     /// The instant this timestamp holds.
-    pub fn get(self) -> DateTime<Utc> {
+    pub fn get(self) -> Timestamp {
         self.0
     }
 
     /// The text this timestamp is stored as.
     pub fn to_text(self) -> String {
-        self.0.to_rfc3339_opts(SecondsFormat::Millis, true)
+        self.0.to_rfc3339(Precision::Millis)
     }
 
     /// Parses a stored timestamp.
@@ -49,22 +50,19 @@ impl Timestamp {
     /// Accepts any RFC 3339 spelling, not only the one we write: a value that
     /// reached the file from a `sqlite3` prompt or an older release is better
     /// read than refused.
-    pub fn parse(text: &str) -> Result<Self, chrono::ParseError> {
-        Ok(Self::from(
-            DateTime::parse_from_rfc3339(text)?.with_timezone(&Utc),
-        ))
+    pub fn parse(text: &str) -> Result<Self, ParseError> {
+        Ok(Self::from(text.parse::<Timestamp>()?))
     }
 }
 
-impl From<DateTime<Utc>> for Timestamp {
-    fn from(value: DateTime<Utc>) -> Self {
+impl From<Timestamp> for DbTime {
+    fn from(value: Timestamp) -> Self {
         // Round-trip through the stored text so that the in-memory value and
         // the stored one cannot disagree about the sub-second part.
-        let text = value.to_rfc3339_opts(SecondsFormat::Millis, true);
+        let text = value.to_rfc3339(Precision::Millis);
 
         Self(
-            DateTime::parse_from_rfc3339(&text)
-                .map(|parsed| parsed.with_timezone(&Utc))
+            text.parse::<Timestamp>()
                 // Infallible: the string was produced by the formatter three
                 // lines above, which only emits values this parser accepts.
                 .unwrap_or(value),
@@ -72,34 +70,34 @@ impl From<DateTime<Utc>> for Timestamp {
     }
 }
 
-impl From<Timestamp> for DateTime<Utc> {
-    fn from(value: Timestamp) -> Self {
+impl From<DbTime> for Timestamp {
+    fn from(value: DbTime) -> Self {
         value.0
     }
 }
 
-impl ToSql for Timestamp {
+impl ToSql for DbTime {
     fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
         Ok(ToSqlOutput::from(self.to_text()))
     }
 }
 
-impl FromSql for Timestamp {
+impl FromSql for DbTime {
     fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
         let text = value.as_str()?;
 
-        Timestamp::parse(text).map_err(|err| FromSqlError::Other(Box::new(err)))
+        DbTime::parse(text).map_err(|err| FromSqlError::Other(Box::new(err)))
     }
 }
 
 /// Reads a required timestamp column.
-pub fn ts(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<DateTime<Utc>> {
-    Ok(row.get::<_, Timestamp>(index)?.get())
+pub fn ts(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Timestamp> {
+    Ok(row.get::<_, DbTime>(index)?.get())
 }
 
 /// Reads a nullable timestamp column.
-pub fn opt_ts(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Option<DateTime<Utc>>> {
-    Ok(row.get::<_, Option<Timestamp>>(index)?.map(Timestamp::get))
+pub fn opt_ts(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Option<Timestamp>> {
+    Ok(row.get::<_, Option<DbTime>>(index)?.map(DbTime::get))
 }
 
 /// Reads an `INTEGER` column holding a boolean.
@@ -205,14 +203,14 @@ mod tests {
 
     #[test]
     fn timestamps_are_rfc3339_with_exactly_three_fractional_digits() {
-        let at = Timestamp::parse("2026-09-18T10:00:00.123456Z").unwrap();
+        let at = DbTime::parse("2026-09-18T10:00:00.123456Z").unwrap();
 
         assert_eq!(at.to_text(), "2026-09-18T10:00:00.123Z");
     }
 
     #[test]
     fn timestamps_offered_with_an_offset_are_normalised_to_utc() {
-        let at = Timestamp::parse("2026-09-18T12:00:00.000+02:00").unwrap();
+        let at = DbTime::parse("2026-09-18T12:00:00.000+02:00").unwrap();
 
         assert_eq!(at.to_text(), "2026-09-18T10:00:00.000Z");
     }
@@ -224,12 +222,12 @@ mod tests {
             .execute("CREATE TABLE t (at TEXT NOT NULL) STRICT", [])
             .unwrap();
 
-        let written = Timestamp::now();
+        let written = DbTime::now();
         connection
             .execute("INSERT INTO t (at) VALUES (?1)", [written])
             .unwrap();
 
-        let read: Timestamp = connection
+        let read: DbTime = connection
             .query_one("SELECT at FROM t", [], |row| row.get(0))
             .unwrap();
 
@@ -239,8 +237,8 @@ mod tests {
 
     #[test]
     fn stored_timestamps_sort_in_chronological_order_as_text() {
-        let earlier = Timestamp::parse("2026-09-18T09:59:59.999Z").unwrap();
-        let later = Timestamp::parse("2026-09-18T10:00:00.000Z").unwrap();
+        let earlier = DbTime::parse("2026-09-18T09:59:59.999Z").unwrap();
+        let later = DbTime::parse("2026-09-18T10:00:00.000Z").unwrap();
 
         assert!(earlier.to_text() < later.to_text());
     }
@@ -249,7 +247,7 @@ mod tests {
     fn a_timestamp_we_cannot_parse_is_an_error_rather_than_a_default() {
         let connection = rusqlite::Connection::open_in_memory().unwrap();
 
-        let read: rusqlite::Result<Timestamp> =
+        let read: rusqlite::Result<DbTime> =
             connection.query_one("SELECT 'not a time'", [], |row| row.get(0));
 
         assert!(read.is_err());

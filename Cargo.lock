@@ -4418,10 +4418,10 @@ dependencies = [
  "async-trait",
  "base64 0.23.1",
  "bytes",
- "chrono",
  "clap",
  "futures",
  "human-errors",
+ "jiff",
  "rcgen",
  "reqwest 0.13.5",
  "rustak-api",
@@ -4451,7 +4451,6 @@ dependencies = [
  "argon2",
  "base64 0.23.1",
  "bitvec",
- "chrono",
  "dotenvy",
  "human-errors",
  "rand 0.10.4",
@@ -4476,8 +4475,8 @@ name = "rustak-cot"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "chrono",
  "futures",
+ "jiff",
  "memchr",
  "pretty_assertions",
  "proptest",
@@ -4487,6 +4486,7 @@ dependencies = [
  "protox",
  "quick-xml",
  "rstest",
+ "rustak-api",
  "serde",
  "tokio",
  "tokio-util",
@@ -4496,7 +4496,6 @@ dependencies = [
 name = "rustak-plugin-adsb"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "clap",
  "human-errors",
  "reqwest 0.13.5",
@@ -4517,10 +4516,10 @@ dependencies = [
 name = "rustak-plugin-ais"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "clap",
  "futures",
  "human-errors",
+ "jiff",
  "nmea-parser",
  "rustak-api",
  "rustak-client",
@@ -4540,7 +4539,6 @@ dependencies = [
 name = "rustak-plugin-esb"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "clap",
  "human-errors",
  "reqwest 0.13.5",
@@ -4577,7 +4575,6 @@ dependencies = [
 name = "rustak-plugin-firms"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "human-errors",
  "reqwest 0.13.5",
  "rustak-api",
@@ -4606,7 +4603,6 @@ dependencies = [
  "base64 0.23.1",
  "bitvec",
  "bytes",
- "chrono",
  "ciborium",
  "clap",
  "dotenvy",

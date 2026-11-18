@@ -20,7 +20,7 @@ use rusqlite::Connection as SyncConnection;
 use rustak_core::prelude::*;
 use tokio_rusqlite::Connection;
 
-use super::{ADVICE_DB_ERROR, ADVICE_REPORT_DEV, row::Timestamp};
+use super::{ADVICE_DB_ERROR, ADVICE_REPORT_DEV, row::DbTime};
 
 static MIGRATIONS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/migrations");
 
@@ -185,7 +185,7 @@ pub async fn migrate_to(connection: &Connection, version: usize) -> Result<(), E
                 transaction.execute_batch(sql)?;
                 transaction.execute(
                     "INSERT INTO schema_migrations (id, name, applied_at) VALUES (?1, ?2, ?3)",
-                    rusqlite::params![id as i64, name, Timestamp::now()],
+                    rusqlite::params![id as i64, name, DbTime::now()],
                 )?;
 
                 transaction.commit()?;

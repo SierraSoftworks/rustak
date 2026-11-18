@@ -19,9 +19,9 @@
 //! one more `maybe` in [`device_prefs`]. One that only matters to the console
 //! is not mentioned here at all.
 
-use chrono::{DateTime, Utc};
 use rustak_api::{Symbology, UserPreferencesPatch};
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 
 use super::builder::ProfileFileData;
 use super::prefs::{APP_PREFS, PrefGroup, render};
@@ -50,7 +50,7 @@ pub fn device_prefs(chosen: &UserPreferencesPatch) -> PrefGroup {
 pub async fn account_file(
     db: &Database,
     user: UserId,
-    since: Option<DateTime<Utc>>,
+    since: Option<Timestamp>,
 ) -> Result<Option<ProfileFileData>, Error> {
     let Some((chosen, updated)) = db.user_preferences().chosen(user).await? else {
         return Ok(None);

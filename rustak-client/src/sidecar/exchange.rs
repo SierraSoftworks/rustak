@@ -20,6 +20,7 @@
 //! which is what cost the first live deployment a `429` lockout that outlived
 //! the process that earned it.
 
+use rustak_core::time::{DurationExt, SignedDuration, Timestamp};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -37,7 +38,7 @@ use super::workload::{Source, report_control_identity};
 pub const JWT_BEARER_GRANT: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 
 /// How long before an access token expires it is exchanged again.
-const RENEW_BEFORE: chrono::Duration = chrono::Duration::seconds(60);
+const RENEW_BEFORE: SignedDuration = SignedDuration::from_secs(60);
 
 /// The last line of advice on every refusal the **server** made.
 ///
@@ -74,7 +75,7 @@ struct Granted {
 #[derive(Debug, Clone)]
 struct Held {
     token: Secret,
-    renew_at: chrono::DateTime<chrono::Utc>,
+    renew_at: Timestamp,
 }
 
 /// The rustak access token a workload identity buys, kept until it is nearly
@@ -200,7 +201,7 @@ impl AccessTokens {
         let assertion = self.assertion().await?;
         let granted = self.exchange(&assertion).await?;
         let renew_at = self.clock.now()
-            + chrono::Duration::seconds(granted.expires_in.unwrap_or(0))
+            + SignedDuration::from_secs(granted.expires_in.unwrap_or(0))
             - RENEW_BEFORE;
         let token = Secret::new(granted.access_token);
 
@@ -396,7 +397,7 @@ fn refused(
     status: reqwest::StatusCode,
     source: &Source,
     assertion: &Assertion,
-    now: chrono::DateTime<chrono::Utc>,
+    now: Timestamp,
     description: Option<&str>,
 ) -> Error {
     let said = match description {
@@ -431,7 +432,7 @@ fn advice(
     status: reqwest::StatusCode,
     source: &Source,
     assertion: &Assertion,
-    now: chrono::DateTime<chrono::Utc>,
+    now: Timestamp,
 ) -> &'static [&'static str] {
     if assertion.expired_for(now).is_some() && !source.is_renewable() {
         return &[
@@ -463,17 +464,15 @@ fn advice(
 mod tests {
     use std::path::PathBuf;
 
-    use chrono::{DateTime, Utc};
-
     use super::*;
 
     /// The instant these tests judge against; nothing here reads a wall clock.
-    fn at(seconds: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(1_789_646_400 + seconds, 0).expect("an instant")
+    fn at(seconds: i64) -> Timestamp {
+        Timestamp::new(1_789_646_400 + seconds, 0).expect("an instant")
     }
 
     /// A workload assertion expiring at the given instant.
-    fn assertion(expires_at: DateTime<Utc>) -> String {
+    fn assertion(expires_at: Timestamp) -> String {
         use base64::Engine as _;
 
         let encoder = base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -485,7 +484,7 @@ mod tests {
                 serde_json::json!({
                     "iss": "https://nomad.example.com",
                     "sub": "global:default:rustak-plugin-adsb:sidecar:adsb:rustak",
-                    "exp": expires_at.timestamp(),
+                    "exp": expires_at.as_second(),
                 })
                 .to_string()
                 .as_bytes(),

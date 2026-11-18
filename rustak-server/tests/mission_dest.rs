@@ -13,9 +13,9 @@
 
 mod stream_support;
 
+use rustak_core::time::Timestamp;
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
 use rustak_api::MissionRoleKind;
 use rustak_api::identity::GroupName;
 use rustak_cot::{CotTime, Event, xml};
@@ -31,8 +31,8 @@ use rustak_server::stream::mission_payload::{
 const NOW: CotTime = CotTime::from_millis(1_789_646_440_000);
 
 /// The same instant as a wall clock, for the payload timestamps.
-fn at() -> DateTime<Utc> {
-    DateTime::from_timestamp_millis(1_789_646_440_000).expect("a valid instant")
+fn at() -> Timestamp {
+    Timestamp::from_millisecond(1_789_646_440_000).expect("a valid instant")
 }
 
 fn golden_dir() -> PathBuf {

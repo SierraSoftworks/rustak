@@ -9,6 +9,7 @@
 //! history — see `cot_drawer` for why the document matters more than any
 //! summary of it.
 
+use rustak_api::time::Timestamp;
 use rustak_api::{CotSummary, Group, GroupName};
 use yew::prelude::*;
 
@@ -192,7 +193,7 @@ fn filters(filter: &UseStateHandle<CotFilter>, channels: &Option<Vec<Group>>) ->
 /// Whether a message has gone stale, which is what decides if a client still
 /// draws it.
 fn is_stale(summary: &CotSummary) -> bool {
-    summary.stale <= chrono::Utc::now()
+    summary.stale <= Timestamp::now()
 }
 
 #[derive(Properties, PartialEq)]
@@ -269,6 +270,7 @@ fn cot_row(props: &CotRowProps) -> Html {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_api::time::SignedDuration;
 
     fn summary(stale_in_minutes: i64) -> CotSummary {
         CotSummary {
@@ -277,9 +279,9 @@ mod tests {
             callsign: Some("ALPHA".to_string()),
             team: None,
             role: None,
-            time: chrono::Utc::now(),
-            stale: chrono::Utc::now() + chrono::Duration::minutes(stale_in_minutes),
-            received_at: chrono::Utc::now(),
+            time: Timestamp::now(),
+            stale: Timestamp::now() + SignedDuration::from_mins(stale_in_minutes),
+            received_at: Timestamp::now(),
             lat: 51.5,
             lon: -0.1,
             groups: Vec::new(),

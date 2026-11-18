@@ -21,8 +21,8 @@
 //! nothing by that uid is connected — there is nothing to hide.
 
 use actix_web::web;
-use chrono::Utc;
 use rustak_api::Direction;
+use rustak_core::time::{DurationExt, Timestamp};
 
 use crate::prelude::*;
 use crate::stream::{ClientEndpoint, LeaveReason};
@@ -248,7 +248,7 @@ async fn rows(
 
 /// One live connection, as the diagnostic shape.
 fn row(peer: &ClientEndpoint, groups: &[crate::db::repos::GroupRow]) -> SubscriptionInfoJson {
-    let last = peer.last_status.timestamp_millis();
+    let last = peer.last_status.as_millisecond();
     // `takv` is `platform:version`; TAK Server carries the two halves.
     let (client, version) = match peer.takv.split_once(':') {
         Some((client, version)) => (Some(client.to_string()), Some(version.to_string())),
@@ -260,7 +260,7 @@ fn row(peer: &ClientEndpoint, groups: &[crate::db::repos::GroupRow]) -> Subscrip
         callsign: peer.callsign.clone(),
         client_uid: peer.uid.clone(),
         last_report_milliseconds: last,
-        last_report_diff_milliseconds: (Utc::now() - peer.last_status).num_milliseconds(),
+        last_report_diff_milliseconds: (Timestamp::now() - peer.last_status).whole_millis(),
         tak_client: client,
         tak_version: version,
         username: peer.username.clone(),
@@ -318,8 +318,8 @@ mod tests {
             role: "Team Member".to_string(),
             takv: "ATAK:5.0.0".to_string(),
             groups: Vec::new(),
-            last_status: Utc::now(),
-            connected_at: Utc::now(),
+            last_status: Timestamp::now(),
+            connected_at: Timestamp::now(),
             incognito: false,
             mode: rustak_cot::codec::Mode::Xml,
             peer: "10.0.0.7:41234".parse().unwrap(),

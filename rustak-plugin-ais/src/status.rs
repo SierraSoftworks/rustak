@@ -17,9 +17,9 @@
 //! plugin makes it this one. `AisSidecar::health` is three lines around
 //! [`FeedStatus::heartbeat`].
 
+use rustak_core::time::{DurationExt, Timestamp};
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use rustak_api::{Heartbeat, ServiceState};
 use rustak_client::feed::FeedCounters;
 use rustak_core::prelude::*;
@@ -40,12 +40,12 @@ pub enum Connection {
     /// Talking to the upstream since this instant.
     Connected {
         /// When the current connection was established.
-        since: DateTime<Utc>,
+        since: Timestamp,
     },
     /// Trying to get back, since this instant.
     Reconnecting {
         /// When the connection was lost.
-        since: DateTime<Utc>,
+        since: Timestamp,
         /// Why, in the words this crate logged.
         last_error: String,
     },
@@ -56,21 +56,23 @@ impl Connection {
     /// reports itself connected from the moment it opens.
     #[must_use]
     pub fn connected() -> Self {
-        Self::Connected { since: Utc::now() }
+        Self::Connected {
+            since: Timestamp::now(),
+        }
     }
 
     /// The same, losing the connection now.
     #[must_use]
     pub fn reconnecting(reason: impl Into<String>) -> Self {
         Self::Reconnecting {
-            since: Utc::now(),
+            since: Timestamp::now(),
             last_error: reason.into(),
         }
     }
 
     /// How long this state has held, or [`None`] for one that never started.
     #[must_use]
-    pub fn held_for(&self, now: DateTime<Utc>) -> Option<Duration> {
+    pub fn held_for(&self, now: Timestamp) -> Option<Duration> {
         let since = match self {
             Self::Waiting => return None,
             Self::Connected { since } | Self::Reconnecting { since, .. } => *since,
@@ -149,7 +151,7 @@ impl FeedStatus {
     /// reconnecting for longer than two of them has missed more than a blip,
     /// which is what makes a feed `degraded` rather than merely busy.
     #[must_use]
-    pub fn heartbeat(&self, poll: Duration, now: DateTime<Utc>) -> Heartbeat {
+    pub fn heartbeat(&self, poll: Duration, now: Timestamp) -> Heartbeat {
         let (state, message) = self.state(poll, now);
 
         Heartbeat {
@@ -197,7 +199,7 @@ impl FeedStatus {
     }
 
     /// The state and the sentence beside it.
-    fn state(&self, poll: Duration, now: DateTime<Utc>) -> (ServiceState, String) {
+    fn state(&self, poll: Duration, now: Timestamp) -> (ServiceState, String) {
         match &self.connection.connection {
             Connection::Waiting => (
                 ServiceState::Unhealthy,
@@ -314,12 +316,13 @@ pub fn connection() -> (ConnectionTx, ConnectionRx) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::SignedDuration;
 
-    fn at(seconds: i64) -> DateTime<Utc> {
+    fn at(seconds: i64) -> Timestamp {
         "2026-09-20T12:00:00Z"
-            .parse::<DateTime<Utc>>()
+            .parse::<Timestamp>()
             .expect("an instant")
-            + chrono::Duration::seconds(seconds)
+            + SignedDuration::from_secs(seconds)
     }
 
     fn status(connection: Connection) -> FeedStatus {

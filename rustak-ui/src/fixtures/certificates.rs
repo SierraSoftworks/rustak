@@ -13,6 +13,7 @@
 //! and no URL could reach them while that one was the only fixture, so
 //! `?demo&tls=files`, `&tls=internal` and `&tls=none` each select their own.
 
+use rustak_api::time::Timestamp;
 use std::cell::RefCell;
 
 use rustak_api::{
@@ -163,7 +164,7 @@ pub fn revoke_certificate(
             ));
         }
 
-        certificate.revoked_at = Some(chrono::Utc::now());
+        certificate.revoked_at = Some(Timestamp::now());
         certificate.revocation_reason = Some(reason.as_str().to_string());
 
         Ok(certificate.clone())

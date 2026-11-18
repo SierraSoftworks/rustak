@@ -34,7 +34,7 @@
 //! Nothing secret is carried: no tokens, no certificate material, no file
 //! contents, and no peer addresses.
 
-use chrono::{DateTime, Utc};
+use crate::time::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::identity::ServiceName;
@@ -54,7 +54,7 @@ pub struct ServerEvent {
     pub id: u64,
 
     /// When it happened.
-    pub at: DateTime<Utc>,
+    pub at: Timestamp,
 
     /// What happened.
     #[serde(flatten)]

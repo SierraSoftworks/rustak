@@ -5,11 +5,11 @@
 //! one carries, which fields a client may change and how a listing narrows —
 //! and [`super`] says how those reach SQLite.
 
-use chrono::{DateTime, Utc};
 use rusqlite::types::Value;
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 
-use crate::db::row::{Timestamp, bool_col, json_col, opt_id_col, opt_ts, ts};
+use crate::db::row::{DbTime, bool_col, json_col, opt_id_col, opt_ts, ts};
 
 /// The columns [`ResourceRow::from_row`] expects, in order.
 pub(super) const COLUMNS: &str = "id, hash, uid, name, filename, mime_type, size, tool, creator_uid, \
@@ -34,7 +34,7 @@ pub struct ResourceRow {
     pub creator_uid: Option<String>,
     pub submitter_id: Option<UserId>,
     pub submitter: Option<String>,
-    pub submission_time: DateTime<Utc>,
+    pub submission_time: Timestamp,
     /// Epoch milliseconds; `None` means never.
     pub expiration: Option<i64>,
     pub is_mission_package: bool,
@@ -51,8 +51,8 @@ pub struct ResourceRow {
     pub plugin_class_name: Option<String>,
     /// Ship this package in the enrolment profile.
     pub install_on_enrollment: bool,
-    pub deleted_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
+    pub deleted_at: Option<Timestamp>,
+    pub created_at: Timestamp,
     /// Filled by [`super::ResourcesRepo`] from `resource_keywords`.
     pub keywords: Vec<String>,
 }
@@ -170,8 +170,8 @@ pub struct ResourceFilter {
     pub mission_name: Option<String>,
     /// Every keyword must be present.
     pub keywords: Vec<String>,
-    pub start: Option<DateTime<Utc>>,
-    pub end: Option<DateTime<Utc>>,
+    pub start: Option<Timestamp>,
+    pub end: Option<Timestamp>,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
     /// Oldest first. The default is newest first, which is what a browser shows.
@@ -216,7 +216,7 @@ impl ResourceFilter {
 
         for (comparison, bound) in [(">=", self.start), ("<=", self.end)] {
             if let Some(at) = bound {
-                binds.push(Value::Text(Timestamp::from(at).to_text()));
+                binds.push(Value::Text(DbTime::from(at).to_text()));
                 sql.push(format!("submission_time {comparison} ?{}", binds.len()));
             }
         }

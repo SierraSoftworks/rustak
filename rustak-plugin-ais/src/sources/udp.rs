@@ -18,10 +18,10 @@
 //! address that no longer exists — and that is what the backoff and the
 //! heartbeat's `reconnecting` state are for.
 
+use rustak_core::time::Timestamp;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use chrono::Utc;
 use nmea_parser::ais::{CargoType, ShipType, VesselDynamicData, VesselStaticData};
 use nmea_parser::{NmeaParser, ParsedMessage};
 use rustak_client::feed::upstream::{Repeated, Report, humanised};
@@ -188,7 +188,7 @@ async fn run(
 
 /// One attempt at the port that did not work, said once per run.
 fn cannot_listen(trouble: &mut Repeated, reason: &str, retry_in: Duration) {
-    match trouble.happened(Utc::now()) {
+    match trouble.happened(Timestamp::now()) {
         Report::First => warn!(source = NAME, retry_in = ?retry_in, "Cannot listen: {reason}"),
         Report::Reminder { count, over } => warn!(
             source = NAME,
@@ -201,7 +201,7 @@ fn cannot_listen(trouble: &mut Repeated, reason: &str, retry_in: Duration) {
 
 /// The port answering again, which is the end of that run.
 fn listening_again(trouble: &mut Repeated, listen: SocketAddr) {
-    match trouble.cleared(Utc::now()) {
+    match trouble.cleared(Timestamp::now()) {
         Report::Recovered { count, over } => info!(
             source = NAME,
             %listen,
@@ -295,7 +295,7 @@ fn position(dynamic: &VesselDynamicData) -> Option<Position> {
         // The sentence carries only the second of the minute it was sent in, so
         // the receiver's clock is the best answer available — and a receiver on
         // the same network is never more than a moment out.
-        observed_at: Utc::now(),
+        observed_at: Timestamp::now(),
     })
 }
 

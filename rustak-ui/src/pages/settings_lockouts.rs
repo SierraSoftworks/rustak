@@ -271,12 +271,12 @@ fn lockout_row(props: &LockoutRowProps) -> Html {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{Duration, Utc};
+    use rustak_api::time::{SignedDuration, Timestamp};
 
     use super::*;
 
     fn lockout(class: LockoutClass, key: &str) -> Lockout {
-        let started_at = Utc::now();
+        let started_at = Timestamp::now();
 
         Lockout {
             class,
@@ -284,7 +284,7 @@ mod tests {
             prefix: Some(32),
             key: key.to_string(),
             started_at,
-            ends_at: started_at + Duration::minutes(15),
+            ends_at: started_at + SignedDuration::from_mins(15),
             failures: 10,
         }
     }

@@ -16,7 +16,6 @@ workspace = true
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-chrono = { workspace = true }
 jiff = { workspace = true }
 # The one dependency this crate cannot inherit from the workspace table.
 #
@@ -35,4 +34,6 @@ jiff = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+# The golden tests in `time` compare against chrono until it leaves the tree.
+chrono = { workspace = true }
 rstest = { workspace = true }

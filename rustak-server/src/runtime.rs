@@ -56,6 +56,7 @@
 //! dropped is the waiting rather than the stopping, and the process is two
 //! seconds from exiting anyway.
 
+use rustak_core::time::Timestamp;
 use std::future::Future;
 use std::sync::Arc;
 
@@ -451,7 +452,7 @@ async fn sweep_ceremonies(context: &AppContext) {
         Err(err) => warn!(error = %err, "Could not sweep abandoned sign-ins."),
     }
 
-    match crate::auth::oauth_server::codes::prune(context.db(), chrono::Utc::now()).await {
+    match crate::auth::oauth_server::codes::prune(context.db(), Timestamp::now()).await {
         Ok(0) => {}
         Ok(removed) => debug!(removed, "Pruned expired authorization codes."),
         Err(err) => warn!(error = %err, "Could not prune expired authorization codes."),

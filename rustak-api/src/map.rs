@@ -32,7 +32,7 @@
 //! editor later move a shape's anchor and its outline independently, the way
 //! TAK clients do.
 
-use chrono::{DateTime, Utc};
+use crate::time::Timestamp;
 use serde::{Deserialize, Serialize};
 
 /// One thing on the map.
@@ -61,14 +61,14 @@ pub struct MapFeature {
     pub role: Option<String>,
 
     /// The event's own time, which is what two copies of a uid are ordered by.
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
 
     /// When the event stops being current. A page dims it then, and drops it a
     /// little later.
-    pub stale: DateTime<Utc>,
+    pub stale: Timestamp,
 
     /// When this server relayed it.
-    pub received_at: DateTime<Utc>,
+    pub received_at: Timestamp,
 
     pub point: MapPoint,
 
@@ -256,7 +256,7 @@ pub struct PublishFeature {
     /// When it stops being current. A day from now when the page does not
     /// say, which is what a marker somebody placed by hand deserves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stale: Option<DateTime<Utc>>,
+    pub stale: Option<Timestamp>,
 
     /// The channels to publish into, by name. Empty is a broadcast to
     /// everybody the sender reaches.

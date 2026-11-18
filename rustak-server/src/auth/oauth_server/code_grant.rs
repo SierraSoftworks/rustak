@@ -32,6 +32,7 @@
 //! `compat/oauth.md` §1.
 
 use actix_web::{HttpRequest, HttpResponse};
+use rustak_core::time::Timestamp;
 
 use crate::auth::{RateLimiter, tokens};
 use crate::prelude::*;
@@ -269,7 +270,7 @@ async fn mint_id_token(
             client_id,
             granted: granted_scope,
             nonce: redemption.nonce.as_deref(),
-            expires_at: chrono::Utc::now().timestamp()
+            expires_at: Timestamp::now().as_second()
                 + i64::try_from(session.expires_in).unwrap_or(0),
             auth_time: Some(redemption.authorized_at),
         },

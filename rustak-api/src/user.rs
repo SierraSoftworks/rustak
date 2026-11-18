@@ -1,6 +1,6 @@
 //! The people and services that hold an identity on this server.
 
-use chrono::{DateTime, Utc};
+use crate::time::Timestamp;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::identity::{UserId, Username};
@@ -136,12 +136,12 @@ pub struct User {
     #[serde(default)]
     pub disabled: bool,
 
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
 
     /// The last time we saw this identity: a sign-in, an enrolment, or a client
     /// connecting to the stream.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_seen_at: Option<DateTime<Utc>>,
+    pub last_seen_at: Option<Timestamp>,
 }
 
 impl User {

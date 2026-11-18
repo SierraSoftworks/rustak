@@ -202,6 +202,7 @@ async fn write(
 
 #[cfg(test)]
 mod tests {
+    use rustak_core::time::{SignedDuration, Timestamp};
     use std::sync::Arc;
 
     use rustak_cot::Event;
@@ -273,8 +274,8 @@ mod tests {
             .overlapping(
                 super::super::STREAM_KIND,
                 "UID-A",
-                chrono::Utc::now() - chrono::Duration::hours(1),
-                chrono::Utc::now() + chrono::Duration::hours(1),
+                Timestamp::now() - SignedDuration::from_hours(1),
+                Timestamp::now() + SignedDuration::from_hours(1),
             )
             .await
             .unwrap();
@@ -339,8 +340,8 @@ mod tests {
             .overlapping(
                 super::super::STREAM_KIND,
                 &uid,
-                chrono::Utc::now() - chrono::Duration::hours(1),
-                chrono::Utc::now() + chrono::Duration::hours(1),
+                Timestamp::now() - SignedDuration::from_hours(1),
+                Timestamp::now() + SignedDuration::from_hours(1),
             )
             .await
             .unwrap();
@@ -374,8 +375,8 @@ mod tests {
                 .overlapping(
                     super::super::STREAM_KIND,
                     "UID-A",
-                    chrono::Utc::now() - chrono::Duration::hours(1),
-                    chrono::Utc::now() + chrono::Duration::hours(1),
+                    Timestamp::now() - SignedDuration::from_hours(1),
+                    Timestamp::now() + SignedDuration::from_hours(1),
                 )
                 .await
                 .unwrap()

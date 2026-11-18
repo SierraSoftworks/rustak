@@ -61,9 +61,9 @@ pub mod late;
 mod mock;
 mod wiring;
 
+use rustak_core::time::Timestamp;
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
 use rustak_core::{prelude::*, telemetry::Session};
 
 use crate::{
@@ -181,7 +181,7 @@ pub struct AppContext {
     session: Arc<Session>,
     http_client: reqwest::Client,
     shutdown: Shutdown,
-    started_at: DateTime<Utc>,
+    started_at: Timestamp,
     rate_limiter: Arc<RateLimiter>,
 }
 
@@ -221,7 +221,7 @@ impl AppContext {
             session,
             http_client,
             shutdown,
-            started_at: Utc::now(),
+            started_at: Timestamp::now(),
             rate_limiter,
         })
     }
@@ -318,7 +318,7 @@ impl AppContext {
     }
 
     /// When this process finished starting up, for `/api/v1/health`'s uptime.
-    pub fn started_at(&self) -> DateTime<Utc> {
+    pub fn started_at(&self) -> Timestamp {
         self.started_at
     }
 
@@ -589,6 +589,7 @@ impl<S: Services + ?Sized> Services for &S {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::SignedDuration;
 
     #[tokio::test]
     async fn the_context_is_built_from_the_handles_start_up_opens() {
@@ -600,7 +601,7 @@ mod tests {
 
         assert_eq!(context.config().server.name, "rustak-under-test");
         assert!(!context.shutdown().is_cancelled());
-        assert!(context.started_at() <= Utc::now());
+        assert!(context.started_at() <= Timestamp::now());
         assert!(
             context
                 .http_client()
@@ -636,7 +637,7 @@ mod tests {
             .await;
 
         let mut config = Config::default();
-        config.server.http_timeout = chrono::Duration::milliseconds(250);
+        config.server.http_timeout = SignedDuration::from_millis(250);
 
         let client = http_client(&config).unwrap();
         let started = std::time::Instant::now();

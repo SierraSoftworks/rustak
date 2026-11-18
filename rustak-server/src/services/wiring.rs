@@ -12,6 +12,7 @@
 //! call site in `runtime` reads `Database::from_config(…)` rather than naming a
 //! helper module.
 
+use rustak_core::time::DurationExt;
 use std::path::Path;
 
 use rustak_core::prelude::*;

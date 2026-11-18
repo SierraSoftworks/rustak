@@ -22,9 +22,9 @@
 
 mod token;
 
+use rustak_core::time::Timestamp;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use rustak_client::feed::{Area, Feed, Track};
 use rustak_client::sidecar::async_trait;
 use rustak_core::prelude::*;
@@ -177,7 +177,7 @@ impl OpenSkyFeed {
 
         // The server's own clock, so that a position's age is measured against
         // the clock that stamped it.
-        let now = DateTime::from_timestamp(states.time, 0).unwrap_or_else(Utc::now);
+        let now = Timestamp::new(states.time, 0).unwrap_or_else(Timestamp::now);
 
         Ok(states
             .states

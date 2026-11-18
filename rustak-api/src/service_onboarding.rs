@@ -23,9 +23,9 @@
 //! argon2id hashes. [`ServiceOnboarding`] redacts both in [`fmt::Debug`], so a
 //! logged response cannot carry one.
 
+use crate::time::{Precision, Timestamp};
 use core::fmt;
 
-use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::identity::{CredentialId, ServiceName, Username};
@@ -92,7 +92,7 @@ pub struct ServiceOnboarding {
     pub enrollment_token_id: CredentialId,
 
     /// When the enrolment token stops working whether or not it was used.
-    pub enrollment_expires_at: DateTime<Utc>,
+    pub enrollment_expires_at: Timestamp,
 
     /// What happened to the service token.
     pub service_token_outcome: ServiceTokenOutcome,
@@ -170,13 +170,13 @@ pub fn config_fragment(name: &ServiceName, account: &Username) -> String {
 /// its hash, and the deployment already has it.
 pub fn environment(
     enrollment_token: &str,
-    expires_at: DateTime<Utc>,
+    expires_at: Timestamp,
     service_token: Option<&str>,
 ) -> String {
     let mut lines = format!(
         "# One-time: spent by the first start, and refused after {}.\n\
          {ENROLLMENT_TOKEN_ENV}={enrollment_token}\n",
-        expires_at.to_rfc3339_opts(SecondsFormat::Secs, true),
+        expires_at.to_rfc3339(Precision::Secs),
     );
 
     match service_token {
@@ -194,7 +194,6 @@ pub fn environment(
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone as _;
 
     use super::*;
 
@@ -258,7 +257,8 @@ mod tests {
 
     #[test]
     fn the_environment_states_the_expiry_and_each_secret_once() {
-        let expires = Utc.with_ymd_and_hms(2026, 9, 29, 12, 15, 0).unwrap();
+        let expires =
+            Timestamp::from_civil(crate::time::civil::datetime(2026, 9, 29, 12, 15, 0, 0)).unwrap();
         let lines = environment("enrol-me", expires, Some("rsk_token"));
 
         assert!(lines.contains("2026-09-29T12:15:00Z"), "{lines}");
@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn a_kept_service_token_is_named_and_not_invented() {
-        let lines = environment("enrol-me", Utc::now(), None);
+        let lines = environment("enrol-me", Timestamp::now(), None);
 
         assert!(!lines.contains("RUSTAK_SERVICE_TOKEN="), "{lines}");
         assert!(lines.contains("# RUSTAK_SERVICE_TOKEN: keep"), "{lines}");
@@ -289,13 +289,17 @@ mod tests {
             account_created: true,
             enrollment_token: "ENROLMENT-SECRET".to_string(),
             enrollment_token_id: CredentialId::new(1),
-            enrollment_expires_at: Utc::now(),
+            enrollment_expires_at: Timestamp::now(),
             service_token_outcome: ServiceTokenOutcome::Minted,
             service_token: Some("rsk_SERVICE-SECRET".to_string()),
             service_token_id: Some(CredentialId::new(2)),
             revoked_service_tokens: Vec::new(),
             config_fragment: config_fragment(&name("adsb"), &account("svc.adsb")),
-            environment: environment("ENROLMENT-SECRET", Utc::now(), Some("rsk_SERVICE-SECRET")),
+            environment: environment(
+                "ENROLMENT-SECRET",
+                Timestamp::now(),
+                Some("rsk_SERVICE-SECRET"),
+            ),
             notes: vec!["Created the account.".to_string()],
         };
 

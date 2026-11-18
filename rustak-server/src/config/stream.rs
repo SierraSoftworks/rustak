@@ -15,6 +15,7 @@
 //! and is not.
 
 use rustak_core::config::ListenAddr;
+use rustak_core::time::SignedDuration;
 use serde::{Deserialize, Serialize};
 
 /// The default CoT stream listen address.
@@ -26,8 +27,8 @@ fn default_stream_listen() -> ListenAddr {
 ///
 /// TAK clients ping well inside this; the timeout is what reclaims a connection
 /// whose device fell off the network without closing its socket.
-fn default_idle_timeout() -> chrono::Duration {
-    chrono::Duration::seconds(90)
+fn default_idle_timeout() -> SignedDuration {
+    SignedDuration::from_secs(90)
 }
 
 /// How a connection answers the TAK Protocol v1 negotiation.
@@ -124,7 +125,7 @@ pub struct StreamLimits {
         default = "default_handshake_timeout",
         with = "rustak_core::config::duration::humane"
     )]
-    pub handshake_timeout: chrono::Duration,
+    pub handshake_timeout: SignedDuration,
 
     /// How long one write to a connection's socket may take before the
     /// connection is given up on.
@@ -144,7 +145,7 @@ pub struct StreamLimits {
         default = "default_write_timeout",
         with = "rustak_core::config::duration::humane"
     )]
-    pub write_timeout: chrono::Duration,
+    pub write_timeout: SignedDuration,
 
     /// The most connections this listener accepts at once.
     #[serde(default = "default_max_connections")]
@@ -175,16 +176,16 @@ fn default_close_after_drops() -> u64 {
     512
 }
 
-fn default_handshake_timeout() -> chrono::Duration {
-    chrono::Duration::seconds(10)
+fn default_handshake_timeout() -> SignedDuration {
+    SignedDuration::from_secs(10)
 }
 
 /// Thirty seconds, which is a stalled socket rather than a slow one.
 ///
 /// A device on a poor link takes seconds to accept a burst; one that has taken
 /// none of a single flush in half a minute is not slow, it is gone.
-fn default_write_timeout() -> chrono::Duration {
-    chrono::Duration::seconds(30)
+fn default_write_timeout() -> SignedDuration {
+    SignedDuration::from_secs(30)
 }
 
 fn default_max_connections() -> usize {
@@ -213,7 +214,7 @@ impl StreamLimits {
             ));
         }
 
-        if self.write_timeout <= chrono::Duration::zero() {
+        if self.write_timeout <= SignedDuration::ZERO {
             return Err(human_errors::user(
                 "`[stream.limits] write_timeout` must be longer than zero, or no write to a client could ever complete.",
                 ADVICE,
@@ -276,7 +277,7 @@ pub struct StreamTlsConfig {
         default = "default_idle_timeout",
         with = "rustak_core::config::duration::humane"
     )]
-    pub idle_timeout: chrono::Duration,
+    pub idle_timeout: SignedDuration,
 }
 
 /// The stream listener is bound unless an installation turns it off.
@@ -308,7 +309,7 @@ mod tests {
         assert_eq!(parsed, StreamConfig::default());
         assert!(parsed.tls.enabled);
         assert_eq!(parsed.tls.listen, ListenAddr::new("", 8089));
-        assert_eq!(parsed.tls.idle_timeout, chrono::Duration::seconds(90));
+        assert_eq!(parsed.tls.idle_timeout, SignedDuration::from_secs(90));
     }
 
     #[test]
@@ -410,12 +411,12 @@ mod tests {
     fn the_write_timeout_has_a_default_an_installation_never_has_to_write() {
         let parsed: StreamConfig = toml::from_str("").unwrap();
 
-        assert_eq!(parsed.limits.write_timeout, chrono::Duration::seconds(30));
+        assert_eq!(parsed.limits.write_timeout, SignedDuration::from_secs(30));
         assert_eq!(
             toml::from_str::<StreamLimits>(r#"write_timeout = "2m""#)
                 .unwrap()
                 .write_timeout,
-            chrono::Duration::minutes(2),
+            SignedDuration::from_mins(2),
         );
     }
 
@@ -451,7 +452,7 @@ mod tests {
         assert!(err.to_string().contains("queue_len"), "{err}");
 
         let instant = StreamLimits {
-            write_timeout: chrono::Duration::zero(),
+            write_timeout: SignedDuration::ZERO,
             ..StreamLimits::default()
         };
         let err = instant
@@ -464,6 +465,6 @@ mod tests {
     fn an_idle_timeout_is_written_the_way_a_person_writes_one() {
         let parsed: StreamTlsConfig = toml::from_str(r#"idle_timeout = "5m""#).unwrap();
 
-        assert_eq!(parsed.idle_timeout, chrono::Duration::minutes(5));
+        assert_eq!(parsed.idle_timeout, SignedDuration::from_mins(5));
     }
 }

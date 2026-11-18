@@ -58,9 +58,8 @@ pub mod roles;
 pub mod service;
 pub mod subscriptions;
 
-use chrono::{DateTime, Utc};
-
 use crate::marti::time;
+use rustak_core::time::Timestamp;
 
 pub use cot::MissionPublisher;
 pub use dto::{
@@ -106,7 +105,7 @@ pub fn subscription_json(
 }
 
 /// The unpadded-millisecond date form the subscription object uses.
-fn unpadded(at: DateTime<Utc>) -> String {
+fn unpadded(at: Timestamp) -> String {
     time::cot_date_unpadded(at)
 }
 
@@ -120,7 +119,7 @@ mod tests {
             client_uid: "ANDROID-1".to_string(),
             username: None,
             role: Role::Subscriber,
-            create_time: DateTime::UNIX_EPOCH,
+            create_time: Timestamp::UNIX_EPOCH,
             token: Some("t".to_string()),
         };
 

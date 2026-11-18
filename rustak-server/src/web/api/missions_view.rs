@@ -9,6 +9,7 @@ use rustak_api::{
     AuditCategory, AuditOutcome, MissionChangeKind, MissionChangeSummary, MissionGuid,
     MissionRoleKind, MissionSummary, UidDetails,
 };
+use rustak_core::time::Timestamp;
 
 use crate::db::AuditEntry;
 use crate::marti::MissionRef;
@@ -134,7 +135,7 @@ pub(super) async fn summary(
         expiration: mission
             .expiration
             .filter(|seconds| *seconds > 0)
-            .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0)),
+            .and_then(|seconds| Timestamp::new(seconds, 0)),
         deleted_at: mission.deleted_at,
     })
 }

@@ -4,6 +4,7 @@
 //! entry is just a stored value carrying its own expiry — there is nothing for a
 //! separate table to hold.
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::{borrow::Cow, pin::Pin};
 
 use rustak_core::prelude::*;
@@ -14,7 +15,7 @@ use super::{Partition, kv::KeyValueStore};
 #[derive(Serialize, Deserialize)]
 struct CacheItem<T> {
     value: T,
-    expires_at: chrono::DateTime<chrono::Utc>,
+    expires_at: Timestamp,
 }
 
 /// A store that can answer from a cached value or build a fresh one.
@@ -30,7 +31,7 @@ pub trait Cache {
         partition: P,
         key: K,
         builder: B,
-        ttl: chrono::Duration,
+        ttl: SignedDuration,
     ) -> Result<T, Error>
     where
         T: DeserializeOwned + Serialize + Clone + Send + 'static,
@@ -55,7 +56,7 @@ impl<KV: KeyValueStore + Sync + Send + 'static> Cache for KV {
         partition: P,
         key: K,
         builder: B,
-        ttl: chrono::Duration,
+        ttl: SignedDuration,
     ) -> Result<T, Error>
     where
         T: DeserializeOwned + Serialize + Clone + Send + 'static,
@@ -65,7 +66,7 @@ impl<KV: KeyValueStore + Sync + Send + 'static> Cache for KV {
         let key = key.into();
 
         if let Some(item @ CacheItem::<T> { .. }) = self.get(partition.clone(), key.clone()).await?
-            && item.expires_at > chrono::Utc::now()
+            && item.expires_at > Timestamp::now()
         {
             return Ok(item.value);
         }
@@ -76,7 +77,7 @@ impl<KV: KeyValueStore + Sync + Send + 'static> Cache for KV {
             key,
             CacheItem {
                 value: value.clone(),
-                expires_at: chrono::Utc::now() + ttl,
+                expires_at: Timestamp::now() + ttl,
             },
         )
         .await?;
@@ -110,7 +111,7 @@ mod tests {
     async fn a_live_entry_is_served_without_rebuilding() {
         let db = Database::open_in_memory().await.unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
-        let ttl = chrono::TimeDelta::minutes(5);
+        let ttl = SignedDuration::from_mins(5);
 
         let first = db
             .cached("oidc", "jwks", counting_builder(calls.clone(), 1), ttl)
@@ -134,7 +135,7 @@ mod tests {
             "oidc",
             "jwks",
             counting_builder(calls.clone(), 1),
-            chrono::TimeDelta::seconds(-1),
+            SignedDuration::from_secs(-1),
         )
         .await
         .unwrap();
@@ -144,7 +145,7 @@ mod tests {
                 "oidc",
                 "jwks",
                 counting_builder(calls.clone(), 2),
-                chrono::TimeDelta::minutes(5),
+                SignedDuration::from_mins(5),
             )
             .await
             .unwrap();
@@ -162,7 +163,7 @@ mod tests {
                 "oidc",
                 "jwks",
                 || Box::pin(async { Err(human_errors::system("no", &["retry"])) }),
-                chrono::TimeDelta::minutes(5),
+                SignedDuration::from_mins(5),
             )
             .await;
 

@@ -33,6 +33,7 @@
 use actix_web::http::StatusCode;
 use actix_web::http::header::{LOCATION, SET_COOKIE};
 use actix_web::{App, test};
+use rustak_core::time::{SignedDuration, Timestamp};
 use rustak_server::config::{OAuthClient, OAuthServerConfig};
 use rustak_server::prelude::*;
 use rustak_server::testing::TestServer;
@@ -365,8 +366,8 @@ mod authorization_code {
             .write(|tx| {
                 tx.execute(
                     "UPDATE oauth_codes SET expires_at = ?1",
-                    [rustak_server::db::Timestamp::from(
-                        chrono::Utc::now() - chrono::Duration::seconds(1),
+                    [rustak_server::db::DbTime::from(
+                        Timestamp::now() - SignedDuration::from_secs(1),
                     )],
                 )
             })

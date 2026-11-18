@@ -7,10 +7,11 @@
 //! account rather than global, so that one noisy source cannot evict everybody
 //! else's history.
 
+use rustak_core::time::SignedDuration;
 use serde::{Deserialize, Serialize};
 
-fn default_cot_history() -> chrono::Duration {
-    chrono::Duration::days(7)
+fn default_cot_history() -> SignedDuration {
+    SignedDuration::from_hours(24 * 7)
 }
 
 /// Frames kept per device before older segments are pruned, whatever their age.
@@ -25,8 +26,8 @@ fn default_cot_history_max_rows() -> u64 {
 /// that went stale yesterday. A feed of short-lived tracks (ADS-B, AIS) adds a
 /// row per aircraft or vessel, so holding them for the history horizon is what
 /// lets the table — and every query over it — grow by a week of traffic.
-fn default_cot_latest() -> chrono::Duration {
-    chrono::Duration::days(1)
+fn default_cot_latest() -> SignedDuration {
+    SignedDuration::from_hours(24)
 }
 
 /// Megabytes of CoT history kept on disk across every device.
@@ -35,23 +36,23 @@ fn default_cot_history_max_mb() -> u64 {
 }
 
 /// How often the CoT garbage collector runs.
-fn default_cot_sweep_interval() -> chrono::Duration {
-    chrono::Duration::hours(1)
+fn default_cot_sweep_interval() -> SignedDuration {
+    SignedDuration::from_hours(1)
 }
 
 /// The shortest `cot_sweep_interval` accepted.
-const MIN_COT_SWEEP_INTERVAL: chrono::Duration = chrono::Duration::minutes(1);
+const MIN_COT_SWEEP_INTERVAL: SignedDuration = SignedDuration::from_mins(1);
 
-fn default_audit() -> chrono::Duration {
-    chrono::Duration::days(90)
+fn default_audit() -> SignedDuration {
+    SignedDuration::from_hours(24 * 90)
 }
 
 fn default_audit_max_entries() -> u64 {
     100_000
 }
 
-fn default_archived_missions() -> chrono::Duration {
-    chrono::Duration::days(30)
+fn default_archived_missions() -> SignedDuration {
+    SignedDuration::from_hours(24 * 30)
 }
 
 /// How long a soft-deleted mission is kept before it is really gone.
@@ -62,8 +63,8 @@ fn default_archived_missions() -> chrono::Duration {
 /// is only useful while clients might still ask, so the row is purged after a
 /// fortnight — long enough to cover a device that was switched off for a
 /// holiday, short enough that a deleted mission is not kept indefinitely.
-fn default_missions_purge_after() -> chrono::Duration {
-    chrono::Duration::days(14)
+fn default_missions_purge_after() -> SignedDuration {
+    SignedDuration::from_hours(24 * 14)
 }
 
 /// How long an uploaded blob nothing refers to is kept.
@@ -71,8 +72,8 @@ fn default_missions_purge_after() -> chrono::Duration {
 /// Not zero, because an upload is referenced a moment *after* it is stored: a
 /// collector that ran between the two would delete the file out from under the
 /// request that had just written it.
-fn default_content_orphans() -> chrono::Duration {
-    chrono::Duration::hours(24)
+fn default_content_orphans() -> SignedDuration {
+    SignedDuration::from_hours(24)
 }
 
 /// `[retention]`.
@@ -85,7 +86,7 @@ pub struct RetentionConfig {
         default = "default_cot_history",
         with = "rustak_core::config::duration::humane"
     )]
-    pub cot_history: chrono::Duration,
+    pub cot_history: SignedDuration,
 
     /// The most history frames kept for any one device.
     #[serde(default = "default_cot_history_max_rows")]
@@ -102,21 +103,21 @@ pub struct RetentionConfig {
         default = "default_cot_latest",
         with = "rustak_core::config::duration::humane"
     )]
-    pub cot_latest: chrono::Duration,
+    pub cot_latest: SignedDuration,
 
     /// How often the CoT garbage collector enforces the four limits above.
     #[serde(
         default = "default_cot_sweep_interval",
         with = "rustak_core::config::duration::humane"
     )]
-    pub cot_sweep_interval: chrono::Duration,
+    pub cot_sweep_interval: SignedDuration,
 
     /// How long audit entries are kept.
     #[serde(
         default = "default_audit",
         with = "rustak_core::config::duration::humane"
     )]
-    pub audit: chrono::Duration,
+    pub audit: SignedDuration,
 
     /// The most audit entries kept for any one account.
     #[serde(default = "default_audit_max_entries")]
@@ -127,7 +128,7 @@ pub struct RetentionConfig {
         default = "default_archived_missions",
         with = "rustak_core::config::duration::humane"
     )]
-    pub archived_missions: chrono::Duration,
+    pub archived_missions: SignedDuration,
 
     /// How long a soft-deleted mission keeps answering `410` before its row,
     /// its changes and its subscriptions are removed for good.
@@ -135,14 +136,14 @@ pub struct RetentionConfig {
         default = "default_missions_purge_after",
         with = "rustak_core::config::duration::humane"
     )]
-    pub missions_purge_after: chrono::Duration,
+    pub missions_purge_after: SignedDuration,
 
     /// How long a stored blob that nothing refers to is kept.
     #[serde(
         default = "default_content_orphans",
         with = "rustak_core::config::duration::humane"
     )]
-    pub content_orphans: chrono::Duration,
+    pub content_orphans: SignedDuration,
 }
 
 impl Default for RetentionConfig {
@@ -200,16 +201,22 @@ mod tests {
         let parsed: RetentionConfig = toml::from_str("").unwrap();
 
         assert_eq!(parsed, RetentionConfig::default());
-        assert_eq!(parsed.cot_history, chrono::Duration::days(7));
+        assert_eq!(parsed.cot_history, SignedDuration::from_hours(24 * 7));
         assert_eq!(parsed.cot_history_max_rows, 2_000_000);
         assert_eq!(parsed.cot_history_max_mb, 10_240);
-        assert_eq!(parsed.cot_latest, chrono::Duration::days(1));
-        assert_eq!(parsed.cot_sweep_interval, chrono::Duration::hours(1));
-        assert_eq!(parsed.audit, chrono::Duration::days(90));
+        assert_eq!(parsed.cot_latest, SignedDuration::from_hours(24));
+        assert_eq!(parsed.cot_sweep_interval, SignedDuration::from_hours(1));
+        assert_eq!(parsed.audit, SignedDuration::from_hours(24 * 90));
         assert_eq!(parsed.audit_max_entries, 100_000);
-        assert_eq!(parsed.archived_missions, chrono::Duration::days(30));
-        assert_eq!(parsed.missions_purge_after, chrono::Duration::days(14));
-        assert_eq!(parsed.content_orphans, chrono::Duration::hours(24));
+        assert_eq!(
+            parsed.archived_missions,
+            SignedDuration::from_hours(24 * 30)
+        );
+        assert_eq!(
+            parsed.missions_purge_after,
+            SignedDuration::from_hours(24 * 14)
+        );
+        assert_eq!(parsed.content_orphans, SignedDuration::from_hours(24));
     }
 
     #[test]

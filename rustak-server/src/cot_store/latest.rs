@@ -15,11 +15,11 @@
 //! vector at send time is the only thing that makes the question answerable
 //! later, so it is written with the row.
 
-use chrono::{DateTime, Utc};
 use rusqlite::{OptionalExtension as _, params};
+use rustak_core::time::Timestamp;
 
 use crate::db::Database;
-use crate::db::row::{Timestamp, opt_id_col, ts};
+use crate::db::row::{DbTime, opt_id_col, ts};
 use crate::prelude::*;
 
 use super::CotRecord;
@@ -40,13 +40,13 @@ pub struct LatestRow {
     /// The sender's channel rights when it was sent.
     pub group_bits: Vec<u8>,
     /// The event's own time.
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     /// When it goes stale.
-    pub stale: DateTime<Utc>,
+    pub stale: Timestamp,
     /// The XML the recipients were sent.
     pub xml: String,
     /// When this server handled it.
-    pub received_at: DateTime<Utc>,
+    pub received_at: Timestamp,
 }
 
 impl LatestRow {
@@ -133,16 +133,16 @@ pub async fn upsert_batch(db: &Database, records: Vec<CotRecord>) -> Result<usiz
                 record.user_id.map(i64::from),
                 record.device_id.map(i64::from),
                 record.group_bits,
-                Timestamp::from(record.time),
-                Timestamp::from(record.start),
-                Timestamp::from(record.stale),
+                DbTime::from(record.time),
+                DbTime::from(record.start),
+                DbTime::from(record.stale),
                 lat,
                 lon,
                 hae,
                 ce,
                 le,
                 xml.as_ref(),
-                Timestamp::from(record.received_at),
+                DbTime::from(record.received_at),
             ])?;
         }
 
@@ -202,7 +202,7 @@ pub async fn latest_event(db: &Database, uid: &str) -> Result<Option<LatestRow>,
 /// A [`human_errors::Kind::System`] error carrying whatever SQLite reported.
 pub async fn latest_events(
     db: &Database,
-    since: DateTime<Utc>,
+    since: Timestamp,
     prefixes: &[String],
     limit: u32,
 ) -> Result<Vec<LatestRow>, Error> {
@@ -215,7 +215,7 @@ pub async fn latest_events(
     db.read(move |connection| {
         let mut statement = connection.prepare_cached(&sql)?;
         let rows = statement
-            .query_map(params![Timestamp::from(since), limit], LatestRow::from_row)?
+            .query_map(params![DbTime::from(since), limit], LatestRow::from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
         // Filtered here rather than in SQL: a `LIKE` per prefix would defeat
@@ -248,7 +248,7 @@ pub async fn latest_events(
 /// A [`human_errors::Kind::System`] error carrying whatever SQLite reported.
 pub async fn current(
     db: &Database,
-    since: DateTime<Utc>,
+    since: Timestamp,
     limit: u32,
     offset: u32,
 ) -> Result<Vec<LatestRow>, Error> {
@@ -264,7 +264,7 @@ pub async fn current(
         connection
             .prepare_cached(&sql)?
             .query_map(
-                params![Timestamp::from(since), limit, offset],
+                params![DbTime::from(since), limit, offset],
                 LatestRow::from_row,
             )?
             .collect()
@@ -290,16 +290,12 @@ const PRUNE_BATCH: usize = 1_000;
 /// # Errors
 ///
 /// A [`human_errors::Kind::System`] error carrying whatever SQLite reported.
-pub async fn prune_stale(db: &Database, before: DateTime<Utc>) -> Result<usize, Error> {
+pub async fn prune_stale(db: &Database, before: Timestamp) -> Result<usize, Error> {
     prune_stale_in(db, before, PRUNE_BATCH).await
 }
 
 /// [`prune_stale`], `batch` rows to a transaction.
-async fn prune_stale_in(
-    db: &Database,
-    before: DateTime<Utc>,
-    batch: usize,
-) -> Result<usize, Error> {
+async fn prune_stale_in(db: &Database, before: Timestamp, batch: usize) -> Result<usize, Error> {
     let limit = i64::try_from(batch).unwrap_or(i64::MAX);
     let mut removed = 0;
 
@@ -311,7 +307,7 @@ async fn prune_stale_in(
                 transaction.execute(
                     "DELETE FROM cot_latest WHERE uid IN \
                        (SELECT uid FROM cot_latest WHERE stale < ?1 LIMIT ?2)",
-                    params![Timestamp::from(before), limit],
+                    params![DbTime::from(before), limit],
                 )
             })
             .await?;
@@ -326,6 +322,7 @@ async fn prune_stale_in(
 
 #[cfg(test)]
 mod tests {
+    use rustak_core::time::SignedDuration;
     use std::sync::Arc;
 
     use rustak_cot::Event;
@@ -349,12 +346,12 @@ mod tests {
         .with_groups(std::sync::Arc::new(groups))
     }
 
-    fn record(uid: &str, at: DateTime<Utc>, grants: &[(u32, Direction)]) -> CotRecord {
+    fn record(uid: &str, at: Timestamp, grants: &[(u32, Direction)]) -> CotRecord {
         let encoded = EncodedEvent::new(
             Event::builder("a-f-G-U-C", uid)
                 .how("m-g")
                 .point(51.5, -0.12)
-                .time(rustak_cot::CotTime::from_millis(at.timestamp_millis()))
+                .time(rustak_cot::CotTime::from_millis(at.as_millisecond()))
                 .typed(&Contact::new("ALPHA").with_endpoint(STREAMING_ENDPOINT))
                 .build(),
         );
@@ -374,8 +371,8 @@ mod tests {
     #[tokio::test]
     async fn the_latest_row_is_the_latest_thing_the_uid_said() {
         let db = db().await;
-        let first = Utc::now() - chrono::Duration::seconds(30);
-        let second = Utc::now();
+        let first = Timestamp::now() - SignedDuration::from_secs(30);
+        let second = Timestamp::now();
 
         upsert_batch(&db, vec![record("UID-A", first, &[(7, Direction::In)])])
             .await
@@ -387,7 +384,7 @@ mod tests {
         let row = latest_event(&db, "UID-A").await.unwrap().expect("a row");
 
         assert_eq!(row.uid, "UID-A");
-        assert_eq!(row.time.timestamp_millis(), second.timestamp_millis());
+        assert_eq!(row.time.as_millisecond(), second.as_millisecond());
         assert!(latest_xml(&db, "UID-A").await.unwrap().is_some());
     }
 
@@ -396,8 +393,8 @@ mod tests {
         // A relay or a reconnect can deliver an older report after a newer one;
         // letting it win would move a contact backwards on every map.
         let db = db().await;
-        let newer = Utc::now();
-        let older = newer - chrono::Duration::seconds(60);
+        let newer = Timestamp::now();
+        let older = newer - SignedDuration::from_secs(60);
 
         upsert_batch(&db, vec![record("UID-A", newer, &[])])
             .await
@@ -413,8 +410,8 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .time
-                .timestamp_millis(),
-            newer.timestamp_millis(),
+                .as_millisecond(),
+            newer.as_millisecond(),
         );
     }
 
@@ -423,7 +420,7 @@ mod tests {
         let db = db().await;
         upsert_batch(
             &db,
-            vec![record("UID-A", Utc::now(), &[(7, Direction::In)])],
+            vec![record("UID-A", Timestamp::now(), &[(7, Direction::In)])],
         )
         .await
         .unwrap();
@@ -448,10 +445,10 @@ mod tests {
             user_id: None,
             device_id: None,
             group_bits: vec![0, 1, 2],
-            time: Utc::now(),
-            stale: Utc::now(),
+            time: Timestamp::now(),
+            stale: Timestamp::now(),
             xml: String::new(),
-            received_at: Utc::now(),
+            received_at: Timestamp::now(),
         };
 
         assert!(!row.visible_to(&GroupSet::new()));
@@ -460,7 +457,7 @@ mod tests {
     #[tokio::test]
     async fn a_search_narrows_by_type_prefix() {
         let db = db().await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut chat = record("UID-C", now, &[]);
         chat.kind = "b-t-f".into();
 
@@ -468,7 +465,7 @@ mod tests {
             .await
             .unwrap();
 
-        let since = now - chrono::Duration::hours(1);
+        let since = now - SignedDuration::from_hours(1);
         let atoms = latest_events(&db, since, &["a-".to_string()], 100)
             .await
             .unwrap();
@@ -482,14 +479,14 @@ mod tests {
     #[tokio::test]
     async fn stale_rows_are_pruned() {
         let db = db().await;
-        let mut old = record("UID-OLD", Utc::now(), &[]);
-        old.stale = Utc::now() - chrono::Duration::days(30);
+        let mut old = record("UID-OLD", Timestamp::now(), &[]);
+        old.stale = Timestamp::now() - SignedDuration::from_hours(24 * 30);
 
-        upsert_batch(&db, vec![old, record("UID-NEW", Utc::now(), &[])])
+        upsert_batch(&db, vec![old, record("UID-NEW", Timestamp::now(), &[])])
             .await
             .unwrap();
 
-        let removed = prune_stale(&db, Utc::now() - chrono::Duration::days(7))
+        let removed = prune_stale(&db, Timestamp::now() - SignedDuration::from_hours(24 * 7))
             .await
             .unwrap();
 
@@ -502,17 +499,21 @@ mod tests {
     async fn more_stale_rows_than_one_transaction_takes_all_go() {
         let db = db().await;
         let mut records: Vec<CotRecord> = (0..5)
-            .map(|index| record(&format!("UID-OLD-{index}"), Utc::now(), &[]))
+            .map(|index| record(&format!("UID-OLD-{index}"), Timestamp::now(), &[]))
             .collect();
         for old in &mut records {
-            old.stale = Utc::now() - chrono::Duration::days(30);
+            old.stale = Timestamp::now() - SignedDuration::from_hours(24 * 30);
         }
-        records.push(record("UID-NEW", Utc::now(), &[]));
+        records.push(record("UID-NEW", Timestamp::now(), &[]));
         upsert_batch(&db, records).await.unwrap();
 
-        let removed = prune_stale_in(&db, Utc::now() - chrono::Duration::days(7), 2)
-            .await
-            .unwrap();
+        let removed = prune_stale_in(
+            &db,
+            Timestamp::now() - SignedDuration::from_hours(24 * 7),
+            2,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(removed, 5);
         assert!(latest_event(&db, "UID-NEW").await.unwrap().is_some());

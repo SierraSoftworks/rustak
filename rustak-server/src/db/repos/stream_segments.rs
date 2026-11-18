@@ -14,13 +14,13 @@
 
 mod retention;
 
-use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension as _;
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 
 use crate::db::{
     Database,
-    row::{Timestamp, bool_col, ts},
+    row::{DbTime, bool_col, ts},
 };
 
 /// The columns [`StreamSegmentRow::from_row`] expects, in order.
@@ -37,13 +37,13 @@ pub struct StreamSegmentRow {
     pub stream_key: String,
     /// Where the file is, relative to the stream root.
     pub segment_path: String,
-    pub first_time: DateTime<Utc>,
-    pub last_time: DateTime<Utc>,
+    pub first_time: Timestamp,
+    pub last_time: Timestamp,
     pub record_count: u64,
     pub byte_length: u64,
     /// `false` while the writer is still appending.
     pub sealed: bool,
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
 }
 
 impl StreamSegmentRow {
@@ -70,7 +70,7 @@ pub struct NewStreamSegment {
     pub stream_key: String,
     pub segment_path: String,
     /// The time of the first record, which is also where the index starts.
-    pub first_time: DateTime<Utc>,
+    pub first_time: Timestamp,
 }
 
 /// Reads and writes `stream_segments`.
@@ -93,7 +93,7 @@ impl<'a> StreamSegmentsRepo<'a> {
     pub async fn create(&self, new: NewStreamSegment) -> Result<StreamSegmentRow, Error> {
         self.db
             .write(move |tx| {
-                let first = Timestamp::from(new.first_time);
+                let first = DbTime::from(new.first_time);
 
                 tx.query_one(
                     &format!(
@@ -107,7 +107,7 @@ impl<'a> StreamSegmentsRepo<'a> {
                         new.stream_key,
                         new.segment_path,
                         first,
-                        Timestamp::now(),
+                        DbTime::now(),
                     ],
                     StreamSegmentRow::from_row,
                 )
@@ -126,11 +126,11 @@ impl<'a> StreamSegmentsRepo<'a> {
     pub async fn record_append(
         &self,
         id: i64,
-        last_time: DateTime<Utc>,
+        last_time: Timestamp,
         records: u64,
         bytes: u64,
     ) -> Result<bool, Error> {
-        let last_time = Timestamp::from(last_time);
+        let last_time = DbTime::from(last_time);
 
         let changed = self
             .db
@@ -209,11 +209,11 @@ impl<'a> StreamSegmentsRepo<'a> {
         &self,
         stream_kind: &str,
         stream_key: &str,
-        from: DateTime<Utc>,
-        to: DateTime<Utc>,
+        from: Timestamp,
+        to: Timestamp,
     ) -> Result<Vec<StreamSegmentRow>, Error> {
         let (stream_kind, stream_key) = (stream_kind.to_owned(), stream_key.to_owned());
-        let (from, to) = (Timestamp::from(from), Timestamp::from(to));
+        let (from, to) = (DbTime::from(from), DbTime::from(to));
 
         self.db
             .read(move |c| {
@@ -249,13 +249,9 @@ impl<'a> StreamSegmentsRepo<'a> {
     /// # Errors
     ///
     /// A [`human_errors::Kind::System`] error if the write fails.
-    pub async fn seal_idle(
-        &self,
-        stream_kind: &str,
-        before: DateTime<Utc>,
-    ) -> Result<usize, Error> {
+    pub async fn seal_idle(&self, stream_kind: &str, before: Timestamp) -> Result<usize, Error> {
         let stream_kind = stream_kind.to_owned();
-        let before = Timestamp::from(before);
+        let before = DbTime::from(before);
 
         let sealed = self
             .db
@@ -317,12 +313,13 @@ impl<'a> StreamSegmentsRepo<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::SignedDuration;
 
     async fn db() -> Database {
         Database::open_in_memory().await.unwrap()
     }
 
-    fn opened(key: &str, path: &str, at: DateTime<Utc>) -> NewStreamSegment {
+    fn opened(key: &str, path: &str, at: Timestamp) -> NewStreamSegment {
         NewStreamSegment {
             stream_kind: "cot".into(),
             stream_key: key.into(),
@@ -331,11 +328,9 @@ mod tests {
         }
     }
 
-    fn at(minutes: i64) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2026-09-18T10:00:00.000Z")
-            .unwrap()
-            .with_timezone(&Utc)
-            + chrono::TimeDelta::minutes(minutes)
+    fn at(minutes: i64) -> Timestamp {
+        "2026-09-18T10:00:00.000Z".parse::<Timestamp>().unwrap()
+            + SignedDuration::from_mins(minutes)
     }
 
     #[tokio::test]

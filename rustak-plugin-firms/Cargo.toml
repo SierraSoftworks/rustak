@@ -37,7 +37,6 @@ reqwest = { workspace = true }
 # The heartbeat's `metrics`, and the area an administrator may set server-side.
 serde_json = { workspace = true }
 # Acquisition times, and the `"10m"` durations in `[settings]`.
-chrono = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

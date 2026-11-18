@@ -14,6 +14,7 @@
 //! and handed to whatever needs it, which is also what makes a listener a thing
 //! a test can start, drive and drop.
 
+use rustak_core::time::Timestamp;
 use std::sync::Arc;
 
 use rustak_cot::{CotTime, Event};
@@ -127,7 +128,7 @@ pub struct LiveState {
     store: CotStoreHandle,
     metrics: Arc<StreamMetrics>,
     replay_budget: std::time::Duration,
-    bound_at: chrono::DateTime<chrono::Utc>,
+    bound_at: Timestamp,
 }
 
 impl LiveState {
@@ -146,7 +147,7 @@ impl LiveState {
         metrics: Arc<StreamMetrics>,
     ) -> Self {
         Self {
-            bound_at: chrono::Utc::now(),
+            bound_at: Timestamp::now(),
             hub,
             router,
             store,
@@ -188,7 +189,7 @@ impl LiveState {
     /// Read by `GET /api/v1/clients/status`. A clone carries the original
     /// moment rather than the moment it was cloned — the handle is passed
     /// around, and every copy is the same listener.
-    pub fn bound_at(&self) -> chrono::DateTime<chrono::Utc> {
+    pub fn bound_at(&self) -> Timestamp {
         self.bound_at
     }
 

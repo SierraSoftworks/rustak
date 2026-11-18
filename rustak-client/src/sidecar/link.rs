@@ -27,13 +27,13 @@
 //! is never ready, and publishing into it is a logged no-op. That keeps one
 //! loop in [`run`](super::run) rather than two.
 
+use rustak_core::time::{DurationExt, Timestamp};
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use futures::{SinkExt, Stream, StreamExt};
 use rustak_core::prelude::*;
 use rustak_cot::Event;
@@ -119,7 +119,7 @@ struct Discards {
     dropped: usize,
 
     /// When the run was last mentioned.
-    mentioned_at: Option<DateTime<Utc>>,
+    mentioned_at: Option<Timestamp>,
 }
 
 /// What one discarded batch is worth saying.
@@ -140,7 +140,7 @@ enum Discarded {
 
 impl Discards {
     /// Records what the connection's state is, so a drop is a state change.
-    fn connected(&mut self, connected: bool, now: DateTime<Utc>) {
+    fn connected(&mut self, connected: bool, now: Timestamp) {
         if connected {
             self.ever_connected = true;
             self.announced = false;
@@ -152,7 +152,7 @@ impl Discards {
     }
 
     /// Records a discarded batch and answers what to say about it.
-    fn discarded(&mut self, count: usize, now: DateTime<Utc>) -> Discarded {
+    fn discarded(&mut self, count: usize, now: Timestamp) -> Discarded {
         if !self.ever_connected {
             return Discarded::Starting;
         }
@@ -367,7 +367,7 @@ impl Link {
         self.stats
             .record_discarded(count, self.discards.ever_connected);
 
-        match self.discards.discarded(count, Utc::now()) {
+        match self.discards.discarded(count, Timestamp::now()) {
             Discarded::Starting => tracing::debug!(
                 count,
                 "Discarding events: the CoT stream has not finished connecting yet.",
@@ -397,7 +397,7 @@ impl Link {
         if connected != self.connected {
             self.connected = connected;
             self.negotiated = false;
-            self.discards.connected(connected, Utc::now());
+            self.discards.connected(connected, Timestamp::now());
 
             return Some(if connected {
                 SidecarEvent::Connected {
@@ -592,8 +592,8 @@ mod tests {
     }
 
     /// The clock the discard tests move by hand, so that nothing here waits.
-    fn at(seconds: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(1_789_646_400 + seconds, 0).expect("an instant")
+    fn at(seconds: i64) -> Timestamp {
+        Timestamp::new(1_789_646_400 + seconds, 0).expect("an instant")
     }
 
     #[test]

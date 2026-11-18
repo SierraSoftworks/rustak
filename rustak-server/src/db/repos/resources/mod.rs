@@ -25,7 +25,7 @@ pub mod row;
 use rusqlite::{OptionalExtension as _, params_from_iter};
 use rustak_core::prelude::*;
 
-use crate::db::{Database, row::Timestamp};
+use crate::db::{Database, row::DbTime};
 
 pub use row::{MutableField, NewResource, ResourceFilter, ResourceRow};
 
@@ -89,7 +89,7 @@ impl<'a> ResourcesRepo<'a> {
                         new.creator_uid,
                         new.submitter_id.map(UserId::get),
                         new.submitter,
-                        Timestamp::now(),
+                        DbTime::now(),
                         new.expiration,
                         i64::from(new.is_mission_package),
                         groups,

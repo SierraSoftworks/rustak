@@ -9,6 +9,7 @@
 //! the tab lives, because the pages that exist to do those things cannot be
 //! reviewed otherwise.
 
+use rustak_api::time::Timestamp;
 use std::cell::RefCell;
 
 use rustak_api::{
@@ -175,7 +176,7 @@ impl State {
         if let Some(profile) = self.profiles.iter_mut().find(|profile| profile.id == id) {
             profile.pref_count = prefs as u32;
             profile.file_count = files as u32;
-            profile.updated = chrono::Utc::now();
+            profile.updated = Timestamp::now();
         }
     }
 }
@@ -222,7 +223,7 @@ pub fn create_profile(request: &ProfileCreate) -> Result<Profile, ApiError> {
             tool: request.tool.clone(),
             kind: request.kind.clone(),
             groups: request.groups.clone(),
-            updated: chrono::Utc::now(),
+            updated: Timestamp::now(),
             file_count: 0,
             pref_count: 0,
         };
@@ -265,7 +266,7 @@ pub fn patch_profile(id: ProfileId, change: &ProfileUpdate) -> Result<Profile, A
             profile.groups = groups.clone();
         }
 
-        profile.updated = chrono::Utc::now();
+        profile.updated = Timestamp::now();
 
         Ok(profile.clone())
     })
@@ -350,7 +351,7 @@ pub fn add_profile_file(id: ProfileId, name: String, size: u64) -> Result<Profil
             name,
             size,
             mime_type: None,
-            updated: chrono::Utc::now(),
+            updated: Timestamp::now(),
         };
 
         held.1.retain(|existing| existing.name != file.name);

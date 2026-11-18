@@ -12,7 +12,7 @@
 //! device claims it received against what we hold is comparing the same bytes
 //! rather than the sender's draft of them.
 
-use chrono::{DateTime, Utc};
+use crate::time::Timestamp;
 use serde::{Deserialize, Serialize};
 
 /// The last message one uid sent, without its body.
@@ -37,13 +37,13 @@ pub struct CotSummary {
     pub role: Option<String>,
 
     /// The event's own time.
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
 
     /// When the event stops being worth drawing.
-    pub stale: DateTime<Utc>,
+    pub stale: Timestamp,
 
     /// When this server relayed it, which is what a listing is ordered by.
-    pub received_at: DateTime<Utc>,
+    pub received_at: Timestamp,
 
     pub lat: f64,
     pub lon: f64,

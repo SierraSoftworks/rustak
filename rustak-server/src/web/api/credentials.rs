@@ -29,6 +29,7 @@ use rustak_api::{
     AuditCategory, AuditOutcome, CreateCredentialRequest, Credential, CredentialCreated,
     CredentialId, CredentialKind, EnrollTemplate,
 };
+use rustak_core::time::SignedDuration;
 
 use crate::db::AuditEntry;
 use crate::db::repos::Page;
@@ -356,8 +357,8 @@ fn owner(subject: &Subject) -> Option<Username> {
 }
 
 /// Turns the request's whole days into a duration.
-fn days(count: u32) -> chrono::Duration {
-    chrono::Duration::days(i64::from(count))
+fn days(count: u32) -> SignedDuration {
+    SignedDuration::from_hours(24 * (i64::from(count)))
 }
 
 /// Writes what was done, to whom, and by whom. Never the secret.

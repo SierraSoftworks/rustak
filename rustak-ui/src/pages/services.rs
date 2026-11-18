@@ -257,6 +257,7 @@ fn row(service: &ServiceSummary, selected: bool, onselect: Callback<MouseEvent>)
 
 #[cfg(test)]
 mod tests {
+    use rustak_api::time::Timestamp;
     use rustak_api::{ServiceDescriptor, ServiceId, ServiceName, ServiceStatus};
 
     use super::*;
@@ -270,7 +271,7 @@ mod tests {
                 message: None,
                 last_heartbeat_at: None,
             },
-            registered_at: chrono::Utc::now(),
+            registered_at: Timestamp::now(),
             metrics: serde_json::Value::Null,
         }
     }

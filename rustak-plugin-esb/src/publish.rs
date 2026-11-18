@@ -6,10 +6,10 @@
 //! outage that leaves ESB's list is simply no longer refreshed — **no delete
 //! is ever sent**, and every client drops the marker when its `stale` passes.
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use rustak_client::feed::FeedCounters;
 use rustak_client::feed::upstream::{self, Every};
 use rustak_core::prelude::*;
@@ -45,7 +45,7 @@ impl Summary {
 struct Held {
     outage: Outage,
     /// When this marker is next published whether or not it has changed.
-    due: DateTime<Utc>,
+    due: Timestamp,
 }
 
 /// Turns snapshots of ESB's list into the events worth sending.
@@ -53,7 +53,7 @@ struct Held {
 pub struct OutagePublisher {
     scope: Scope,
     stale: Duration,
-    refresh: chrono::Duration,
+    refresh: SignedDuration,
     held: HashMap<String, Held>,
     outbox: Vec<Event>,
     counters: FeedCounters,
@@ -84,8 +84,7 @@ impl OutagePublisher {
         Self {
             scope,
             stale,
-            refresh: chrono::Duration::from_std(refresh.min(ceiling))
-                .unwrap_or_else(|_| chrono::Duration::zero()),
+            refresh: SignedDuration::try_from(refresh.min(ceiling)).unwrap_or(SignedDuration::ZERO),
             held: HashMap::new(),
             outbox: Vec::new(),
             counters: FeedCounters::default(),
@@ -95,11 +94,11 @@ impl OutagePublisher {
 
     /// Offers everything ESB currently lists.
     pub fn offer(&mut self, snapshot: Vec<Outage>) {
-        self.offer_at(snapshot, Utc::now());
+        self.offer_at(snapshot, Timestamp::now());
     }
 
     /// [`offer`](Self::offer), at an instant of the caller's choosing.
-    pub fn offer_at(&mut self, snapshot: Vec<Outage>, now: DateTime<Utc>) {
+    pub fn offer_at(&mut self, snapshot: Vec<Outage>, now: Timestamp) {
         let mut listed = HashSet::with_capacity(snapshot.len());
 
         for outage in snapshot {
@@ -138,7 +137,7 @@ impl OutagePublisher {
     ///
     /// Everything a storm lists arrives in one poll; without a spread it would
     /// all be republished in one burst every `refresh` for the rest of the day.
-    fn refresh_after(&self, id: &str) -> chrono::Duration {
+    fn refresh_after(&self, id: &str) -> SignedDuration {
         let spread: i32 = id.bytes().map(i32::from).sum::<i32>() % 50;
 
         self.refresh * (50 + spread) / 100
@@ -152,7 +151,7 @@ impl OutagePublisher {
     /// Makes every marker due, for a connection that has none of them.
     pub fn refresh_all(&mut self) {
         for held in self.held.values_mut() {
-            held.due = DateTime::<Utc>::MIN_UTC;
+            held.due = Timestamp::MIN;
         }
     }
 
@@ -195,7 +194,7 @@ impl OutagePublisher {
     /// plugins that publish through `rustak_client::feed::FeedPublisher`.
     ///
     /// Answers whether it logged, for the tests.
-    pub fn report_at(&mut self, now: DateTime<Utc>) -> bool {
+    pub fn report_at(&mut self, now: Timestamp) -> bool {
         if !self.report.due_at(now) {
             return false;
         }
@@ -227,8 +226,8 @@ mod tests {
     const STALE: Duration = Duration::from_secs(900);
     const REFRESH: Duration = Duration::from_secs(300);
 
-    fn at(seconds: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(1_789_646_400 + seconds, 0).expect("an instant")
+    fn at(seconds: i64) -> Timestamp {
+        Timestamp::new(1_789_646_400 + seconds, 0).expect("an instant")
     }
 
     fn publisher() -> OutagePublisher {

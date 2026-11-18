@@ -7,7 +7,7 @@
 //! session — so a page only mounts, and therefore only fetches, once access
 //! has been granted.
 
-use chrono::{Datelike, Utc};
+use rustak_api::time::Timestamp;
 use yew::prelude::*;
 use yew_router::prelude::*;
 use yewi::{
@@ -160,7 +160,7 @@ pub fn admin_shell(props: &AdminShellProps) -> Html {
             </ContextProvider<PageActions>>
             if !immersive {
                 <footer class="app-footer">
-                    <p>{ format!("Copyright © Sierra Softworks {}", Utc::now().year()) }</p>
+                    <p>{ format!("Copyright © Sierra Softworks {}", Timestamp::now().civil().year()) }</p>
                 </footer>
             }
         </AppShell>

@@ -366,6 +366,7 @@ fn from_cached(item: &crate::db::repos::MissionUidRow) -> String {
 
 #[cfg(test)]
 mod tests {
+    use rustak_core::time::Timestamp;
     use std::io::Cursor;
 
     use super::*;
@@ -565,7 +566,7 @@ mod tests {
             .upsert_uid(crate::db::repos::MissionUidRow::new(
                 mission.id,
                 "UID-MARKER",
-                chrono::Utc::now(),
+                Timestamp::now(),
             ))
             .await
             .unwrap();
@@ -613,7 +614,7 @@ mod tests {
             tool: "public".to_string(),
             keywords: Vec::new(),
             creator_uid: None,
-            create_time: chrono::DateTime::UNIX_EPOCH,
+            create_time: Timestamp::UNIX_EPOCH,
             last_edited: None,
             default_role: Role::Subscriber,
             invite_only: false,

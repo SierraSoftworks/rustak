@@ -14,12 +14,12 @@
 //! `WHERE` clause, with the instant bound rather than taken from SQLite, for
 //! the same reason every other timestamp here is.
 
-use chrono::{DateTime, Utc};
 use rustak_api::{CertificateKind, CertificateState};
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 
 use crate::db::repos::Page;
-use crate::db::row::Timestamp;
+use crate::db::row::DbTime;
 
 use super::{COLUMNS, CertificateRow, CertificatesRepo};
 
@@ -86,7 +86,7 @@ impl CertificatesRepo<'_> {
     pub async fn list(
         &self,
         filter: CertificateFilter,
-        now: DateTime<Utc>,
+        now: Timestamp,
         page: Page,
     ) -> Result<Vec<CertificateRow>, Error> {
         let sql = format!(
@@ -104,7 +104,7 @@ impl CertificatesRepo<'_> {
                             filter.kind.map(|kind| kind.as_str()),
                             filter.user_id.map(UserId::get),
                             filter.device_id.map(DeviceId::get),
-                            Timestamp::from(now),
+                            DbTime::from(now),
                             page.limit(),
                             page.offset(),
                         ],
@@ -215,7 +215,7 @@ mod tests {
         db
     }
 
-    fn now() -> DateTime<Utc> {
+    fn now() -> Timestamp {
         "2026-01-01T00:00:00Z".parse().unwrap()
     }
 
@@ -263,7 +263,7 @@ mod tests {
         // The expired listing excludes the revoked ones outright, so the three
         // states partition the register rather than overlapping.
         let db = seeded().await;
-        let later: DateTime<Utc> = "2031-01-01T00:00:00Z".parse().unwrap();
+        let later: Timestamp = "2031-01-01T00:00:00Z".parse().unwrap();
 
         let expired = db
             .certificates()

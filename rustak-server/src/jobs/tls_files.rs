@@ -15,11 +15,10 @@
 //! then returns `Ok`: handing it to the job host's back-off would stop the
 //! *schedule*, and the schedule is what notices the operator fixing it.
 
-use chrono::TimeDelta;
-
 use crate::pki::tls::files::{self, Outcome};
 use crate::prelude::*;
 use crate::register_job;
+use rustak_core::time::SignedDuration;
 
 /// The queue partition this job owns.
 pub const TLS_FILES_PARTITION: &str = "housekeeping/tls-files";
@@ -58,8 +57,8 @@ impl Job for TlsFilesJob {
 
     /// Two `stat` calls and, at most, two small files: a run that takes longer
     /// than this is a filesystem that has stopped answering.
-    fn timeout(&self) -> TimeDelta {
-        TimeDelta::minutes(1)
+    fn timeout(&self) -> SignedDuration {
+        SignedDuration::from_mins(1)
     }
 
     /// Arms the schedule, the first look one interval out, leaving a look that
@@ -144,6 +143,7 @@ fn report(outcome: &Outcome) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::Timestamp;
 
     use std::path::Path;
 
@@ -207,7 +207,7 @@ mod tests {
             config.web.public.tls.mode = TlsMode::Files;
             config.web.public.tls.cert_file = Some(cert_file.clone());
             config.web.public.tls.key_file = Some(key_file.clone());
-            config.web.public.tls.reload_interval = TimeDelta::zero();
+            config.web.public.tls.reload_interval = SignedDuration::ZERO;
         })
         .await
         .unwrap();
@@ -238,7 +238,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(armed.len(), 1);
-        assert!(armed[0].hidden_until > chrono::Utc::now() + TimeDelta::seconds(20));
+        assert!(armed[0].hidden_until > Timestamp::now() + SignedDuration::from_secs(20));
     }
 
     #[tokio::test]
@@ -248,7 +248,7 @@ mod tests {
         TlsFilesJob::dispatch_delayed(
             TlsFilesTask::default(),
             Some(TLS_FILES_PARTITION.into()),
-            TimeDelta::seconds(10),
+            SignedDuration::from_secs(10),
             &context,
         )
         .await
@@ -278,7 +278,7 @@ mod tests {
 
         JobRunnable::handle(
             &TlsFilesJob,
-            JobContext::new(context.clone(), chrono::Utc::now(), None, None),
+            JobContext::new(context.clone(), Timestamp::now(), None, None),
             &serde_json::json!({}),
         )
         .await
@@ -302,7 +302,7 @@ mod tests {
 
         Job::handle(
             &TlsFilesJob,
-            JobContext::new(context.clone(), chrono::Utc::now(), None, None),
+            JobContext::new(context.clone(), Timestamp::now(), None, None),
             &TlsFilesTask { forced: true },
         )
         .await
@@ -346,7 +346,7 @@ mod tests {
 
         Job::handle(
             &TlsFilesJob,
-            JobContext::new(context.clone(), chrono::Utc::now(), None, None),
+            JobContext::new(context.clone(), Timestamp::now(), None, None),
             &TlsFilesTask { forced: true },
         )
         .await

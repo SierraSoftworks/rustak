@@ -1,8 +1,8 @@
 //! One observation of one moving thing, and the CoT event it becomes.
 
+use rustak_core::time::Timestamp;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use rustak_cot::detail::{Contact, Remarks};
 use rustak_cot::{CotTime, Event, Point};
 use serde::{Deserialize, Serialize};
@@ -80,7 +80,7 @@ pub struct Track {
 
     /// When the object was at this position, as its source reported it — not
     /// when we heard about it.
-    pub observed_at: DateTime<Utc>,
+    pub observed_at: Timestamp,
 
     /// Whether it is on the ground or alongside.
     ///
@@ -99,7 +99,7 @@ impl Track {
         id: impl Into<String>,
         kind: TrackKind,
         position: (f64, f64),
-        observed_at: DateTime<Utc>,
+        observed_at: Timestamp,
     ) -> Self {
         Self {
             id: id.into(),

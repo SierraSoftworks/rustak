@@ -6,6 +6,7 @@
 //! mistyped.
 
 use rustak_core::prelude::*;
+use rustak_core::time::SignedDuration;
 
 use super::{
     cache::Cache,
@@ -105,7 +106,7 @@ impl<D: Queue, T: Serialize + DeserializeOwned + Send + 'static> Partition<D, T>
         &self,
         item: T,
         idempotency_key: Option<std::borrow::Cow<'static, str>>,
-        delay: Option<chrono::Duration>,
+        delay: Option<SignedDuration>,
     ) -> Result<QueuedMessage, Error> {
         self.db
             .enqueue(self.name.clone(), item, idempotency_key, delay)
@@ -117,7 +118,7 @@ impl<D: Queue, T: Serialize + DeserializeOwned + Send + 'static> Partition<D, T>
     /// # Errors
     ///
     /// As the underlying queue.
-    pub async fn dequeue(&self, reserve_for: chrono::Duration) -> Result<QueueMessage<T>, Error> {
+    pub async fn dequeue(&self, reserve_for: SignedDuration) -> Result<QueueMessage<T>, Error> {
         self.db.dequeue(self.name.clone(), reserve_for).await
     }
 
@@ -155,12 +156,7 @@ impl<D: Cache, T: Serialize + DeserializeOwned + Clone + Send + 'static> Partiti
     /// # Errors
     ///
     /// As the underlying cache, or whatever `builder` reported.
-    pub async fn cached<B>(
-        &self,
-        key: String,
-        builder: B,
-        ttl: chrono::Duration,
-    ) -> Result<T, Error>
+    pub async fn cached<B>(&self, key: String, builder: B, ttl: SignedDuration) -> Result<T, Error>
     where
         B: FnOnce() -> std::pin::Pin<Box<dyn Future<Output = Result<T, Error>> + Sync + Send>>
             + Sync

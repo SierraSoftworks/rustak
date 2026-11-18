@@ -285,7 +285,7 @@ impl Pki {
             .message(format!(
                 "A client certificate was issued to {} and expires {}.",
                 enrollment.username,
-                issued.not_after.format("%Y-%m-%d")
+                issued.not_after.strftime("%Y-%m-%d")
             ))
             .detail(serde_json::json!({
                 "fingerprint": issued.fingerprint,
@@ -397,6 +397,7 @@ impl Pki {
 mod tests {
     use super::*;
     use crate::pki::keys::{KeyType, generate_key};
+    use rustak_core::time::Timestamp;
 
     struct Fixture {
         db: Database,
@@ -527,7 +528,7 @@ mod tests {
             .client_verifier(true)
             .expect("the verifier the stream listener is built with");
         let now = rustls::pki_types::UnixTime::since_unix_epoch(std::time::Duration::from_secs(
-            chrono::Utc::now().timestamp() as u64,
+            Timestamp::now().as_second() as u64,
         ));
 
         rustls::server::danger::ClientCertVerifier::verify_client_cert(

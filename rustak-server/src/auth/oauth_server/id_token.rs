@@ -33,13 +33,12 @@
 //!
 //! [`JwtIssuer::verify`]: crate::auth::JwtIssuer::verify
 
-use chrono::{DateTime, Utc};
-
 use crate::auth::JwtIssuer;
 use crate::config::OAuthServerConfig;
 use crate::db::Database;
 use crate::db::repos::UserRow;
 use crate::prelude::*;
+use rustak_core::time::Timestamp;
 
 use super::claims;
 
@@ -70,7 +69,7 @@ pub struct Request<'a> {
     pub expires_at: i64,
 
     /// When the session behind this token began, when that is known.
-    pub auth_time: Option<DateTime<Utc>>,
+    pub auth_time: Option<Timestamp>,
 }
 
 /// Mints an ID token.
@@ -86,7 +85,7 @@ pub async fn issue(
     oauth: &OAuthServerConfig,
     request: &Request<'_>,
 ) -> Result<String, Error> {
-    let issued_at = Utc::now().timestamp();
+    let issued_at = Timestamp::now().as_second();
     let mut claims =
         claims::released(db, oauth, request.user, request.is_admin, request.granted).await?;
 
@@ -98,7 +97,7 @@ pub async fn issue(
         "auth_time".to_string(),
         request
             .auth_time
-            .map_or(issued_at, |when| when.timestamp())
+            .map_or(issued_at, |when| when.as_second())
             .into(),
     );
 
@@ -117,6 +116,7 @@ mod tests {
     use super::*;
     use crate::db::repos::NewUser;
     use crate::testing::TestServer;
+    use rustak_core::time::SignedDuration;
 
     /// A server, an account and the issuer the tokens come from.
     async fn fixture(is_admin: bool) -> (TestServer, UserRow) {
@@ -182,7 +182,7 @@ mod tests {
             client_id: "cloudtak",
             granted,
             nonce,
-            expires_at: Utc::now().timestamp() + 3600,
+            expires_at: Timestamp::now().as_second() + 3600,
             auth_time: None,
         }
     }
@@ -227,7 +227,7 @@ mod tests {
     #[actix_web::test]
     async fn auth_time_is_the_sessions_own_start_when_it_is_known() {
         let (server, user) = fixture(false).await;
-        let began = Utc::now() - chrono::Duration::hours(2);
+        let began = Timestamp::now() - SignedDuration::from_hours(2);
         let token = issued(
             &server,
             &user,
@@ -240,7 +240,7 @@ mod tests {
 
         let claims = payload(&token);
 
-        assert_eq!(claims["auth_time"], began.timestamp());
+        assert_eq!(claims["auth_time"], began.as_second());
         assert!(claims["auth_time"].as_i64().unwrap() < claims["iat"].as_i64().unwrap());
     }
 

@@ -13,6 +13,7 @@
 
 mod stream_support;
 
+use rustak_core::time::{Precision, Timestamp};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -188,14 +189,12 @@ async fn an_administrator_adds_a_service_in_one_step() {
             .contains(&format!("RUSTAK_SERVICE_TOKEN={service_token}\n"))
     );
     assert!(
-        onboarding.environment.contains(
-            &onboarding
-                .enrollment_expires_at
-                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-        )
+        onboarding
+            .environment
+            .contains(&onboarding.enrollment_expires_at.to_rfc3339(Precision::Secs))
     );
     let ttl = server.config().auth.enrollment_token_ttl;
-    assert!(onboarding.enrollment_expires_at <= chrono::Utc::now() + ttl);
+    assert!(onboarding.enrollment_expires_at <= Timestamp::now() + ttl);
 
     // The account is a service's, and it holds exactly the two credentials.
     let user = account(&server, "svc.adsb").await.unwrap();

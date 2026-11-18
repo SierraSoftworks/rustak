@@ -34,6 +34,7 @@
 
 mod stream_support;
 
+use rustak_core::time::Timestamp;
 use std::sync::Arc;
 
 use actix_web::{App, test};
@@ -358,7 +359,7 @@ async fn a_missions_cot_document_is_one_a_strict_reader_takes_whole() {
         .upsert_uid(rustak_server::db::repos::MissionUidRow::new(
             mission_id,
             "UID-FILED".to_string(),
-            chrono::Utc::now(),
+            Timestamp::now(),
         ))
         .await
         .unwrap();

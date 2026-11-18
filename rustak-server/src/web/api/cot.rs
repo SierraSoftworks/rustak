@@ -20,8 +20,8 @@
 //! answered, and the next page starts where this one did.
 
 use actix_web::{HttpResponse, web};
-use chrono::{DateTime, Duration, Utc};
 use rustak_api::{AuditCategory, AuditOutcome, CotDetail, CotSummary};
+use rustak_core::time::{SignedDuration, Timestamp};
 use rustak_cot::Event;
 
 use crate::cot_store::latest::LatestRow;
@@ -43,7 +43,7 @@ const DEFAULT_SECAGO: i64 = 3600;
 const MAX_HISTORY: usize = 500;
 
 /// A half-open-ended span of time, as both of the reads here narrow by.
-pub type Window = (DateTime<Utc>, DateTime<Utc>);
+pub type Window = (Timestamp, Timestamp);
 
 /// Registers the CoT browser's routes.
 pub fn routes(config: &mut web::ServiceConfig) {
@@ -74,10 +74,10 @@ pub struct ListQuery {
     pub secago: Option<i64>,
 
     #[serde(default)]
-    pub start: Option<DateTime<Utc>>,
+    pub start: Option<Timestamp>,
 
     #[serde(default)]
-    pub end: Option<DateTime<Utc>>,
+    pub end: Option<Timestamp>,
 
     #[serde(default)]
     pub page: Option<u32>,
@@ -118,10 +118,10 @@ pub struct HistoryQuery {
     pub secago: Option<i64>,
 
     #[serde(default)]
-    pub start: Option<DateTime<Utc>>,
+    pub start: Option<Timestamp>,
 
     #[serde(default)]
-    pub end: Option<DateTime<Utc>>,
+    pub end: Option<Timestamp>,
 
     #[serde(default)]
     pub limit: Option<usize>,
@@ -152,15 +152,15 @@ impl HistoryQuery {
 /// caller that has swapped the two parameters.
 fn bounds(
     secago: Option<i64>,
-    start: Option<DateTime<Utc>>,
-    end: Option<DateTime<Utc>>,
+    start: Option<Timestamp>,
+    end: Option<Timestamp>,
     default_secago: Option<i64>,
 ) -> Result<Window, ApiError> {
-    let end = end.unwrap_or_else(Utc::now);
+    let end = end.unwrap_or_else(Timestamp::now);
     let start = match (start, secago.or(default_secago)) {
         (Some(start), _) => start,
-        (None, Some(secago)) => end - Duration::seconds(secago.max(0)),
-        (None, None) => DateTime::UNIX_EPOCH,
+        (None, Some(secago)) => end - SignedDuration::from_secs(secago.max(0)),
+        (None, None) => Timestamp::UNIX_EPOCH,
     };
 
     if start > end {
@@ -386,7 +386,7 @@ fn summarise(row: &LatestRow, index: &GroupIndex) -> CotSummary {
 /// a channel it did not reach.
 fn from_event(event: &Event, groups: Vec<String>) -> CotSummary {
     let group = event.group();
-    let now = Utc::now();
+    let now = Timestamp::now();
 
     CotSummary {
         uid: event.uid.clone(),
@@ -431,8 +431,8 @@ mod tests {
             user_id: None,
             device_id: None,
             group_bits: groups.to_bytes(),
-            time: Utc::now(),
-            stale: Utc::now(),
+            time: Timestamp::now(),
+            stale: Timestamp::now(),
             xml: "<event version=\"2.0\" uid=\"UID-A\" type=\"a-f-G-U-C\" \
                   time=\"2026-09-18T12:00:00.000Z\" start=\"2026-09-18T12:00:00.000Z\" \
                   stale=\"2026-09-18T12:02:00.000Z\" how=\"m-g\">\
@@ -440,7 +440,7 @@ mod tests {
                   le=\"9999999.0\"/><detail><__group name=\"Cyan\" role=\"Team Member\"/>\
                   </detail></event>"
                 .to_string(),
-            received_at: Utc::now(),
+            received_at: Timestamp::now(),
         }
     }
 
@@ -502,10 +502,10 @@ mod tests {
 
     #[test]
     fn a_window_that_ends_before_it_starts_is_refused() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let backwards = HistoryQuery {
             start: Some(now),
-            end: Some(now - Duration::hours(1)),
+            end: Some(now - SignedDuration::from_hours(1)),
             ..HistoryQuery::default()
         };
 
@@ -514,7 +514,7 @@ mod tests {
 
     #[test]
     fn secago_is_relative_to_the_end_of_the_window_and_start_beats_it() {
-        let end = Utc::now();
+        let end = Timestamp::now();
         let (start, resolved) = HistoryQuery {
             secago: Some(600),
             end: Some(end),
@@ -524,9 +524,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(resolved, end);
-        assert_eq!((end - start).num_seconds(), 600);
+        assert_eq!((end - start).as_secs(), 600);
 
-        let explicit = end - Duration::days(1);
+        let explicit = end - SignedDuration::from_hours(24);
         let (start, _) = HistoryQuery {
             secago: Some(600),
             start: Some(explicit),
@@ -549,7 +549,7 @@ mod tests {
 
     #[test]
     fn a_listing_window_means_what_it_means_on_the_history() {
-        let end = Utc::now();
+        let end = Timestamp::now();
         let (start, resolved) = ListQuery {
             secago: Some(600),
             end: Some(end),
@@ -560,7 +560,7 @@ mod tests {
         .expect("a window was asked for");
 
         assert_eq!(resolved, end);
-        assert_eq!((end - start).num_seconds(), 600);
+        assert_eq!((end - start).as_secs(), 600);
 
         // An `end` alone reaches back to the beginning rather than to an hour
         // before it: "everything up to then" is what was asked.
@@ -572,12 +572,12 @@ mod tests {
         .unwrap()
         .expect("a window was asked for");
 
-        assert_eq!(start, DateTime::UNIX_EPOCH);
+        assert_eq!(start, Timestamp::UNIX_EPOCH);
 
         assert!(
             ListQuery {
                 start: Some(end),
-                end: Some(end - Duration::hours(1)),
+                end: Some(end - SignedDuration::from_hours(1)),
                 ..ListQuery::default()
             }
             .window()
@@ -588,7 +588,7 @@ mod tests {
 
     #[test]
     fn a_negative_secago_is_now_rather_than_the_future() {
-        let end = Utc::now();
+        let end = Timestamp::now();
         let (start, _) = HistoryQuery {
             secago: Some(-600),
             end: Some(end),

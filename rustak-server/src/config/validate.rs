@@ -14,6 +14,7 @@
 //! and `[server]`, and serde has no way to express that.
 
 use human_errors::Error;
+use rustak_core::time::SignedDuration;
 
 use super::{AcmeChallenge, Config, MAX_SHUTDOWN_TIMEOUT, TlsMode};
 
@@ -79,8 +80,8 @@ fn shutdown(config: &Config) -> Result<(), Error> {
         return Err(human_errors::user(
             format!(
                 "`[server] shutdown_timeout` is {}s, and a drain may be at most {}s.",
-                budget.num_seconds(),
-                MAX_SHUTDOWN_TIMEOUT.num_seconds(),
+                budget.as_secs(),
+                MAX_SHUTDOWN_TIMEOUT.as_secs(),
             ),
             &[
                 "Set it to how long connections need to close, inside whatever your orchestrator allows before it sends SIGKILL.",
@@ -335,8 +336,8 @@ fn distinct_listeners(config: &Config) -> Result<(), Error> {
 }
 
 /// Refuses a duration that names no window at all.
-pub(in crate::config) fn positive(value: chrono::Duration, key: &str) -> Result<(), Error> {
-    if value <= chrono::Duration::zero() {
+pub(in crate::config) fn positive(value: SignedDuration, key: &str) -> Result<(), Error> {
+    if value <= SignedDuration::ZERO {
         return Err(human_errors::user(
             format!("`{key}` must be longer than zero."),
             ADVICE_EXAMPLE,

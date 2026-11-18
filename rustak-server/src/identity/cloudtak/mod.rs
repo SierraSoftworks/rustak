@@ -52,9 +52,9 @@
 mod bundle;
 mod urls;
 
-use chrono::Utc;
 use rustak_api::cloudtak::DEFAULT_CREDENTIAL_LABEL;
 use rustak_api::{AuditCategory, AuditOutcome, CloudTakOnboarding, CloudTakOnboardingRequest};
+use rustak_core::time::Timestamp;
 
 use crate::db::AuditEntry;
 use crate::db::repos::{CredentialRow, UserRow};
@@ -267,7 +267,11 @@ async fn existing(
         ));
     }
 
-    if credential.revoked_at.is_some() || credential.expires_at.is_some_and(|at| at <= Utc::now()) {
+    if credential.revoked_at.is_some()
+        || credential
+            .expires_at
+            .is_some_and(|at| at <= Timestamp::now())
+    {
         return Err(human_errors::user(
             "That credential has expired or been revoked, so CloudTAK could not sign in with it.",
             &["Mint a new client password for this account."],

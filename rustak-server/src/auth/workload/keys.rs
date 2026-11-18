@@ -19,9 +19,9 @@
 //! the shape that argument is about: the rotation is picked up by the first
 //! token signed with the new key rather than up to an hour later.
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::time::Duration as StdDuration;
 
-use chrono::{DateTime, Utc};
 use jsonwebtoken::jwk::JwkSet;
 
 use crate::config::WorkloadIssuer;
@@ -38,7 +38,7 @@ const DISCOVERY_PARTITION: &str = "workload:discovery";
 const REFRESH_PARTITION: &str = "workload:jwks-refresh";
 
 /// How often an unknown `kid` may send us back to the orchestrator.
-const REFRESH_EVERY: chrono::Duration = chrono::Duration::minutes(1);
+const REFRESH_EVERY: SignedDuration = SignedDuration::from_mins(1);
 
 /// How long a discovery document is kept. It changes about never, and the key
 /// set it points at has its own, shorter life.
@@ -150,7 +150,7 @@ async fn jwks_url<S: Services>(services: &S, issuer: &WorkloadIssuer) -> Result<
                 let http = services.http_client();
                 move || Box::pin(async move { fetch(&http, &url, "discovery document").await })
             },
-            chrono::Duration::hours(DISCOVERY_TTL_HOURS),
+            SignedDuration::from_hours(DISCOVERY_TTL_HOURS),
         )
         .await?;
 
@@ -162,8 +162,8 @@ async fn jwks_url<S: Services>(services: &S, issuer: &WorkloadIssuer) -> Result<
 /// Recorded rather than counted, because the thing being limited is a request
 /// to somebody else's control plane that any caller can provoke.
 async fn may_refresh<S: Services>(services: &S, issuer: &str) -> Result<bool, Error> {
-    let now = Utc::now();
-    let last: Option<DateTime<Utc>> = services
+    let now = Timestamp::now();
+    let last: Option<Timestamp> = services
         .kv()
         .get(REFRESH_PARTITION, issuer.to_owned())
         .await?;
@@ -282,8 +282,8 @@ mod tests {
             jwks_file: None,
             audience: "rustak".to_string(),
             algorithms: Vec::new(),
-            clock_skew: chrono::Duration::seconds(30),
-            jwks_refresh: chrono::Duration::hours(1),
+            clock_skew: SignedDuration::from_secs(30),
+            jwks_refresh: SignedDuration::from_hours(1),
             allow_insecure_jwks: false,
         }
     }
@@ -434,6 +434,6 @@ mod tests {
     #[test]
     fn the_refresh_window_is_the_one_the_documentation_promises() {
         assert_eq!(refresh_window(), StdDuration::from_secs(60));
-        assert_eq!(REFRESH_EVERY, chrono::Duration::minutes(1));
+        assert_eq!(REFRESH_EVERY, SignedDuration::from_mins(1));
     }
 }

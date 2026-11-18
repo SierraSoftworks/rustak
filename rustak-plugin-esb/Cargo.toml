@@ -31,7 +31,6 @@ rustak-cot = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-chrono = { workspace = true }
 tracing = { workspace = true }
 human-errors = { workspace = true }
 clap = { workspace = true }

@@ -28,11 +28,11 @@
 //! never stored — and a fingerprint that differs from the refused one resets
 //! everything.
 
+use rustak_core::time::Timestamp;
 use std::hash::{Hash as _, Hasher as _};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use rustak_core::prelude::*;
 
 use super::link_health::{REMIND_EVERY, elapsed, humanised};
@@ -81,16 +81,16 @@ pub(crate) enum Accepted {
 #[derive(Debug, Default)]
 struct State {
     /// When the current run of refusals started; [`None`] while it works.
-    refused_since: Option<DateTime<Utc>>,
+    refused_since: Option<Timestamp>,
 
     /// When this run was last mentioned at `warn`.
-    mentioned_at: Option<DateTime<Utc>>,
+    mentioned_at: Option<Timestamp>,
 
     /// How many exchanges have been refused in this run, for the reminder.
     attempts: u32,
 
     /// The earliest instant another exchange is worth making.
-    retry_at: Option<DateTime<Utc>>,
+    retry_at: Option<Timestamp>,
 
     /// A fingerprint of the credential that was refused — never the credential.
     presented: Option<u64>,
@@ -98,7 +98,7 @@ struct State {
 
 impl State {
     /// Records a refusal and answers what to say about it.
-    fn refused(&mut self, mark: Option<u64>, now: DateTime<Utc>) -> Refused {
+    fn refused(&mut self, mark: Option<u64>, now: Timestamp) -> Refused {
         self.attempts = self.attempts.saturating_add(1);
         self.presented = mark;
 
@@ -129,7 +129,7 @@ impl State {
     }
 
     /// Forgets the run, answering what that is worth saying.
-    fn accepted(&mut self, now: DateTime<Utc>) -> Accepted {
+    fn accepted(&mut self, now: Timestamp) -> Accepted {
         let refused_since = self.refused_since.take();
         *self = Self::default();
 
@@ -181,22 +181,22 @@ impl Credential {
     }
 
     /// Whether an exchange is worth making now.
-    pub(crate) fn due_at(&self, now: DateTime<Utc>) -> bool {
+    pub(crate) fn due_at(&self, now: Timestamp) -> bool {
         self.with(|state| state.retry_at.is_none_or(|at| now >= at))
     }
 
     /// How long until the next exchange is worth making.
-    pub(crate) fn retry_in_at(&self, now: DateTime<Utc>) -> Duration {
+    pub(crate) fn retry_in_at(&self, now: Timestamp) -> Duration {
         self.with(|state| state.retry_at.map_or(Duration::ZERO, |at| elapsed(now, at)))
     }
 
     /// Records a refusal of `mark` and answers what to say about it.
-    pub(crate) fn refused_at(&self, mark: Option<u64>, now: DateTime<Utc>) -> Refused {
+    pub(crate) fn refused_at(&self, mark: Option<u64>, now: Timestamp) -> Refused {
         self.with(|state| state.refused(mark, now))
     }
 
     /// Records an acceptance and answers what to say about it.
-    pub(crate) fn accepted_at(&self, now: DateTime<Utc>) -> Accepted {
+    pub(crate) fn accepted_at(&self, now: Timestamp) -> Accepted {
         self.with(|state| state.accepted(now))
     }
 
@@ -287,8 +287,8 @@ mod tests {
     use super::*;
 
     /// The clock these tests move by hand, so that nothing here waits.
-    fn at(seconds: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(1_789_646_400 + seconds, 0).expect("an instant")
+    fn at(seconds: i64) -> Timestamp {
+        Timestamp::new(1_789_646_400 + seconds, 0).expect("an instant")
     }
 
     #[test]

@@ -21,8 +21,8 @@
 //! header is therefore answered as `Err` carrying that line, which is the
 //! upstream's own explanation and the most useful thing to show an operator.
 
-use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use rustak_core::prelude::*;
+use rustak_core::time::{Timestamp, civil};
 
 /// The longest excerpt of an unreadable reply that is kept.
 const EXCERPT: usize = 160;
@@ -88,7 +88,7 @@ pub struct Detection {
     /// Pixel centre longitude, decimal degrees.
     pub lon: f64,
     /// When the satellite saw it.
-    pub acquired_at: DateTime<Utc>,
+    pub acquired_at: Timestamp,
     /// `N`, `N20`, `N21`, `Terra`, `Aqua`, `L8`… as FIRMS spells it.
     pub satellite: Option<String>,
     /// `VIIRS`, `MODIS` or `OLI`.
@@ -112,7 +112,7 @@ pub struct Detection {
 impl Detection {
     /// A detection with nothing known but where and when.
     #[must_use]
-    pub const fn at(lat: f64, lon: f64, acquired_at: DateTime<Utc>) -> Self {
+    pub const fn at(lat: f64, lon: f64, acquired_at: Timestamp) -> Self {
         Self {
             lat,
             lon,
@@ -264,12 +264,14 @@ fn fields(line: &str) -> Vec<&str> {
 }
 
 /// `2026-09-22` and `142`, `0142` or `01:42`, as an instant in UTC.
-fn acquired(date: &str, time: &str) -> Option<DateTime<Utc>> {
-    let date = NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
+fn acquired(date: &str, time: &str) -> Option<Timestamp> {
+    let date = civil::Date::strptime("%Y-%m-%d", date).ok()?;
     let hhmm: u32 = time.replace(':', "").parse().ok()?;
-    let time = NaiveTime::from_hms_opt(hhmm / 100, hhmm % 100, 0)?;
+    let hour = i8::try_from(hhmm / 100).ok()?;
+    let minute = i8::try_from(hhmm % 100).ok()?;
+    let time = civil::Time::new(hour, minute, 0, 0).ok()?;
 
-    Some(date.and_time(time).and_utc())
+    Timestamp::from_civil(date.to_datetime(time))
 }
 
 /// `D` or `N`.
@@ -306,7 +308,7 @@ mod tests {
         assert!((detection.lon + 7.91456).abs() < 1e-9);
         assert_eq!(
             detection.acquired_at,
-            "2026-09-22T13:42:00Z".parse::<DateTime<Utc>>().unwrap(),
+            "2026-09-22T13:42:00Z".parse::<Timestamp>().unwrap(),
         );
         assert_eq!(detection.satellite.as_deref(), Some("N20"));
         assert_eq!(detection.confidence, Some(Confidence::High));
@@ -324,7 +326,7 @@ mod tests {
 
         assert_eq!(
             detection.acquired_at,
-            "2026-09-22T00:42:00Z".parse::<DateTime<Utc>>().unwrap(),
+            "2026-09-22T00:42:00Z".parse::<Timestamp>().unwrap(),
         );
         assert_eq!(detection.brightness_k, Some(322.1));
         assert_eq!(detection.confidence, Some(Confidence::High));

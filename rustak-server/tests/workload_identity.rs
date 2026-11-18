@@ -43,6 +43,7 @@ mod workload_support;
 
 use rustak_api::{AuditCategory, UserKind};
 use rustak_core::prelude::*;
+use rustak_core::time::SignedDuration;
 use rustak_server::config::WorkloadConfig;
 use rustak_server::prelude::*;
 use rustak_server::testing::cases::{self, Case};
@@ -343,7 +344,7 @@ async fn the_clock_skew_allowance_is_a_boundary_and_not_a_door() {
     // host ten times slower still puts both assertions on the same side of it.
     let deployment = Deployment::start_with(true, |config| {
         for issuer in &mut config.auth.workload.issuers {
-            issuer.clock_skew = chrono::Duration::seconds(600);
+            issuer.clock_skew = SignedDuration::from_secs(600);
         }
     })
     .await;
@@ -817,7 +818,7 @@ async fn a_sidecar_whose_token_file_is_renewed_keeps_its_control_link() {
     // Nothing here waits: what moves is the content of a file and a lifetime in
     // the configuration.
     let deployment = Deployment::start_with(true, |config| {
-        config.auth.access_token_ttl = chrono::Duration::seconds(30);
+        config.auth.access_token_ttl = SignedDuration::from_secs(30);
     })
     .await;
     deployment.account(ACCOUNT, UserKind::Service, false).await;

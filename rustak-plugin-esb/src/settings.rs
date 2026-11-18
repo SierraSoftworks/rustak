@@ -1,6 +1,7 @@
 //! The `[settings]` table. Every key is documented with its default in
 //! `config.example.toml`, which this crate's tests load so the two cannot drift.
 
+use rustak_core::time::{DurationExt, SignedDuration};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -38,7 +39,7 @@ pub enum Source {
 
         /// How often the list is asked for. Default `"5m"`, floor `"1m"`.
         #[serde(default = "default_poll", with = "duration::humane")]
-        poll: chrono::Duration,
+        poll: SignedDuration,
 
         /// How many outages have their details fetched per tick. Default 10;
         /// 0 publishes markers with a type and a position and nothing else.
@@ -99,11 +100,11 @@ pub struct Settings {
 
     /// How long a marker lives without being republished. Default `"15m"`.
     #[serde(default = "default_stale", with = "duration::humane")]
-    pub stale: chrono::Duration,
+    pub stale: SignedDuration,
 
     /// How often an unchanged marker is republished. Default `"5m"`.
     #[serde(default = "default_refresh", with = "duration::humane")]
-    pub refresh: chrono::Duration,
+    pub refresh: SignedDuration,
 
     /// The upstream. Required.
     pub source: Source,
@@ -143,20 +144,20 @@ fn default_include() -> Vec<OutageKind> {
     OutageKind::ALL.to_vec()
 }
 
-fn chrono_of(value: Duration) -> chrono::Duration {
-    chrono::Duration::from_std(value).unwrap_or_else(|_| chrono::Duration::zero())
+fn signed_of(value: Duration) -> SignedDuration {
+    SignedDuration::try_from(value).unwrap_or(SignedDuration::ZERO)
 }
 
-fn default_stale() -> chrono::Duration {
-    chrono_of(STALE)
+fn default_stale() -> SignedDuration {
+    signed_of(STALE)
 }
 
-fn default_refresh() -> chrono::Duration {
-    chrono_of(REFRESH)
+fn default_refresh() -> SignedDuration {
+    signed_of(REFRESH)
 }
 
-fn default_poll() -> chrono::Duration {
-    chrono_of(DEFAULT_POLL)
+fn default_poll() -> SignedDuration {
+    signed_of(DEFAULT_POLL)
 }
 
 const fn default_details_per_tick() -> usize {
@@ -227,8 +228,8 @@ mod tests {
     #[test]
     fn a_negative_duration_is_a_typo_rather_than_a_reason_not_to_start() {
         let settings = Settings {
-            stale: chrono::Duration::seconds(-1),
-            refresh: chrono::Duration::seconds(-1),
+            stale: SignedDuration::from_secs(-1),
+            refresh: SignedDuration::from_secs(-1),
             ..Settings::default()
         };
 

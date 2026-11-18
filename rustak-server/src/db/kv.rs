@@ -13,7 +13,7 @@ use rustak_core::prelude::*;
 
 use super::{
     Database, Partition,
-    row::{Timestamp, to_json},
+    row::{DbTime, to_json},
 };
 
 /// The address of one value in the key/value store.
@@ -172,7 +172,7 @@ impl KeyValueStore for Database {
                 "INSERT INTO kv (partition, key, value, updated_at) VALUES (?1, ?2, ?3, ?4) \
                  ON CONFLICT (partition, key) \
                  DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-                rusqlite::params![partition, key, to_json(&value)?, Timestamp::now()],
+                rusqlite::params![partition, key, to_json(&value)?, DbTime::now()],
             )
         })
         .await?;
@@ -194,7 +194,7 @@ impl KeyValueStore for Database {
                 tx.execute(
                     "INSERT INTO kv (partition, key, value, updated_at) VALUES (?1, ?2, ?3, ?4) \
                      ON CONFLICT (partition, key) DO NOTHING",
-                    rusqlite::params![partition, key, to_json(&value)?, Timestamp::now()],
+                    rusqlite::params![partition, key, to_json(&value)?, DbTime::now()],
                 )
             })
             .await?;

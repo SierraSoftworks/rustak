@@ -4,9 +4,9 @@
 //! installation is one installation, so a job's context is the whole server's
 //! [`Services`] rather than one account's slice of them.
 
+use rustak_core::time::{DurationExt, SignedDuration, Timestamp};
 use std::borrow::Cow;
 
-use chrono::{DateTime, TimeDelta, Utc};
 use rustak_core::prelude::*;
 
 use crate::{db::Queue, services::Services};
@@ -16,7 +16,7 @@ use crate::{db::Queue, services::Services};
 /// Generous, because the penalty for being wrong in this direction is a job
 /// that is retried while the first attempt is still running. A job that knows
 /// better overrides [`Job::timeout`].
-pub const DEFAULT_JOB_TIMEOUT: TimeDelta = TimeDelta::minutes(5);
+pub const DEFAULT_JOB_TIMEOUT: SignedDuration = SignedDuration::from_mins(5);
 
 /// What a running job knows about the message that started it.
 ///
@@ -30,7 +30,7 @@ where
     S: Services + Send + Sync + 'static,
 {
     services: S,
-    scheduled_at: DateTime<Utc>,
+    scheduled_at: Timestamp,
     attempts: u32,
     key: Option<String>,
     traceparent: Option<String>,
@@ -45,7 +45,7 @@ where
     /// directly is running a handler without a queue behind it.
     pub fn new(
         services: S,
-        scheduled_at: DateTime<Utc>,
+        scheduled_at: Timestamp,
         traceparent: Option<String>,
         tracestate: Option<String>,
     ) -> Self {
@@ -103,7 +103,7 @@ where
     }
 
     /// When the message was enqueued — for a webhook, when the request arrived.
-    pub fn scheduled_at(&self) -> DateTime<Utc> {
+    pub fn scheduled_at(&self) -> Timestamp {
         self.scheduled_at
     }
 
@@ -154,7 +154,7 @@ pub trait Job {
     fn dispatch_delayed(
         job: Self::JobType,
         idempotency_key: Option<Cow<'static, str>>,
-        delay: TimeDelta,
+        delay: SignedDuration,
         services: &impl Services,
     ) -> impl std::future::Future<Output = Result<(), Error>> + Send {
         Self::dispatch_in(job, idempotency_key, Some(delay), services)
@@ -173,14 +173,14 @@ pub trait Job {
     fn dispatch_in(
         job: Self::JobType,
         idempotency_key: Option<Cow<'static, str>>,
-        delay: Option<TimeDelta>,
+        delay: Option<SignedDuration>,
         services: &impl Services,
     ) -> impl std::future::Future<Output = Result<(), Error>> + Send {
         let span = info_span!(
             "job.dispatch",
             otel.kind = ?OpenTelemetrySpanKind::Producer,
             job.name = Self::partition(),
-            job.delay = delay.unwrap_or_default().num_milliseconds(),
+            job.delay = delay.unwrap_or_default().whole_millis(),
         );
 
         // The queue is taken here and owned by the block, rather than reached
@@ -232,8 +232,8 @@ pub trait Job {
     /// As [`Queue::peek_key`] and [`Queue::enqueue`].
     fn arm_recurring(
         job: Self::JobType,
-        interval: TimeDelta,
-        first_delay: TimeDelta,
+        interval: SignedDuration,
+        first_delay: SignedDuration,
         services: &(impl Services + Sync),
     ) -> impl std::future::Future<Output = Result<(), Error>> + Send {
         async move {
@@ -242,7 +242,7 @@ pub trait Job {
                 .peek_key::<_, serde_json::Value>(Self::partition(), Self::partition())
                 .await?;
 
-            let latest = Utc::now() + interval;
+            let latest = Timestamp::now() + interval;
             let armed = scheduled.is_some_and(|message| {
                 message.reserved_by.is_some() || message.hidden_until <= latest
             });
@@ -274,7 +274,7 @@ pub trait Job {
 
     /// How long this job may run before its message is offered to somebody
     /// else. Doubles as the delay before a failed message is retried.
-    fn timeout(&self) -> TimeDelta {
+    fn timeout(&self) -> SignedDuration {
         DEFAULT_JOB_TIMEOUT
     }
 
@@ -375,7 +375,7 @@ mod tests {
                 value: "later".to_string(),
             },
             None,
-            TimeDelta::hours(1),
+            SignedDuration::from_hours(1),
             &context,
         )
         .await
@@ -384,7 +384,7 @@ mod tests {
         assert!(
             context
                 .queue()
-                .try_dequeue_any(TimeDelta::seconds(30))
+                .try_dequeue_any(SignedDuration::from_secs(30))
                 .await
                 .unwrap()
                 .is_none(),
@@ -393,7 +393,7 @@ mod tests {
     }
 
     /// When the scheduled message on the test partition becomes due.
-    async fn scheduled_for(context: &AppContext) -> DateTime<Utc> {
+    async fn scheduled_for(context: &AppContext) -> Timestamp {
         let queued = context
             .queue()
             .peek::<_, Payload>("test/dispatch", 10)
@@ -421,16 +421,16 @@ mod tests {
 
         Dispatchable::arm_recurring(
             scheduled(),
-            TimeDelta::hours(1),
-            TimeDelta::minutes(5),
+            SignedDuration::from_hours(1),
+            SignedDuration::from_mins(5),
             &context,
         )
         .await
         .unwrap();
 
         let due = scheduled_for(&context).await;
-        assert!(due > Utc::now(), "not at the instant of start-up");
-        assert!(due <= Utc::now() + TimeDelta::minutes(5));
+        assert!(due > Timestamp::now(), "not at the instant of start-up");
+        assert!(due <= Timestamp::now() + SignedDuration::from_mins(5));
     }
 
     #[tokio::test]
@@ -439,14 +439,14 @@ mod tests {
 
         Dispatchable::arm_recurring(
             scheduled(),
-            TimeDelta::minutes(1),
-            TimeDelta::minutes(5),
+            SignedDuration::from_mins(1),
+            SignedDuration::from_mins(5),
             &context,
         )
         .await
         .unwrap();
 
-        assert!(scheduled_for(&context).await <= Utc::now() + TimeDelta::minutes(1));
+        assert!(scheduled_for(&context).await <= Timestamp::now() + SignedDuration::from_mins(1));
     }
 
     #[tokio::test]
@@ -455,7 +455,7 @@ mod tests {
         Dispatchable::dispatch_delayed(
             scheduled(),
             Some("test/dispatch".into()),
-            TimeDelta::minutes(40),
+            SignedDuration::from_mins(40),
             &context,
         )
         .await
@@ -464,8 +464,8 @@ mod tests {
 
         Dispatchable::arm_recurring(
             scheduled(),
-            TimeDelta::hours(1),
-            TimeDelta::hours(1),
+            SignedDuration::from_hours(1),
+            SignedDuration::from_hours(1),
             &context,
         )
         .await
@@ -480,7 +480,7 @@ mod tests {
         Dispatchable::dispatch_delayed(
             scheduled(),
             Some("test/dispatch".into()),
-            TimeDelta::minutes(-5),
+            SignedDuration::from_mins(-5),
             &context,
         )
         .await
@@ -489,8 +489,8 @@ mod tests {
 
         Dispatchable::arm_recurring(
             scheduled(),
-            TimeDelta::hours(1),
-            TimeDelta::hours(1),
+            SignedDuration::from_hours(1),
+            SignedDuration::from_hours(1),
             &context,
         )
         .await
@@ -510,14 +510,14 @@ mod tests {
             .unwrap();
         let held = context
             .queue()
-            .dequeue::<_, Payload>("test/dispatch", TimeDelta::hours(2))
+            .dequeue::<_, Payload>("test/dispatch", SignedDuration::from_hours(2))
             .await
             .unwrap();
 
         Dispatchable::arm_recurring(
             scheduled(),
-            TimeDelta::hours(1),
-            TimeDelta::hours(1),
+            SignedDuration::from_hours(1),
+            SignedDuration::from_hours(1),
             &context,
         )
         .await
@@ -539,7 +539,7 @@ mod tests {
         Dispatchable::dispatch_delayed(
             scheduled(),
             Some("test/dispatch".into()),
-            TimeDelta::hours(6),
+            SignedDuration::from_hours(6),
             &context,
         )
         .await
@@ -547,14 +547,14 @@ mod tests {
 
         Dispatchable::arm_recurring(
             scheduled(),
-            TimeDelta::hours(1),
-            TimeDelta::hours(1),
+            SignedDuration::from_hours(1),
+            SignedDuration::from_hours(1),
             &context,
         )
         .await
         .unwrap();
 
-        assert!(scheduled_for(&context).await <= Utc::now() + TimeDelta::hours(1));
+        assert!(scheduled_for(&context).await <= Timestamp::now() + SignedDuration::from_hours(1));
     }
 
     #[tokio::test]
@@ -574,20 +574,20 @@ mod tests {
 
         Dispatchable::arm_recurring(
             scheduled(),
-            TimeDelta::hours(1),
-            TimeDelta::hours(1),
+            SignedDuration::from_hours(1),
+            SignedDuration::from_hours(1),
             &context,
         )
         .await
         .unwrap();
 
-        assert!(scheduled_for(&context).await > Utc::now());
+        assert!(scheduled_for(&context).await > Timestamp::now());
     }
 
     #[tokio::test]
     async fn a_context_carries_what_the_message_was_enqueued_with() {
         let context = AppContext::new_mock(|_| {}).await.unwrap();
-        let scheduled_at = Utc::now();
+        let scheduled_at = Timestamp::now();
 
         let ctx = JobContext::new(
             context,
