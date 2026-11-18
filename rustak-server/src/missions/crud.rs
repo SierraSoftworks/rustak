@@ -15,10 +15,9 @@
 //! because a subscriber who could widen a mission's channels could share
 //! somebody else's work with a channel they chose.
 
-use chrono::Utc;
-
 use crate::db::repos::{MissionPatch, NewChange, NewMission};
 use crate::marti::{MartiError, MartiPrincipal};
+use rustak_core::time::Timestamp;
 
 use super::model::{CopyParams, Mission, MissionParams, Outcome, validate_name};
 use super::roles::{Permission, Role, require};
@@ -218,7 +217,7 @@ impl MissionService {
         // rebuilds what was lost.
         self.store_archive(mission).await;
 
-        let now = Utc::now();
+        let now = Timestamp::now();
         let row = self
             .db()
             .missions()

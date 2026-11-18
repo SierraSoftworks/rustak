@@ -25,6 +25,7 @@
 //! and `Time` out of the same map to fill in a package's channels column, so
 //! the keys themselves are contractual.
 
+use rustak_core::time::Timestamp;
 use std::collections::BTreeMap;
 
 use serde_json::{Map, Value};
@@ -163,7 +164,7 @@ pub fn metadata_entry(resource: &ResourceRow) -> BTreeMap<String, String> {
 fn expiration_text(resource: &ResourceRow) -> String {
     match resource.expiration.filter(|at| *at >= 0) {
         None => "none".to_string(),
-        Some(at) => chrono::DateTime::from_timestamp_millis(at)
+        Some(at) => Timestamp::from_millisecond(at)
             .map(|at| time::cot_date(at).trim_end_matches('Z').to_string())
             .unwrap_or_else(|| "none".to_string()),
     }
@@ -208,7 +209,6 @@ fn split_list(stored: Option<&str>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone as _;
 
     use super::*;
 
@@ -225,7 +225,10 @@ mod tests {
             creator_uid: Some("ANDROID-1".to_string()),
             submitter_id: None,
             submitter: Some("grace".to_string()),
-            submission_time: chrono::Utc.with_ymd_and_hms(2024, 5, 1, 12, 0, 0).unwrap(),
+            submission_time: Timestamp::from_civil(rustak_core::time::civil::datetime(
+                2024, 5, 1, 12, 0, 0, 0,
+            ))
+            .unwrap(),
             expiration: None,
             is_mission_package: true,
             groups: vec!["Blue".to_string(), "Red".to_string()],
@@ -240,7 +243,7 @@ mod tests {
             plugin_class_name: None,
             install_on_enrollment: false,
             deleted_at: None,
-            created_at: chrono::Utc::now(),
+            created_at: Timestamp::now(),
             keywords: vec!["missionpackage".to_string()],
         }
     }

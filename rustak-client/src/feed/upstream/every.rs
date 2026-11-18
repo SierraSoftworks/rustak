@@ -6,9 +6,8 @@
 //! publishes through something of its own. The line is the plugin's; when it
 //! is due is this.
 
+use rustak_core::time::{DurationExt, Timestamp};
 use std::time::Duration;
-
-use chrono::{DateTime, Utc};
 
 /// How often a feed's counters are logged at `info`. Slow on purpose: a feed
 /// that logged its rate every tick would be the noisiest thing in the journal.
@@ -22,7 +21,7 @@ pub const REPORT_EVERY: Duration = Duration::from_secs(300);
 #[derive(Clone, Copy, Debug)]
 pub struct Every {
     period: Duration,
-    last: Option<DateTime<Utc>>,
+    last: Option<Timestamp>,
 }
 
 impl Every {
@@ -33,7 +32,7 @@ impl Every {
     }
 
     /// Whether it is due at `now`; when it is, the next one is a period away.
-    pub fn due_at(&mut self, now: DateTime<Utc>) -> bool {
+    pub fn due_at(&mut self, now: Timestamp) -> bool {
         let due = self
             .last
             .is_none_or(|last| (now - last).to_std().unwrap_or_default() >= self.period);
@@ -57,8 +56,8 @@ impl Default for Every {
 mod tests {
     use super::*;
 
-    fn at(seconds: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(1_789_646_400 + seconds, 0).expect("an instant")
+    fn at(seconds: i64) -> Timestamp {
+        Timestamp::new(1_789_646_400 + seconds, 0).expect("an instant")
     }
 
     #[test]

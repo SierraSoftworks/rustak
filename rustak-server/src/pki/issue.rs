@@ -20,8 +20,8 @@
 //! window is therefore cut to a day inside the CA's own, which is a short
 //! certificate rather than a broken one.
 
-use chrono::{DateTime, Duration, Utc};
 use rustak_core::prelude::*;
+use rustak_core::time::{SignedDuration, Timestamp};
 use rustls_pki_types::CertificateDer;
 
 use super::ca::CaMaterial;
@@ -56,11 +56,11 @@ pub struct IssueRequest<'a> {
     pub client_uid: Option<&'a str>,
 
     /// How long the certificate is valid, before clamping to the authority.
-    pub validity: Duration,
+    pub validity: SignedDuration,
 
     /// How far `notBefore` is backdated, so a device with a skewed clock does
     /// not reject the certificate it was just handed.
-    pub not_before_skew: Duration,
+    pub not_before_skew: SignedDuration,
 
     /// Whether to add [`CHANNELS_MARKER_OID`].
     pub channels_marker: bool,
@@ -81,7 +81,7 @@ impl<'a> IssueRequest<'a> {
             username,
             client_uid: None,
             validity: pki.client_cert_validity,
-            not_before_skew: Duration::minutes(DEFAULT_SKEW_MINUTES),
+            not_before_skew: SignedDuration::from_mins(DEFAULT_SKEW_MINUTES),
             channels_marker: pki.channels_marker_eku && channels_capable,
         }
     }
@@ -116,8 +116,8 @@ pub struct IssuedCert {
     /// The common name, which is the username.
     pub common_name: String,
 
-    pub not_before: DateTime<Utc>,
-    pub not_after: DateTime<Utc>,
+    pub not_before: Timestamp,
+    pub not_after: Timestamp,
 }
 
 impl std::fmt::Debug for IssuedCert {
@@ -153,7 +153,7 @@ pub fn issue_client_cert(
     let mut plan = rcgen::CertificateSigningRequestParams::from_der(&csr.der.as_slice().into())
         .or_system_err(ADVICE_REPORT)?;
 
-    let now = Utc::now();
+    let now = Timestamp::now();
     let not_before = now - request.not_before_skew;
     let not_after = (now + request.validity).min(latest_usable(ca));
 
@@ -282,8 +282,8 @@ pub fn generate_signing_request(
 }
 
 /// The latest instant a certificate we issue may expire.
-fn latest_usable(ca: &CaMaterial) -> DateTime<Utc> {
-    ca.not_after() - Duration::days(CA_EXPIRY_MARGIN_DAYS)
+fn latest_usable(ca: &CaMaterial) -> Timestamp {
+    ca.not_after() - SignedDuration::from_hours(24 * CA_EXPIRY_MARGIN_DAYS)
 }
 
 /// The subject, as a string, in the order it is encoded.
@@ -364,8 +364,8 @@ fn extended_key_usages(channels_marker: bool) -> Vec<rcgen::ExtendedKeyUsagePurp
 /// authority already dates its own certificates by the day rather than the
 /// second; a client certificate needs the minute, so that this one can be
 /// backdated by exactly the skew asked for.
-fn asn1_time(at: DateTime<Utc>) -> Result<x509_parser::time::ASN1Time, Error> {
-    x509_parser::time::ASN1Time::from_timestamp(at.timestamp()).or_system_err(ADVICE_REPORT)
+fn asn1_time(at: Timestamp) -> Result<x509_parser::time::ASN1Time, Error> {
+    x509_parser::time::ASN1Time::from_timestamp(at.as_second()).or_system_err(ADVICE_REPORT)
 }
 
 /// Maps the short attribute names an operator writes to rcgen's types.
@@ -433,8 +433,8 @@ mod tests {
         IssueRequest {
             username,
             client_uid: None,
-            validity: Duration::days(365),
-            not_before_skew: Duration::minutes(DEFAULT_SKEW_MINUTES),
+            validity: SignedDuration::from_hours(24 * 365),
+            not_before_skew: SignedDuration::from_mins(DEFAULT_SKEW_MINUTES),
             channels_marker: false,
         }
     }
@@ -678,7 +678,7 @@ mod tests {
     async fn the_validity_starts_before_now_and_is_capped_by_the_authority() {
         let (ca, _dir) = authority().await;
         let user = alice();
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         let ordinary = issue_client_cert(
             &ca,
@@ -689,10 +689,10 @@ mod tests {
         .unwrap();
 
         assert!(ordinary.not_before < now, "backdated for clock skew");
-        assert!(now - ordinary.not_before < Duration::minutes(10));
+        assert!(now - ordinary.not_before < SignedDuration::from_mins(10));
         assert!(
-            (ordinary.not_after - now - Duration::days(365))
-                .num_seconds()
+            (ordinary.not_after - now - SignedDuration::from_hours(24 * 365))
+                .as_secs()
                 .abs()
                 < 60
         );
@@ -702,7 +702,7 @@ mod tests {
             &csr("alice", KeyType::EcdsaP256),
             ENTRIES,
             &IssueRequest {
-                validity: Duration::days(100_000),
+                validity: SignedDuration::from_hours(24 * 100_000),
                 ..request(&user)
             },
         )
@@ -754,7 +754,7 @@ mod tests {
     async fn a_request_built_from_the_configuration_follows_it() {
         let user = alice();
         let pki = PkiConfig {
-            client_cert_validity: Duration::days(30),
+            client_cert_validity: SignedDuration::from_hours(24 * 30),
             channels_marker_eku: true,
             ..PkiConfig::default()
         };
@@ -763,7 +763,7 @@ mod tests {
         assert!(!IssueRequest::new(&user, &pki, false).channels_marker);
         assert_eq!(
             IssueRequest::new(&user, &pki, true).validity,
-            Duration::days(30)
+            SignedDuration::from_hours(24 * 30)
         );
 
         let off = PkiConfig {

@@ -7,6 +7,8 @@
 //! `attempts` counter added, which the job host uses to back a failing message
 //! off rather than spinning on it.
 
+use rustak_core::time::SignedDuration;
+use rustak_core::time::Timestamp;
 use std::borrow::Cow;
 
 use rustak_core::prelude::*;
@@ -24,7 +26,7 @@ pub struct QueueMessage<T> {
     /// cannot be completed twice.
     pub reservation_id: String,
     pub payload: T,
-    pub scheduled_at: chrono::DateTime<chrono::Utc>,
+    pub scheduled_at: Timestamp,
     /// How many times this message has been handed out, including this time.
     pub attempts: u32,
     pub traceparent: Option<String>,
@@ -58,8 +60,8 @@ impl<T> OpenTelemetryPropagationExtractor for QueueMessage<T> {
 pub struct PeekedMessage<T> {
     pub key: String,
     pub payload: T,
-    pub scheduled_at: chrono::DateTime<chrono::Utc>,
-    pub hidden_until: chrono::DateTime<chrono::Utc>,
+    pub scheduled_at: Timestamp,
+    pub hidden_until: Timestamp,
     pub reserved_by: Option<String>,
     pub attempts: u32,
     pub traceparent: Option<String>,
@@ -76,7 +78,7 @@ pub trait Queue {
         partition: P,
         job: T,
         idempotency_key: Option<Cow<'static, str>>,
-        delay: Option<chrono::Duration>,
+        delay: Option<SignedDuration>,
     ) -> Result<QueuedMessage, Error>;
 
     /// Reserves the next due message in one partition, waiting for one to
@@ -84,7 +86,7 @@ pub trait Queue {
     async fn dequeue<P: Into<Cow<'static, str>> + Send, T: DeserializeOwned + Send + 'static>(
         &self,
         partition: P,
-        reserve_for: chrono::Duration,
+        reserve_for: SignedDuration,
     ) -> Result<QueueMessage<T>, Error>;
 
     /// Reserves the next due message from any partition, in scheduling order.
@@ -93,7 +95,7 @@ pub trait Queue {
     /// [`QueueMessage::partition`] tells it which handler to run.
     async fn dequeue_any(
         &self,
-        reserve_for: chrono::Duration,
+        reserve_for: SignedDuration,
     ) -> Result<QueueMessage<serde_json::Value>, Error>;
 
     /// Reserves the next due message from any partition, or returns `None`
@@ -103,7 +105,7 @@ pub trait Queue {
     /// shutdown signal rather than sitting inside a sleep it cannot cancel.
     async fn try_dequeue_any(
         &self,
-        reserve_for: chrono::Duration,
+        reserve_for: SignedDuration,
     ) -> Result<Option<QueueMessage<serde_json::Value>>, Error>;
 
     /// Deletes a message this consumer holds. A lapsed reservation deletes
@@ -128,7 +130,7 @@ pub trait Queue {
         partition: P,
         key: K,
         reservation_id: R,
-        reserve_for: chrono::Duration,
+        reserve_for: SignedDuration,
     ) -> Result<(), Error>;
 
     /// Reads messages without reserving them, oldest first.

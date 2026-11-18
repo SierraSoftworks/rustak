@@ -9,9 +9,9 @@
 //! Every method answers a [`Changes`]: what to draw again and what to take
 //! away. The clock is always passed in, so none of this needs a browser.
 
+use rustak_api::time::{SignedDuration, Timestamp};
 use std::collections::{HashMap, HashSet};
 
-use chrono::{DateTime, Duration, Utc};
 use rustak_api::MapFeature;
 use serde_json::Value;
 
@@ -19,11 +19,11 @@ use super::render;
 
 /// How long a stale feature stays, dimmed. The server's snapshot uses the same
 /// figure, so a reload does not bring back what the page had already dropped.
-const LINGER: Duration = Duration::minutes(5);
+const LINGER: SignedDuration = SignedDuration::from_mins(5);
 
 /// How recently something must have arrived to survive a snapshot that does
 /// not mention it — the snapshot was read a moment before it was relayed.
-const JUST_ARRIVED: Duration = Duration::seconds(10);
+const JUST_ARRIVED: SignedDuration = SignedDuration::from_secs(10);
 
 /// What a change to the store means for the map.
 #[derive(Debug, Default, PartialEq)]
@@ -88,7 +88,7 @@ impl Store {
     }
 
     /// Takes one feature off the feed.
-    pub fn upsert(&mut self, feature: MapFeature, now: DateTime<Utc>) -> Changes {
+    pub fn upsert(&mut self, feature: MapFeature, now: Timestamp) -> Changes {
         let mut changes = Changes::default();
 
         if feature.stale + LINGER < now {
@@ -135,7 +135,7 @@ impl Store {
 
     /// Takes a snapshot: everything in it, and nothing that is not — except
     /// what arrived so recently that the snapshot could not have known.
-    pub fn replace(&mut self, snapshot: Vec<MapFeature>, now: DateTime<Utc>) -> Changes {
+    pub fn replace(&mut self, snapshot: Vec<MapFeature>, now: Timestamp) -> Changes {
         let mut changes = Changes::default();
 
         // A set, because both sides can be thousands long and this runs on the
@@ -166,7 +166,7 @@ impl Store {
 
     /// Lets time pass: dims what has gone stale, drops what has been stale long
     /// enough.
-    pub fn sweep(&mut self, now: DateTime<Utc>) -> Changes {
+    pub fn sweep(&mut self, now: Timestamp) -> Changes {
         let mut changes = Changes::default();
 
         self.held.retain(|uid, held| {
@@ -195,7 +195,7 @@ mod tests {
 
     use super::*;
 
-    fn at(time: &str) -> DateTime<Utc> {
+    fn at(time: &str) -> Timestamp {
         format!("2026-09-18T{time}Z").parse().unwrap()
     }
 
@@ -209,7 +209,7 @@ mod tests {
             team: None,
             role: None,
             time: at(time),
-            stale: at(time) + Duration::minutes(2),
+            stale: at(time) + SignedDuration::from_mins(2),
             received_at: at(time),
             point: MapPoint {
                 lat: 51.5,

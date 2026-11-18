@@ -3,6 +3,7 @@
 
 mod stream_support;
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::time::Duration;
 
 use rustak_api::identity::Direction;
@@ -62,8 +63,8 @@ async fn the_history_segments_hold_every_message_a_device_sent() {
         .overlapping(
             cot_store::STREAM_KIND,
             "UID-ALICE",
-            chrono::Utc::now() - chrono::Duration::hours(1),
-            chrono::Utc::now() + chrono::Duration::hours(1),
+            Timestamp::now() - SignedDuration::from_hours(1),
+            Timestamp::now() + SignedDuration::from_hours(1),
         )
         .await
         .unwrap();

@@ -34,6 +34,7 @@
 use actix_web::http::StatusCode;
 use actix_web::http::header::{CACHE_CONTROL, SET_COOKIE};
 use actix_web::{HttpRequest, HttpResponse, web};
+use rustak_core::time::{SignedDuration, Timestamp};
 
 use crate::auth::resolve::{ListenerAuthPolicy, resolve_principal};
 use crate::auth::tokens;
@@ -137,8 +138,8 @@ pub async fn logout(
         // the browser could undo.
         let expires_at = resolved
             .token()
-            .and_then(|claims| chrono::DateTime::from_timestamp(claims.exp, 0))
-            .unwrap_or_else(|| chrono::Utc::now() + chrono::Duration::hours(1));
+            .and_then(|claims| Timestamp::new(claims.exp, 0))
+            .unwrap_or_else(|| Timestamp::now() + SignedDuration::from_hours(1));
         let jti = resolved
             .token()
             .map(|claims| claims.jti.clone())

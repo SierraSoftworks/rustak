@@ -28,8 +28,8 @@
 //! helicopter drawn as a civil one is the worse of the two mistakes. OpenSky
 //! publishes no military flag, so nothing from it is ever flipped.
 
-use chrono::{DateTime, Utc};
 use rustak_client::feed::{AircraftClass, Track, TrackKind};
+use rustak_core::time::{SignedDuration, Timestamp};
 
 use crate::wire::{Aircraft, StateVector};
 
@@ -94,7 +94,7 @@ pub fn kind_from_opensky_category(category: Option<u8>) -> TrackKind {
 /// nothing else is most of a busy receiver's list) and one whose position is
 /// older than [`MAX_POSITION_AGE_S`].
 #[must_use]
-pub fn track_from_aircraft(aircraft: &Aircraft, now: DateTime<Utc>) -> Option<Track> {
+pub fn track_from_aircraft(aircraft: &Aircraft, now: Timestamp) -> Option<Track> {
     let (lat, lon) = (aircraft.lat?, aircraft.lon?);
     let age = aircraft.seen_pos.unwrap_or(0.0);
 
@@ -147,11 +147,11 @@ pub fn track_from_aircraft(aircraft: &Aircraft, now: DateTime<Utc>) -> Option<Tr
 /// One OpenSky state vector as a track, or [`None`] when there is nothing to
 /// draw.
 #[must_use]
-pub fn track_from_state(state: &StateVector, now: DateTime<Utc>) -> Option<Track> {
+pub fn track_from_state(state: &StateVector, now: Timestamp) -> Option<Track> {
     let (lat, lon) = (state.latitude?, state.longitude?);
     let age = state
         .time_position
-        .map_or(0.0, |at| (now.timestamp() - at).max(0) as f64);
+        .map_or(0.0, |at| (now.as_second() - at).max(0) as f64);
 
     if age > MAX_POSITION_AGE_S {
         return None;
@@ -196,8 +196,8 @@ pub fn track_from_state(state: &StateVector, now: DateTime<Utc>) -> Option<Track
 ///
 /// Against *our* clock rather than the receiver's: a receiver with no NTP is
 /// common, and the publisher measures staleness against wall-clock now.
-fn observed(now: DateTime<Utc>, age_seconds: f64) -> DateTime<Utc> {
-    now - chrono::Duration::milliseconds((age_seconds * 1_000.0) as i64)
+fn observed(now: Timestamp, age_seconds: f64) -> Timestamp {
+    now - SignedDuration::from_millis((age_seconds * 1_000.0) as i64)
 }
 
 /// What the map shows: the callsign the crew set, else the registration, else
@@ -483,7 +483,7 @@ mod tests {
 
     #[test]
     fn an_airliner_becomes_the_track_an_operator_expects() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let track = track_from_aircraft(&fixture()[0], now).expect("it has a position");
 
         assert_eq!(track.id, "ADSB-3c6444");
@@ -511,7 +511,7 @@ mod tests {
 
     #[test]
     fn the_remarks_are_the_ordered_lines_the_brief_asks_for() {
-        let track = track_from_aircraft(&fixture()[0], Utc::now()).expect("a track");
+        let track = track_from_aircraft(&fixture()[0], Timestamp::now()).expect("a track");
         let keys: Vec<&str> = track.remarks.iter().map(|(key, _)| key.as_str()).collect();
 
         assert_eq!(
@@ -549,7 +549,7 @@ mod tests {
 
     #[test]
     fn an_aircraft_with_only_a_barometric_altitude_says_so() {
-        let track = track_from_aircraft(&fixture()[1], Utc::now()).expect("a track");
+        let track = track_from_aircraft(&fixture()[1], Timestamp::now()).expect("a track");
 
         assert_eq!(track.kind, TrackKind::Aircraft(AircraftClass::CivilRotary));
         assert_eq!(track.callsign.as_deref(), Some("HLE21"));
@@ -562,7 +562,7 @@ mod tests {
 
     #[test]
     fn a_military_airframe_is_a_military_track() {
-        let track = track_from_aircraft(&fixture()[2], Utc::now()).expect("a track");
+        let track = track_from_aircraft(&fixture()[2], Timestamp::now()).expect("a track");
 
         assert_eq!(
             track.kind,
@@ -574,7 +574,7 @@ mod tests {
 
     #[test]
     fn the_ground_sentinel_becomes_an_on_ground_track_with_no_altitude() {
-        let track = track_from_aircraft(&fixture()[3], Utc::now()).expect("a track");
+        let track = track_from_aircraft(&fixture()[3], Timestamp::now()).expect("a track");
 
         assert_eq!(track.kind, TrackKind::GroundVehicle);
         assert!(track.on_ground);
@@ -591,7 +591,7 @@ mod tests {
 
     #[test]
     fn a_non_icao_address_keeps_its_tilde_and_its_emergency_is_shown() {
-        let track = track_from_aircraft(&fixture()[4], Utc::now()).expect("a track");
+        let track = track_from_aircraft(&fixture()[4], Timestamp::now()).expect("a track");
 
         assert_eq!(track.id, "ADSB-~a1b2c3", "the ~ is part of the address");
         assert_eq!(remark(&track, "ICAO"), Some("~a1b2c3"));
@@ -606,7 +606,7 @@ mod tests {
 
     #[test]
     fn a_stale_position_and_a_missing_one_are_both_skipped() {
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         assert!(
             track_from_aircraft(&fixture()[5], now).is_none(),
@@ -620,7 +620,7 @@ mod tests {
 
     #[test]
     fn the_whole_fixture_yields_exactly_the_five_drawable_aircraft() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let tracks: Vec<Track> = fixture()
             .iter()
             .filter_map(|aircraft| track_from_aircraft(aircraft, now))
@@ -639,7 +639,7 @@ mod tests {
             ..Aircraft::default()
         };
 
-        let track = track_from_aircraft(&aircraft, Utc::now()).expect("a track");
+        let track = track_from_aircraft(&aircraft, Timestamp::now()).expect("a track");
 
         assert_eq!(track.id, "ADSB-3c6444");
     }
@@ -655,7 +655,7 @@ mod tests {
             ..Aircraft::default()
         };
 
-        let track = track_from_aircraft(&aircraft, Utc::now()).expect("a track");
+        let track = track_from_aircraft(&aircraft, Timestamp::now()).expect("a track");
 
         assert_eq!(track.callsign.as_deref(), Some("G-ABCD"));
     }
@@ -671,7 +671,7 @@ mod tests {
             ..Aircraft::default()
         };
 
-        let track = track_from_aircraft(&aircraft, Utc::now()).expect("a track");
+        let track = track_from_aircraft(&aircraft, Timestamp::now()).expect("a track");
 
         assert_eq!(
             remark(&track, "Vertical rate"),
@@ -685,7 +685,7 @@ mod tests {
             serde_json::from_str(include_str!("../tests/fixtures/opensky.json"))
                 .expect("the fixture parses");
         let vectors = states.states.expect("states are present");
-        let now = DateTime::from_timestamp(states.time, 0).expect("a time");
+        let now = Timestamp::new(states.time, 0).expect("a time");
 
         let airliner = track_from_state(&vectors[0], now).expect("a track");
 

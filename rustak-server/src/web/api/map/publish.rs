@@ -24,8 +24,8 @@
 //! whoever they reach.
 
 use actix_web::{HttpResponse, web};
-use chrono::{Duration, Utc};
 use rustak_api::PublishFeature;
+use rustak_core::time::{SignedDuration, Timestamp};
 use rustak_cot::detail::marti::{Dest, marti_element};
 use rustak_cot::detail::{Contact, Element, Remarks};
 use rustak_cot::event::Point;
@@ -44,7 +44,7 @@ use crate::web::api::extract::Authenticated;
 use crate::web::api::subject::failed;
 
 /// How long a marker stays current when the page does not say.
-const DEFAULT_LIFETIME: Duration = Duration::hours(24);
+const DEFAULT_LIFETIME: SignedDuration = SignedDuration::from_hours(24);
 
 /// `PUT /api/v1/map/features/{uid}` — publishes a marker, replacing whatever
 /// that uid said before. Answers the feature as the map now draws it.
@@ -95,7 +95,7 @@ pub async fn put(
     let relayed = relay(&context, &caller, event.clone()).await?;
 
     let groups = draft.groups.clone();
-    let published = feature::from_event(relayed.event(), Utc::now(), groups);
+    let published = feature::from_event(relayed.event(), Timestamp::now(), groups);
 
     Ok(json_ok(&published))
 }
@@ -195,7 +195,7 @@ fn event_from(uid: &str, draft: &PublishFeature) -> Event {
     let stale = draft
         .stale
         .map(CotTime::from_datetime)
-        .unwrap_or_else(|| CotTime::from_datetime(Utc::now() + DEFAULT_LIFETIME));
+        .unwrap_or_else(|| CotTime::from_datetime(Timestamp::now() + DEFAULT_LIFETIME));
 
     let mut builder = Event::builder(draft.kind.as_str(), uid)
         .how(draft.how.as_deref().unwrap_or("h-g-i-g-o"))
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn a_draft_becomes_the_event_a_client_would_have_placed() {
         let event = event_from("MARKER-1", &draft());
-        let drawn = feature::from_event(&event, Utc::now(), Vec::new());
+        let drawn = feature::from_event(&event, Timestamp::now(), Vec::new());
 
         assert_eq!(event.how.as_deref(), Some("h-g-i-g-o"));
         assert_eq!(drawn.callsign.as_deref(), Some("MARKER 1"));
@@ -297,7 +297,7 @@ mod tests {
             "the channels are the message's destinations"
         );
         assert!(
-            drawn.stale > Utc::now() + Duration::hours(23),
+            drawn.stale > Timestamp::now() + SignedDuration::from_hours(23),
             "a marker lasts a day unless told otherwise"
         );
     }

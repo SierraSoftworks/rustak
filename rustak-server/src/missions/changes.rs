@@ -20,9 +20,9 @@
 //! `?squashed=false` — and the `?changes=true` form of `GET /missions/{name}`,
 //! which is genuinely the other default — returns every row.
 
+use rustak_core::time::Timestamp;
 use std::collections::HashSet;
 
-use chrono::{DateTime, Utc};
 use rustak_cot::Event;
 use tracing::warn;
 
@@ -150,12 +150,12 @@ impl MissionService {
     pub async fn changes_since(
         &self,
         mission: &Mission,
-        since: DateTime<Utc>,
+        since: Timestamp,
     ) -> Result<Vec<MissionChangeJson>, MartiError> {
         let rows = self
             .db()
             .mission_changes()
-            .window(mission.id, since, Utc::now())
+            .window(mission.id, since, Timestamp::now())
             .await?;
 
         self.render_changes(mission, rows).await
@@ -335,6 +335,7 @@ pub fn details_of(event: &Event) -> UidDetailsJson {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::SignedDuration;
 
     fn change(
         id: i64,
@@ -343,7 +344,7 @@ mod tests {
         creator: &str,
         seconds: i64,
     ) -> MissionChangeRow {
-        let at = DateTime::UNIX_EPOCH + chrono::Duration::seconds(seconds);
+        let at = Timestamp::UNIX_EPOCH + SignedDuration::from_secs(seconds);
 
         MissionChangeRow {
             id,

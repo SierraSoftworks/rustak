@@ -23,9 +23,9 @@
 //! token. [`read_fresh`] therefore gives it a moment and looks again before
 //! deciding, and prefers whichever read answered something worth presenting.
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::sync::Arc;
 
-use chrono::{DateTime, Duration, Utc};
 use rustak_core::prelude::*;
 
 /// How close to its expiry a token stops being worth presenting.
@@ -33,7 +33,7 @@ use rustak_core::prelude::*;
 /// The same margin the access-token cache uses, and for the same reason: a
 /// token that expires between the check and the request is a refusal that costs
 /// a whole retry cycle to recover from.
-pub(crate) const FRESH_WITHIN: Duration = Duration::seconds(60);
+pub(crate) const FRESH_WITHIN: SignedDuration = SignedDuration::from_secs(60);
 
 /// The clock, injected so that tests decide what "now" is.
 ///
@@ -41,11 +41,11 @@ pub(crate) const FRESH_WITHIN: Duration = Duration::seconds(60);
 /// and a test that arranges one by sleeping is a test that fails on a busy
 /// machine. Nothing in production ever constructs anything but the default.
 #[derive(Clone)]
-pub(crate) struct Clock(Arc<dyn Fn() -> DateTime<Utc> + Send + Sync>);
+pub(crate) struct Clock(Arc<dyn Fn() -> Timestamp + Send + Sync>);
 
 impl Default for Clock {
     fn default() -> Self {
-        Self(Arc::new(Utc::now))
+        Self(Arc::new(Timestamp::now))
     }
 }
 
@@ -57,13 +57,13 @@ impl std::fmt::Debug for Clock {
 
 impl Clock {
     /// What this clock says the time is.
-    pub(crate) fn now(&self) -> DateTime<Utc> {
+    pub(crate) fn now(&self) -> Timestamp {
         (self.0)()
     }
 
     /// A clock that always answers the same instant.
     #[cfg(test)]
-    pub(crate) fn fixed(at: DateTime<Utc>) -> Self {
+    pub(crate) fn fixed(at: Timestamp) -> Self {
         Self(Arc::new(move || at))
     }
 }
@@ -75,7 +75,7 @@ impl Clock {
 #[derive(Clone, Debug)]
 pub struct Assertion {
     token: Secret,
-    expires_at: Option<DateTime<Utc>>,
+    expires_at: Option<Timestamp>,
     issuer: Option<String>,
     readable: bool,
 }
@@ -90,7 +90,7 @@ impl Assertion {
                 .as_ref()
                 .and_then(|claims| claims.get("exp"))
                 .and_then(serde_json::Value::as_i64)
-                .and_then(|seconds| DateTime::from_timestamp(seconds, 0)),
+                .and_then(|seconds| Timestamp::new(seconds, 0)),
             issuer: claims
                 .as_ref()
                 .and_then(|claims| claims.get("iss"))
@@ -107,7 +107,7 @@ impl Assertion {
     }
 
     /// When it stops being valid, when it says.
-    pub fn expires_at(&self) -> Option<DateTime<Utc>> {
+    pub fn expires_at(&self) -> Option<Timestamp> {
         self.expires_at
     }
 
@@ -126,7 +126,7 @@ impl Assertion {
     }
 
     /// How long ago it expired, when it has.
-    pub fn expired_for(&self, now: DateTime<Utc>) -> Option<Duration> {
+    pub fn expired_for(&self, now: Timestamp) -> Option<SignedDuration> {
         let expires_at = self.expires_at?;
 
         (now > expires_at).then(|| now - expires_at)
@@ -137,7 +137,7 @@ impl Assertion {
     /// A token whose expiry we cannot read is presented: the server is the one
     /// that decides, and refusing to try would turn an unreadable claim into an
     /// outage of our own making.
-    pub fn is_fresh_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_fresh_at(&self, now: Timestamp) -> bool {
         if !self.readable {
             return false;
         }
@@ -191,7 +191,7 @@ where
 }
 
 /// Whether the second read answered something worth preferring.
-fn better(first: &Assertion, second: &Assertion, now: DateTime<Utc>) -> bool {
+fn better(first: &Assertion, second: &Assertion, now: Timestamp) -> bool {
     if second.is_fresh_at(now) {
         return true;
     }
@@ -244,12 +244,12 @@ mod tests {
     use super::*;
 
     /// The instant these tests judge against; nothing here reads a wall clock.
-    fn at(seconds: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(1_789_646_400 + seconds, 0).expect("an instant")
+    fn at(seconds: i64) -> Timestamp {
+        Timestamp::new(1_789_646_400 + seconds, 0).expect("an instant")
     }
 
     /// A token whose `exp` is the given instant.
-    fn token(expires_at: Option<DateTime<Utc>>) -> Secret {
+    fn token(expires_at: Option<Timestamp>) -> Secret {
         use base64::Engine as _;
 
         let encoder = base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -257,7 +257,7 @@ mod tests {
             Some(at) => serde_json::json!({
                 "iss": "https://nomad.example.com",
                 "sub": "global:default:rustak-plugin-ais:sidecar:ais:rustak",
-                "exp": at.timestamp(),
+                "exp": at.as_second(),
             }),
             None => serde_json::json!({ "iss": "https://nomad.example.com" }),
         };
@@ -300,7 +300,7 @@ mod tests {
         assert_eq!(assertion.expired_for(at(3_600)), None, "not yet expired");
         assert_eq!(
             assertion.expired_for(at(7_080)),
-            Some(Duration::seconds(3_480)),
+            Some(SignedDuration::from_secs(3_480)),
             "58 minutes, which is what the production defect produced",
         );
     }
@@ -399,7 +399,7 @@ mod tests {
 
         assert_eq!(
             assertion.expired_for(at(0)),
-            Some(Duration::seconds(3_600)),
+            Some(SignedDuration::from_secs(3_600)),
             "and it knows exactly how dead it is",
         );
     }

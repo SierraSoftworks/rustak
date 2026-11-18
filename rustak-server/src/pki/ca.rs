@@ -25,9 +25,9 @@
 //! therefore written with an insert that does not overwrite, and a caller that
 //! loses the race reads back and adopts the certificate that won.
 
+use rustak_core::time::Timestamp;
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Datelike as _, Utc};
 use rustak_core::prelude::*;
 use rustls_pki_types::CertificateDer;
 
@@ -72,8 +72,8 @@ struct RootCaRecord {
     key: Sealed,
     subject: String,
     serial_hex: String,
-    not_before: DateTime<Utc>,
-    not_after: DateTime<Utc>,
+    not_before: Timestamp,
+    not_after: Timestamp,
 }
 
 /// A loaded root certificate authority, ready to sign.
@@ -82,8 +82,8 @@ pub struct CaMaterial {
     subject: String,
     serial_hex: String,
     fingerprint: String,
-    not_before: DateTime<Utc>,
-    not_after: DateTime<Utc>,
+    not_before: Timestamp,
+    not_after: Timestamp,
     key_type: KeyType,
     issuer: rcgen::Issuer<'static, rcgen::KeyPair>,
 }
@@ -138,12 +138,12 @@ impl CaMaterial {
     }
 
     /// When the CA became valid.
-    pub fn not_before(&self) -> DateTime<Utc> {
+    pub fn not_before(&self) -> Timestamp {
         self.not_before
     }
 
     /// When the CA expires. Nothing we issue may outlive this.
-    pub fn not_after(&self) -> DateTime<Utc> {
+    pub fn not_after(&self) -> Timestamp {
         self.not_after
     }
 
@@ -305,13 +305,13 @@ struct RootPlan {
     params: rcgen::CertificateParams,
     subject: String,
     serial_hex: String,
-    not_before: DateTime<Utc>,
-    not_after: DateTime<Utc>,
+    not_before: Timestamp,
+    not_after: Timestamp,
 }
 
 /// Builds the parameters a root CA is issued with, and the metadata we record.
 fn root_params(pki: &PkiConfig) -> RootPlan {
-    let now = Utc::now();
+    let now = Timestamp::now();
     let expires = now + pki.ca_validity;
 
     let mut distinguished_name = rcgen::DistinguishedName::new();
@@ -346,9 +346,16 @@ fn root_params(pki: &PkiConfig) -> RootPlan {
     params.serial_number = Some(rcgen::SerialNumber::from_slice(&serial));
     // Day granularity, taken from midnight today, so the certificate is already
     // valid however the clocks of the devices reading it happen to be set.
-    params.not_before = rcgen::date_time_ymd(now.year(), now.month() as u8, now.day() as u8);
-    params.not_after =
-        rcgen::date_time_ymd(expires.year(), expires.month() as u8, expires.day() as u8);
+    params.not_before = rcgen::date_time_ymd(
+        i32::from(now.civil().year()),
+        now.civil().month() as u8,
+        now.civil().day() as u8,
+    );
+    params.not_after = rcgen::date_time_ymd(
+        i32::from(expires.civil().year()),
+        expires.civil().month() as u8,
+        expires.civil().day() as u8,
+    );
     params.use_authority_key_identifier_extension = false;
     params.key_identifier_method = rcgen::KeyIdMethod::Sha256;
 
@@ -426,6 +433,7 @@ fn decode_der(encoded: &str) -> Result<Vec<u8>, Error> {
 mod tests {
     use super::*;
     use crate::pki::serial::SERIAL_BYTES;
+    use rustak_core::time::SignedDuration;
 
     fn config() -> PkiConfig {
         PkiConfig {
@@ -509,7 +517,7 @@ mod tests {
     async fn the_validity_follows_the_configured_window() {
         let (db, secrets, dir) = setup().await;
         let pki = PkiConfig {
-            ca_validity: chrono::Duration::days(30),
+            ca_validity: SignedDuration::from_hours(24 * 30),
             ..config()
         };
 
@@ -519,7 +527,7 @@ mod tests {
         let cert = parsed(&ca);
         let span = cert.validity().not_after.timestamp() - cert.validity().not_before.timestamp();
 
-        assert!(ca.not_before() <= Utc::now());
+        assert!(ca.not_before() <= Timestamp::now());
         assert!(
             (28..=31).contains(&(span / 86_400)),
             "{span} seconds is not about 30 days"

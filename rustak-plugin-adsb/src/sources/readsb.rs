@@ -11,10 +11,10 @@
 //! but the poll interval still exists, because re-reading a file that is
 //! rewritten once a second ten times a second is a waste of both ends.
 
+use rustak_core::time::Timestamp;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use chrono::Utc;
 use rustak_client::feed::{Feed, Track};
 use rustak_client::sidecar::async_trait;
 use rustak_core::errors::ADVICE_FILE_ACCESS;
@@ -186,7 +186,7 @@ impl Feed for ReadsbFeed {
 
         self.state.succeeded();
 
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         Ok(snapshot
             .into_aircraft()

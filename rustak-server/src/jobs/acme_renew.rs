@@ -17,11 +17,10 @@
 //! [`renew::backoff`](crate::pki::acme::backoff) does. An hour later the
 //! schedule comes round again and the row decides whether it is time.
 
-use chrono::TimeDelta;
-
 use crate::pki::acme;
 use crate::prelude::*;
 use crate::register_job;
+use rustak_core::time::SignedDuration;
 
 /// The queue partition this job owns.
 pub const ACME_RENEW_PARTITION: &str = "housekeeping/acme-renew";
@@ -37,7 +36,7 @@ pub const ACME_RENEW_FORCED_KEY: &str = "housekeeping/acme-renew/forced";
 ///
 /// Not configurable; `[acme] renew_before` is, and that is the number an
 /// operator has an opinion about.
-pub const RENEW_INTERVAL: TimeDelta = TimeDelta::hours(1);
+pub const RENEW_INTERVAL: SignedDuration = SignedDuration::from_hours(1);
 
 /// The message this job runs on.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -72,8 +71,8 @@ impl Job for AcmeRenewJob {
     /// Generous: an order waits for an authority to validate a name, which
     /// means polling with back-off, and the default would hand the message to
     /// a second worker while the first was still mid-order.
-    fn timeout(&self) -> TimeDelta {
-        TimeDelta::minutes(10)
+    fn timeout(&self) -> SignedDuration {
+        SignedDuration::from_mins(10)
     }
 
     /// Arms the schedule to run at once, when ACME is switched on.
@@ -141,6 +140,7 @@ impl Job for AcmeRenewJob {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::Timestamp;
 
     use crate::config::{AcmeDirectory, TlsMode};
     use crate::jobs::JobRunnable;
@@ -183,7 +183,7 @@ mod tests {
 
         let due = context
             .queue()
-            .try_dequeue_any(TimeDelta::seconds(30))
+            .try_dequeue_any(SignedDuration::from_secs(30))
             .await
             .unwrap()
             .expect("the first order should be due immediately");
@@ -199,7 +199,7 @@ mod tests {
 
         JobRunnable::handle(
             &AcmeRenewJob,
-            JobContext::new(context.clone(), chrono::Utc::now(), None, None),
+            JobContext::new(context.clone(), Timestamp::now(), None, None),
             &serde_json::json!({}),
         )
         .await
@@ -212,7 +212,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(armed.len(), 1, "the schedule survives a failed order");
-        assert!(armed[0].hidden_until > chrono::Utc::now() + TimeDelta::minutes(50));
+        assert!(armed[0].hidden_until > Timestamp::now() + SignedDuration::from_mins(50));
     }
 
     #[tokio::test]
@@ -221,7 +221,7 @@ mod tests {
 
         Job::handle(
             &AcmeRenewJob,
-            JobContext::new(context.clone(), chrono::Utc::now(), None, None),
+            JobContext::new(context.clone(), Timestamp::now(), None, None),
             &AcmeRenewTask::default(),
         )
         .await
@@ -243,7 +243,7 @@ mod tests {
 
         Job::handle(
             &AcmeRenewJob,
-            JobContext::new(context.clone(), chrono::Utc::now(), None, None),
+            JobContext::new(context.clone(), Timestamp::now(), None, None),
             &AcmeRenewTask { forced: true },
         )
         .await

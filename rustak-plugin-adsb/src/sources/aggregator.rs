@@ -45,9 +45,9 @@
 //! README, and [`Provider::terms`] carries the short version into the log at
 //! start-up so that an operator sees it without reading anything.
 
+use rustak_core::time::Timestamp;
 use std::time::Duration;
 
-use chrono::Utc;
 use rustak_client::feed::{Area, Feed, Track};
 use rustak_client::sidecar::async_trait;
 use rustak_core::prelude::*;
@@ -301,7 +301,7 @@ impl AggregatorFeed {
         self.forbidden = 0;
         self.state.succeeded();
 
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         Ok(snapshot
             .into_aircraft()

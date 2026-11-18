@@ -9,13 +9,13 @@
 //! Retiring a key rather than deleting it is what makes rotation safe: tokens
 //! signed by the old key stay verifiable until they expire.
 
-use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension as _;
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 
 use crate::db::{
     Database,
-    row::{Timestamp, enum_col, opt_ts, ts},
+    row::{DbTime, enum_col, opt_ts, ts},
 };
 
 /// The columns [`OauthKeyRow::from_row`] expects, in order.
@@ -86,10 +86,10 @@ pub struct OauthKeyRow {
     pub public_jwk: Option<String>,
     /// The private half, sealed.
     pub private_sealed: String,
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// Set when the key stopped being used for signing. Tokens it signed stay
     /// verifiable until they expire.
-    pub retired_at: Option<DateTime<Utc>>,
+    pub retired_at: Option<Timestamp>,
 }
 
 impl OauthKeyRow {
@@ -147,7 +147,7 @@ impl<'a> OauthKeysRepo<'a> {
                         new.purpose.as_str(),
                         new.public_jwk,
                         new.private_sealed,
-                        Timestamp::now(),
+                        DbTime::now(),
                     ],
                     OauthKeyRow::from_row,
                 )
@@ -232,7 +232,7 @@ impl<'a> OauthKeysRepo<'a> {
                 tx.execute(
                     "UPDATE oauth_keys SET retired_at = ?2 \
                      WHERE kid = ?1 AND retired_at IS NULL",
-                    rusqlite::params![kid, Timestamp::now()],
+                    rusqlite::params![kid, DbTime::now()],
                 )
             })
             .await?;
@@ -246,8 +246,8 @@ impl<'a> OauthKeysRepo<'a> {
     /// # Errors
     ///
     /// A [`human_errors::Kind::System`] error if the write fails.
-    pub async fn prune(&self, before: DateTime<Utc>) -> Result<usize, Error> {
-        let before = Timestamp::from(before);
+    pub async fn prune(&self, before: Timestamp) -> Result<usize, Error> {
+        let before = DbTime::from(before);
 
         self.db
             .write(move |tx| {
@@ -263,6 +263,7 @@ impl<'a> OauthKeysRepo<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::SignedDuration;
 
     async fn db() -> Database {
         Database::open_in_memory().await.unwrap()
@@ -410,14 +411,14 @@ mod tests {
 
         assert_eq!(
             db.oauth_keys()
-                .prune(Utc::now() - chrono::TimeDelta::days(30))
+                .prune(Timestamp::now() - SignedDuration::from_hours(24 * 30))
                 .await
                 .unwrap(),
             0
         );
         assert_eq!(
             db.oauth_keys()
-                .prune(Utc::now() + chrono::TimeDelta::seconds(1))
+                .prune(Timestamp::now() + SignedDuration::from_secs(1))
                 .await
                 .unwrap(),
             1

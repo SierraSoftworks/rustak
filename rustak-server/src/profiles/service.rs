@@ -13,9 +13,9 @@
 //! connection profile, and every profile an operator later configures silently
 //! does nothing. That is a phantom bug worth spending one file to avoid.
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
 use rustak_api::{GroupName, PrefEntry, Profile};
 use rustak_core::identity::{Direction, GroupSet};
 use rustak_core::prelude::*;
@@ -44,7 +44,7 @@ pub struct Assembled {
     /// The newest `updated`, truncated to the second — millisecond jitter
     /// against an `If-Modified-Since` a client echoed back would otherwise
     /// report a change that did not happen.
-    pub last_modified: Option<DateTime<Utc>>,
+    pub last_modified: Option<Timestamp>,
 }
 
 impl Assembled {
@@ -166,7 +166,7 @@ impl<'a> ProfileService<'a> {
             assembled.push(ProfileFileData::new(
                 ENROLLMENT_PREF,
                 document.into_bytes(),
-                Utc::now(),
+                Timestamp::now(),
             ));
         }
 
@@ -325,7 +325,7 @@ impl<'a> ProfileService<'a> {
     async fn account(
         &self,
         account: Option<UserId>,
-        since: Option<DateTime<Utc>>,
+        since: Option<Timestamp>,
         into: &mut Assembled,
     ) -> Result<(), Error> {
         if let Some(user) = account
@@ -341,7 +341,7 @@ impl<'a> ProfileService<'a> {
     async fn collect(
         &self,
         delivery: Delivery,
-        since: Option<DateTime<Utc>>,
+        since: Option<Timestamp>,
         held: &[GroupName],
         into: &mut Assembled,
     ) -> Result<(), Error> {
@@ -379,7 +379,7 @@ impl<'a> ProfileService<'a> {
 
     /// The data packages an administrator flagged to install at enrolment.
     async fn enrollment_packages(&self, into: &mut Assembled) -> Result<(), Error> {
-        let rows: Vec<(String, String, DateTime<Utc>)> = self
+        let rows: Vec<(String, String, Timestamp)> = self
             .db
             .read(move |c| {
                 c.prepare(
@@ -444,8 +444,8 @@ pub fn preferred_host(
 /// `-1` is the documented "everything" value; a first run sends roughly the
 /// current epoch in seconds, which lands before any row we hold and therefore
 /// means the same thing.
-fn window(sync_secago: i64) -> Option<DateTime<Utc>> {
-    (sync_secago > 0).then(|| Utc::now() - chrono::Duration::seconds(sync_secago))
+fn window(sync_secago: i64) -> Option<Timestamp> {
+    (sync_secago > 0).then(|| Timestamp::now() - SignedDuration::from_secs(sync_secago))
 }
 
 /// Whether a stored path is the one asked for, or sits under it.
@@ -460,8 +460,8 @@ fn matches_path(stored: &str, wanted: &str) -> bool {
 }
 
 /// Drops the sub-second part, which `If-Modified-Since` cannot carry.
-fn truncate(at: DateTime<Utc>) -> DateTime<Utc> {
-    DateTime::from_timestamp(at.timestamp(), 0).unwrap_or(at)
+fn truncate(at: Timestamp) -> Timestamp {
+    Timestamp::new(at.as_second(), 0).unwrap_or(at)
 }
 
 #[cfg(test)]
@@ -505,8 +505,8 @@ mod tests {
     #[test]
     fn the_newest_change_wins_and_is_whole_seconds() {
         let mut assembled = Assembled::default();
-        let early = DateTime::from_timestamp(1_700_000_000, 500_000_000).unwrap();
-        let late = DateTime::from_timestamp(1_700_000_060, 0).unwrap();
+        let early = Timestamp::new(1_700_000_000, 500_000_000).unwrap();
+        let late = Timestamp::new(1_700_000_060, 0).unwrap();
 
         assembled.push(ProfileFileData::new("b", Vec::new(), late));
         assembled.push(ProfileFileData::new("a", Vec::new(), early));
@@ -514,7 +514,7 @@ mod tests {
         assert_eq!(assembled.last_modified, Some(late));
         assert_eq!(assembled.files.len(), 2);
         assert!(!assembled.is_empty());
-        assert_eq!(truncate(early).timestamp_subsec_nanos(), 0);
+        assert_eq!(truncate(early).subsec_nanosecond(), 0);
     }
 
     #[test]
@@ -529,8 +529,8 @@ mod tests {
             tool: None,
             kind: None,
             groups: Vec::new(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: Timestamp::now(),
+            updated_at: Timestamp::now(),
         };
 
         assert_eq!(pref_filename(&row), "..-..-etc-passwd.pref");

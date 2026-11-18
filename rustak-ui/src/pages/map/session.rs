@@ -12,10 +12,10 @@
 //! the [`Store`] keeps the newer; the other order would lose it. A `reset`
 //! from the server is handled the same way: drop the feed and start again.
 
+use rustak_api::time::Timestamp;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use chrono::Utc;
 use gloo_timers::future::TimeoutFuture;
 use rustak_api::MapUpdate;
 use wasm_bindgen_futures::spawn_local;
@@ -250,7 +250,7 @@ impl Running {
                     .session
                     .borrow_mut()
                     .store
-                    .replace(snapshot, Utc::now());
+                    .replace(snapshot, Timestamp::now());
                 self.apply(changes);
                 self.fit_once();
             }
@@ -271,7 +271,7 @@ impl Running {
                 MapUpdate::Upsert(feature) => {
                     let mut session = self.session.borrow_mut();
                     session.extend_track(&feature);
-                    session.store.upsert(*feature, Utc::now())
+                    session.store.upsert(*feature, Timestamp::now())
                 }
                 MapUpdate::Remove { uid } => self.session.borrow_mut().store.remove(&uid),
                 // `Reset`, and anything a newer server says that this build
@@ -310,7 +310,7 @@ impl Running {
         while self.alive.get() {
             TimeoutFuture::new(TICK_MS).await;
 
-            let swept = self.session.borrow_mut().store.sweep(Utc::now());
+            let swept = self.session.borrow_mut().store.sweep(Timestamp::now());
             self.apply(swept);
 
             let mut session = self.session.borrow_mut();

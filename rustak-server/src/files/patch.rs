@@ -78,7 +78,7 @@ pub async fn apply(db: &Database, hash: &str, change: &PackageUpdate) -> Result<
         // surface says it with TAK's own `-1`; the column holds `NULL` for
         // both, and epoch milliseconds for anything else.
         let value = match at {
-            Some(at) => Value::Integer(at.timestamp_millis()),
+            Some(at) => Value::Integer(at.as_millisecond()),
             None => Value::Null,
         };
         set("expiration", value, &mut binds);
@@ -114,9 +114,10 @@ pub async fn apply(db: &Database, hash: &str, change: &PackageUpdate) -> Result<
 mod tests {
     use super::*;
     use crate::db::repos::NewResource;
+    use rustak_core::time::Timestamp;
 
     /// An expiry a long way off, and the same one every time.
-    fn expires() -> chrono::DateTime<chrono::Utc> {
+    fn expires() -> Timestamp {
         "2026-09-25T12:00:00Z".parse().unwrap()
     }
 
@@ -169,7 +170,7 @@ mod tests {
         assert_eq!(row.tool, "atak");
         assert_eq!(row.groups, vec!["Red".to_string(), "Green".to_string()]);
         assert!(row.install_on_enrollment);
-        assert_eq!(row.expiration, Some(expires().timestamp_millis()));
+        assert_eq!(row.expiration, Some(expires().as_millisecond()));
     }
 
     #[tokio::test]

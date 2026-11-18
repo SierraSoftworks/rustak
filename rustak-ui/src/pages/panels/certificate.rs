@@ -16,6 +16,7 @@
 //! beside it offers the three that say more. Each is stored on the row, written
 //! to the audit log and shown here afterwards.
 
+use rustak_api::time::Timestamp;
 use rustak_api::{Certificate, CertificateState, RevocationReason};
 use yew::prelude::*;
 
@@ -54,7 +55,7 @@ pub fn revoke_actions(
     certificate: &Certificate,
     revoke: &Callback<RevocationReason>,
 ) -> Option<(MenuAction, Vec<MenuItem>)> {
-    if certificate.state(chrono::Utc::now()) == CertificateState::Revoked {
+    if certificate.state(Timestamp::now()) == CertificateState::Revoked {
         return None;
     }
 
@@ -106,7 +107,7 @@ pub fn certificate_details(props: &CertificateDetailsProps) -> Html {
         };
     };
 
-    let state = certificate.state(chrono::Utc::now());
+    let state = certificate.state(Timestamp::now());
 
     html! {
         <div class="certificate">

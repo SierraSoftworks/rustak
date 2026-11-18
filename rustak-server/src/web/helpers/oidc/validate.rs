@@ -213,6 +213,7 @@ fn check_nonce(
 #[cfg(test)]
 mod tests {
     use base64::Engine as _;
+    use rustak_core::time::Timestamp;
 
     use super::*;
     use crate::services::AppContext;
@@ -242,7 +243,7 @@ mod tests {
                 "sub": "ada",
                 "aud": "rustak",
                 "iss": "https://id.example.com",
-                "exp": chrono::Utc::now().timestamp() + 3600,
+                "exp": Timestamp::now().as_second() + 3600,
             }),
             &jsonwebtoken::EncodingKey::from_secret(b"the-public-modulus").unwrap(),
         )
@@ -407,7 +408,7 @@ mod tests {
         let (context, oidc) = trusting(&provider).await;
 
         let mut claims = provider.claims_for("alice");
-        claims["exp"] = serde_json::json!(chrono::Utc::now().timestamp() - 3600);
+        claims["exp"] = serde_json::json!(Timestamp::now().as_second() - 3600);
 
         assert!(
             validate_token(&context, &oidc, &provider.issue(claims), None)

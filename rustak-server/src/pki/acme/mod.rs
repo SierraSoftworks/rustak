@@ -120,6 +120,7 @@ pub async fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::{SignedDuration, Timestamp};
 
     use crate::config::AcmeChallenge;
 
@@ -138,8 +139,8 @@ mod tests {
             certificate.pem(),
             &key.serialize_der(),
             (
-                chrono::Utc::now(),
-                chrono::Utc::now() + chrono::Duration::days(90),
+                Timestamp::now(),
+                Timestamp::now() + SignedDuration::from_hours(24 * 90),
             ),
             AcmeChallenge::TlsAlpn01,
         )

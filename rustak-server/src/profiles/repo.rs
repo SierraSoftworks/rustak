@@ -5,13 +5,13 @@
 //! `db::repos` because everything that reads these rows is in this module —
 //! nothing else in the server has an opinion about what a profile is.
 
-use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension as _;
 use rustak_api::{GroupName, PrefClass, PrefEntry, ProfileId};
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 
 use crate::db::Database;
-use crate::db::row::Timestamp;
+use crate::db::row::DbTime;
 
 use super::model::{COLUMNS, Delivery, FILE_COLUMNS, NewProfile, ProfileFileRow, ProfileRow};
 
@@ -90,14 +90,14 @@ impl<'a> ProfilesRepo<'a> {
     pub async fn for_delivery(
         &self,
         delivery: Delivery,
-        since: Option<DateTime<Utc>>,
+        since: Option<Timestamp>,
     ) -> Result<Vec<ProfileRow>, Error> {
         let predicate = delivery.predicate();
         let tool = match &delivery {
             Delivery::Tool(tool) => Some(tool.clone()),
             _ => None,
         };
-        let since = since.map(|at| Timestamp::from(at).to_text());
+        let since = since.map(|at| DbTime::from(at).to_text());
 
         self.db
             .read(move |c| {
@@ -157,7 +157,7 @@ impl<'a> ProfilesRepo<'a> {
                         new.tool,
                         new.kind,
                         groups,
-                        Timestamp::now(),
+                        DbTime::now(),
                     ],
                     ProfileRow::from_row,
                 )
@@ -205,7 +205,7 @@ impl<'a> ProfilesRepo<'a> {
                         change.tool,
                         change.kind,
                         groups,
-                        Timestamp::now(),
+                        DbTime::now(),
                     ],
                     ProfileRow::from_row,
                 )
@@ -279,7 +279,7 @@ impl<'a> ProfilesRepo<'a> {
     ) -> Result<ProfileFileRow, Error> {
         self.db
             .write(move |tx| {
-                let now = Timestamp::now();
+                let now = DbTime::now();
                 let row = tx.query_one(
                     &format!(
                         "INSERT INTO profile_files \
@@ -320,7 +320,7 @@ impl<'a> ProfilesRepo<'a> {
 
                 tx.execute(
                     "UPDATE profiles SET updated_at = ?2 WHERE id = ?1",
-                    rusqlite::params![id.get(), Timestamp::now()],
+                    rusqlite::params![id.get(), DbTime::now()],
                 )?;
 
                 Ok(removed)
@@ -385,7 +385,7 @@ impl<'a> ProfilesRepo<'a> {
 
                 tx.execute(
                     "UPDATE profiles SET updated_at = ?2 WHERE id = ?1",
-                    rusqlite::params![id.get(), Timestamp::now()],
+                    rusqlite::params![id.get(), DbTime::now()],
                 )
             })
             .await?;
@@ -416,6 +416,7 @@ fn taken(name: &str, err: Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::SignedDuration;
 
     async fn db() -> Database {
         let db = Database::open_in_memory().await.unwrap();
@@ -507,7 +508,7 @@ mod tests {
                 .is_empty(),
         );
 
-        let future = Utc::now() + chrono::Duration::minutes(5);
+        let future = Timestamp::now() + SignedDuration::from_mins(5);
         assert!(
             repo.for_delivery(Delivery::Enrollment, Some(future))
                 .await
@@ -621,8 +622,8 @@ mod tests {
             tool: None,
             kind: None,
             groups: Vec::new(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: Timestamp::now(),
+            updated_at: Timestamp::now(),
         };
 
         assert!(row.visible_to(&[]));

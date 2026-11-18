@@ -19,10 +19,10 @@
 //! - **Every timestamp is RFC 3339 with milliseconds, bound from Rust.** SQLite's
 //!   `CURRENT_TIMESTAMP` resolves only to the second and `DATETIME` is not a
 //!   `STRICT` storage class, so timestamps are `TEXT` written through
-//!   [`row::Timestamp`]. A migration test refuses any `CURRENT_TIMESTAMP`
-//!   default that gets added later. Note that `rusqlite`'s own `chrono` support
-//!   writes `2026-09-18 10:00:00.123456789+00:00` — a different separator and a
-//!   different precision — so a bare [`chrono::DateTime`] must never be bound
+//!   [`row::DbTime`]. A migration test refuses any `CURRENT_TIMESTAMP`
+//!   default that gets added later. Note that `rusqlite`'s own `chrono` and `jiff`
+//!   support write other spellings (`2026-09-18 10:00:00.123456789+00:00`,
+//!   `2026-09-18T10:00:00.123456789Z`), so a bare time must never be bound
 //!   directly.
 //! - **`foreign_keys = ON`**, unlike automate, because this schema has
 //!   `REFERENCES` clauses and cascades that carry real meaning (deleting a user
@@ -53,7 +53,7 @@ pub use kv::{KeyValueStore, StateKey};
 pub use partition::Partition;
 pub use queue::{PeekedMessage, Queue, QueueMessage};
 pub use repos::Page;
-pub use row::Timestamp;
+pub use row::DbTime;
 
 /// Advice offered when a database operation fails for reasons outside our
 /// control, such as an unreadable or damaged database file.

@@ -19,8 +19,8 @@
 //! offering neither is the error — which names the authorisation rather than
 //! failing later with "order invalid".
 
-use chrono::{DateTime, TimeZone as _, Utc};
 use instant_acme::{Account, AuthorizationStatus, Identifier, NewOrder, OrderStatus, RetryPolicy};
+use rustak_core::time::Timestamp;
 
 use rustak_core::prelude::*;
 
@@ -43,8 +43,8 @@ pub struct IssuedChain {
     pub chain_pem: String,
     /// The PKCS#8 private key we generated for it.
     pub key_pkcs8: Vec<u8>,
-    pub not_before: DateTime<Utc>,
-    pub not_after: DateTime<Utc>,
+    pub not_before: Timestamp,
+    pub not_after: Timestamp,
     /// How the last authorisation was validated, for the record.
     pub challenge: AcmeChallenge,
 }
@@ -282,7 +282,7 @@ async fn finish(
 }
 
 /// The leaf's validity window, which is what the renewal decision is made on.
-fn validity(chain_pem: &str) -> Result<(DateTime<Utc>, DateTime<Utc>), Error> {
+fn validity(chain_pem: &str) -> Result<(Timestamp, Timestamp), Error> {
     let leaf = pem::parse_many(chain_pem)
         .or_system_err(ADVICE_ORDER)?
         .into_iter()
@@ -298,14 +298,12 @@ fn validity(chain_pem: &str) -> Result<(DateTime<Utc>, DateTime<Utc>), Error> {
         x509_parser::parse_x509_certificate(leaf.contents()).or_system_err(ADVICE_ORDER)?;
 
     let at = |time: x509_parser::time::ASN1Time| {
-        Utc.timestamp_opt(time.timestamp(), 0)
-            .single()
-            .ok_or_else(|| {
-                human_errors::system(
-                    "The issued certificate carries a validity date we cannot represent.",
-                    ADVICE_ORDER,
-                )
-            })
+        Timestamp::from_second(time.timestamp()).ok_or_else(|| {
+            human_errors::system(
+                "The issued certificate carries a validity date we cannot represent.",
+                ADVICE_ORDER,
+            )
+        })
     };
 
     Ok((
@@ -317,28 +315,35 @@ fn validity(chain_pem: &str) -> Result<(DateTime<Utc>, DateTime<Utc>), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::SignedDuration;
 
     /// A chain whose leaf is valid for `days`, as the authority would return.
     fn chain(days: i64) -> String {
         let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
         let mut params =
             rcgen::CertificateParams::new(vec!["tak.example.com".to_string()]).unwrap();
-        let now = Utc::now();
-        params.not_before = rcgen::date_time_ymd(now.year(), now.month() as u8, now.day() as u8);
-        let end = now + chrono::Duration::days(days);
-        params.not_after = rcgen::date_time_ymd(end.year(), end.month() as u8, end.day() as u8);
+        let now = Timestamp::now();
+        params.not_before = rcgen::date_time_ymd(
+            i32::from(now.civil().year()),
+            now.civil().month() as u8,
+            now.civil().day() as u8,
+        );
+        let end = now + SignedDuration::from_hours(24 * days);
+        params.not_after = rcgen::date_time_ymd(
+            i32::from(end.civil().year()),
+            end.civil().month() as u8,
+            end.civil().day() as u8,
+        );
 
         params.self_signed(&key).unwrap().pem()
     }
-
-    use chrono::Datelike as _;
 
     #[test]
     fn the_leaf_decides_the_validity_window() {
         let (not_before, not_after) = validity(&chain(90)).unwrap();
 
-        assert!(not_before <= Utc::now());
-        assert!(not_after > Utc::now() + chrono::Duration::days(88));
+        assert!(not_before <= Timestamp::now());
+        assert!(not_after > Timestamp::now() + SignedDuration::from_hours(24 * 88));
     }
 
     #[test]
@@ -357,6 +362,6 @@ mod tests {
         let issuer = chain(3650);
         let (_, not_after) = validity(&format!("{leaf}{issuer}")).unwrap();
 
-        assert!(not_after < Utc::now() + chrono::Duration::days(60));
+        assert!(not_after < Timestamp::now() + SignedDuration::from_hours(24 * 60));
     }
 }

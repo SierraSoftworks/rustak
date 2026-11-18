@@ -5,8 +5,8 @@
 //! end up here, so a marker cannot look different depending on whether the
 //! page was open when it arrived.
 
-use chrono::{DateTime, Utc};
 use rustak_api::{MapFeature, MapPoint};
+use rustak_core::time::Timestamp;
 use rustak_cot::detail::{Remarks, Status, Takv, Track};
 use rustak_cot::event::Point;
 use rustak_cot::types::{cot_type, is_chat};
@@ -64,7 +64,7 @@ pub fn from_row(row: &LatestRow, index: &GroupIndex) -> Option<MapFeature> {
 }
 
 /// A relayed event as a feature.
-pub fn from_event(event: &Event, received_at: DateTime<Utc>, groups: Vec<String>) -> MapFeature {
+pub fn from_event(event: &Event, received_at: Timestamp, groups: Vec<String>) -> MapFeature {
     let group = event.group();
     let track = event.detail.get::<Track>();
     let shape = shape::of(event);
@@ -166,7 +166,7 @@ mod tests {
 
     use super::*;
 
-    fn received() -> DateTime<Utc> {
+    fn received() -> Timestamp {
         "2026-09-18T12:00:00Z".parse().unwrap()
     }
 

@@ -13,8 +13,8 @@
 //! produce and what CloudTAK's parser expects, so it is reproduced rather than
 //! made consistent.
 
-use chrono::{DateTime, Utc};
 use rustak_api::MissionRoleKind;
+use rustak_core::time::Timestamp;
 use rustak_cot::detail::{Element, Node};
 
 use crate::marti::time::cot_date;
@@ -80,7 +80,7 @@ pub struct ResourceXml {
     /// How large it is.
     pub size: u64,
     /// When it was stored.
-    pub submission_time: DateTime<Utc>,
+    pub submission_time: Timestamp,
     /// The account that stored it.
     pub submitter: String,
     /// The tool it belongs to.
@@ -124,7 +124,7 @@ pub struct MissionChangeXml {
     /// Who changed it.
     pub creator_uid: Option<String>,
     /// When.
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: Timestamp,
     /// The cached description of the item, when the change is about a uid.
     pub details: Option<UidDetailsXml>,
     /// The stored file, when the change is about one.
@@ -133,7 +133,7 @@ pub struct MissionChangeXml {
 
 impl MissionChangeXml {
     /// A change of a given kind at a given moment.
-    pub fn new(kind: impl Into<String>, timestamp: DateTime<Utc>) -> Self {
+    pub fn new(kind: impl Into<String>, timestamp: Timestamp) -> Self {
         Self {
             kind: kind.into(),
             content_uid: None,

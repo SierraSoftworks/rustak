@@ -12,7 +12,7 @@
 //!   what a username may contain, rather than one per crate that handles them.
 //!
 //! This crate is deliberately free of any web framework, database or runtime
-//! dependency: only `serde`, `serde_json`, `jiff`, `chrono` (being retired, see [`time`]) and `uuid`. That is what
+//! dependency: only `serde`, `serde_json`, `jiff` and `uuid`. That is what
 //! lets it compile for `wasm32-unknown-unknown` alongside the browser UI as
 //! well as link into the server. No tokio, no tracing, no rusqlite.
 //!

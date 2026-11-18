@@ -8,10 +8,10 @@
 //! cells, and only a key the sketch refuses now; because cells are shared,
 //! that also forgives any other key whose cells were all among them.
 
+use rustak_core::time::Timestamp;
 use std::collections::HashSet;
 use std::net::IpAddr;
 
-use chrono::{DateTime, Utc};
 use rustak_api::{Lockout, LockoutClass, LockoutTier, Lockouts, TierFill};
 
 use super::events::{Counted, Event, Tier};
@@ -32,11 +32,11 @@ impl RateLimiter {
     /// The keys locked out now, newest first, how many there are, and how
     /// full each tier is.
     pub fn lockouts(&self, limit: usize) -> Lockouts {
-        self.lockouts_at(Utc::now(), limit)
+        self.lockouts_at(Timestamp::now(), limit)
     }
 
     /// [`lockouts`](Self::lockouts), at a moment the caller chooses.
-    pub(super) fn lockouts_at(&self, now: DateTime<Utc>, limit: usize) -> Lockouts {
+    pub(super) fn lockouts_at(&self, now: Timestamp, limit: usize) -> Lockouts {
         let stamp = self.clock.stamp(now);
         let mut seen = HashSet::new();
 
@@ -97,13 +97,13 @@ impl RateLimiter {
         address: Option<IpAddr>,
         key: &str,
     ) -> Result<Lockout, Unclearable> {
-        self.clear_at(Utc::now(), class, address, key)
+        self.clear_at(Timestamp::now(), class, address, key)
     }
 
     /// [`clear`](Self::clear), at a moment the caller chooses.
     pub(super) fn clear_at(
         &self,
-        now: DateTime<Utc>,
+        now: Timestamp,
         class: LockoutClass,
         address: Option<IpAddr>,
         key: &str,
@@ -151,7 +151,7 @@ impl RateLimiter {
     }
 
     /// One lockout as the API describes it.
-    fn describe(&self, key: &Counted, since: DateTime<Utc>, until: u32, estimate: u16) -> Lockout {
+    fn describe(&self, key: &Counted, since: Timestamp, until: u32, estimate: u16) -> Lockout {
         let (class, shown) = match &key.subject {
             Some(subject) => {
                 let (class, shown) = super::classify(subject.as_str());
@@ -176,14 +176,14 @@ impl RateLimiter {
 
 #[cfg(test)]
 mod tests {
-    use chrono::Duration;
+    use rustak_core::time::SignedDuration;
 
     use super::*;
     use crate::auth::ratelimit::key::KeyedHash;
     use crate::config::RateLimitConfig;
 
-    fn limiter() -> (RateLimiter, DateTime<Utc>) {
-        let at = Utc::now();
+    fn limiter() -> (RateLimiter, Timestamp) {
+        let at = Timestamp::now();
         // Every allowance explicit, so a change of default moves none of
         // these tests.
         let config = RateLimitConfig {
@@ -203,7 +203,7 @@ mod tests {
         Some("198.51.100.4".parse().unwrap())
     }
 
-    fn lock_out(limiter: &RateLimiter, at: DateTime<Utc>, subject: &str) {
+    fn lock_out(limiter: &RateLimiter, at: Timestamp, subject: &str) {
         for _ in 0..3 {
             limiter.record_failures_at(at, address(), &[subject]);
         }
@@ -236,7 +236,7 @@ mod tests {
                 failures: 3,
             }]
         );
-        assert!(listed.lockouts[0].ends_at > at + Duration::minutes(14));
+        assert!(listed.lockouts[0].ends_at > at + SignedDuration::from_mins(14));
         assert_eq!(listed.tiers.len(), 2);
         assert!(
             listed
@@ -271,7 +271,7 @@ mod tests {
         let before = limiter.lockouts_at(at, 10);
 
         for _ in 0..5 {
-            limiter.lockouts_at(at + Duration::minutes(1), 10);
+            limiter.lockouts_at(at + SignedDuration::from_mins(1), 10);
         }
 
         assert_eq!(limiter.lockouts_at(at, 10), before);
@@ -289,7 +289,12 @@ mod tests {
 
         lock_out(&limiter, at, "ada");
 
-        assert_eq!(limiter.lockouts_at(at + Duration::minutes(16), 10).total, 0);
+        assert_eq!(
+            limiter
+                .lockouts_at(at + SignedDuration::from_mins(16), 10)
+                .total,
+            0
+        );
     }
 
     #[test]
@@ -300,14 +305,14 @@ mod tests {
             let address: IpAddr = format!("198.51.100.{index}").parse().unwrap();
             for _ in 0..3 {
                 limiter.record_failures_at(
-                    at + Duration::seconds(index),
+                    at + SignedDuration::from_secs(index),
                     Some(address),
                     &[&format!("user-{index}")],
                 );
             }
         }
 
-        let listed = limiter.lockouts_at(at + Duration::seconds(30), 5);
+        let listed = limiter.lockouts_at(at + SignedDuration::from_secs(30), 5);
 
         assert_eq!(listed.total, 8);
         assert_eq!(
@@ -402,14 +407,17 @@ mod tests {
 
         let cleared = limiter
             .clear_at(
-                at + Duration::seconds(30),
+                at + SignedDuration::from_secs(30),
                 LockoutClass::Account,
                 address(),
                 "ada",
             )
             .unwrap();
 
-        assert_eq!(cleared.started_at, cleared.ends_at - Duration::minutes(15));
+        assert_eq!(
+            cleared.started_at,
+            cleared.ends_at - SignedDuration::from_mins(15)
+        );
         assert_eq!(cleared.failures, 3);
     }
 }

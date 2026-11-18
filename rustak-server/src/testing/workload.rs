@@ -21,6 +21,7 @@
 //! the key, and watch the refetch accept it. A third key is never published at
 //! all: that is the forgery, correct in every respect except the signature.
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use wiremock::matchers::{method, path};
@@ -164,8 +165,8 @@ impl TestWorkloadIssuer {
             jwks_file: None,
             audience: AUDIENCE.to_string(),
             algorithms: vec![WorkloadAlgorithm::Rs256, WorkloadAlgorithm::EdDsa],
-            clock_skew: chrono::Duration::seconds(30),
-            jwks_refresh: chrono::Duration::hours(1),
+            clock_skew: SignedDuration::from_secs(30),
+            jwks_refresh: SignedDuration::from_hours(1),
             allow_insecure_jwks: false,
         }
     }
@@ -212,7 +213,7 @@ impl TestWorkloadIssuer {
     /// The claims a Nomad `identity` block produces, as the maintainer's
     /// cluster emits them (verified 2026-09-20).
     pub fn nomad_claims(&self, namespace: &str, job: &str, task: &str) -> serde_json::Value {
-        let now = chrono::Utc::now().timestamp();
+        let now = Timestamp::now().as_second();
 
         serde_json::json!({
             "iss": self.issuer(),
@@ -232,7 +233,7 @@ impl TestWorkloadIssuer {
     /// The claims a Kubernetes projected service-account token carries, with
     /// everything inside the one `kubernetes.io` claim.
     pub fn kubernetes_claims(&self, namespace: &str, account: &str) -> serde_json::Value {
-        let now = chrono::Utc::now().timestamp();
+        let now = Timestamp::now().as_second();
 
         serde_json::json!({
             "iss": self.issuer(),

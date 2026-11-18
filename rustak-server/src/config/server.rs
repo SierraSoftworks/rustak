@@ -6,6 +6,7 @@
 //! entry is the host written into enrollment QR codes, `.pref` files and the
 //! issuer of our JWTs, so changing it invalidates what devices already hold.
 
+use rustak_core::time::{DurationExt, SignedDuration};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -35,10 +36,10 @@ fn default_data_dir() -> PathBuf {
 const DEFAULT_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// [`DEFAULT_SHUTDOWN_TIMEOUT`] as the configuration file spells a duration.
-fn default_shutdown_timeout() -> chrono::Duration {
-    // Provably infallible: eight seconds is inside every range chrono has.
-    chrono::Duration::from_std(DEFAULT_SHUTDOWN_TIMEOUT)
-        .expect("eight seconds is a duration chrono can hold")
+fn default_shutdown_timeout() -> SignedDuration {
+    // Provably infallible: eight seconds is inside every range jiff has.
+    SignedDuration::try_from(DEFAULT_SHUTDOWN_TIMEOUT)
+        .expect("eight seconds is a representable duration")
 }
 
 /// How long an outbound request may take in total, by default.
@@ -49,8 +50,8 @@ fn default_shutdown_timeout() -> chrono::Duration {
 /// than any discovery document, JWKS or ACME exchange takes and short enough
 /// that a hung provider does not hold an actix worker — and therefore an
 /// administrator's sign-in — open indefinitely.
-fn default_http_timeout() -> chrono::Duration {
-    chrono::Duration::seconds(30)
+fn default_http_timeout() -> SignedDuration {
+    SignedDuration::from_secs(30)
 }
 
 /// How long the connect phase of an outbound request may take, by default.
@@ -58,8 +59,8 @@ fn default_http_timeout() -> chrono::Duration {
 /// Separate from the total because the two failures are different: a refused
 /// or black-holed address should be given up on quickly, while a slow but live
 /// response is worth waiting for.
-fn default_http_connect_timeout() -> chrono::Duration {
-    chrono::Duration::seconds(10)
+fn default_http_connect_timeout() -> SignedDuration {
+    SignedDuration::from_secs(10)
 }
 
 /// The longest drain an operator may configure.
@@ -69,7 +70,7 @@ fn default_http_connect_timeout() -> chrono::Duration {
 /// the `SIGKILL` it exists to avoid. Anybody who genuinely needs longer has to
 /// raise their orchestrator's own timeout as well, and a refusal here is where
 /// they find that out.
-pub const MAX_SHUTDOWN_TIMEOUT: chrono::Duration = chrono::Duration::minutes(1);
+pub const MAX_SHUTDOWN_TIMEOUT: SignedDuration = SignedDuration::from_mins(1);
 
 /// `[server]`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,7 +125,7 @@ pub struct ServerConfig {
         default = "default_shutdown_timeout",
         with = "rustak_core::config::duration::humane"
     )]
-    pub shutdown_timeout: chrono::Duration,
+    pub shutdown_timeout: SignedDuration,
 
     /// How long an outbound HTTP request may take in total.
     ///
@@ -136,14 +137,14 @@ pub struct ServerConfig {
         default = "default_http_timeout",
         with = "rustak_core::config::duration::humane"
     )]
-    pub http_timeout: chrono::Duration,
+    pub http_timeout: SignedDuration,
 
     /// How long the connect phase of an outbound HTTP request may take.
     #[serde(
         default = "default_http_connect_timeout",
         with = "rustak_core::config::duration::humane"
     )]
-    pub http_connect_timeout: chrono::Duration,
+    pub http_connect_timeout: SignedDuration,
 }
 
 impl Default for ServerConfig {
@@ -247,9 +248,9 @@ mod tests {
         // WAL truncation that follows the drain needs two of them.
         let parsed: ServerConfig = toml::from_str("").unwrap();
 
-        assert_eq!(parsed.shutdown_timeout, chrono::Duration::seconds(8));
-        assert_eq!(parsed.http_timeout, chrono::Duration::seconds(30));
-        assert_eq!(parsed.http_connect_timeout, chrono::Duration::seconds(10));
+        assert_eq!(parsed.shutdown_timeout, SignedDuration::from_secs(8));
+        assert_eq!(parsed.http_timeout, SignedDuration::from_secs(30));
+        assert_eq!(parsed.http_connect_timeout, SignedDuration::from_secs(10));
         assert_eq!(parsed.shutdown_budget(), std::time::Duration::from_secs(8));
     }
 
@@ -273,7 +274,7 @@ mod tests {
         // Reached from the shutdown path, where a zero-length wait would cost
         // the checkpoint this setting exists to protect.
         let broken = ServerConfig {
-            shutdown_timeout: chrono::Duration::seconds(-1),
+            shutdown_timeout: SignedDuration::from_secs(-1),
             ..ServerConfig::default()
         };
 

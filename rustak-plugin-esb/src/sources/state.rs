@@ -104,12 +104,12 @@ impl Rules for Esb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{DateTime, Utc};
     use rustak_client::feed::upstream::Report;
+    use rustak_core::time::Timestamp;
 
     /// The clock these tests move by hand, so that nothing here waits.
-    fn at(seconds: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(1_789_646_400 + seconds, 0).expect("an instant")
+    fn at(seconds: i64) -> Timestamp {
+        Timestamp::new(1_789_646_400 + seconds, 0).expect("an instant")
     }
 
     fn state() -> SourceState {

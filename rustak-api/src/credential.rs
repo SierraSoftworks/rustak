@@ -7,9 +7,9 @@
 //! admin UI with a passkey or through the identity provider, and the
 //! credentials below exist only for the clients that cannot do either.
 
+use crate::time::Timestamp;
 use core::fmt;
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::identity::{CredentialId, Username};
@@ -110,7 +110,7 @@ pub struct Credential {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<Username>,
 
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
 
     /// Who minted it, which is not always its owner: an administrator can mint
     /// an enrolment token on somebody's behalf.
@@ -120,7 +120,7 @@ pub struct Credential {
     /// When it stops working. Absent means it does not expire on its own, which
     /// is only ever true of a service token.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<Timestamp>,
 
     /// How many times it may be used in total.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -131,12 +131,12 @@ pub struct Credential {
     pub uses: u32,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_used_at: Option<DateTime<Utc>>,
+    pub last_used_at: Option<Timestamp>,
 
     /// When it was revoked. Revoking a credential also revokes the certificates
     /// that were issued with it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub revoked_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<Timestamp>,
 }
 
 impl Credential {
@@ -151,7 +151,7 @@ impl Credential {
     }
 
     /// Whether it would still be accepted at `now`.
-    pub fn is_usable_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_usable_at(&self, now: Timestamp) -> bool {
         !self.is_revoked()
             && !self.is_exhausted()
             && self.expires_at.is_none_or(|expires_at| now < expires_at)
@@ -336,7 +336,7 @@ mod tests {
 
     #[test]
     fn a_spent_or_expired_credential_is_no_longer_usable() {
-        let now: DateTime<Utc> = "2026-09-18T12:05:00Z".parse().unwrap();
+        let now: Timestamp = "2026-09-18T12:05:00Z".parse().unwrap();
         let credential = a_credential();
         assert!(credential.is_usable_at(now));
 
@@ -347,7 +347,7 @@ mod tests {
         assert!(spent.is_exhausted());
         assert!(!spent.is_usable_at(now));
 
-        let expired: DateTime<Utc> = "2026-09-18T13:00:00Z".parse().unwrap();
+        let expired: Timestamp = "2026-09-18T13:00:00Z".parse().unwrap();
         assert!(!credential.is_usable_at(expired));
 
         let revoked = Credential {

@@ -29,12 +29,12 @@
 //! switched off, and a service name already registered to another account —
 //! each before anything is written.
 
-use chrono::Utc;
 use rustak_api::service_onboarding::{config_fragment, environment};
 use rustak_api::{
     CredentialId, CredentialKind, ServiceName, ServiceOnboarding, ServiceOnboardingRequest,
     ServiceTokenOutcome, UserKind,
 };
+use rustak_core::time::Timestamp;
 
 use crate::db::repos::{CredentialRow, NewUser, UserRow};
 use crate::prelude::*;
@@ -147,7 +147,7 @@ pub async fn onboard(
         .enrolment
         .credential
         .expires_at
-        .unwrap_or_else(Utc::now);
+        .unwrap_or_else(Timestamp::now);
     let service_token = issued
         .service
         .as_ref()
@@ -239,7 +239,7 @@ async fn live_service_tokens(
     context: &AppContext,
     user: &UserRow,
 ) -> Result<Vec<CredentialRow>, Error> {
-    let now = Utc::now();
+    let now = Timestamp::now();
 
     Ok(context
         .db()

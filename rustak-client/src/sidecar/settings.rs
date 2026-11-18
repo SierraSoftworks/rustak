@@ -25,8 +25,8 @@
 //! the configuration when the harness is already holding a credential, and
 //! waits for the next tick when it is not.
 
-use chrono::{DateTime, Duration, Utc};
 use rustak_core::prelude::*;
+use rustak_core::time::{SignedDuration, Timestamp};
 
 use super::SidecarContext;
 
@@ -35,14 +35,14 @@ use super::SidecarContext;
 /// An administrator moving an area in the admin UI is rare and never urgent, so
 /// this is a cadence rather than a subscription — and five minutes is the same
 /// window everything else in the harness reminds on.
-const RE_READ_EVERY: Duration = Duration::minutes(5);
+const RE_READ_EVERY: SignedDuration = SignedDuration::from_mins(5);
 
 /// How long after a failed read another attempt is worth making.
 ///
 /// Short, because the failure this exists for is a start-up where the control
 /// link is not up *yet*, and the sooner that is picked up the sooner an
 /// administrator's setting is actually in effect.
-const RETRY_AFTER: Duration = Duration::seconds(30);
+const RETRY_AFTER: SignedDuration = SignedDuration::from_secs(30);
 
 /// This service's server-side configuration, kept up to date.
 ///
@@ -63,7 +63,7 @@ pub struct ServiceSettings {
     complained: bool,
 
     /// The earliest instant another read is worth making.
-    next_at: Option<DateTime<Utc>>,
+    next_at: Option<Timestamp>,
 }
 
 impl ServiceSettings {
@@ -87,7 +87,7 @@ impl ServiceSettings {
     /// [`None`] means "nothing to do": no control API, no credential yet, a
     /// read that failed, or the same document as last time.
     pub async fn refresh<S>(&mut self, context: &SidecarContext<S>) -> Option<serde_json::Value> {
-        self.refresh_at(context, Utc::now()).await
+        self.refresh_at(context, Timestamp::now()).await
     }
 
     /// One setting of that document, when a new document carries a usable one.
@@ -122,7 +122,7 @@ impl ServiceSettings {
     pub async fn refresh_at<S>(
         &mut self,
         context: &SidecarContext<S>,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Option<serde_json::Value> {
         if self.next_at.is_some_and(|at| now < at) {
             return None;
@@ -201,8 +201,8 @@ mod tests {
     use crate::sidecar::{NoSettings, SidecarConfig};
 
     /// The clock these tests move by hand, so that nothing here waits.
-    fn at(seconds: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(1_789_646_400 + seconds, 0).expect("an instant")
+    fn at(seconds: i64) -> Timestamp {
+        Timestamp::new(1_789_646_400 + seconds, 0).expect("an instant")
     }
 
     /// A context against `uri`, with a `[service] token`: the credential the

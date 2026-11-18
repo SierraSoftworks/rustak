@@ -1,9 +1,8 @@
 //! Small formatting and navigation helpers shared across pages.
 
+use rustak_api::time::Timestamp;
 pub mod mgrs;
 pub mod sidc;
-
-use chrono::{DateTime, Utc};
 
 /// Builds an href for in-app navigation, preserving demo mode across full-page
 /// navigations by carrying the `?demo` query forward when it is active.
@@ -28,10 +27,16 @@ pub fn urlencode(value: &str) -> String {
     js_sys::encode_uri_component(value).into()
 }
 
+/// Converts a timestamp for yewi's time components, which take chrono's type.
+pub fn to_chrono(ts: Timestamp) -> yewi::chrono::DateTime<yewi::chrono::Utc> {
+    yewi::chrono::DateTime::from_timestamp(ts.as_second(), ts.subsec_nanosecond())
+        .unwrap_or_default()
+}
+
 /// Formats a UTC timestamp as an RFC 3339 string with a `Z` suffix, for example
 /// `2026-06-08T12:48:38Z`.
-pub fn format_iso8601(dt: DateTime<Utc>) -> String {
-    dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+pub fn format_iso8601(dt: Timestamp) -> String {
+    dt.strftime("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
 /// Formats a duration in seconds using the single largest sensible unit, for
@@ -51,8 +56,8 @@ pub fn short_duration(secs: i64) -> String {
 
 /// Formats a timestamp relative to now, for example `15m ago`, `in 5m`, or
 /// `now` when it is within a second of the present.
-pub fn short_relative(dt: DateTime<Utc>) -> String {
-    let secs = dt.signed_duration_since(Utc::now()).num_seconds();
+pub fn short_relative(dt: Timestamp) -> String {
+    let secs = dt.duration_since(Timestamp::now()).as_secs();
     if secs.abs() < 1 {
         return "now".to_string();
     }
@@ -67,13 +72,13 @@ pub fn short_relative(dt: DateTime<Utc>) -> String {
 /// Renders an optional timestamp as a relative phrase, or an em dash when there
 /// is nothing to say. Used by every list that has a "last seen" column, so that
 /// "never" looks the same in all of them.
-pub fn optional_relative(dt: Option<DateTime<Utc>>) -> String {
+pub fn optional_relative(dt: Option<Timestamp>) -> String {
     dt.map(short_relative).unwrap_or_else(|| "—".to_string())
 }
 
 #[cfg(test)]
 mod tests {
-    use chrono::Duration;
+    use rustak_api::time::SignedDuration;
 
     use super::*;
 
@@ -93,19 +98,28 @@ mod tests {
 
     #[test]
     fn a_timestamp_says_which_side_of_now_it_is_on() {
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         assert_eq!(short_relative(now), "now");
         // A heartbeat a few minutes ago, which is the case the Services page
         // exists to show.
-        assert_eq!(short_relative(now - Duration::minutes(15)), "15m ago");
-        assert_eq!(short_relative(now - Duration::hours(3)), "3h ago");
-        assert_eq!(short_relative(now - Duration::days(2)), "2d ago");
+        assert_eq!(
+            short_relative(now - SignedDuration::from_mins(15)),
+            "15m ago"
+        );
+        assert_eq!(
+            short_relative(now - SignedDuration::from_hours(3)),
+            "3h ago"
+        );
+        assert_eq!(
+            short_relative(now - SignedDuration::from_hours(24 * 2)),
+            "2d ago"
+        );
         // A second past the boundary, because the clock moves between building
         // the timestamp and formatting it: a bare `now + 5m` has already become
         // four minutes and fifty-nine seconds by the time it is read.
         assert_eq!(
-            short_relative(now + Duration::minutes(5) + Duration::seconds(1)),
+            short_relative(now + SignedDuration::from_mins(5) + SignedDuration::from_secs(1)),
             "in 5m"
         );
     }
@@ -116,7 +130,7 @@ mod tests {
         // last-seen column, which is what this helper is for.
         assert_eq!(optional_relative(None), "—");
         assert_eq!(
-            optional_relative(Some(Utc::now() - Duration::minutes(47))),
+            optional_relative(Some(Timestamp::now() - SignedDuration::from_mins(47))),
             "47m ago"
         );
     }

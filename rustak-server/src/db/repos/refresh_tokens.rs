@@ -11,13 +11,13 @@
 //! strings, so sha256 is enough to find the row and argon2 would only make
 //! every refresh slow.
 
-use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension as _;
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 
 use crate::db::{
     Database,
-    row::{Timestamp, id_col, opt_ts, ts},
+    row::{DbTime, id_col, opt_ts, ts},
 };
 
 /// The columns [`RefreshTokenRow::from_row`] expects, in order.
@@ -36,11 +36,11 @@ pub struct RefreshTokenRow {
     pub scope: String,
     /// Which client it was issued to, for the sessions list in the UI.
     pub client: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,
+    pub created_at: Timestamp,
+    pub expires_at: Timestamp,
     /// Set when the token was exchanged. A second exchange is a replay.
-    pub used_at: Option<DateTime<Utc>>,
-    pub revoked_at: Option<DateTime<Utc>>,
+    pub used_at: Option<Timestamp>,
+    pub revoked_at: Option<Timestamp>,
     /// The `jti` of the access token minted beside this refresh token.
     /// [`None`] for a row written before migration `0024`.
     pub jti: Option<String>,
@@ -68,7 +68,7 @@ impl RefreshTokenRow {
     }
 
     /// Whether this token may be exchanged at `now`.
-    pub fn is_usable_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_usable_at(&self, now: Timestamp) -> bool {
         self.used_at.is_none() && self.revoked_at.is_none() && self.expires_at > now
     }
 }
@@ -82,7 +82,7 @@ pub struct NewRefreshToken {
     pub family: String,
     pub scope: String,
     pub client: Option<String>,
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
     /// The `jti` of the access token issued with it.
     pub jti: Option<String>,
     /// The OpenID scopes granted, copied forward from the spent token on a
@@ -133,8 +133,8 @@ impl<'a> RefreshTokensRepo<'a> {
                         new.family,
                         new.scope,
                         new.client,
-                        Timestamp::now(),
-                        Timestamp::from(new.expires_at),
+                        DbTime::now(),
+                        DbTime::from(new.expires_at),
                         new.jti,
                         new.oidc_scope,
                     ],
@@ -184,7 +184,7 @@ impl<'a> RefreshTokensRepo<'a> {
                 c.query_one(
                     "SELECT oidc_scope FROM refresh_tokens \
                      WHERE jti = ?1 AND revoked_at IS NULL AND expires_at > ?2",
-                    rusqlite::params![jti, Timestamp::now()],
+                    rusqlite::params![jti, DbTime::now()],
                     |row| row.get::<_, Option<String>>(0),
                 )
                 .optional()
@@ -207,7 +207,7 @@ impl<'a> RefreshTokensRepo<'a> {
 
         self.db
             .write(move |tx| {
-                let now = Timestamp::now();
+                let now = DbTime::now();
                 let Some(row) = tx
                     .query_one(
                         &format!("SELECT {COLUMNS} FROM refresh_tokens WHERE token_hash = ?1"),
@@ -259,7 +259,7 @@ impl<'a> RefreshTokensRepo<'a> {
                 tx.execute(
                     "UPDATE refresh_tokens SET revoked_at = ?2 \
                      WHERE family = ?1 AND revoked_at IS NULL",
-                    rusqlite::params![family, Timestamp::now()],
+                    rusqlite::params![family, DbTime::now()],
                 )
             })
             .await
@@ -276,7 +276,7 @@ impl<'a> RefreshTokensRepo<'a> {
                 tx.execute(
                     "UPDATE refresh_tokens SET revoked_at = ?2 \
                      WHERE user_id = ?1 AND revoked_at IS NULL",
-                    rusqlite::params![user_id.get(), Timestamp::now()],
+                    rusqlite::params![user_id.get(), DbTime::now()],
                 )
             })
             .await
@@ -297,7 +297,7 @@ impl<'a> RefreshTokensRepo<'a> {
                      ORDER BY created_at DESC"
                 ))?;
                 let rows = statement.query_map(
-                    rusqlite::params![user_id.get(), Timestamp::now()],
+                    rusqlite::params![user_id.get(), DbTime::now()],
                     RefreshTokenRow::from_row,
                 )?;
 
@@ -311,8 +311,8 @@ impl<'a> RefreshTokensRepo<'a> {
     /// # Errors
     ///
     /// A [`human_errors::Kind::System`] error if the write fails.
-    pub async fn prune(&self, before: DateTime<Utc>) -> Result<usize, Error> {
-        let before = Timestamp::from(before);
+    pub async fn prune(&self, before: Timestamp) -> Result<usize, Error> {
+        let before = DbTime::from(before);
 
         self.db
             .write(move |tx| {
@@ -326,6 +326,7 @@ impl<'a> RefreshTokensRepo<'a> {
 mod tests {
     use super::*;
     use crate::db::repos::NewUser;
+    use rustak_core::time::SignedDuration;
 
     async fn fixture() -> (Database, UserId) {
         let db = Database::open_in_memory().await.unwrap();
@@ -345,7 +346,7 @@ mod tests {
             family: family.into(),
             scope: "admin".into(),
             client: Some("rustak-ui".into()),
-            expires_at: Utc::now() + chrono::TimeDelta::days(30),
+            expires_at: Timestamp::now() + SignedDuration::from_hours(24 * 30),
             jti: None,
             oidc_scope: None,
         }
@@ -361,7 +362,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(created.is_usable_at(Utc::now()));
+        assert!(created.is_usable_at(Timestamp::now()));
         assert_eq!(created.client.as_deref(), Some("rustak-ui"));
         assert_eq!(
             db.refresh_tokens()
@@ -447,7 +448,7 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap()
-                .is_usable_at(Utc::now())
+                .is_usable_at(Timestamp::now())
         );
         assert!(
             db.refresh_tokens()
@@ -455,7 +456,7 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap()
-                .is_usable_at(Utc::now())
+                .is_usable_at(Timestamp::now())
         );
     }
 
@@ -464,7 +465,7 @@ mod tests {
         let (db, user) = fixture().await;
         db.refresh_tokens()
             .create(NewRefreshToken {
-                expires_at: Utc::now() - chrono::TimeDelta::hours(1),
+                expires_at: Timestamp::now() - SignedDuration::from_hours(1),
                 ..issued(user, "old", "f1")
             })
             .await
@@ -520,7 +521,7 @@ mod tests {
         let (db, user) = fixture().await;
         db.refresh_tokens()
             .create(NewRefreshToken {
-                expires_at: Utc::now() - chrono::TimeDelta::days(1),
+                expires_at: Timestamp::now() - SignedDuration::from_hours(24),
                 ..issued(user, "old", "f1")
             })
             .await
@@ -530,7 +531,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(db.refresh_tokens().prune(Utc::now()).await.unwrap(), 1);
+        assert_eq!(
+            db.refresh_tokens().prune(Timestamp::now()).await.unwrap(),
+            1
+        );
         assert!(
             db.refresh_tokens()
                 .get_by_hash("live")

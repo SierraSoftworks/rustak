@@ -6,13 +6,13 @@
 //! nothing here is worth stealing. The sign counter is the one mutable part,
 //! and it exists to notice a cloned authenticator.
 
-use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension as _;
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 
 use crate::db::{
     Database,
-    row::{Timestamp, bool_col, id_col, opt_json_col, opt_ts, to_json, ts},
+    row::{DbTime, bool_col, id_col, opt_json_col, opt_ts, to_json, ts},
 };
 
 /// The columns [`PasskeyRow::from_row`] expects, in order.
@@ -38,8 +38,8 @@ pub struct PasskeyRow {
     pub backup_eligible: bool,
     /// Whether it currently is.
     pub backup_state: bool,
-    pub created_at: DateTime<Utc>,
-    pub last_used_at: Option<DateTime<Utc>>,
+    pub created_at: Timestamp,
+    pub last_used_at: Option<Timestamp>,
 }
 
 impl PasskeyRow {
@@ -108,7 +108,7 @@ impl<'a> PasskeysRepo<'a> {
                         new.label,
                         i64::from(new.backup_eligible),
                         i64::from(new.backup_state),
-                        Timestamp::now(),
+                        DbTime::now(),
                     ],
                     PasskeyRow::from_row,
                 )
@@ -195,7 +195,7 @@ impl<'a> PasskeysRepo<'a> {
                 tx.execute(
                     "UPDATE passkeys SET sign_count = ?2, last_used_at = ?3 \
                      WHERE id = ?1 AND (?2 > sign_count OR ?2 = 0)",
-                    rusqlite::params![id.get(), i64::from(sign_count), Timestamp::now()],
+                    rusqlite::params![id.get(), i64::from(sign_count), DbTime::now()],
                 )
             })
             .await?;

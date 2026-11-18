@@ -16,7 +16,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::db::row::Timestamp;
+use crate::db::row::DbTime;
 use crate::marti::MartiError;
 
 use super::model::Mission;
@@ -121,7 +121,7 @@ impl MissionService {
                      ON CONFLICT (mission_id, uid) DO UPDATE SET \
                        name = excluded.name, body = excluded.body, \
                        updated_at = excluded.updated_at",
-                    rusqlite::params![mission_id, key, label, stored, creator, Timestamp::now()],
+                    rusqlite::params![mission_id, key, label, stored, creator, DbTime::now()],
                 )
             })
             .await?;
@@ -233,7 +233,7 @@ impl MissionService {
                         held.url_view,
                         held.notes,
                         creator,
-                        Timestamp::now(),
+                        DbTime::now(),
                     ],
                 )
             })
@@ -290,7 +290,7 @@ impl MissionService {
                     "INSERT INTO mission_feeds (mission_id, uid, body, creator_uid, created_at) \
                      VALUES (?1, ?2, ?3, ?4, ?5) \
                      ON CONFLICT (mission_id, uid) DO UPDATE SET body = excluded.body",
-                    rusqlite::params![mission_id, uid, stored, creator, Timestamp::now()],
+                    rusqlite::params![mission_id, uid, stored, creator, DbTime::now()],
                 )
             })
             .await?;

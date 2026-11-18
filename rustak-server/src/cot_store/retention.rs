@@ -42,12 +42,11 @@
 //! [`StreamSegmentsRepo::over_row_cap`]: crate::db::repos::StreamSegmentsRepo::over_row_cap
 //! [`StreamSegmentsRepo::over_byte_cap`]: crate::db::repos::StreamSegmentsRepo::over_byte_cap
 
-use chrono::{DateTime, Utc};
-
 use crate::config::RetentionConfig;
 use crate::db::Database;
 use crate::prelude::*;
 use crate::store::{AppendLog, PRUNE_PAGE, Surplus};
+use rustak_core::time::{SignedDuration, Timestamp};
 
 use super::{STREAM_KIND, latest};
 
@@ -59,15 +58,15 @@ use super::{STREAM_KIND, latest};
 /// segments. An hour is far longer than any gap in a live device's reporting
 /// and far shorter than any retention horizon, so nothing a writer is actually
 /// using is closed and nothing a device left behind is kept for ever.
-const IDLE_SEAL_AFTER: chrono::TimeDelta = chrono::TimeDelta::hours(1);
+const IDLE_SEAL_AFTER: SignedDuration = SignedDuration::from_hours(1);
 
 /// What one sweep enforces: `[retention]`, resolved against a clock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
     /// Sealed history segments whose newest record predates this go.
-    pub history_before: DateTime<Utc>,
+    pub history_before: Timestamp,
     /// `cot_latest` rows that went stale before this go.
-    pub latest_before: DateTime<Utc>,
+    pub latest_before: Timestamp,
     /// Records kept per stream key; zero is no cap.
     pub max_rows: u64,
     /// Bytes of history kept across every stream; zero is no cap.
@@ -76,7 +75,7 @@ pub struct Limits {
 
 impl Limits {
     /// The limits `[retention]` asks for as of `now`.
-    pub fn from_config(retention: &RetentionConfig, now: DateTime<Utc>) -> Self {
+    pub fn from_config(retention: &RetentionConfig, now: Timestamp) -> Self {
         Self {
             history_before: now - retention.cot_history,
             latest_before: now - retention.cot_latest,
@@ -137,7 +136,7 @@ pub async fn sweep(
     // able to see them at all.
     let sealed = db
         .stream_segments()
-        .seal_idle(STREAM_KIND, Utc::now() - IDLE_SEAL_AFTER)
+        .seal_idle(STREAM_KIND, Timestamp::now() - IDLE_SEAL_AFTER)
         .await?;
 
     // Age next: a segment past the horizon is gone whatever the counts say,
@@ -213,15 +212,15 @@ async fn prune_over_cap(
 mod tests {
     use super::super::STREAM_KIND;
     use super::*;
-    use crate::db::row::Timestamp;
+    use crate::db::row::DbTime;
     use crate::store::append_log::AppendLogOptions;
 
     /// A week of everything and no size cap, so each test names the one limit
     /// it is about.
     fn limits(max_rows: u64) -> Limits {
         Limits {
-            history_before: Utc::now() - chrono::Duration::days(7),
-            latest_before: Utc::now() - chrono::Duration::days(7),
+            history_before: Timestamp::now() - SignedDuration::from_hours(24 * 7),
+            latest_before: Timestamp::now() - SignedDuration::from_hours(24 * 7),
             max_rows,
             max_bytes: 0,
         }
@@ -231,7 +230,7 @@ mod tests {
     async fn a_sealed_segment_older_than_the_horizon_goes() {
         let dir = tempfile::tempdir().unwrap();
         let db = Database::open_in_memory().await.unwrap();
-        let old = Utc::now() - chrono::Duration::days(30);
+        let old = Timestamp::now() - SignedDuration::from_hours(24 * 30);
 
         let mut log = AppendLog::open(
             &db,
@@ -257,7 +256,7 @@ mod tests {
         // the segment's own last record, so only `sealed = 0` is protecting it.
         let dir = tempfile::tempdir().unwrap();
         let db = Database::open_in_memory().await.unwrap();
-        let recent = Utc::now() - chrono::Duration::minutes(10);
+        let recent = Timestamp::now() - SignedDuration::from_mins(10);
 
         let mut log = AppendLog::open(
             &db,
@@ -275,7 +274,7 @@ mod tests {
             &db,
             dir.path(),
             Limits {
-                history_before: Utc::now() - chrono::Duration::minutes(5),
+                history_before: Timestamp::now() - SignedDuration::from_mins(5),
                 ..limits(0)
             },
         )
@@ -293,7 +292,7 @@ mod tests {
         // would be kept for ever: every horizon below only sees sealed rows.
         let dir = tempfile::tempdir().unwrap();
         let db = Database::open_in_memory().await.unwrap();
-        let old = Utc::now() - chrono::Duration::days(30);
+        let old = Timestamp::now() - SignedDuration::from_hours(24 * 30);
 
         let mut log = AppendLog::open(
             &db,
@@ -316,7 +315,7 @@ mod tests {
 
     /// A stream with `segments` sealed one-record segments, oldest first.
     async fn sealed_segments(db: &Database, dir: &std::path::Path, key: &str, segments: usize) {
-        sealed_segments_aged(db, dir, key, segments, chrono::Duration::zero()).await;
+        sealed_segments_aged(db, dir, key, segments, SignedDuration::ZERO).await;
     }
 
     /// As [`sealed_segments`], with the whole stream `age` further in the past.
@@ -325,7 +324,7 @@ mod tests {
         dir: &std::path::Path,
         key: &str,
         segments: usize,
-        age: chrono::Duration,
+        age: SignedDuration,
     ) {
         for index in 0..segments {
             let mut log = AppendLog::open(
@@ -343,7 +342,7 @@ mod tests {
             .unwrap();
 
             log.append(
-                Utc::now() - age - chrono::Duration::minutes((segments - index) as i64),
+                Timestamp::now() - age - SignedDuration::from_mins((segments - index) as i64),
                 b"x",
             )
             .await
@@ -357,8 +356,8 @@ mod tests {
             .overlapping(
                 STREAM_KIND,
                 key,
-                Utc::now() - chrono::Duration::days(1),
-                Utc::now() + chrono::Duration::days(1),
+                Timestamp::now() - SignedDuration::from_hours(24),
+                Timestamp::now() + SignedDuration::from_hours(24),
             )
             .await
             .unwrap()
@@ -429,7 +428,7 @@ mod tests {
         )
         .await
         .unwrap();
-        open.append(Utc::now(), b"now").await.unwrap();
+        open.append(Timestamp::now(), b"now").await.unwrap();
         open.flush().await.unwrap();
 
         let swept = sweep(&db, dir.path(), limits(1)).await.unwrap();
@@ -468,7 +467,14 @@ mod tests {
         // of aircraft looks like, and what only a bound on the whole can trim.
         let dir = tempfile::tempdir().unwrap();
         let db = Database::open_in_memory().await.unwrap();
-        sealed_segments_aged(&db, dir.path(), "ICAO-OLD", 3, chrono::Duration::hours(2)).await;
+        sealed_segments_aged(
+            &db,
+            dir.path(),
+            "ICAO-OLD",
+            3,
+            SignedDuration::from_hours(2),
+        )
+        .await;
         sealed_segments(&db, dir.path(), "ICAO-NEW", 3).await;
 
         let one_segment = db
@@ -499,8 +505,8 @@ mod tests {
     }
 
     /// A `cot_latest` row that went stale `stale_ago` before now.
-    async fn latest_row(db: &Database, uid: &'static str, stale_ago: chrono::Duration) {
-        let stale = Timestamp::from(Utc::now() - stale_ago);
+    async fn latest_row(db: &Database, uid: &'static str, stale_ago: SignedDuration) {
+        let stale = DbTime::from(Timestamp::now() - stale_ago);
 
         db.write(move |tx| {
             tx.execute(
@@ -518,14 +524,14 @@ mod tests {
     async fn stale_contacts_go_on_their_own_horizon_not_the_history_s() {
         let dir = tempfile::tempdir().unwrap();
         let db = Database::open_in_memory().await.unwrap();
-        latest_row(&db, "ICAO-LANDED", chrono::Duration::days(2)).await;
-        latest_row(&db, "ICAO-RECENT", chrono::Duration::hours(2)).await;
+        latest_row(&db, "ICAO-LANDED", SignedDuration::from_hours(24 * 2)).await;
+        latest_row(&db, "ICAO-RECENT", SignedDuration::from_hours(2)).await;
 
         let swept = sweep(
             &db,
             dir.path(),
             Limits {
-                latest_before: Utc::now() - chrono::Duration::days(1),
+                latest_before: Timestamp::now() - SignedDuration::from_hours(24),
                 ..limits(0)
             },
         )

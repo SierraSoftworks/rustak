@@ -261,6 +261,7 @@ fn parse_role(requested: Option<&str>) -> Result<Role, MartiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::Timestamp;
 
     #[test]
     fn an_absent_role_is_the_subscriber_default() {
@@ -289,7 +290,7 @@ mod tests {
             tool: "public".to_string(),
             keywords: Vec::new(),
             creator_uid: None,
-            create_time: chrono::DateTime::UNIX_EPOCH,
+            create_time: Timestamp::UNIX_EPOCH,
             last_edited: None,
             default_role: Role::Subscriber,
             invite_only: true,
@@ -306,7 +307,7 @@ mod tests {
             invitee: "ANDROID-1".to_string(),
             creator_uid: Some("ANDROID-9".to_string()),
             role: Role::Subscriber,
-            create_time: chrono::DateTime::UNIX_EPOCH,
+            create_time: Timestamp::UNIX_EPOCH,
             token: Some("eyJ0".to_string()),
         };
 

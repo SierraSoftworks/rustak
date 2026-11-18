@@ -9,10 +9,10 @@
 //! wire. The hop from `tick`'s return value to a device is the harness's, and
 //! is covered by `rustak-server/tests/feed_sidecars.rs`.
 
-use chrono::Utc;
 use rustak_api::ServiceState;
 use rustak_client::sidecar::{Sidecar, SidecarConfig, SidecarContext};
 use rustak_core::prelude::*;
+use rustak_core::time::{SignedDuration, Timestamp};
 use rustak_cot::Event;
 use rustak_plugin_firms::{FirmsSidecar, Settings};
 use wiremock::matchers::{header, method, path_regex};
@@ -24,11 +24,11 @@ const KEY: &str = "0123456789abcdef0123456789abcdef";
 /// Four detections an hour old: three inside the area below (high, nominal and
 /// low confidence) and one 400 km outside it.
 fn reply() -> String {
-    let seen = Utc::now() - chrono::Duration::hours(1);
+    let seen = Timestamp::now() - SignedDuration::from_hours(1);
 
     include_str!("fixtures/viirs.csv")
-        .replace("{DATE}", &seen.format("%Y-%m-%d").to_string())
-        .replace("{HHMM}", &seen.format("%H%M").to_string())
+        .replace("{DATE}", &seen.strftime("%Y-%m-%d").to_string())
+        .replace("{HHMM}", &seen.strftime("%H%M").to_string())
 }
 
 /// A mock FIRMS answering every area request the same way.
@@ -112,7 +112,8 @@ async fn a_firms_reply_becomes_markers_a_device_can_read() {
     assert!(xml.contains("Confidence: high"), "{xml}");
     assert!(xml.contains("<color"), "{xml}");
     assert!(
-        !biggest.is_stale_at(biggest.time) && biggest.time.millis() < Utc::now().timestamp_millis(),
+        !biggest.is_stale_at(biggest.time)
+            && biggest.time.millis() < Timestamp::now().as_millisecond(),
         "aged from the overpass an hour ago, and still live",
     );
 

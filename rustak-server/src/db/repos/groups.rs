@@ -8,9 +8,9 @@
 //!
 //! [`GroupSet`]: rustak_core::identity::GroupSet
 
-use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension as _;
 use rustak_api::GroupSource;
+use rustak_core::time::Timestamp;
 use rustak_core::{identity::GROUP_BITS, prelude::*};
 
 use crate::db::{
@@ -30,10 +30,10 @@ pub struct GroupRow {
     pub bitpos: u32,
     pub description: Option<String>,
     pub source: GroupSource,
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// Set when the channel was deleted; its bit stays reserved until the row
     /// is purged.
-    pub deleted_at: Option<DateTime<Utc>>,
+    pub deleted_at: Option<Timestamp>,
 }
 
 impl GroupRow {
@@ -115,7 +115,7 @@ impl<'a> GroupsRepo<'a> {
                         bitpos,
                         new.description,
                         new.source.as_str(),
-                        crate::db::row::Timestamp::now(),
+                        crate::db::row::DbTime::now(),
                     ],
                     GroupRow::from_row,
                 )
@@ -270,7 +270,7 @@ impl<'a> GroupsRepo<'a> {
             .write(move |tx| {
                 tx.execute(
                     "UPDATE groups SET deleted_at = ?2 WHERE id = ?1 AND deleted_at IS NULL",
-                    rusqlite::params![id.get(), crate::db::row::Timestamp::now()],
+                    rusqlite::params![id.get(), crate::db::row::DbTime::now()],
                 )
             })
             .await?;

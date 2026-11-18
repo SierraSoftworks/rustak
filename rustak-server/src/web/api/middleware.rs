@@ -110,7 +110,7 @@ fn refusal(context: &AppContext, failure: AuthFailure) -> HttpResponse {
             StatusCode::TOO_MANY_REQUESTS,
             format!(
                 "Too many attempts. Try again in {} minutes.",
-                retry_after.num_minutes().max(1)
+                retry_after.as_mins().max(1)
             ),
         ),
         AuthFailure::Unavailable(err) => {

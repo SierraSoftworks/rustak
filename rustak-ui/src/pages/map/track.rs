@@ -13,9 +13,9 @@
 //! between two places it was merely seen at. Nothing here touches the
 //! browser, so all of it is tested natively.
 
+use rustak_api::time::Timestamp;
 use std::ops::Range;
 
-use chrono::{DateTime, Utc};
 use rustak_api::MapFeature;
 use serde_json::{Value, json};
 
@@ -55,7 +55,7 @@ impl Track {
     }
 
     /// From the first fix to the last.
-    pub fn span(&self) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+    pub fn span(&self) -> Option<(Timestamp, Timestamp)> {
         Some((self.fixes.first()?.time, self.fixes.last()?.time))
     }
 
@@ -63,7 +63,7 @@ impl Track {
     /// first fix of each until its last went stale, because a fix is held to
     /// be true until then. The gaps between them are the times a fix had gone
     /// stale before the next arrived.
-    pub fn windows(&self) -> Vec<(DateTime<Utc>, DateTime<Utc>)> {
+    pub fn windows(&self) -> Vec<(Timestamp, Timestamp)> {
         self.runs()
             .into_iter()
             .map(|run| {
@@ -76,7 +76,7 @@ impl Track {
     /// Where playback that has reached `when` carries on from: `when` itself,
     /// or the start of the next window when it falls in a gap, because there
     /// is nothing to watch in one.
-    pub fn resume(&self, when: DateTime<Utc>) -> DateTime<Utc> {
+    pub fn resume(&self, when: Timestamp) -> Timestamp {
         self.windows()
             .windows(2)
             .find(|pair| when > pair[0].1 && when < pair[1].0)
@@ -119,7 +119,7 @@ impl Track {
 
     /// The fix that was current at `when`: the last one at or before it, or
     /// the first when `when` is before all of them.
-    pub fn at(&self, when: DateTime<Utc>) -> Option<&MapFeature> {
+    pub fn at(&self, when: Timestamp) -> Option<&MapFeature> {
         let after = self.fixes.partition_point(|fix| fix.time <= when);
 
         self.fixes.get(after.saturating_sub(1))
@@ -129,7 +129,7 @@ impl Track {
     /// part still to come, and every fix along it. With no `until`, all of it
     /// has been travelled. Each window is its own line, so a gap in the
     /// tracking is a gap in the drawing.
-    pub fn draw(&self, until: Option<DateTime<Utc>>, color: &str) -> Value {
+    pub fn draw(&self, until: Option<Timestamp>, color: &str) -> Value {
         let position = |fix: &MapFeature| json!([fix.point.lon, fix.point.lat]);
         let line = |part: &str, fixes: &[MapFeature]| {
             (fixes.len() >= 2).then(|| {
@@ -176,12 +176,12 @@ impl Track {
 
 #[cfg(test)]
 mod tests {
-    use chrono::Duration;
     use rustak_api::MapPoint;
+    use rustak_api::time::SignedDuration;
 
     use super::*;
 
-    fn at(time: &str) -> DateTime<Utc> {
+    fn at(time: &str) -> Timestamp {
         format!("2026-09-18T{time}Z").parse().unwrap()
     }
 
@@ -194,7 +194,7 @@ mod tests {
             team: None,
             role: None,
             time: at(time),
-            stale: at(time) + Duration::minutes(2),
+            stale: at(time) + SignedDuration::from_mins(2),
             received_at: at(time),
             point: MapPoint {
                 lat: 51.5,

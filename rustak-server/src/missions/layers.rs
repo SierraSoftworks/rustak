@@ -17,9 +17,10 @@
 //! It is the one key in the whole mission JSON surface that is not camelCase.
 //! Renaming it would be tidier and would break every client that reads a tree.
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 
-use crate::db::row::Timestamp;
+use crate::db::row::DbTime;
 use crate::marti::MartiError;
 
 use super::model::Mission;
@@ -197,8 +198,8 @@ impl MissionService {
             .mission_changes()
             .window(
                 mission.id,
-                chrono::DateTime::UNIX_EPOCH,
-                chrono::Utc::now() + chrono::Duration::days(1),
+                Timestamp::UNIX_EPOCH,
+                Timestamp::now() + SignedDuration::from_hours(24),
             )
             .await?)
     }
@@ -261,7 +262,7 @@ impl MissionService {
                         position,
                         creator,
                         data,
-                        Timestamp::now(),
+                        DbTime::now(),
                     ],
                 )
             })
@@ -291,7 +292,7 @@ impl MissionService {
                 Ok(tx.execute(
                     "UPDATE mission_layers SET name = ?3, updated_at = ?4 \
                      WHERE mission_id = ?1 AND uid = ?2",
-                    rusqlite::params![mission_id, uid, name, Timestamp::now()],
+                    rusqlite::params![mission_id, uid, name, DbTime::now()],
                 )? > 0)
             })
             .await?)
@@ -327,7 +328,7 @@ impl MissionService {
                 Ok(tx.execute(
                     "UPDATE mission_layers SET parent_uid = ?3, position = ?4, updated_at = ?5 \
                      WHERE mission_id = ?1 AND uid = ?2",
-                    rusqlite::params![mission_id, uid, parent, position, Timestamp::now()],
+                    rusqlite::params![mission_id, uid, parent, position, DbTime::now()],
                 )? > 0)
             })
             .await?)
@@ -556,7 +557,7 @@ mod tests {
             .mission_contents()
             .upsert_uid(crate::db::repos::MissionUidRow {
                 layer_uid: Some("child".to_string()),
-                ..crate::db::repos::MissionUidRow::new(mission.id, "UID-A", chrono::Utc::now())
+                ..crate::db::repos::MissionUidRow::new(mission.id, "UID-A", Timestamp::now())
             })
             .await
             .unwrap();

@@ -33,6 +33,7 @@
 
 use base64::Engine as _;
 use jsonwebtoken::jwk::JwkSet;
+use rustak_core::time::Timestamp;
 
 use crate::config::{WorkloadConfig, WorkloadIssuer};
 use crate::prelude::*;
@@ -175,7 +176,7 @@ fn decode(
 
     let mut validation = jsonwebtoken::Validation::new(algorithm);
     validation.algorithms = vec![algorithm];
-    validation.leeway = issuer.clock_skew.num_seconds().max(0).unsigned_abs();
+    validation.leeway = issuer.clock_skew.as_secs().max(0).unsigned_abs();
     validation.validate_exp = true;
     validation.validate_nbf = true;
     validation.validate_aud = true;
@@ -260,7 +261,7 @@ fn explain(
 ) -> ClaimRefusal {
     use jsonwebtoken::errors::ErrorKind;
 
-    let now = chrono::Utc::now().timestamp();
+    let now = Timestamp::now().as_second();
 
     match err.kind() {
         ErrorKind::ExpiredSignature => match number(token, "exp") {
@@ -386,8 +387,8 @@ fn fresh_enough(issuer: &WorkloadIssuer, claims: &Claims) -> Result<(), Refusal>
         )));
     };
 
-    let now = chrono::Utc::now().timestamp();
-    let ceiling = now + issuer.clock_skew.num_seconds().max(0);
+    let now = Timestamp::now().as_second();
+    let ceiling = now + issuer.clock_skew.as_secs().max(0);
 
     if issued > ceiling {
         return Err(Refusal::Claims(ClaimRefusal::new(
@@ -395,7 +396,7 @@ fn fresh_enough(issuer: &WorkloadIssuer, claims: &Claims) -> Result<(), Refusal>
             format!(
                 "issued {} in the future, which is more than the {} this issuer allows",
                 span(issued - now),
-                span(issuer.clock_skew.num_seconds()),
+                span(issuer.clock_skew.as_secs()),
             ),
         )));
     }
@@ -427,6 +428,7 @@ fn string(claims: &Claims, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::SignedDuration;
 
     #[test]
     fn the_issuer_a_token_claims_is_read_without_verifying_it() {
@@ -477,8 +479,8 @@ mod tests {
             jwks_file: None,
             audience: "rustak".to_string(),
             algorithms: Vec::new(),
-            clock_skew: chrono::Duration::seconds(30),
-            jwks_refresh: chrono::Duration::hours(1),
+            clock_skew: SignedDuration::from_secs(30),
+            jwks_refresh: SignedDuration::from_hours(1),
             allow_insecure_jwks: false,
         }
     }
@@ -488,7 +490,7 @@ mod tests {
         // The production defect said `error=Claims` and nothing else, for two
         // hours, five seconds apart. This is the line that would have ended it
         // in one read.
-        let now = chrono::Utc::now().timestamp();
+        let now = Timestamp::now().as_second();
         let token = token(serde_json::json!({ "exp": now - 3_492, "aud": ["rustak"] }));
 
         let refusal = explain(
@@ -507,7 +509,7 @@ mod tests {
 
     #[test]
     fn a_token_that_is_not_valid_yet_says_how_long_it_will_be() {
-        let now = chrono::Utc::now().timestamp();
+        let now = Timestamp::now().as_second();
         let token = token(serde_json::json!({ "nbf": now + 40 }));
 
         let refusal = explain(
@@ -591,7 +593,7 @@ mod tests {
         let issuer = nomad();
 
         let at = |offset: i64| {
-            serde_json::json!({ "iat": chrono::Utc::now().timestamp() + offset })
+            serde_json::json!({ "iat": Timestamp::now().as_second() + offset })
                 .as_object()
                 .unwrap()
                 .clone()

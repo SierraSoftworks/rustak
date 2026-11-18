@@ -23,7 +23,7 @@
 //! the expiry alone) from *`null`* (clear it) — which the integer spelling
 //! could only do by reserving a sign.
 
-use chrono::{DateTime, Utc};
+use crate::time::Timestamp;
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// One stored file, as the package list shows it.
@@ -55,7 +55,7 @@ pub struct PackageSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creator_uid: Option<String>,
 
-    pub submission_time: DateTime<Utc>,
+    pub submission_time: Timestamp,
 
     #[serde(default)]
     pub keywords: Vec<String>,
@@ -72,7 +72,7 @@ pub struct PackageSummary {
     /// does. Always present, so that "never" is stated rather than inferred
     /// from a missing key.
     #[serde(default)]
-    pub expiration: Option<DateTime<Utc>>,
+    pub expiration: Option<Timestamp>,
 
     /// Whether this package is delivered with an enrolment profile.
     pub install_on_enrollment: bool,
@@ -118,7 +118,7 @@ pub struct PackageUpdate {
         deserialize_with = "explicit_null",
         skip_serializing_if = "Option::is_none"
     )]
-    pub expiration: Option<Option<DateTime<Utc>>>,
+    pub expiration: Option<Option<Timestamp>>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -142,11 +142,11 @@ impl PackageUpdate {
 /// undecorated `Option<Option<T>>` unable to tell "leave it alone" from "clear
 /// it". Reached only for a key that is actually in the body, because
 /// `#[serde(default)]` answers for the ones that are not.
-fn explicit_null<'de, D>(deserializer: D) -> Result<Option<Option<DateTime<Utc>>>, D::Error>
+fn explicit_null<'de, D>(deserializer: D) -> Result<Option<Option<Timestamp>>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    Option::<DateTime<Utc>>::deserialize(deserializer).map(Some)
+    Option::<Timestamp>::deserialize(deserializer).map(Some)
 }
 
 #[cfg(test)]

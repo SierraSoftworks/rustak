@@ -14,8 +14,8 @@
 //! appeared would be a worse feed. Every field is therefore optional and
 //! anything unrecognised is dropped.
 
-use chrono::{DateTime, Utc};
 use rustak_client::feed::Area;
+use rustak_core::time::Timestamp;
 use serde::Deserialize;
 
 use crate::mapping::{Dimensions, Position, StaticData};
@@ -219,12 +219,12 @@ impl Envelope {
     }
 
     /// When this message was received, or now for one that did not say.
-    fn observed_at(&self) -> DateTime<Utc> {
+    fn observed_at(&self) -> Timestamp {
         self.metadata
             .time_utc
             .as_deref()
             .and_then(instant)
-            .unwrap_or_else(Utc::now)
+            .unwrap_or_else(Timestamp::now)
     }
 }
 
@@ -232,13 +232,14 @@ impl Envelope {
 /// `2026-09-20 12:00:00.123456789 +0000 UTC` — with RFC 3339 accepted too, so
 /// that a change of format upstream is a value this still reads.
 #[must_use]
-pub fn instant(raw: &str) -> Option<DateTime<Utc>> {
+pub fn instant(raw: &str) -> Option<Timestamp> {
     let trimmed = raw.trim().trim_end_matches("UTC").trim();
 
-    DateTime::parse_from_rfc3339(trimmed)
-        .or_else(|_| DateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M:%S%.f %z"))
-        .ok()
-        .map(|value| value.with_timezone(&Utc))
+    trimmed.parse::<Timestamp>().ok().or_else(|| {
+        jiff::Timestamp::strptime("%Y-%m-%d %H:%M:%S%.f %z", trimmed)
+            .ok()
+            .map(Timestamp::from)
+    })
 }
 
 /// AIS pads its text fields with `@` and spaces; neither is part of a name.
@@ -325,8 +326,8 @@ mod tests {
         assert_eq!(position.heading_deg, Some(270.0));
         assert_eq!(position.nav_status, Some(0));
         assert_eq!(
-            position.observed_at.to_rfc3339(),
-            "2026-09-20T12:00:00.123456789+00:00",
+            position.observed_at.to_string(),
+            "2026-09-20T12:00:00.123456789Z",
         );
     }
 
@@ -528,14 +529,14 @@ mod tests {
         assert_eq!(
             instant("2026-09-20 12:00:00 +0000 UTC")
                 .expect("Go's format")
-                .to_rfc3339(),
-            "2026-09-20T12:00:00+00:00",
+                .to_string(),
+            "2026-09-20T12:00:00Z",
         );
         assert_eq!(
             instant("2026-09-20T12:00:00Z")
                 .expect("RFC 3339")
-                .to_rfc3339(),
-            "2026-09-20T12:00:00+00:00",
+                .to_string(),
+            "2026-09-20T12:00:00Z",
         );
         assert_eq!(instant("whenever"), None);
     }

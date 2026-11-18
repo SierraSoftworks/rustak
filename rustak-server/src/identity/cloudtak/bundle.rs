@@ -24,9 +24,9 @@
 //!   not left holding that keystore for the life of the volume.
 
 use base64::Engine as _;
-use chrono::{DateTime, Duration, Utc};
 use rand::Rng as _;
 use rustak_api::cloudtak::BUNDLE_TTL_MINUTES;
+use rustak_core::time::{SignedDuration, Timestamp};
 
 use crate::crypto::{Sealed, SecretContext};
 use crate::db::Database;
@@ -82,7 +82,7 @@ struct Stashed {
     certificate_id: CertificateId,
     /// The bundle, sealed under [`SecretContext::ServiceCertKey`].
     sealed: Sealed,
-    expires_at: DateTime<Utc>,
+    expires_at: Timestamp,
 }
 
 /// Seals the bundle and puts it where the download will find it.
@@ -95,10 +95,10 @@ pub async fn stash(
     username: &Username,
     certificate_id: CertificateId,
     p12: Vec<u8>,
-) -> Result<(String, DateTime<Utc>), Error> {
-    sweep(context.db(), Utc::now()).await?;
+) -> Result<(String, Timestamp), Error> {
+    sweep(context.db(), Timestamp::now()).await?;
 
-    let expires_at = Utc::now() + Duration::minutes(BUNDLE_TTL_MINUTES);
+    let expires_at = Timestamp::now() + SignedDuration::from_mins(BUNDLE_TTL_MINUTES);
     let sealed = context.secrets().seal(
         &p12,
         // The bundle *is* this certificate's key material; see the module
@@ -158,7 +158,7 @@ pub async fn take(context: &AppContext, id: &str) -> Result<Option<Bundle>, Erro
         return Ok(None);
     };
 
-    if stashed.v != RECORD_VERSION || stashed.expires_at <= Utc::now() {
+    if stashed.v != RECORD_VERSION || stashed.expires_at <= Timestamp::now() {
         return Ok(None);
     }
 
@@ -192,7 +192,7 @@ pub async fn take(context: &AppContext, id: &str) -> Result<Option<Bundle>, Erro
 /// # Errors
 ///
 /// A [`human_errors::Kind::System`] error when a read or a write fails.
-pub async fn sweep(db: &Database, now: DateTime<Utc>) -> Result<usize, Error> {
+pub async fn sweep(db: &Database, now: Timestamp) -> Result<usize, Error> {
     let stashed: Vec<(String, Stashed)> = db.list(BUNDLE_PARTITION).await?;
     let mut swept = 0;
 

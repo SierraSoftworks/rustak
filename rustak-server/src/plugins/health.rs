@@ -19,6 +19,7 @@
 
 use rustak_api::{Heartbeat, ServiceState, ServiceStatus};
 use rustak_core::prelude::*;
+use rustak_core::time::{SignedDuration, Timestamp};
 
 use crate::db::repos::ServiceRow;
 use crate::prelude::*;
@@ -29,7 +30,7 @@ use crate::prelude::*;
 /// Three times the sidecar harness's default tick (30s), so a single missed
 /// heartbeat — a slow upstream, a restart, a network blip — does not turn the
 /// whole fleet amber.
-pub const DEFAULT_GRACE: chrono::TimeDelta = chrono::TimeDelta::seconds(90);
+pub const DEFAULT_GRACE: SignedDuration = SignedDuration::from_secs(90);
 
 /// Records what a service said about itself.
 ///
@@ -70,7 +71,7 @@ pub async fn record(
     Ok(Some(ServiceStatus {
         state: beat.state,
         message: beat.message.clone(),
-        last_heartbeat_at: Some(chrono::Utc::now()),
+        last_heartbeat_at: Some(Timestamp::now()),
     }))
 }
 
@@ -86,8 +87,8 @@ pub async fn record(
 ///
 /// A [`human_errors::Kind::System`] error if a read or the write fails.
 #[instrument("plugins.sweep", skip_all, err(Display))]
-pub async fn sweep(services: &impl Services, grace: chrono::TimeDelta) -> Result<usize, Error> {
-    let cutoff = chrono::Utc::now() - grace;
+pub async fn sweep(services: &impl Services, grace: SignedDuration) -> Result<usize, Error> {
+    let cutoff = Timestamp::now() - grace;
     let overdue: Vec<ServiceRow> = services
         .db()
         .services()
@@ -118,7 +119,7 @@ pub async fn sweep(services: &impl Services, grace: chrono::TimeDelta) -> Result
 /// Mirrors the repository's `mark_silent_before` predicate so that the events
 /// published and the rows written are the same set; a service that is already
 /// `unknown` is neither swept nor announced again.
-fn is_overdue(row: &ServiceRow, cutoff: chrono::DateTime<chrono::Utc>) -> bool {
+fn is_overdue(row: &ServiceRow, cutoff: Timestamp) -> bool {
     row.status != ServiceState::Unknown && row.last_heartbeat_at.is_none_or(|last| last < cutoff)
 }
 
@@ -198,7 +199,7 @@ mod tests {
         record(&context, &row, &Heartbeat::healthy()).await.unwrap();
 
         // A grace period that has already elapsed, rather than a sleep.
-        let swept = sweep(&context, chrono::TimeDelta::seconds(-1))
+        let swept = sweep(&context, SignedDuration::from_secs(-1))
             .await
             .unwrap();
 
@@ -210,7 +211,7 @@ mod tests {
         // Once. A service that is already quiet is not re-announced on every
         // sweep, or a feed consumer would see one event per minute forever.
         assert_eq!(
-            sweep(&context, chrono::TimeDelta::seconds(-1))
+            sweep(&context, SignedDuration::from_secs(-1))
                 .await
                 .unwrap(),
             0

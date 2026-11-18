@@ -101,7 +101,7 @@ fn fingerprint(files: &[ProfileFileData]) -> u64 {
 
     for file in files {
         file.name.hash(&mut hasher);
-        file.updated.timestamp_millis().hash(&mut hasher);
+        file.updated.as_millisecond().hash(&mut hasher);
         file.data.len().hash(&mut hasher);
     }
 
@@ -145,9 +145,10 @@ fn lock() -> std::sync::MutexGuard<'static, Vec<(Key, Bytes)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::Timestamp;
 
-    fn at(seconds: i64) -> chrono::DateTime<chrono::Utc> {
-        chrono::DateTime::from_timestamp(1_780_000_000 + seconds, 0).unwrap()
+    fn at(seconds: i64) -> Timestamp {
+        Timestamp::new(1_780_000_000 + seconds, 0).unwrap()
     }
 
     fn files(updated: i64) -> Vec<ProfileFileData> {

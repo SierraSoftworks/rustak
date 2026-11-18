@@ -14,9 +14,8 @@
 //! pressing "share" on a device with an intermittent link, and losing the nine
 //! files that did arrive because the tenth is truncated helps nobody.
 
+use rustak_core::time::Timestamp;
 use std::io::Read as _;
-
-use chrono::Utc;
 
 use crate::db::repos::{
     MissionChangeRow, MissionContentRow, MissionUidRow, NewChange, NewResource,
@@ -117,7 +116,7 @@ impl MissionService {
         };
 
         let details = serde_json::to_value(details_of(&event)).ok();
-        let at = Utc::now();
+        let at = Timestamp::now();
 
         self.db()
             .mission_contents()
@@ -148,7 +147,7 @@ impl MissionService {
         let size = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
         let stored = self.context.content()?.put_bytes(&bytes).await?;
         let filename = path.rsplit('/').next().unwrap_or(path).to_string();
-        let at = Utc::now();
+        let at = Timestamp::now();
 
         let resource = self
             .db()

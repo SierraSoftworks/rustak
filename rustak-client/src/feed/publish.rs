@@ -22,9 +22,9 @@
 //! # }
 //! ```
 
+use rustak_core::time::{DurationExt, Timestamp};
 use std::collections::HashMap;
 
-use chrono::{DateTime, Utc};
 use rustak_cot::Event;
 use serde::Serialize;
 
@@ -54,10 +54,10 @@ pub struct FeedCounters {
 #[derive(Debug)]
 struct Tracked {
     /// When we last had any report of it, which is what staleness measures.
-    seen_at: DateTime<Utc>,
+    seen_at: Timestamp,
     /// The newest observation time we have accepted, so that an out-of-order
     /// report from a source that reconnected does not move a track backwards.
-    observed_at: DateTime<Utc>,
+    observed_at: Timestamp,
     /// When it was last published, and what was in that publication.
     published: Option<Published>,
 }
@@ -65,7 +65,7 @@ struct Tracked {
 /// The parts of a publication a later observation is compared against.
 #[derive(Debug)]
 struct Published {
-    at: DateTime<Utc>,
+    at: Timestamp,
     position: (f64, f64),
     speed_mps: Option<f64>,
     bearing_deg: Option<f64>,
@@ -133,11 +133,11 @@ impl FeedPublisher {
     /// Uses the wall clock; see [`offer_at`](Self::offer_at) for a test that
     /// would rather not.
     pub fn offer(&mut self, track: Track) -> bool {
-        self.offer_at(track, Utc::now())
+        self.offer_at(track, Timestamp::now())
     }
 
     /// [`offer`](Self::offer), at an instant of the caller's choosing.
-    pub fn offer_at(&mut self, track: Track, now: DateTime<Utc>) -> bool {
+    pub fn offer_at(&mut self, track: Track, now: Timestamp) -> bool {
         self.counters.offered += 1;
 
         if !self.area.contains(track.position.0, track.position.1) {
@@ -186,7 +186,7 @@ impl FeedPublisher {
     }
 
     /// Whether this observation says anything the last publication did not.
-    fn changed_enough(&self, known: &Tracked, track: &Track, now: DateTime<Utc>) -> bool {
+    fn changed_enough(&self, known: &Tracked, track: &Track, now: Timestamp) -> bool {
         let Some(published) = &known.published else {
             // Held but never published: a reconnection asked for everything to
             // go out again.
@@ -221,11 +221,11 @@ impl FeedPublisher {
     /// clients expire a track by the `stale` on the last event they were given,
     /// so forgetting one here simply stops refreshing it.
     pub fn tick(&mut self) -> usize {
-        self.tick_at(Utc::now())
+        self.tick_at(Timestamp::now())
     }
 
     /// [`tick`](Self::tick), at an instant of the caller's choosing.
-    pub fn tick_at(&mut self, now: DateTime<Utc>) -> usize {
+    pub fn tick_at(&mut self, now: Timestamp) -> usize {
         let stale = self.policy.stale();
         let before = self.tracks.len();
 
@@ -283,7 +283,7 @@ impl FeedPublisher {
             return 0;
         }
 
-        let mut seen: Vec<(DateTime<Utc>, String)> = self
+        let mut seen: Vec<(Timestamp, String)> = self
             .tracks
             .iter()
             .map(|(id, held)| (held.seen_at, id.clone()))
@@ -301,7 +301,7 @@ impl FeedPublisher {
 
     /// Logs the counters, no more often than
     /// [`REPORT_EVERY`](super::upstream::REPORT_EVERY).
-    fn report(&mut self, now: DateTime<Utc>) {
+    fn report(&mut self, now: Timestamp) {
         if !self.report.due_at(now) {
             return;
         }
@@ -344,14 +344,15 @@ fn turned_by(before: Option<f64>, after: Option<f64>, threshold: f64) -> bool {
 mod tests {
     use super::*;
     use crate::feed::{AircraftClass, TrackKind, VesselClass};
+    use rustak_core::time::SignedDuration;
     use std::time::Duration;
 
     /// The clock these tests move by hand, so that nothing here waits.
-    fn at(seconds: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(1_789_646_400 + seconds, 0).expect("an instant")
+    fn at(seconds: i64) -> Timestamp {
+        Timestamp::new(1_789_646_400 + seconds, 0).expect("an instant")
     }
 
-    fn vessel(id: &str, position: (f64, f64), at: DateTime<Utc>) -> Track {
+    fn vessel(id: &str, position: (f64, f64), at: Timestamp) -> Track {
         Track::new(id, TrackKind::Vessel(VesselClass::Merchant), position, at)
             .with_velocity(6.2, 271.5)
     }
@@ -382,7 +383,7 @@ mod tests {
         let mut publisher = publisher();
 
         for tenth in 0..10 {
-            let now = at(0) + chrono::Duration::milliseconds(tenth * 100);
+            let now = at(0) + SignedDuration::from_millis(tenth * 100);
             publisher.offer_at(vessel("AIS-1", (51.9, 4.1), now), now);
         }
 

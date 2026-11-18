@@ -12,13 +12,11 @@
 //! fan-out into the CoT store, so the fields a listing shows are copied onto
 //! the row when the item is filed and are refreshed whenever it is filed again.
 
-use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension as _;
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 
-use crate::db::{
-    Database, row::Timestamp, row::json_col, row::opt_json_col, row::to_json, row::ts,
-};
+use crate::db::{Database, row::DbTime, row::json_col, row::opt_json_col, row::to_json, row::ts};
 
 /// Every column [`MissionUidRow::from_row`] reads, in order.
 const UID_COLUMNS: &str =
@@ -34,7 +32,7 @@ pub struct MissionUidRow {
     pub mission_id: i64,
     pub uid: String,
     pub creator_uid: Option<String>,
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: Timestamp,
     pub keywords: Vec<String>,
     /// The cached rendering fields; see the module documentation.
     pub details: Option<serde_json::Value>,
@@ -58,7 +56,7 @@ impl MissionUidRow {
     }
 
     /// An item with no keywords, details or layer, for a caller to fill in.
-    pub fn new(mission_id: i64, uid: impl Into<String>, at: DateTime<Utc>) -> Self {
+    pub fn new(mission_id: i64, uid: impl Into<String>, at: Timestamp) -> Self {
         Self {
             mission_id,
             uid: uid.into(),
@@ -78,7 +76,7 @@ pub struct MissionContentRow {
     pub mission_id: i64,
     pub resource_id: i64,
     pub creator_uid: Option<String>,
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: Timestamp,
     pub keywords: Vec<String>,
     pub layer_uid: Option<String>,
     pub position: Option<i64>,
@@ -98,7 +96,7 @@ impl MissionContentRow {
     }
 
     /// A resource with no keywords or layer, for a caller to fill in.
-    pub fn new(mission_id: i64, resource_id: i64, at: DateTime<Utc>) -> Self {
+    pub fn new(mission_id: i64, resource_id: i64, at: Timestamp) -> Self {
         Self {
             mission_id,
             resource_id,
@@ -153,7 +151,7 @@ impl<'a> MissionContentsRepo<'a> {
                         item.mission_id,
                         item.uid,
                         item.creator_uid,
-                        Timestamp::from(item.timestamp),
+                        DbTime::from(item.timestamp),
                         to_json(&item.keywords)?,
                         item.details.as_ref().map(ToString::to_string),
                         item.layer_uid,
@@ -252,7 +250,7 @@ impl<'a> MissionContentsRepo<'a> {
                         content.mission_id,
                         content.resource_id,
                         content.creator_uid,
-                        Timestamp::from(content.timestamp),
+                        DbTime::from(content.timestamp),
                         to_json(&content.keywords)?,
                         content.layer_uid,
                         content.position,
@@ -347,7 +345,7 @@ mod tests {
     async fn filing_an_item_twice_reports_it_new_only_once() {
         let db = Database::open_in_memory().await.unwrap();
         let id = mission(&db).await;
-        let item = MissionUidRow::new(id, "ANDROID-1", Utc::now());
+        let item = MissionUidRow::new(id, "ANDROID-1", Timestamp::now());
 
         assert!(
             db.mission_contents()
@@ -365,13 +363,13 @@ mod tests {
         let id = mission(&db).await;
 
         db.mission_contents()
-            .upsert_uid(MissionUidRow::new(id, "ANDROID-1", Utc::now()))
+            .upsert_uid(MissionUidRow::new(id, "ANDROID-1", Timestamp::now()))
             .await
             .unwrap();
         db.mission_contents()
             .upsert_uid(MissionUidRow {
                 details: Some(serde_json::json!({ "callsign": "ALPHA" })),
-                ..MissionUidRow::new(id, "ANDROID-1", Utc::now())
+                ..MissionUidRow::new(id, "ANDROID-1", Timestamp::now())
             })
             .await
             .unwrap();
@@ -387,7 +385,7 @@ mod tests {
         let id = mission(&db).await;
 
         db.mission_contents()
-            .upsert_uid(MissionUidRow::new(id, "ANDROID-1", Utc::now()))
+            .upsert_uid(MissionUidRow::new(id, "ANDROID-1", Timestamp::now()))
             .await
             .unwrap();
 
@@ -418,7 +416,7 @@ mod tests {
 
         for id in [first, second] {
             db.mission_contents()
-                .upsert_uid(MissionUidRow::new(id, "ANDROID-1", Utc::now()))
+                .upsert_uid(MissionUidRow::new(id, "ANDROID-1", Timestamp::now()))
                 .await
                 .unwrap();
         }

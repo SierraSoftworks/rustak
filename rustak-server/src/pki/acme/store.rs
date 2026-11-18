@@ -14,9 +14,9 @@
 //! reports that as "no certificate yet" rather than handing a listener a chain
 //! with nothing in it.
 
+use rustak_core::time::Timestamp;
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension as _;
 use rustls::sign::CertifiedKey;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _};
@@ -26,7 +26,7 @@ use rustak_core::prelude::*;
 use crate::config::AcmeChallenge;
 use crate::crypto::{Sealed, SecretContext, SecretStore};
 use crate::db::Database;
-use crate::db::row::{Timestamp, json_col, opt_ts, to_json, ts};
+use crate::db::row::{DbTime, json_col, opt_ts, to_json, ts};
 
 /// One row of `acme_certificates`.
 #[derive(Debug, Clone)]
@@ -39,17 +39,17 @@ pub struct AcmeCertificateRow {
     pub chain_pem: String,
     /// The PKCS#8 private key, sealed — absent while the row is only reserved.
     pub key_sealed: Option<Sealed>,
-    pub not_before: Option<DateTime<Utc>>,
-    pub not_after: Option<DateTime<Utc>>,
+    pub not_before: Option<Timestamp>,
+    pub not_after: Option<Timestamp>,
     /// How the last successful order was validated.
     pub challenge_type: Option<AcmeChallenge>,
     /// Consecutive failures since the last success, for the back-off.
     pub attempts: i64,
-    pub last_attempt_at: Option<DateTime<Utc>>,
+    pub last_attempt_at: Option<Timestamp>,
     /// The last failure, shown in the admin UI. Never a secret: it is the
     /// authority's own problem document.
     pub last_error: Option<String>,
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
 }
 
 impl AcmeCertificateRow {
@@ -214,7 +214,7 @@ pub async fn reserve(db: &Database, domains: &[String]) -> Result<i64, Error> {
 
     db.write(move |tx| {
         let key = storage_key(&domains)?;
-        let now = Timestamp::now();
+        let now = DbTime::now();
 
         tx.execute(
             "INSERT INTO acme_certificates (domains, chain_pem, key_sealed, attempts, created_at, updated_at) \
@@ -246,7 +246,7 @@ pub async fn store(
     id: i64,
     chain_pem: String,
     key_pkcs8: &[u8],
-    validity: (DateTime<Utc>, DateTime<Utc>),
+    validity: (Timestamp, Timestamp),
     challenge: AcmeChallenge,
 ) -> Result<(), Error> {
     let sealed = secrets.seal(
@@ -268,10 +268,10 @@ pub async fn store(
                 id,
                 chain_pem,
                 to_json(&sealed)?,
-                Timestamp::from(validity.0),
-                Timestamp::from(validity.1),
+                DbTime::from(validity.0),
+                DbTime::from(validity.1),
                 challenge,
-                Timestamp::now(),
+                DbTime::now(),
             ],
         )
     })
@@ -293,7 +293,7 @@ pub async fn record_failure(db: &Database, id: i64, reason: &str) -> Result<i64,
             "UPDATE acme_certificates SET \
                attempts = attempts + 1, last_error = ?2, last_attempt_at = ?3, updated_at = ?3 \
              WHERE id = ?1",
-            rusqlite::params![id, reason, Timestamp::now()],
+            rusqlite::params![id, reason, DbTime::now()],
         )?;
 
         tx.query_one(
@@ -308,6 +308,7 @@ pub async fn record_failure(db: &Database, id: i64, reason: &str) -> Result<i64,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::SignedDuration;
 
     async fn database() -> Database {
         Database::open_in_memory().await.unwrap()
@@ -379,7 +380,7 @@ mod tests {
             .unwrap()
             .self_signed(&key)
             .unwrap();
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         store(
             &db,
@@ -387,7 +388,7 @@ mod tests {
             id,
             certificate.pem(),
             &key.serialize_der(),
-            (now, now + chrono::Duration::days(90)),
+            (now, now + SignedDuration::from_hours(24 * 90)),
             AcmeChallenge::Http01,
         )
         .await
@@ -414,7 +415,7 @@ mod tests {
             .unwrap()
             .self_signed(&key)
             .unwrap();
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         store(
             &db,
@@ -422,7 +423,7 @@ mod tests {
             id,
             certificate.pem(),
             &key.serialize_der(),
-            (now, now + chrono::Duration::days(90)),
+            (now, now + SignedDuration::from_hours(24 * 90)),
             AcmeChallenge::TlsAlpn01,
         )
         .await
@@ -458,7 +459,7 @@ mod tests {
             .unwrap()
             .self_signed(&key)
             .unwrap();
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         store(
             &db,
@@ -466,7 +467,7 @@ mod tests {
             id,
             certificate.pem(),
             &key.serialize_der(),
-            (now, now + chrono::Duration::days(90)),
+            (now, now + SignedDuration::from_hours(24 * 90)),
             AcmeChallenge::TlsAlpn01,
         )
         .await

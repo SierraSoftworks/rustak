@@ -13,6 +13,7 @@
 //! because deleting the last administrator must not reopen the door that
 //! creates one without a credential.
 
+use rustak_core::time::SignedDuration;
 use std::sync::Arc;
 
 use actix_web::{HttpRequest, HttpResponse, web};
@@ -349,12 +350,12 @@ fn failed(err: Error) -> ApiError {
 }
 
 /// The failure for somebody who has been guessing at the setup token.
-fn too_many(retry_after: chrono::Duration) -> ApiError {
+fn too_many(retry_after: SignedDuration) -> ApiError {
     ApiError::new(
         actix_web::http::StatusCode::TOO_MANY_REQUESTS,
         format!(
             "Too many attempts. Try again in {} minutes.",
-            retry_after.num_minutes().max(1)
+            retry_after.as_mins().max(1)
         ),
     )
     .with_code("rate_limited")

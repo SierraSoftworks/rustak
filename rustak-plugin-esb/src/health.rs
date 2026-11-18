@@ -9,9 +9,9 @@
 //! Nothing secret goes in `metrics`: the last error comes from
 //! [`SourceState`], whose messages never carry the subscription key.
 
-use chrono::Utc;
 use rustak_api::{Heartbeat, ServiceState};
 use rustak_client::feed::FeedCounters;
+use rustak_core::time::{SignedDuration, Timestamp};
 
 use crate::publish::Summary;
 use crate::sources::SourceState;
@@ -52,9 +52,9 @@ pub fn service_state(state: &SourceState) -> ServiceState {
         return ServiceState::Unhealthy;
     }
 
-    let grace = chrono::Duration::from_std(state.interval() * 2).unwrap_or_default();
+    let grace = SignedDuration::try_from(state.interval() * 2).unwrap_or_default();
 
-    if !state.is_connected() && Utc::now() - state.since() > grace {
+    if !state.is_connected() && Timestamp::now() - state.since() > grace {
         ServiceState::Degraded
     } else {
         ServiceState::Healthy

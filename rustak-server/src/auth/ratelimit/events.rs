@@ -16,9 +16,9 @@
 //! reader, on the administrator's request, does wait for each slot in turn,
 //! one copy at a time.
 
+use rustak_core::time::Timestamp;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
-use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use rustak_api::LockoutClass;
 
@@ -61,7 +61,7 @@ pub(super) struct Event {
     /// Unique and increasing: the order events were recorded in.
     pub seq: u64,
     pub key: Counted,
-    pub since: DateTime<Utc>,
+    pub since: Timestamp,
     /// The key's estimate when it was locked.
     pub estimate: u16,
     pub cleared: bool,
@@ -69,7 +69,7 @@ pub(super) struct Event {
 
 impl Event {
     /// A lockout of `key` that began at `since`, not yet in the ring.
-    pub fn new(key: Counted, since: DateTime<Utc>, estimate: u16) -> Self {
+    pub fn new(key: Counted, since: Timestamp, estimate: u16) -> Self {
         Self {
             seq: 0,
             key,
@@ -167,7 +167,7 @@ mod tests {
             subject: Some(ShownKey::of("ada")),
         };
 
-        Event::new(key, Utc::now(), 10)
+        Event::new(key, Timestamp::now(), 10)
     }
 
     #[test]

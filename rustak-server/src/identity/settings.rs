@@ -12,9 +12,9 @@
 //! that reading "what is this server" is one row and one deserialisation, and
 //! so a partially written wizard step cannot leave the two halves disagreeing.
 
-use chrono::Utc;
 use rustak_api::{ServerSettings, ServerSettingsRequest};
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 
 use crate::config::{Config, ServerConfig};
 use crate::db::Database;
@@ -141,7 +141,7 @@ pub async fn complete(db: &Database, by: Option<&Username>) -> Result<ServerSett
     let mut settings = stored(db).await?;
 
     if settings.setup_completed_at.is_none() {
-        settings.setup_completed_at = Some(Utc::now());
+        settings.setup_completed_at = Some(Timestamp::now());
         settings.node_id = settings.node_id.or_else(|| Some(node_id()));
 
         db.settings().set(SERVER_KEY, settings.clone(), by).await?;

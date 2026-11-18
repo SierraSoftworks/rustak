@@ -134,7 +134,7 @@ pub fn uid(detection: &Detection) -> String {
         } else {
             &satellite
         },
-        detection.acquired_at.format("%Y%m%d%H%M"),
+        detection.acquired_at.strftime("%Y%m%d%H%M"),
         (detection.lat * 1e5).round() as i64,
         (detection.lon * 1e5).round() as i64,
     )
@@ -259,7 +259,7 @@ fn event(
 
 /// What the map shows beside the dot: when, and how hard it is burning.
 fn callsign(detection: &Detection) -> String {
-    let seen = detection.acquired_at.format("%H:%MZ");
+    let seen = detection.acquired_at.strftime("%H:%MZ");
 
     match detection.frp_mw {
         Some(frp) => format!("Fire {seen} {frp:.0}MW"),
@@ -281,7 +281,7 @@ fn remarks(detection: &Detection) -> String {
 
     lines.push(format!(
         "Detected: {}",
-        detection.acquired_at.format("%Y-%m-%d %H:%M UTC"),
+        detection.acquired_at.strftime("%Y-%m-%d %H:%M UTC"),
     ));
     match (&detection.satellite, &detection.instrument) {
         (Some(satellite), Some(instrument)) => {

@@ -17,6 +17,7 @@
 
 mod stream_support;
 
+use rustak_core::time::SignedDuration;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -81,7 +82,7 @@ async fn a_client_that_only_receives_is_never_reclaimed_for_saying_nothing() {
     // is the channel's traffic. Under the old read-idle rule BRAVO was dropped
     // `idle_timeout` after connecting, however much was being written to it.
     let harness = Harness::start_with(|config| {
-        config.stream.tls.idle_timeout = chrono::Duration::from_std(IDLE).unwrap();
+        config.stream.tls.idle_timeout = SignedDuration::try_from(IDLE).unwrap();
     })
     .await;
     let alice = harness
@@ -138,7 +139,7 @@ async fn a_client_that_neither_sends_nor_receives_is_reclaimed_as_idle() {
     // only connection — and it sends nothing, so it is idle in both
     // directions and the disconnect line says so.
     let harness = Harness::start_with(|config| {
-        config.stream.tls.idle_timeout = chrono::Duration::milliseconds(500);
+        config.stream.tls.idle_timeout = SignedDuration::from_millis(500);
     })
     .await;
     let alice = harness

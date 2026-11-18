@@ -14,7 +14,7 @@
 //! is said in a tooltip over the bar, as a media player says a timestamp,
 //! which leaves the whole width to the bar.
 
-use chrono::{DateTime, Duration, Utc};
+use rustak_api::time::{DurationExt, SignedDuration, Timestamp};
 use web_sys::{HtmlElement, HtmlInputElement, HtmlSelectElement};
 use yew::prelude::*;
 
@@ -27,18 +27,18 @@ pub const SPEEDS: [u32; 4] = [1, 10, 60, 600];
 #[derive(Clone, Debug, PartialEq)]
 pub struct Position {
     /// The first fix.
-    pub start: DateTime<Utc>,
+    pub start: Timestamp,
     /// The last fix, which is also where "live" sits.
-    pub end: DateTime<Utc>,
+    pub end: Timestamp,
     /// The moment being shown, or [`None`] for the live map.
-    pub at: Option<DateTime<Utc>>,
+    pub at: Option<Timestamp>,
     pub playing: bool,
     pub speed: u32,
 }
 
 impl Position {
     /// Live, over `start..=end`.
-    pub fn live(start: DateTime<Utc>, end: DateTime<Utc>) -> Self {
+    pub fn live(start: Timestamp, end: Timestamp) -> Self {
         Self {
             start,
             end: end.max(start),
@@ -54,29 +54,28 @@ impl Position {
 
     /// How long the track is, in the slider's units.
     pub fn span_ms(&self) -> i64 {
-        (self.end - self.start).num_milliseconds().max(0)
+        (self.end - self.start).whole_millis().max(0)
     }
 
     /// Where the slider sits: at the end when live.
     pub fn offset_ms(&self) -> i64 {
         match self.at {
-            Some(at) => (at - self.start)
-                .num_milliseconds()
-                .clamp(0, self.span_ms()),
+            Some(at) => (at - self.start).whole_millis().clamp(0, self.span_ms()),
             None => self.span_ms(),
         }
     }
 
     /// The moment `offset` milliseconds into the track.
-    pub fn moment(&self, offset_ms: i64) -> DateTime<Utc> {
-        self.start + Duration::milliseconds(offset_ms.clamp(0, self.span_ms()))
+    pub fn moment(&self, offset_ms: i64) -> Timestamp {
+        self.start + SignedDuration::from_millis(offset_ms.clamp(0, self.span_ms()))
     }
 
     /// Where playback is after `elapsed_ms` of wall-clock at this speed, or
     /// [`None`] once that is past the end.
-    pub fn advanced(&self, elapsed_ms: i64) -> Option<DateTime<Utc>> {
+    pub fn advanced(&self, elapsed_ms: i64) -> Option<Timestamp> {
         let from = self.at.unwrap_or(self.start);
-        let to = from + Duration::milliseconds(elapsed_ms.saturating_mul(i64::from(self.speed)));
+        let to =
+            from + SignedDuration::from_millis(elapsed_ms.saturating_mul(i64::from(self.speed)));
 
         (to < self.end).then_some(to)
     }
@@ -91,7 +90,7 @@ pub struct Band {
 }
 
 /// Where the track's windows fall along the bar.
-pub fn bands(windows: &[(DateTime<Utc>, DateTime<Utc>)], position: &Position) -> Vec<Band> {
+pub fn bands(windows: &[(Timestamp, Timestamp)], position: &Position) -> Vec<Band> {
     let span = position.span_ms();
     if span == 0 {
         // One moment is all there is, and it was tracked.
@@ -101,8 +100,8 @@ pub fn bands(windows: &[(DateTime<Utc>, DateTime<Utc>)], position: &Position) ->
         }];
     }
 
-    let percent = |when: DateTime<Utc>| {
-        (when - position.start).num_milliseconds().clamp(0, span) as f64 / span as f64 * 100.0
+    let percent = |when: Timestamp| {
+        (when - position.start).whole_millis().clamp(0, span) as f64 / span as f64 * 100.0
     };
 
     windows
@@ -115,7 +114,7 @@ pub fn bands(windows: &[(DateTime<Utc>, DateTime<Utc>)], position: &Position) ->
 }
 
 /// Whether the thing was being tracked at `when`.
-pub fn tracked(windows: &[(DateTime<Utc>, DateTime<Utc>)], when: DateTime<Utc>) -> bool {
+pub fn tracked(windows: &[(Timestamp, Timestamp)], when: Timestamp) -> bool {
     windows
         .iter()
         .any(|(from, to)| (*from..=*to).contains(&when))
@@ -133,7 +132,7 @@ pub struct PlaybackBarProps {
     /// How many fixes it has.
     pub fixes: usize,
     /// When it was being tracked: see [`Track::windows`](super::track::Track::windows).
-    pub windows: Vec<(DateTime<Utc>, DateTime<Utc>)>,
+    pub windows: Vec<(Timestamp, Timestamp)>,
     pub position: Position,
 
     /// The slider moved, to this many milliseconds into the track.
@@ -146,8 +145,8 @@ pub struct PlaybackBarProps {
 }
 
 /// A moment, as the bar says it: the date, because a track can be a day long.
-fn stamp(when: DateTime<Utc>) -> String {
-    when.format("%Y-%m-%d %H:%M:%SZ").to_string()
+fn stamp(when: Timestamp) -> String {
+    when.strftime("%Y-%m-%d %H:%M:%SZ").to_string()
 }
 
 #[function_component(PlaybackBar)]
@@ -156,7 +155,7 @@ pub fn playback_bar(props: &PlaybackBarProps) -> Html {
 
     // Where the pointer is over the bar, in pixels from its left, and the
     // moment that is: what a media player shows over its own.
-    let pointed = use_state(|| None::<(f64, DateTime<Utc>)>);
+    let pointed = use_state(|| None::<(f64, Timestamp)>);
 
     let onseek = {
         let onseek = props.onseek.clone();
@@ -233,7 +232,7 @@ pub fn playback_bar(props: &PlaybackBarProps) -> Html {
         (1, _) => "1 fix".to_string(),
         (fixes, gaps) => format!(
             "{fixes} fixes over {}{}",
-            short_duration((position.end - position.start).num_seconds()),
+            short_duration((position.end - position.start).as_secs()),
             match gaps {
                 0 => String::new(),
                 1 => " · 1 gap".to_string(),
@@ -335,7 +334,7 @@ pub fn playback_bar(props: &PlaybackBarProps) -> Html {
 mod tests {
     use super::*;
 
-    fn at(time: &str) -> DateTime<Utc> {
+    fn at(time: &str) -> Timestamp {
         format!("2026-09-18T{time}Z").parse().unwrap()
     }
 

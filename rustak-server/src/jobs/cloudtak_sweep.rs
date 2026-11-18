@@ -18,11 +18,10 @@
 //! this is the schedule around it, registered like every other job so that it
 //! is visible in the queue and can be run early by hand.
 
-use chrono::{TimeDelta, Utc};
-
 use crate::identity::cloudtak;
 use crate::prelude::*;
 use crate::register_job;
+use rustak_core::time::{SignedDuration, Timestamp};
 
 /// The queue partition this job owns.
 pub const CLOUDTAK_SWEEP_PARTITION: &str = "housekeeping/cloudtak-sweep";
@@ -36,7 +35,7 @@ pub const CLOUDTAK_SWEEP_PARTITION: &str = "housekeeping/cloudtak-sweep";
 /// partition holds at most a handful of rows, so running it four times an hour
 /// costs nothing worth configuring. Not configurable for the same reason the
 /// TTL is not: neither is something an operator has an opinion about.
-pub const SWEEP_INTERVAL: TimeDelta = TimeDelta::minutes(15);
+pub const SWEEP_INTERVAL: SignedDuration = SignedDuration::from_mins(15);
 
 /// The message this job runs on. The window is a constant and the clock is read
 /// at run time, so there is nothing to carry.
@@ -94,7 +93,7 @@ impl Job for CloudTakSweepJob {
         )
         .await?;
 
-        let removed = cloudtak::sweep(services.db(), Utc::now()).await?;
+        let removed = cloudtak::sweep(services.db(), Timestamp::now()).await?;
 
         // Silent when there is nothing to remove, which is the ordinary case on
         // every installation that is not onboarding CloudTAK this quarter-hour.
@@ -148,7 +147,7 @@ mod tests {
             .unwrap()
             .expect("the bundle is waiting");
 
-        stored["expires_at"] = serde_json::json!(Utc::now() - TimeDelta::minutes(1));
+        stored["expires_at"] = serde_json::json!(Timestamp::now() - SignedDuration::from_mins(1));
 
         context
             .db()
@@ -191,7 +190,7 @@ mod tests {
 
         let due = context
             .queue()
-            .try_dequeue_any(TimeDelta::seconds(30))
+            .try_dequeue_any(SignedDuration::from_secs(30))
             .await
             .unwrap()
             .expect("the sweep should be due immediately");
@@ -212,7 +211,7 @@ mod tests {
 
         JobRunnable::handle(
             &CloudTakSweepJob,
-            JobContext::new(context.clone(), Utc::now(), None, None),
+            JobContext::new(context.clone(), Timestamp::now(), None, None),
             &serde_json::json!({}),
         )
         .await
@@ -231,7 +230,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(armed.len(), 1, "the run should have re-armed itself");
-        assert!(armed[0].hidden_until > Utc::now() + TimeDelta::minutes(14));
+        assert!(armed[0].hidden_until > Timestamp::now() + SignedDuration::from_mins(14));
     }
 
     #[tokio::test]
@@ -241,7 +240,7 @@ mod tests {
 
         Job::handle(
             &CloudTakSweepJob,
-            JobContext::new(context.clone(), Utc::now(), None, None),
+            JobContext::new(context.clone(), Timestamp::now(), None, None),
             &CloudTakSweepTask {},
         )
         .await

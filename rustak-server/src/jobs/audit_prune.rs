@@ -11,8 +11,8 @@
 //! limit lets a busy day fill the disk inside the window, and a count limit lets
 //! a quiet installation keep entries for ever.
 
-use chrono::TimeDelta;
 use rustak_core::prelude::*;
+use rustak_core::time::SignedDuration;
 
 use crate::{
     db::AuditStore,
@@ -30,7 +30,7 @@ pub const AUDIT_PRUNE_PARTITION: &str = "housekeeping/audit-prune";
 /// that the delete is never the reason another write is waiting. Not
 /// configurable: the limits are, and they are what an operator actually has an
 /// opinion about.
-pub const PRUNE_INTERVAL: TimeDelta = TimeDelta::hours(24);
+pub const PRUNE_INTERVAL: SignedDuration = SignedDuration::from_hours(24);
 
 /// The message this job runs on. The limits come from the configuration at run
 /// time, so there is nothing to carry.
@@ -111,6 +111,7 @@ impl Job for AuditPruneJob {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::Timestamp;
 
     use rustak_api::{AuditCategory, AuditOutcome};
 
@@ -143,7 +144,7 @@ mod tests {
 
         let due = context
             .queue()
-            .try_dequeue_any(TimeDelta::seconds(30))
+            .try_dequeue_any(SignedDuration::from_secs(30))
             .await
             .unwrap()
             .expect("the prune should be due immediately");
@@ -162,7 +163,7 @@ mod tests {
 
         JobRunnable::handle(
             &AuditPruneJob,
-            JobContext::new(context.clone(), chrono::Utc::now(), None, None),
+            JobContext::new(context.clone(), Timestamp::now(), None, None),
             &serde_json::json!({}),
         )
         .await
@@ -178,7 +179,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(armed.len(), 1, "the run should have re-armed itself");
-        assert!(armed[0].hidden_until > chrono::Utc::now() + TimeDelta::hours(23));
+        assert!(armed[0].hidden_until > Timestamp::now() + SignedDuration::from_hours(23));
     }
 
     #[tokio::test]
@@ -188,7 +189,7 @@ mod tests {
 
         Job::handle(
             &AuditPruneJob,
-            JobContext::new(context.clone(), chrono::Utc::now(), None, None),
+            JobContext::new(context.clone(), Timestamp::now(), None, None),
             &AuditPruneTask {},
         )
         .await

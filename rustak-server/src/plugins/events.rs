@@ -31,11 +31,11 @@
 //! see that module. A consumer of this feed is authenticated but is not
 //! necessarily an administrator, so "what a service may see" is the bar.
 
+use rustak_core::time::Timestamp;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use chrono::Utc;
 use parking_lot::Mutex;
 use rustak_api::event::{
     ChannelEvent, ClientEvent, ConfigValidationEvent, MissionEvent, PackageEvent, ServerEvent,
@@ -236,7 +236,7 @@ impl ServerEvents {
         let published = Arc::new(PublishedEvent {
             event: ServerEvent {
                 id: self.inner.next_id.fetch_add(1, Ordering::Relaxed) + 1,
-                at: Utc::now(),
+                at: Timestamp::now(),
                 payload,
             },
             audience,
@@ -613,7 +613,7 @@ mod tests {
     }
 
     fn resource() -> ResourceRow {
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         ResourceRow {
             id: 1,

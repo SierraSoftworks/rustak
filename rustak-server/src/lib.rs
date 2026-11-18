@@ -33,6 +33,7 @@
 //! # }
 //! ```
 
+use rustak_core::time::DurationExt;
 pub mod auth;
 pub mod config;
 pub mod cot_store;
@@ -174,7 +175,7 @@ pub async fn build_context(
 
 /// `[storage] busy_timeout` as the standard library spells a duration.
 ///
-/// `chrono` durations can be negative and `std` ones cannot, so a value that
+/// `SignedDuration`s can be negative and `std` ones cannot, so a value that
 /// will not convert falls back to the database layer's own default. Refusing to
 /// start over a busy timeout somebody typed a minus sign into would be a
 /// disproportionate answer to a value that only decides how long a writer waits.

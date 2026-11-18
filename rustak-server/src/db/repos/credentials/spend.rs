@@ -22,11 +22,11 @@
 //! [`find_by_hint_including_spent`](CredentialsRepo::find_by_hint_including_spent),
 //! so an administrator taking a token back ends its grace window at once.
 
-use chrono::{DateTime, Utc};
 use rusqlite::Transaction;
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 
-use crate::db::row::Timestamp;
+use crate::db::row::DbTime;
 
 use super::{COLUMNS, CredentialRow, CredentialsRepo};
 
@@ -67,10 +67,10 @@ impl CredentialsRepo<'_> {
     pub async fn find_by_hint_including_spent(
         &self,
         hint: &str,
-        since: DateTime<Utc>,
+        since: Timestamp,
     ) -> Result<Vec<CredentialRow>, Error> {
         let hint = hint.to_owned();
-        let since = Timestamp::from(since);
+        let since = DbTime::from(since);
 
         self.db
             .read(move |c| {
@@ -111,7 +111,7 @@ impl CredentialsRepo<'_> {
         let claimed = self
             .db
             .write(move |tx| {
-                let now = Timestamp::now();
+                let now = DbTime::now();
 
                 tx.execute(
                     "UPDATE credentials \

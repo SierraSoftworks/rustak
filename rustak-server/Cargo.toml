@@ -73,7 +73,6 @@ serde_json = { workspace = true }
 # `plugins::config_schema`.
 jsonschema = { workspace = true }
 toml = { workspace = true }
-chrono = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 quick-xml = { workspace = true }
 zip = { workspace = true }

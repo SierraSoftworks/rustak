@@ -33,8 +33,8 @@ pub mod publish;
 pub mod shape;
 
 use actix_web::web;
-use chrono::{Duration, Utc};
 use rustak_api::MapFeature;
+use rustak_core::time::{SignedDuration, Timestamp};
 
 use crate::cot_store::latest;
 use crate::prelude::*;
@@ -48,7 +48,7 @@ use super::subject::failed;
 /// A page dims what is stale and drops it this much later, the way a TAK
 /// client does, so that "it stopped reporting a minute ago" is something
 /// somebody can see rather than infer from an absence.
-pub const LINGER: Duration = Duration::minutes(5);
+pub const LINGER: SignedDuration = SignedDuration::from_mins(5);
 
 /// The most features one snapshot carries.
 ///
@@ -105,7 +105,7 @@ async fn visible(
     page: u32,
     most: usize,
 ) -> Result<Vec<MapFeature>, Error> {
-    let since = Utc::now() - LINGER;
+    let since = Timestamp::now() - LINGER;
     let index = context.db().groups().index().await?;
 
     let mut listed: Vec<MapFeature> = Vec::new();
@@ -141,7 +141,6 @@ async fn visible(
 mod tests {
     use std::sync::Arc;
 
-    use chrono::Duration;
     use rustak_cot::codec::EncodedEvent;
     use rustak_cot::{CotTime, Event};
 
@@ -167,7 +166,9 @@ mod tests {
     async fn store(server: &TestServer, uid: &str, kind: &str, bits: &[u32]) {
         let event = Event::builder(kind, uid)
             .point(51.5, -0.12)
-            .stale(CotTime::from_datetime(Utc::now() + Duration::minutes(2)))
+            .stale(CotTime::from_datetime(
+                Timestamp::now() + SignedDuration::from_mins(2),
+            ))
             .build();
 
         let mut record = CotRecord::new(Arc::new(EncodedEvent::new(event)), &sender(bits), None);

@@ -15,10 +15,10 @@
 //! cached certificate. The stored record therefore carries the exact list it
 //! was issued for, and a mismatch is a reissue rather than a warning.
 
+use rustak_core::time::Timestamp;
 use std::net::IpAddr;
 use std::path::Path;
 
-use chrono::{DateTime, Datelike as _, Utc};
 use rustak_core::prelude::*;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
@@ -59,8 +59,8 @@ struct ServerCertRecord {
     /// Exactly what this certificate covers, so a change is noticed.
     names: Vec<String>,
     addresses: Vec<String>,
-    not_before: DateTime<Utc>,
-    not_after: DateTime<Utc>,
+    not_before: Timestamp,
+    not_after: Timestamp,
     /// The CA that signed it: rotating the CA has to reissue the leaf.
     issuer_fingerprint: String,
 }
@@ -72,7 +72,7 @@ pub struct ServerCertificate {
     /// The private key, as rustls wants it.
     pub key: PrivateKeyDer<'static>,
     /// When it stops being valid, for the renewal job M2 adds.
-    pub not_after: DateTime<Utc>,
+    pub not_after: Timestamp,
     /// The names it covers, for logging and for `/api/v1/pki/status`.
     pub names: Vec<String>,
 }
@@ -146,7 +146,7 @@ fn usable(
         && record.issuer_fingerprint == ca.fingerprint()
         && record.names == names
         && record.addresses == addresses
-        && record.not_after - Utc::now() > pki.server_cert_renew_before
+        && record.not_after - Timestamp::now() > pki.server_cert_renew_before
 }
 
 /// Issues a leaf and stores it, replacing whatever was there.
@@ -166,7 +166,7 @@ async fn issue(
         .await
         .or_system_err(ADVICE_REPORT)??;
 
-    let now = Utc::now();
+    let now = Timestamp::now();
     let expires = (now + pki.server_cert_validity).min(ca.not_after());
     let params = params(pki, &names, &addresses, now, expires)?;
 
@@ -209,8 +209,8 @@ fn params(
     pki: &PkiConfig,
     names: &[String],
     addresses: &[String],
-    now: DateTime<Utc>,
-    expires: DateTime<Utc>,
+    now: Timestamp,
+    expires: Timestamp,
 ) -> Result<rcgen::CertificateParams, Error> {
     let mut subject_alt_names: Vec<rcgen::SanType> = Vec::new();
 
@@ -256,9 +256,16 @@ fn params(
     ];
     params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
     params.serial_number = Some(rcgen::SerialNumber::from_slice(&random_serial()));
-    params.not_before = rcgen::date_time_ymd(now.year(), now.month() as u8, now.day() as u8);
-    params.not_after =
-        rcgen::date_time_ymd(expires.year(), expires.month() as u8, expires.day() as u8);
+    params.not_before = rcgen::date_time_ymd(
+        i32::from(now.civil().year()),
+        now.civil().month() as u8,
+        now.civil().day() as u8,
+    );
+    params.not_after = rcgen::date_time_ymd(
+        i32::from(expires.civil().year()),
+        expires.civil().month() as u8,
+        expires.civil().day() as u8,
+    );
     params.use_authority_key_identifier_extension = true;
     params.key_identifier_method = rcgen::KeyIdMethod::Sha256;
 
@@ -355,6 +362,7 @@ pub fn server_certificate_path(data_dir: &Path) -> std::path::PathBuf {
 mod tests {
     use super::*;
     use crate::crypto::SecretStore;
+    use rustak_core::time::SignedDuration;
 
     async fn fixtures() -> (Database, SecretStore, PkiConfig, CaMaterial) {
         let db = Database::open_in_memory().await.unwrap();
@@ -459,7 +467,7 @@ mod tests {
     async fn it_never_outlives_the_authority_that_signed_it() {
         let (db, secrets, pki, ca) = fixtures().await;
         let pki = PkiConfig {
-            server_cert_validity: chrono::Duration::days(100_000),
+            server_cert_validity: SignedDuration::from_hours(24 * 100_000),
             ..pki
         };
 
@@ -492,7 +500,7 @@ mod tests {
         // A renewal window longer than the certificate's whole life means every
         // load is a reissue, which is the boundary this rule turns on.
         let eager = PkiConfig {
-            server_cert_renew_before: chrono::Duration::days(100_000),
+            server_cert_renew_before: SignedDuration::from_hours(24 * 100_000),
             ..pki
         };
 

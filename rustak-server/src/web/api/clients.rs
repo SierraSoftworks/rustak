@@ -23,10 +23,10 @@
 //! rather than to the device row, which is why there is nothing to set when
 //! nothing is connected under that uid.
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::collections::{HashMap, HashSet};
 
 use actix_web::{HttpResponse, web};
-use chrono::{Duration, Utc};
 use rustak_api::{
     AuditCategory, AuditOutcome, ClientHistoryEntry, ConnectedClient, IncognitoRequest,
     StreamStatus,
@@ -247,7 +247,8 @@ pub async fn history(
     request: web::Query<HistoryQuery>,
     _: Administrative,
 ) -> ApiResult {
-    let since = Utc::now() - Duration::seconds(request.secago.unwrap_or(DEFAULT_SECAGO).max(0));
+    let since = Timestamp::now()
+        - SignedDuration::from_secs(request.secago.unwrap_or(DEFAULT_SECAGO).max(0));
     let limit = request.limit.unwrap_or(MAX_HISTORY).clamp(1, MAX_HISTORY);
 
     let rows = devices::list(context.db(), Page::first(limit))
@@ -410,15 +411,15 @@ mod tests {
             user_id: None,
             device_id: None,
             group_bits: GroupSet::new().to_bytes(),
-            time: Utc::now(),
-            stale: Utc::now(),
+            time: Timestamp::now(),
+            stale: Timestamp::now(),
             xml: "<event version=\"2.0\" uid=\"ANDROID-1\" type=\"a-f-G-U-C\" \
                   time=\"2026-09-18T12:00:00.000Z\" start=\"2026-09-18T12:00:00.000Z\" \
                   stale=\"2026-09-18T12:02:00.000Z\" how=\"m-g\">\
                   <point lat=\"51.5\" lon=\"-0.12\" hae=\"0\" ce=\"0\" le=\"0\"/>\
                   <detail><__group name=\"Cyan\" role=\"Team Member\"/></detail></event>"
                 .to_string(),
-            received_at: Utc::now(),
+            received_at: Timestamp::now(),
         }
     }
 
@@ -434,8 +435,8 @@ mod tests {
             os: None,
             incognito: false,
             last_certificate_id: None,
-            first_seen_at: Utc::now(),
-            last_seen_at: Utc::now(),
+            first_seen_at: Timestamp::now(),
+            last_seen_at: Timestamp::now(),
             last_ip: None,
         }
     }
@@ -674,12 +675,12 @@ mod tests {
         let server = TestServer::start().await;
         let (_, session) = server.signed_in("ada", true).await;
 
-        let before = Utc::now();
+        let before = Timestamp::now();
         let live = live_with_alpha(&[]).await;
         server
             .install_live(std::sync::Arc::new(live))
             .expect("the registry is installed once");
-        let after = Utc::now();
+        let after = Timestamp::now();
 
         let app = test::init_service(App::new().configure(server.app())).await;
 

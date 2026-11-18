@@ -40,6 +40,7 @@ use actix_web::http::header::{
     CONTENT_DISPOSITION, CONTENT_TYPE, HeaderValue, HttpDate, LastModified,
 };
 use actix_web::{HttpRequest, HttpResponse, web};
+use rustak_core::time::Timestamp;
 
 use crate::prelude::*;
 
@@ -372,7 +373,7 @@ fn download(
     content_type: impl TryInto<HeaderValue>,
     filename: &str,
     body: Bytes,
-    last_modified: Option<chrono::DateTime<chrono::Utc>>,
+    last_modified: Option<Timestamp>,
 ) -> HttpResponse {
     let mut response = HttpResponse::Ok();
 
@@ -407,7 +408,7 @@ fn drop_unchanged(assembled: Assembled, header: Option<&HeaderValue>) -> Option<
         return Some(assembled);
     };
 
-    let since = chrono::DateTime::<chrono::Utc>::from(std::time::SystemTime::from(since));
+    let since = Timestamp::from(std::time::SystemTime::from(since));
     let mut kept = Assembled::default();
 
     for file in assembled.files {
@@ -415,8 +416,7 @@ fn drop_unchanged(assembled: Assembled, header: Option<&HeaderValue>) -> Option<
         // millisecond part, so comparing against the stored value would report
         // a change on every request for a file whose timestamp is not exactly
         // on a second.
-        let updated =
-            chrono::DateTime::from_timestamp(file.updated.timestamp(), 0).unwrap_or(file.updated);
+        let updated = Timestamp::new(file.updated.as_second(), 0).unwrap_or(file.updated);
 
         if updated > since {
             kept.files.push(file);
@@ -547,8 +547,8 @@ mod tests {
 
     #[test]
     fn nothing_newer_than_the_client_already_has_is_a_304() {
-        let old = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
-        let new = chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        let old = Timestamp::new(1_700_000_000, 0).unwrap();
+        let new = Timestamp::new(1_800_000_000, 0).unwrap();
 
         let assembled = Assembled {
             files: vec![
@@ -558,7 +558,7 @@ mod tests {
             last_modified: Some(new),
         };
 
-        let header = |at: chrono::DateTime<chrono::Utc>| {
+        let header = |at: Timestamp| {
             HeaderValue::from_str(&HttpDate::from(std::time::SystemTime::from(at)).to_string())
                 .unwrap()
         };

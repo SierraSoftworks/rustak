@@ -20,14 +20,14 @@
 //! index lags the file by up to one flush: a uid that reported a second ago has
 //! its bytes on disk and its `last_time` still a batch behind.
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
 use rusqlite::params;
 use rustak_cot::Event;
 
 use crate::db::Database;
-use crate::db::row::Timestamp;
+use crate::db::row::DbTime;
 use crate::prelude::*;
 use crate::store::frame::Frames;
 
@@ -71,9 +71,9 @@ pub struct LatestQuery {
     /// window that ended an hour ago has none of its rows in the newest page,
     /// so narrowing afterwards would answer "nothing happened" for every
     /// question about the past.
-    pub since: Option<DateTime<Utc>>,
+    pub since: Option<Timestamp>,
     /// The latest relay time to include.
-    pub until: Option<DateTime<Utc>>,
+    pub until: Option<Timestamp>,
     /// How many rows, already clamped by the caller.
     pub limit: u32,
     /// How many rows to skip.
@@ -96,8 +96,8 @@ pub async fn latest(db: &Database, query: LatestQuery) -> Result<Vec<LatestRow>,
          ORDER BY received_at DESC, uid ASC LIMIT ?5 OFFSET ?6",
         LatestRow::COLUMNS
     );
-    let since = query.since.map(Timestamp::from);
-    let until = query.until.map(Timestamp::from);
+    let since = query.since.map(DbTime::from);
+    let until = query.until.map(DbTime::from);
 
     db.read(move |connection| {
         let mut statement = connection.prepare_cached(&sql)?;
@@ -147,8 +147,8 @@ pub async fn history(
     db: &Database,
     streams_dir: &Path,
     uid: &str,
-    from: DateTime<Utc>,
-    to: DateTime<Utc>,
+    from: Timestamp,
+    to: Timestamp,
     limit: usize,
 ) -> Result<Vec<Event>, Error> {
     history_where(db, streams_dir, uid, from, to, limit, |_| true).await
@@ -167,8 +167,8 @@ pub async fn history_where(
     db: &Database,
     streams_dir: &Path,
     uid: &str,
-    from: DateTime<Utc>,
-    to: DateTime<Utc>,
+    from: Timestamp,
+    to: Timestamp,
     limit: usize,
     keep: impl Fn(&Event) -> bool,
 ) -> Result<Vec<Event>, Error> {
@@ -290,8 +290,8 @@ pub async fn forget(db: &Database, streams_dir: &Path, uid: &str) -> Result<Forg
 async fn segment_paths(
     db: &Database,
     uid: &str,
-    from: DateTime<Utc>,
-    to: DateTime<Utc>,
+    from: Timestamp,
+    to: Timestamp,
 ) -> Result<Vec<String>, Error> {
     let mut paths: Vec<String> = db
         .stream_segments()
@@ -345,7 +345,7 @@ fn decode(payload: &[u8]) -> Option<Event> {
 }
 
 /// Whether an event's own time falls inside the window that was asked for.
-fn within(event: &Event, from: DateTime<Utc>, to: DateTime<Utc>) -> bool {
+fn within(event: &Event, from: Timestamp, to: Timestamp) -> bool {
     event
         .time
         .to_datetime()
@@ -353,13 +353,13 @@ fn within(event: &Event, from: DateTime<Utc>, to: DateTime<Utc>) -> bool {
 }
 
 /// The start of the epoch, as a lower bound a segment cannot precede.
-fn epoch() -> DateTime<Utc> {
-    DateTime::from_timestamp(0, 0).unwrap_or_else(Utc::now)
+fn epoch() -> Timestamp {
+    Timestamp::new(0, 0).unwrap_or_else(Timestamp::now)
 }
 
 /// Far enough ahead that no segment's first record is after it.
-fn far_future() -> DateTime<Utc> {
-    Utc::now() + chrono::Duration::days(365 * 100)
+fn far_future() -> Timestamp {
+    Timestamp::now() + SignedDuration::from_hours(24 * (365 * 100))
 }
 
 #[cfg(test)]
@@ -393,7 +393,7 @@ mod tests {
         .with_groups(std::sync::Arc::new(groups))
     }
 
-    fn event(uid: &str, kind: &str, callsign: &str, at: DateTime<Utc>) -> EncodedEvent {
+    fn event(uid: &str, kind: &str, callsign: &str, at: Timestamp) -> EncodedEvent {
         EncodedEvent::new(
             rustak_cot::Event::builder(kind, uid)
                 .how("m-g")
@@ -405,7 +405,7 @@ mod tests {
         )
     }
 
-    fn record(uid: &str, kind: &str, callsign: &str, at: DateTime<Utc>, bits: &[u32]) -> CotRecord {
+    fn record(uid: &str, kind: &str, callsign: &str, at: Timestamp, bits: &[u32]) -> CotRecord {
         let mut record = CotRecord::new(
             Arc::new(event(uid, kind, callsign, at)),
             &principal(bits),
@@ -421,7 +421,7 @@ mod tests {
     #[tokio::test]
     async fn a_listing_is_newest_first_and_narrows_by_type_and_callsign() {
         let db = db().await;
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         upsert_batch(
             &db,
@@ -430,7 +430,7 @@ mod tests {
                     "UID-A",
                     "a-f-G-U-C",
                     "ALPHA",
-                    now - chrono::Duration::seconds(60),
+                    now - SignedDuration::from_secs(60),
                     &[],
                 ),
                 record("UID-B", "a-f-G-U-C", "BRAVO", now, &[]),
@@ -481,7 +481,7 @@ mod tests {
     #[tokio::test]
     async fn a_page_is_a_window_and_its_size_is_capped() {
         let db = db().await;
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         for index in 0..5 {
             upsert_batch(
@@ -490,7 +490,7 @@ mod tests {
                     &format!("UID-{index}"),
                     "a-f-G",
                     "ALPHA",
-                    now - chrono::Duration::seconds(index),
+                    now - SignedDuration::from_secs(index),
                     &[],
                 )],
             )
@@ -547,7 +547,7 @@ mod tests {
     async fn history_comes_back_newest_first_and_inside_the_window() {
         let dir = tempfile::tempdir().unwrap();
         let db = db().await;
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         let mut log = AppendLog::open(
             &db,
@@ -560,7 +560,7 @@ mod tests {
         .unwrap();
 
         for offset in [600i64, 120, 30] {
-            let at = now - chrono::Duration::seconds(offset);
+            let at = now - SignedDuration::from_secs(offset);
             log.append(at, event("UID-A", "a-f-G-U-C", "ALPHA", at).proto())
                 .await
                 .unwrap();
@@ -571,7 +571,7 @@ mod tests {
             &db,
             dir.path(),
             "UID-A",
-            now - chrono::Duration::seconds(300),
+            now - SignedDuration::from_secs(300),
             now,
             100,
         )
@@ -593,7 +593,7 @@ mod tests {
             &db,
             dir.path(),
             "UID-A",
-            now - chrono::Duration::hours(1),
+            now - SignedDuration::from_hours(1),
             now,
             1,
         )
@@ -611,7 +611,7 @@ mod tests {
         // whole window would fail rather than quietly cost a gigabyte.
         let dir = tempfile::tempdir().unwrap();
         let db = db().await;
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         let mut log = AppendLog::open(
             &db,
@@ -628,7 +628,7 @@ mod tests {
         .unwrap();
 
         for offset in (0..6i64).rev() {
-            let at = now - chrono::Duration::seconds(offset * 10);
+            let at = now - SignedDuration::from_secs(offset * 10);
             log.append(at, event("UID-A", "a-f-G-U-C", "ALPHA", at).proto())
                 .await
                 .unwrap();
@@ -653,7 +653,7 @@ mod tests {
             &db,
             dir.path(),
             "UID-A",
-            now - chrono::Duration::hours(1),
+            now - SignedDuration::from_hours(1),
             now,
             2,
         )
@@ -671,7 +671,7 @@ mod tests {
                 &db,
                 dir.path(),
                 "UID-A",
-                now - chrono::Duration::hours(1),
+                now - SignedDuration::from_hours(1),
                 now,
                 100,
             )
@@ -684,7 +684,7 @@ mod tests {
     async fn a_record_that_cannot_be_decoded_does_not_hide_the_rest() {
         let dir = tempfile::tempdir().unwrap();
         let db = db().await;
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         let mut log = AppendLog::open(
             &db,
@@ -707,8 +707,8 @@ mod tests {
             &db,
             dir.path(),
             "UID-A",
-            now - chrono::Duration::minutes(5),
-            now + chrono::Duration::minutes(5),
+            now - SignedDuration::from_mins(5),
+            now + SignedDuration::from_mins(5),
             100,
         )
         .await
@@ -721,7 +721,7 @@ mod tests {
     async fn forgetting_a_uid_takes_the_row_and_the_segments() {
         let dir = tempfile::tempdir().unwrap();
         let db = db().await;
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         upsert_batch(&db, vec![record("UID-A", "a-f-G", "ALPHA", now, &[])])
             .await
@@ -756,7 +756,7 @@ mod tests {
                 &db,
                 dir.path(),
                 "UID-A",
-                now - chrono::Duration::hours(1),
+                now - SignedDuration::from_hours(1),
                 now,
                 10
             )

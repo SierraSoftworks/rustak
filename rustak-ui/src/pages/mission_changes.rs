@@ -155,6 +155,7 @@ fn change_row(props: &ChangeRowProps) -> Html {
 #[cfg(test)]
 mod tests {
     use rustak_api::MissionChangeKind;
+    use rustak_api::time::Timestamp;
 
     use super::*;
 
@@ -163,8 +164,8 @@ mod tests {
             kind,
             content_uid: None,
             content_hash: None,
-            timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
-            server_time: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+            timestamp: Timestamp::from_second(1_700_000_000).unwrap(),
+            server_time: Timestamp::from_second(1_700_000_000).unwrap(),
             creator_uid: None,
             details: None,
         }

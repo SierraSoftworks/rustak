@@ -32,6 +32,7 @@
 
 mod validate;
 
+use rustak_core::time::SignedDuration;
 use std::path::PathBuf;
 
 use filt_rs::Filter;
@@ -53,12 +54,12 @@ fn default_algorithms() -> Vec<WorkloadAlgorithm> {
     ]
 }
 
-fn default_clock_skew() -> chrono::Duration {
-    chrono::Duration::seconds(30)
+fn default_clock_skew() -> SignedDuration {
+    SignedDuration::from_secs(30)
 }
 
-fn default_jwks_refresh() -> chrono::Duration {
-    chrono::Duration::hours(1)
+fn default_jwks_refresh() -> SignedDuration {
+    SignedDuration::from_hours(1)
 }
 
 fn default_true() -> bool {
@@ -189,7 +190,7 @@ pub struct WorkloadIssuer {
         default = "default_clock_skew",
         with = "rustak_core::config::duration::humane"
     )]
-    pub clock_skew: chrono::Duration,
+    pub clock_skew: SignedDuration,
 
     /// How long a fetched key set is kept before it is fetched again.
     ///
@@ -199,7 +200,7 @@ pub struct WorkloadIssuer {
         default = "default_jwks_refresh",
         with = "rustak_core::config::duration::humane"
     )]
-    pub jwks_refresh: chrono::Duration,
+    pub jwks_refresh: SignedDuration,
 
     /// Whether `jwks_url` may be a plain `http://` address to a host that is
     /// not a loopback one.
@@ -464,8 +465,8 @@ mod tests {
                 WorkloadAlgorithm::EdDsa
             ],
         );
-        assert_eq!(issuer.clock_skew, chrono::Duration::seconds(30));
-        assert_eq!(issuer.jwks_refresh, chrono::Duration::hours(1));
+        assert_eq!(issuer.clock_skew, SignedDuration::from_secs(30));
+        assert_eq!(issuer.jwks_refresh, SignedDuration::from_hours(1));
         assert!(!issuer.allow_insecure_jwks);
     }
 

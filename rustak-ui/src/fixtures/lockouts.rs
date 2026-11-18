@@ -8,9 +8,9 @@
 //! Every address is from the documentation ranges (RFC 5737), so a demo never
 //! shows anybody a real one.
 
+use rustak_api::time::SignedDuration;
 use std::cell::RefCell;
 
-use chrono::Duration;
 use rustak_api::{
     CLEARED_NOTE, ClearLockoutRequest, ClearedLockout, Lockout, LockoutClass, LockoutCounter,
     LockoutTier, Lockouts, TierFill,
@@ -34,7 +34,7 @@ fn seed() -> Vec<Lockout> {
             prefix: Some(32),
             key: key.to_string(),
             started_at,
-            ends_at: started_at + Duration::minutes(15),
+            ends_at: started_at + SignedDuration::from_mins(15),
             failures,
         }
     };

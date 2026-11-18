@@ -18,10 +18,10 @@
 //! A `MissionChange` spells it with a capital T and a log entry does not. Both
 //! are real and neither is ours to unify (`compat/missions.md` Gotchas).
 
-use chrono::{DateTime, Utc};
+use rustak_core::time::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::db::row::{Timestamp, opt_ts, ts};
+use crate::db::row::{DbTime, opt_ts, ts};
 use crate::marti::{MartiError, time};
 
 use super::model::Mission;
@@ -40,9 +40,9 @@ pub struct LogEntry {
     pub entry_uid: Option<String>,
     /// Every mission this entry was written to, in the order they were named.
     pub mission_names: Vec<String>,
-    pub servertime: DateTime<Utc>,
-    pub dtg: Option<DateTime<Utc>>,
-    pub created: DateTime<Utc>,
+    pub servertime: Timestamp,
+    pub dtg: Option<Timestamp>,
+    pub created: Timestamp,
     pub content_hashes: Vec<String>,
     pub keywords: Vec<String>,
 }
@@ -133,7 +133,7 @@ impl MissionService {
             ));
         }
 
-        let now = Utc::now();
+        let now = Timestamp::now();
         let dtg = match &body.dtg {
             Some(value) => Some(time::parse_date(value)?),
             None => Some(now),
@@ -236,8 +236,8 @@ impl MissionService {
     pub async fn mission_logs(
         &self,
         mission: &Mission,
-        start: DateTime<Utc>,
-        end: DateTime<Utc>,
+        start: Timestamp,
+        end: Timestamp,
     ) -> Result<Vec<LogEntry>, MartiError> {
         let mission_id = mission.id;
         let name = mission.name.clone();
@@ -253,7 +253,7 @@ impl MissionService {
 
                 statement
                     .query_map(
-                        rusqlite::params![mission_id, Timestamp::from(start), Timestamp::from(end)],
+                        rusqlite::params![mission_id, DbTime::from(start), DbTime::from(end)],
                         LogEntry::from_row,
                     )?
                     .collect()
@@ -314,8 +314,8 @@ impl MissionService {
                         row.entry_uid,
                         hashes,
                         keywords,
-                        Timestamp::from(row.at),
-                        row.dtg.map(Timestamp::from),
+                        DbTime::from(row.at),
+                        row.dtg.map(DbTime::from),
                     ],
                 )
             })
@@ -334,13 +334,14 @@ struct StoredLog {
     entry_uid: Option<String>,
     content_hashes: Vec<String>,
     keywords: Vec<String>,
-    at: DateTime<Utc>,
-    dtg: Option<DateTime<Utc>>,
+    at: Timestamp,
+    dtg: Option<Timestamp>,
 }
 
 #[cfg(test)]
 mod tests {
     use crate::prelude::*;
+    use rustak_core::time::SignedDuration;
 
     use super::super::roles::Role;
     use super::*;
@@ -421,7 +422,7 @@ mod tests {
         assert_eq!(read.mission_names, vec!["Kettle"]);
         assert!(
             service
-                .mission_logs(&anvil, DateTime::UNIX_EPOCH, Utc::now())
+                .mission_logs(&anvil, Timestamp::UNIX_EPOCH, Timestamp::now())
                 .await
                 .unwrap()
                 .is_empty(),
@@ -466,8 +467,8 @@ mod tests {
         let before = service
             .mission_logs(
                 &kettle,
-                DateTime::UNIX_EPOCH,
-                Utc::now() - chrono::Duration::hours(1),
+                Timestamp::UNIX_EPOCH,
+                Timestamp::now() - SignedDuration::from_hours(1),
             )
             .await
             .unwrap();
@@ -475,7 +476,7 @@ mod tests {
         assert!(before.is_empty());
         assert_eq!(
             service
-                .mission_logs(&kettle, DateTime::UNIX_EPOCH, Utc::now())
+                .mission_logs(&kettle, Timestamp::UNIX_EPOCH, Timestamp::now())
                 .await
                 .unwrap()
                 .len(),

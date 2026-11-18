@@ -100,6 +100,7 @@ mod tests {
     use rustak_api::{UserKind, UserSource};
     use rustak_core::identity::{AuthMethod, Principal, PrincipalKind};
     use rustak_core::prelude::*;
+    use rustak_core::time::Timestamp;
 
     use super::*;
     use crate::auth::AccessClaims;
@@ -107,7 +108,7 @@ mod tests {
 
     fn identity_for(is_admin: bool) -> Identity {
         let username = Username::parse("ada").unwrap();
-        let now = chrono::Utc::now();
+        let now = Timestamp::now();
 
         let mut principal = Principal::new(
             UserId::new(1),
@@ -144,9 +145,9 @@ mod tests {
                 sub: "ada".to_string(),
                 aud: "rustak".to_string(),
                 iss: "https://tak.example.com".to_string(),
-                iat: now.timestamp(),
-                nbf: now.timestamp(),
-                exp: now.timestamp() + 3600,
+                iat: now.as_second(),
+                nbf: now.as_second(),
+                exp: now.as_second() + 3600,
                 jti: "a-token".to_string(),
                 scope: "api".to_string(),
                 dev: None,

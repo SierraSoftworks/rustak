@@ -1,7 +1,7 @@
 //! The installation-wide settings the first-run wizard writes and the admin UI
 //! edits.
 
-use chrono::{DateTime, Utc};
+use crate::time::Timestamp;
 use serde::{Deserialize, Serialize};
 
 /// The settings that describe this installation to its clients.
@@ -38,7 +38,7 @@ pub struct ServerSettings {
     /// When the first-run wizard was finished. While this is absent the setup
     /// routes are open; once it is set they answer 410 forever.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub setup_completed_at: Option<DateTime<Utc>>,
+    pub setup_completed_at: Option<Timestamp>,
 }
 
 impl ServerSettings {
@@ -110,18 +110,18 @@ pub struct TlsStatus {
     pub domains: Vec<String>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub not_before: Option<DateTime<Utc>>,
+    pub not_before: Option<Timestamp>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub not_after: Option<DateTime<Utc>>,
+    pub not_after: Option<Timestamp>,
 
     /// When the renewal job will next try to replace it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub renews_at: Option<DateTime<Utc>>,
+    pub renews_at: Option<Timestamp>,
 
     /// When the pair was last read off disk, for `files`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub loaded_at: Option<DateTime<Utc>>,
+    pub loaded_at: Option<Timestamp>,
 
     /// The chain `[web.public.tls] cert_file` names, for `files`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -149,7 +149,7 @@ pub struct TlsStatus {
     pub attempts: u32,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_attempt_at: Option<DateTime<Utc>>,
+    pub last_attempt_at: Option<Timestamp>,
 
     /// What the authority said the last time an order failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]

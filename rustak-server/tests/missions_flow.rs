@@ -31,6 +31,7 @@ mod schema;
 use actix_web::http::header::CONTENT_TYPE;
 use actix_web::web::Bytes;
 use actix_web::{App, test};
+use rustak_core::time::Timestamp;
 use serde_json::Value;
 
 use rustak_server::testing::TestServer;
@@ -597,7 +598,7 @@ async fn a_filed_item_that_will_not_parse_costs_only_itself_not_the_document() {
         server
             .db()
             .mission_contents()
-            .upsert_uid(MissionUidRow::new(mission_id, uid, chrono::Utc::now()))
+            .upsert_uid(MissionUidRow::new(mission_id, uid, Timestamp::now()))
             .await
             .unwrap();
     }

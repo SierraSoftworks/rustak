@@ -13,6 +13,7 @@
 
 #![allow(dead_code)]
 
+use rustak_core::time::Timestamp;
 use std::sync::Arc;
 
 use rustak_api::UserKind;
@@ -184,7 +185,7 @@ impl Deployment {
     /// Issued an hour before it expired, as a one-hour identity is.
     pub fn expired(&self, ago: i64) -> String {
         let mut claims = self.issuer.nomad_claims(NAMESPACE, JOB, "ais");
-        let expired = chrono::Utc::now().timestamp() - ago;
+        let expired = Timestamp::now().as_second() - ago;
 
         claims["exp"] = serde_json::json!(expired);
         claims["iat"] = serde_json::json!(expired - 3_600);

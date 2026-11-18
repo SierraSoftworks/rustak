@@ -16,9 +16,9 @@
 //! profile's own `updated`, not from the archive — the only thing that tells a
 //! client something changed.
 
+use rustak_core::time::Timestamp;
 use std::io::{Cursor, Write as _};
 
-use chrono::{DateTime, Utc};
 use rustak_core::prelude::*;
 use zip::write::SimpleFileOptions;
 
@@ -38,12 +38,12 @@ pub struct ProfileFileData {
     pub data: Vec<u8>,
     /// When the file last changed, which is what `Last-Modified` is computed
     /// from.
-    pub updated: DateTime<Utc>,
+    pub updated: Timestamp,
 }
 
 impl ProfileFileData {
     /// A file with the given contents.
-    pub fn new(name: impl Into<String>, data: Vec<u8>, updated: DateTime<Utc>) -> Self {
+    pub fn new(name: impl Into<String>, data: Vec<u8>, updated: Timestamp) -> Self {
         Self {
             name: name.into(),
             data,
@@ -230,7 +230,7 @@ mod tests {
     use crate::files::package::read_manifest;
 
     fn file(name: &str, data: &str) -> ProfileFileData {
-        ProfileFileData::new(name, data.as_bytes().to_vec(), Utc::now())
+        ProfileFileData::new(name, data.as_bytes().to_vec(), Timestamp::now())
     }
 
     fn names(zip: &[u8]) -> Vec<String> {

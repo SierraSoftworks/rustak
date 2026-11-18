@@ -16,12 +16,12 @@
 //! and its disconnect notice is not worth sending, because nobody ever saw it
 //! arrive.
 
+use rustak_core::time::Timestamp;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use rustak_cot::Event;
 use rustak_cot::codec::{EncodedEvent, Mode};
 use tokio::sync::mpsc;
@@ -274,9 +274,9 @@ pub struct Subscription {
     /// Where it connected from.
     pub peer: SocketAddr,
     /// When it connected.
-    pub connected_at: DateTime<Utc>,
+    pub connected_at: Timestamp,
     /// When it was last heard from.
-    pub last_rx: DateTime<Utc>,
+    pub last_rx: Timestamp,
     /// The uid it calls itself, from the first message carrying a contact
     /// endpoint.
     pub client_uid: Option<String>,
@@ -315,7 +315,7 @@ impl Subscription {
         peer: SocketAddr,
         handle: ConnHandle,
     ) -> Self {
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         Self {
             id,
@@ -370,7 +370,7 @@ impl Subscription {
     /// leaves the previous value alone — ATAK, WinTAK, iTAK and CloudTAK each
     /// send a different subset.
     pub fn apply_event(&mut self, event: &Event, encoded: Option<&Arc<EncodedEvent>>) -> SaUpdate {
-        self.last_rx = Utc::now();
+        self.last_rx = Timestamp::now();
 
         let Some(callsign) = event.callsign().filter(|name| !name.is_empty()) else {
             return SaUpdate::default();
@@ -448,9 +448,9 @@ pub struct ClientEndpoint {
     /// The channels it receives from.
     pub groups: Vec<GroupName>,
     /// When it was last heard from.
-    pub last_status: DateTime<Utc>,
+    pub last_status: Timestamp,
     /// When it connected.
-    pub connected_at: DateTime<Utc>,
+    pub connected_at: Timestamp,
     /// Whether it is invisible to implicit broadcast.
     pub incognito: bool,
     /// Which encoding it is being written in.

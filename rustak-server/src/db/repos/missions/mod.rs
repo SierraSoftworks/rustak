@@ -20,13 +20,13 @@ pub mod contents;
 pub mod row;
 pub mod subscriptions;
 
-use chrono::{DateTime, Utc};
 use rusqlite::types::Value;
 use rusqlite::{OptionalExtension as _, params_from_iter};
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 use uuid::Uuid;
 
-use crate::db::{Database, row::Timestamp, row::to_json};
+use crate::db::{Database, row::DbTime, row::to_json};
 
 pub use row::{MissionFilter, MissionPatch, MissionRow, NewMission};
 
@@ -52,7 +52,7 @@ impl<'a> MissionsRepo<'a> {
     pub async fn create(&self, new: NewMission) -> Result<MissionRow, Error> {
         self.db
             .write(move |tx| {
-                let now = Timestamp::now();
+                let now = DbTime::now();
 
                 tx.query_one(
                     &format!(
@@ -159,7 +159,7 @@ impl<'a> MissionsRepo<'a> {
         self.db
             .write(move |tx| {
                 let (mut sets, mut binds) = patch_clauses(&patch)?;
-                let now = Timestamp::now();
+                let now = DbTime::now();
 
                 binds.push(Value::Text(now.to_text()));
                 sets.push(format!("last_edited = ?{}", binds.len()));
@@ -186,11 +186,7 @@ impl<'a> MissionsRepo<'a> {
     /// # Errors
     ///
     /// A [`human_errors::Kind::System`] error if the write fails.
-    pub async fn soft_delete(
-        &self,
-        id: i64,
-        at: DateTime<Utc>,
-    ) -> Result<Option<MissionRow>, Error> {
+    pub async fn soft_delete(&self, id: i64, at: Timestamp) -> Result<Option<MissionRow>, Error> {
         self.db
             .write(move |tx| {
                 tx.query_row(
@@ -198,7 +194,7 @@ impl<'a> MissionsRepo<'a> {
                         "UPDATE missions SET deleted_at = ?2, updated_at = ?2 \
                          WHERE id = ?1 AND deleted_at IS NULL RETURNING {COLUMNS}"
                     ),
-                    rusqlite::params![id, Timestamp::from(at)],
+                    rusqlite::params![id, DbTime::from(at)],
                     MissionRow::from_row,
                 )
                 .optional()
@@ -400,7 +396,7 @@ mod tests {
         let created = db.missions().create(sample()).await.unwrap();
 
         db.missions()
-            .soft_delete(created.id, Utc::now())
+            .soft_delete(created.id, Timestamp::now())
             .await
             .unwrap()
             .unwrap();

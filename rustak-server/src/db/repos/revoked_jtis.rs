@@ -5,11 +5,11 @@
 //! small: once a token has expired the signature check refuses it anyway, and
 //! keeping the row would only grow the table for ever.
 
-use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension as _;
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 
-use crate::db::{Database, row::Timestamp};
+use crate::db::{Database, row::DbTime};
 
 /// Reads and writes `revoked_jtis`.
 pub struct RevokedJtisRepo<'a> {
@@ -26,16 +26,16 @@ impl<'a> RevokedJtisRepo<'a> {
     /// # Errors
     ///
     /// A [`human_errors::Kind::System`] error if the write fails.
-    pub async fn revoke(&self, jti: &str, expires_at: DateTime<Utc>) -> Result<(), Error> {
+    pub async fn revoke(&self, jti: &str, expires_at: Timestamp) -> Result<(), Error> {
         let jti = jti.to_owned();
-        let expires_at = Timestamp::from(expires_at);
+        let expires_at = DbTime::from(expires_at);
 
         self.db
             .write(move |tx| {
                 tx.execute(
                     "INSERT INTO revoked_jtis (jti, expires_at, revoked_at) VALUES (?1, ?2, ?3) \
                      ON CONFLICT (jti) DO NOTHING",
-                    rusqlite::params![jti, expires_at, Timestamp::now()],
+                    rusqlite::params![jti, expires_at, DbTime::now()],
                 )
             })
             .await?;
@@ -77,7 +77,7 @@ impl<'a> RevokedJtisRepo<'a> {
                     c.prepare("SELECT jti FROM revoked_jtis WHERE expires_at > ?1")?;
 
                 statement
-                    .query_map([Timestamp::now()], |row| row.get(0))?
+                    .query_map([DbTime::now()], |row| row.get(0))?
                     .collect()
             })
             .await
@@ -94,7 +94,7 @@ impl<'a> RevokedJtisRepo<'a> {
             .write(|tx| {
                 tx.execute(
                     "DELETE FROM revoked_jtis WHERE expires_at <= ?1",
-                    [Timestamp::now()],
+                    [DbTime::now()],
                 )
             })
             .await
@@ -104,6 +104,7 @@ impl<'a> RevokedJtisRepo<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::SignedDuration;
 
     async fn db() -> Database {
         Database::open_in_memory().await.unwrap()
@@ -114,7 +115,7 @@ mod tests {
         let db = db().await;
 
         db.revoked_jtis()
-            .revoke("jti-1", Utc::now() + chrono::TimeDelta::hours(1))
+            .revoke("jti-1", Timestamp::now() + SignedDuration::from_hours(1))
             .await
             .unwrap();
 
@@ -125,7 +126,7 @@ mod tests {
     #[tokio::test]
     async fn revoking_the_same_token_twice_is_not_an_error() {
         let db = db().await;
-        let expiry = Utc::now() + chrono::TimeDelta::hours(1);
+        let expiry = Timestamp::now() + SignedDuration::from_hours(1);
 
         db.revoked_jtis().revoke("jti-1", expiry).await.unwrap();
         db.revoked_jtis().revoke("jti-1", expiry).await.unwrap();
@@ -140,11 +141,11 @@ mod tests {
     async fn the_cache_only_carries_tokens_that_could_still_be_presented() {
         let db = db().await;
         db.revoked_jtis()
-            .revoke("live", Utc::now() + chrono::TimeDelta::hours(1))
+            .revoke("live", Timestamp::now() + SignedDuration::from_hours(1))
             .await
             .unwrap();
         db.revoked_jtis()
-            .revoke("expired", Utc::now() - chrono::TimeDelta::hours(1))
+            .revoke("expired", Timestamp::now() - SignedDuration::from_hours(1))
             .await
             .unwrap();
 
@@ -158,11 +159,11 @@ mod tests {
     async fn pruning_drops_only_the_expired_rows() {
         let db = db().await;
         db.revoked_jtis()
-            .revoke("live", Utc::now() + chrono::TimeDelta::hours(1))
+            .revoke("live", Timestamp::now() + SignedDuration::from_hours(1))
             .await
             .unwrap();
         db.revoked_jtis()
-            .revoke("expired", Utc::now() - chrono::TimeDelta::hours(1))
+            .revoke("expired", Timestamp::now() - SignedDuration::from_hours(1))
             .await
             .unwrap();
 

@@ -28,10 +28,10 @@
 //! verify means "no token" and never an error — the request may not have been
 //! claiming a mission role at all.
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::collections::HashSet;
 
 use actix_web::HttpRequest;
-use chrono::{Duration, Utc};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use rustak_core::identity::AuthMethod;
 use uuid::Uuid;
@@ -233,16 +233,16 @@ impl MissionTokens {
         kind: TokenType,
         mission_name: &str,
         mission_guid: Uuid,
-        ttl: Option<Duration>,
+        ttl: Option<SignedDuration>,
     ) -> Result<String, Error> {
-        let now = Utc::now().timestamp();
+        let now = Timestamp::now().as_second();
         let identifier = Some(id.to_string());
         let claims = RawClaims {
             jti: Uuid::new_v4().to_string(),
             iat: now,
             sub: kind.as_str().to_string(),
             iss: self.issuer.clone(),
-            exp: ttl.map(|ttl| now + ttl.num_seconds()),
+            exp: ttl.map(|ttl| now + ttl.as_secs()),
             subscription: (kind == TokenType::Subscription)
                 .then(|| identifier.clone())
                 .flatten(),
@@ -490,7 +490,7 @@ mod tests {
                 TokenType::Subscription,
                 "Alpha",
                 Uuid::new_v4(),
-                Some(Duration::seconds(-3600)),
+                Some(SignedDuration::from_secs(-3600)),
             )
             .unwrap();
 
@@ -505,7 +505,7 @@ mod tests {
                 TokenType::Invitation,
                 "Alpha",
                 Uuid::new_v4(),
-                Some(Duration::hours(1)),
+                Some(SignedDuration::from_hours(1)),
             )
             .unwrap();
 

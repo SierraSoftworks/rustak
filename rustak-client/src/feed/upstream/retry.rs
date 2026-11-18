@@ -4,9 +4,9 @@
 //! meant it anyway; this is the tolerant reading every HTTP feed shares, so a
 //! delay that one plugin honours is a delay they all honour.
 
+use rustak_core::time::{DurationExt, Timestamp};
 use std::time::Duration;
 
-use chrono::{DateTime, NaiveDateTime, Utc};
 use reqwest::header::HeaderMap;
 
 /// The header a `429` or `503` normally names its delay in.
@@ -28,13 +28,13 @@ pub const RETRY_AFTER: &str = "retry-after";
 /// until a moment we cannot work out is not a reason to stop polling forever.
 #[must_use]
 pub fn retry_after(headers: &HeaderMap, header: &str) -> Option<Duration> {
-    retry_after_at(headers, header, Utc::now())
+    retry_after_at(headers, header, Timestamp::now())
 }
 
 /// [`retry_after`], with an HTTP-date judged against an instant of the
 /// caller's choosing.
 #[must_use]
-pub fn retry_after_at(headers: &HeaderMap, header: &str, now: DateTime<Utc>) -> Option<Duration> {
+pub fn retry_after_at(headers: &HeaderMap, header: &str, now: Timestamp) -> Option<Duration> {
     let value = headers.get(header)?.to_str().ok()?.trim();
 
     if let Ok(seconds) = value.parse::<u64>() {
@@ -67,9 +67,9 @@ pub fn retry_after_at(headers: &HeaderMap, header: &str, now: DateTime<Utc>) -> 
 /// gets it wrong has still told us when. Month names and `GMT` are read without
 /// regard to case. A two-digit year is this century's, which is all a delay
 /// can be.
-fn http_date(value: &str) -> Option<DateTime<Utc>> {
-    if let Ok(at) = DateTime::parse_from_rfc2822(value) {
-        return Some(at.with_timezone(&Utc));
+fn http_date(value: &str) -> Option<Timestamp> {
+    if let Ok(at) = jiff::fmt::rfc2822::DateTimeParser::new().parse_timestamp(value) {
+        return Some(at.into());
     }
 
     let (_day, rest) = value.split_once([',', ' '])?;
@@ -89,14 +89,15 @@ fn http_date(value: &str) -> Option<DateTime<Utc>> {
         "%b %e %H:%M:%S %Y",
     ]
     .iter()
-    .find_map(|format| NaiveDateTime::parse_from_str(rest, format).ok())
-    .map(|at| at.and_utc())
+    .find_map(|format| jiff::civil::DateTime::strptime(format, rest).ok())
+    .and_then(Timestamp::from_civil)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use reqwest::header::{HeaderName, HeaderValue};
+    use rustak_core::time::SignedDuration;
 
     fn headers(value: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
@@ -105,10 +106,10 @@ mod tests {
     }
 
     /// The instant the date forms below are judged against.
-    fn now() -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2026-09-22T01:00:00Z")
+    fn now() -> Timestamp {
+        "2026-09-22T01:00:00Z"
+            .parse::<Timestamp>()
             .expect("an instant")
-            .with_timezone(&Utc)
     }
 
     #[test]
@@ -176,9 +177,12 @@ mod tests {
     #[test]
     fn a_retry_after_as_a_date_on_the_wall_clock_is_the_delay_until_then() {
         // What the ESB and FIRMS copies asserted before they were lifted.
-        let at = Utc::now() + chrono::Duration::seconds(120);
-        let delay =
-            retry_after(&headers(&at.to_rfc2822()), RETRY_AFTER).expect("an HTTP date is a delay");
+        let at = Timestamp::now() + SignedDuration::from_secs(120);
+        let delay = retry_after(
+            &headers(&at.strftime("%a, %d %b %Y %H:%M:%S GMT").to_string()),
+            RETRY_AFTER,
+        )
+        .expect("an HTTP date is a delay");
 
         assert!(
             delay > Duration::from_secs(100) && delay <= Duration::from_secs(120),
@@ -218,7 +222,7 @@ mod tests {
 
     #[test]
     fn a_date_is_a_delay_in_whole_seconds_rounded_up() {
-        let late = now() + chrono::Duration::milliseconds(400);
+        let late = now() + SignedDuration::from_millis(400);
 
         assert_eq!(
             retry_after_at(&headers("Tue, 22 Sep 2026 01:02:00 GMT"), RETRY_AFTER, late),
@@ -249,7 +253,13 @@ mod tests {
             None,
         );
 
-        let past = Utc::now() - chrono::Duration::hours(1);
-        assert_eq!(retry_after(&headers(&past.to_rfc2822()), RETRY_AFTER), None);
+        let past = Timestamp::now() - SignedDuration::from_hours(1);
+        assert_eq!(
+            retry_after(
+                &headers(&past.strftime("%a, %d %b %Y %H:%M:%S GMT").to_string()),
+                RETRY_AFTER
+            ),
+            None
+        );
     }
 }

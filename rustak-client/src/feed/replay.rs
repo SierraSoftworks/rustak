@@ -11,10 +11,10 @@
 //! Blank lines and lines beginning with `#` are skipped, so a fixture can carry
 //! a comment saying what it is a fixture *of*.
 
+use rustak_core::time::Timestamp;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
-use chrono::Utc;
 use human_errors::{Error, ResultExt};
 use rustak_core::errors::ADVICE_FILE_ACCESS;
 
@@ -123,7 +123,7 @@ impl Feed for Replay {
     }
 
     async fn poll(&mut self) -> Result<Vec<Track>, Error> {
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         Ok(self
             .tracks
@@ -182,7 +182,7 @@ mod tests {
             "2020-01-01T00:00:00Z".parse().unwrap(),
         )]);
 
-        let before = Utc::now();
+        let before = Timestamp::now();
         let polled = replay.poll().await.unwrap();
 
         assert!(polled[0].observed_at >= before);

@@ -608,7 +608,7 @@ pub fn mint_credential(request: &CreateCredentialRequest) -> Result<CredentialCr
 }
 
 /// What the server would have chosen when the request said nothing.
-fn default_expiry(kind: rustak_api::CredentialKind) -> Option<chrono::DateTime<chrono::Utc>> {
+fn default_expiry(kind: rustak_api::CredentialKind) -> Option<rustak_api::time::Timestamp> {
     match kind {
         rustak_api::CredentialKind::EnrollmentToken => Some(data::ago(-15)),
         rustak_api::CredentialKind::ClientPassword => Some(data::ago(-90 * 24 * 60)),

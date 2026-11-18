@@ -1,9 +1,9 @@
 //! What a polled upstream is doing, and when it is worth asking again.
 
+use rustak_core::time::{DurationExt, SignedDuration, Timestamp};
 use std::marker::PhantomData;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use tracing::{debug, info, warn};
 
 use super::{REMIND_EVERY, Repeated, Report, Rules};
@@ -33,10 +33,10 @@ pub struct SourceState<R: Rules> {
     connected: bool,
     ever_connected: bool,
     failures: u32,
-    since: DateTime<Utc>,
-    last_success: Option<DateTime<Utc>>,
+    since: Timestamp,
+    last_success: Option<Timestamp>,
     last_error: Option<String>,
-    next_attempt: DateTime<Utc>,
+    next_attempt: Timestamp,
     rate_limited: u64,
 
     /// The run of failures, so an outage is announced once.
@@ -53,12 +53,12 @@ impl<R: Rules> SourceState<R> {
     /// A source that has not been asked anything yet, and may be asked now.
     #[must_use]
     pub fn new(name: impl Into<String>, interval: Duration) -> Self {
-        Self::new_at(name, interval, Utc::now())
+        Self::new_at(name, interval, Timestamp::now())
     }
 
     /// [`new`](Self::new), at an instant of the caller's choosing.
     #[must_use]
-    pub fn new_at(name: impl Into<String>, interval: Duration, now: DateTime<Utc>) -> Self {
+    pub fn new_at(name: impl Into<String>, interval: Duration, now: Timestamp) -> Self {
         let settle = REMIND_EVERY.max(interval.saturating_mul(R::REFUSALS_SETTLE_OVER_POLLS));
 
         Self {
@@ -110,18 +110,18 @@ impl<R: Rules> SourceState<R> {
     /// Whether it is time to reach out again.
     #[must_use]
     pub fn ready(&self) -> bool {
-        self.ready_at(Utc::now())
+        self.ready_at(Timestamp::now())
     }
 
     /// [`ready`](Self::ready), at an instant of the caller's choosing.
     #[must_use]
-    pub fn ready_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn ready_at(&self, now: Timestamp) -> bool {
         now >= self.next_attempt
     }
 
     /// When the next request is due.
     #[must_use]
-    pub const fn next_attempt(&self) -> DateTime<Utc> {
+    pub const fn next_attempt(&self) -> Timestamp {
         self.next_attempt
     }
 
@@ -129,19 +129,19 @@ impl<R: Rules> SourceState<R> {
     /// backoff that follows from it. For a suite that will not wait five
     /// minutes for a poll; a plugin that calls it on a live upstream is
     /// overriding whatever that upstream asked for.
-    pub const fn due_at(&mut self, at: DateTime<Utc>) {
+    pub const fn due_at(&mut self, at: Timestamp) {
         self.next_attempt = at;
     }
 
     /// Records an answer, and schedules the next request an interval away.
     pub fn succeeded(&mut self) {
-        self.succeeded_at(Utc::now());
+        self.succeeded_at(Timestamp::now());
     }
 
     /// [`succeeded`](Self::succeeded), at an instant of the caller's choosing.
     /// Answers what was said about the outage run and the rate-limit run, in
     /// that order.
-    pub fn succeeded_at(&mut self, now: DateTime<Utc>) -> (Report, Report) {
+    pub fn succeeded_at(&mut self, now: Timestamp) -> (Report, Report) {
         let outage = self.answered(now);
         let limit = self.limit.cleared(now);
 
@@ -159,12 +159,12 @@ impl<R: Rules> SourceState<R> {
     /// administrator to read: nothing here redacts, so nothing here should
     /// ever be handed a credential.
     pub fn failed(&mut self, error: impl Into<String>) {
-        self.failed_at(error, Utc::now());
+        self.failed_at(error, Timestamp::now());
     }
 
     /// [`failed`](Self::failed), at an instant of the caller's choosing.
     /// Answers what was said about it.
-    pub fn failed_at(&mut self, error: impl Into<String>, now: DateTime<Utc>) -> Report {
+    pub fn failed_at(&mut self, error: impl Into<String>, now: Timestamp) -> Report {
         let error = error.into();
         let report = self.outage.happened(now);
         let name = &self.name;
@@ -200,17 +200,13 @@ impl<R: Rules> SourceState<R> {
     /// delay asked. Whether this is also an answer is
     /// [`Rules::REFUSAL_IS_AN_ANSWER`].
     pub fn wait_for(&mut self, asked: Option<Duration>) -> Duration {
-        self.wait_for_at(asked, Utc::now()).0
+        self.wait_for_at(asked, Timestamp::now()).0
     }
 
     /// [`wait_for`](Self::wait_for), at an instant of the caller's choosing.
     /// Answers the wait, so a source can hold its other requests back for as
     /// long, and what was said about it.
-    pub fn wait_for_at(
-        &mut self,
-        asked: Option<Duration>,
-        now: DateTime<Utc>,
-    ) -> (Duration, Report) {
+    pub fn wait_for_at(&mut self, asked: Option<Duration>, now: Timestamp) -> (Duration, Report) {
         let every = self.interval;
         let delay = asked
             .map_or(every.saturating_mul(2).min(R::MAX_BACKOFF), |stated| {
@@ -248,7 +244,7 @@ impl<R: Rules> SourceState<R> {
     }
 
     /// Records that the upstream answered at all, which ends an outage.
-    fn answered(&mut self, now: DateTime<Utc>) -> Report {
+    fn answered(&mut self, now: Timestamp) -> Report {
         let report = self.outage.cleared(now);
 
         match report {
@@ -286,20 +282,20 @@ impl<R: Rules> SourceState<R> {
 
     /// When the upstream last answered with something other than a refusal.
     #[must_use]
-    pub const fn last_success(&self) -> Option<DateTime<Utc>> {
+    pub const fn last_success(&self) -> Option<Timestamp> {
         self.last_success
     }
 
     /// When the current condition began.
     #[must_use]
-    pub const fn since(&self) -> DateTime<Utc> {
+    pub const fn since(&self) -> Timestamp {
         self.since
     }
 
     /// How long it has been failing, or [`None`] while it is working.
     #[must_use]
-    pub fn reconnecting_for(&self) -> Option<chrono::Duration> {
-        (!self.connected).then(|| Utc::now() - self.since)
+    pub fn reconnecting_for(&self) -> Option<SignedDuration> {
+        (!self.connected).then(|| Timestamp::now() - self.since)
     }
 
     /// What went wrong last, if anything has.
@@ -341,7 +337,7 @@ impl<R: Rules> SourceState<R> {
 }
 
 /// `now - before`, never negative.
-fn elapsed(before: DateTime<Utc>, now: DateTime<Utc>) -> Duration {
+fn elapsed(before: Timestamp, now: Timestamp) -> Duration {
     (now - before).to_std().unwrap_or_default()
 }
 

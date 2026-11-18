@@ -32,11 +32,11 @@ pub mod settings;
 pub mod sources;
 pub mod wire;
 
-use chrono::{DateTime, Utc};
 use rustak_api::{Heartbeat, ServiceState};
 use rustak_client::feed::Area;
 use rustak_client::sidecar::{ServiceSettings, Sidecar, SidecarContext, SidecarEvent, async_trait};
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 use rustak_cot::Event;
 
 pub use hotspots::{Counters, Hotspots};
@@ -128,7 +128,7 @@ impl FirmsSidecar {
     ///
     /// A document that names no `area` gives the choice back to the file; one
     /// that names an unreadable one is a warning and what is already in effect.
-    async fn configured_area(&mut self, now: DateTime<Utc>) -> Option<(Area, &'static str)> {
+    async fn configured_area(&mut self, now: Timestamp) -> Option<(Area, &'static str)> {
         let context = self.context.clone()?;
         let document = self.configured.refresh_at(&context, now).await?;
 
@@ -176,7 +176,7 @@ impl FirmsSidecar {
     /// # Errors
     ///
     /// None today: an upstream that fails is a quiet tick, never a stop.
-    pub async fn tick_at(&mut self, now: DateTime<Utc>) -> Result<Vec<Event>, Error> {
+    pub async fn tick_at(&mut self, now: Timestamp) -> Result<Vec<Event>, Error> {
         if let Some((area, from)) = self.configured_area(now).await
             && (area, from) != (self.area, self.area_from)
         {
@@ -218,7 +218,7 @@ impl Sidecar for FirmsSidecar {
         self.context = Some(ctx.clone());
         let settings = ctx.settings();
         let (area, from) = self
-            .configured_area(Utc::now())
+            .configured_area(Timestamp::now())
             .await
             .unwrap_or((settings.area, FROM_FILE));
 
@@ -247,7 +247,7 @@ impl Sidecar for FirmsSidecar {
     }
 
     async fn tick(&mut self) -> Result<Vec<Event>, Error> {
-        self.tick_at(Utc::now()).await
+        self.tick_at(Timestamp::now()).await
     }
 
     /// The harness asks after every tick, and reports exactly this.
@@ -298,6 +298,7 @@ impl Sidecar for FirmsSidecar {
 mod tests {
     use super::*;
     use rustak_client::sidecar::SidecarConfig;
+    use rustak_core::time::SignedDuration;
 
     /// The file an operator is handed, loaded the way the binary loads it.
     const EXAMPLE: &str = include_str!("../config.example.toml");
@@ -449,7 +450,7 @@ mod tests {
         );
 
         let _ = sidecar
-            .tick_at(Utc::now() + chrono::Duration::seconds(31))
+            .tick_at(Timestamp::now() + SignedDuration::from_secs(31))
             .await
             .expect("a tick");
 
@@ -474,7 +475,7 @@ mod tests {
         assert_eq!(sidecar.area().1, FROM_SERVER, "read at start-up");
 
         let _ = sidecar
-            .tick_at(Utc::now() + chrono::Duration::minutes(6))
+            .tick_at(Timestamp::now() + SignedDuration::from_mins(6))
             .await
             .expect("a tick");
 

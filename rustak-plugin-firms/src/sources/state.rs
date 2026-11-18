@@ -98,17 +98,17 @@ impl Rules for Firms {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{DateTime, Utc};
     use rustak_client::feed::upstream::Report;
+    use rustak_core::time::{SignedDuration, Timestamp};
 
     const TEN_MINUTES: Duration = Duration::from_secs(600);
 
-    fn now() -> DateTime<Utc> {
+    fn now() -> Timestamp {
         "2026-09-22T14:00:00Z".parse().expect("an instant")
     }
 
-    fn after(minutes: i64) -> DateTime<Utc> {
-        now() + chrono::Duration::minutes(minutes)
+    fn after(minutes: i64) -> Timestamp {
+        now() + SignedDuration::from_mins(minutes)
     }
 
     #[test]
@@ -131,7 +131,7 @@ mod tests {
 
         for _ in 0..5 {
             state.failed_at("timed out", now());
-            waits.push((state.next_attempt() - now()).num_minutes());
+            waits.push((state.next_attempt() - now()).as_mins());
         }
 
         assert_eq!(waits, [10, 20, 40, 60, 60]);
@@ -141,7 +141,7 @@ mod tests {
         state.succeeded_at(now());
 
         assert_eq!(state.last_error(), None);
-        assert_eq!((state.next_attempt() - now()).num_minutes(), 10);
+        assert_eq!((state.next_attempt() - now()).as_mins(), 10);
     }
 
     #[test]

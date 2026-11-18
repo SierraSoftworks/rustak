@@ -7,6 +7,7 @@
 //! everything else here uses. Splitting them would mean three stores whose
 //! consistency nobody enforced.
 
+use rustak_api::time::Timestamp;
 use std::cell::RefCell;
 
 use rustak_api::{
@@ -390,7 +391,7 @@ pub fn create_package(
             size,
             submitter: Some("avery".to_string()),
             creator_uid: None,
-            submission_time: chrono::Utc::now(),
+            submission_time: Timestamp::now(),
             mission_package: keywords.iter().any(|word| word == "missionpackage"),
             keywords: keywords.to_vec(),
             groups: groups.to_vec(),

@@ -7,8 +7,8 @@
 //! other endpoint would fail in a way far harder to read.
 
 use actix_web::{HttpResponse, web};
-use chrono::Utc;
 use rustak_api::{ComponentStatus, Health};
+use rustak_core::time::Timestamp;
 
 use crate::prelude::*;
 
@@ -16,7 +16,7 @@ use super::error::json_ok;
 
 /// Answers the health check.
 pub async fn health(context: web::Data<AppContext>) -> HttpResponse {
-    let uptime = (Utc::now() - context.started_at()).num_seconds().max(0) as u64;
+    let uptime = (Timestamp::now() - context.started_at()).as_secs().max(0) as u64;
     let version = env!("CARGO_PKG_VERSION");
 
     match reachable(context.get_ref()).await {

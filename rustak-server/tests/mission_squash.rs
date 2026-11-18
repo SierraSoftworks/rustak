@@ -20,9 +20,9 @@
 
 #![cfg(feature = "testing")]
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::collections::{HashMap, HashSet};
 
-use chrono::{DateTime, Duration};
 use proptest::prelude::*;
 
 use rustak_server::db::repos::MissionChangeRow;
@@ -48,12 +48,12 @@ struct Step {
 /// Turns generated steps into rows, newest first, as the repository returns a
 /// window.
 fn history(steps: &[Step]) -> Vec<MissionChangeRow> {
-    let base = DateTime::UNIX_EPOCH;
+    let base = Timestamp::UNIX_EPOCH;
     let mut rows: Vec<MissionChangeRow> = steps
         .iter()
         .enumerate()
         .map(|(index, step)| {
-            let at = base + Duration::seconds(index as i64);
+            let at = base + SignedDuration::from_secs(index as i64);
             let kind = KINDS[step.kind % KINDS.len()];
             let about_item = kind != "CREATE_MISSION";
 

@@ -15,6 +15,7 @@
 //! because a `mode` key was left at a permissive default is not a mistake we
 //! want to make available by accident.
 
+use rustak_core::time::SignedDuration;
 use std::path::PathBuf;
 
 use rustak_core::config::ListenAddr;
@@ -41,8 +42,8 @@ fn default_true() -> bool {
 /// difference between a renewal being served within the minute and an
 /// operator wondering why the certificate a sidecar wrote an hour ago is not
 /// the one their browser sees.
-fn default_reload_interval() -> chrono::Duration {
-    chrono::Duration::seconds(30)
+fn default_reload_interval() -> SignedDuration {
+    SignedDuration::from_secs(30)
 }
 
 /// `[web]`.
@@ -158,7 +159,7 @@ pub struct TlsConfig {
         default = "default_reload_interval",
         with = "rustak_core::config::duration::humane"
     )]
-    pub reload_interval: chrono::Duration,
+    pub reload_interval: SignedDuration,
 
     /// Whether a missing or unusable pair stops the server at start-up.
     ///
@@ -236,8 +237,8 @@ impl TlsConfig {
     }
 
     /// How often the pair is re-checked, when anything checks it at all.
-    pub fn reload_every(&self) -> Option<chrono::Duration> {
-        (self.mode == TlsMode::Files && self.reload_interval > chrono::Duration::zero())
+    pub fn reload_every(&self) -> Option<SignedDuration> {
+        (self.mode == TlsMode::Files && self.reload_interval > SignedDuration::ZERO)
             .then_some(self.reload_interval)
     }
 }
@@ -371,9 +372,9 @@ mod tests {
         // waiting has to have something doing the looking.
         let parsed: TlsConfig = toml::from_str(r#"mode = "files""#).unwrap();
 
-        assert_eq!(parsed.reload_interval, chrono::Duration::seconds(30));
+        assert_eq!(parsed.reload_interval, SignedDuration::from_secs(30));
         assert!(!parsed.require_files_at_start);
-        assert_eq!(parsed.reload_every(), Some(chrono::Duration::seconds(30)));
+        assert_eq!(parsed.reload_every(), Some(SignedDuration::from_secs(30)));
         assert_eq!(parsed.missing_at_start(), None);
     }
 

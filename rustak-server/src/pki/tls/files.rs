@@ -32,10 +32,10 @@
 //! rest of the write landing — is retried, which is why the fingerprint of a
 //! rejected pair is remembered too: the same bytes will fail the same way.
 
+use rustak_core::time::Timestamp;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
-use chrono::{DateTime, TimeZone as _, Utc};
 use rustak_api::{TlsCertificateState, TlsSource, TlsStatus};
 use rustls::sign::CertifiedKey;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _};
@@ -122,11 +122,11 @@ pub struct Loaded {
     /// How many certificates the chain held.
     pub certificates: usize,
 
-    pub not_before: Option<DateTime<Utc>>,
-    pub not_after: Option<DateTime<Utc>>,
+    pub not_before: Option<Timestamp>,
+    pub not_after: Option<Timestamp>,
 
     /// When this pair was read off disk.
-    pub loaded_at: DateTime<Utc>,
+    pub loaded_at: Timestamp,
 }
 
 impl std::fmt::Debug for Loaded {
@@ -152,7 +152,7 @@ pub enum Outcome {
     Waiting,
 
     /// A new pair was read, proved and installed without a restart.
-    Swapped { not_after: Option<DateTime<Utc>> },
+    Swapped { not_after: Option<Timestamp> },
 
     /// The pair on disk changed and is not usable. The previous one — or the
     /// bootstrap certificate — keeps serving.
@@ -168,7 +168,7 @@ struct Seen {
     loaded: Option<Loaded>,
     last_error: Option<String>,
     attempts: u32,
-    last_attempt_at: Option<DateTime<Utc>>,
+    last_attempt_at: Option<Timestamp>,
 }
 
 /// The pair on disk, the listener presenting it, and what happened last.
@@ -208,7 +208,7 @@ impl FilesCertificate {
             seen: Mutex::new(Seen {
                 fingerprint,
                 attempts: u32::from(failure.is_some()),
-                last_attempt_at: attempted.then(Utc::now),
+                last_attempt_at: attempted.then(Timestamp::now),
                 loaded,
                 last_error: failure,
             }),
@@ -231,7 +231,7 @@ impl FilesCertificate {
         }
 
         seen.fingerprint = Some(fingerprint);
-        seen.last_attempt_at = Some(Utc::now());
+        seen.last_attempt_at = Some(Timestamp::now());
 
         match load(&self.cert_file, &self.key_file) {
             Ok(loaded) => {
@@ -261,7 +261,8 @@ impl FilesCertificate {
     pub fn status(&self, domains: &[String]) -> TlsStatus {
         let seen = self.seen();
         let loaded = seen.loaded.as_ref();
-        let expired = loaded.is_some_and(|pair| pair.not_after.is_some_and(|at| at <= Utc::now()));
+        let expired =
+            loaded.is_some_and(|pair| pair.not_after.is_some_and(|at| at <= Timestamp::now()));
 
         TlsStatus {
             source: TlsSource::Files,
@@ -422,7 +423,7 @@ pub fn load(cert_file: &Path, key_file: &Path) -> Result<Loaded, Error> {
         certificates,
         not_before,
         not_after,
-        loaded_at: Utc::now(),
+        loaded_at: Timestamp::now(),
     })
 }
 
@@ -431,12 +432,12 @@ pub fn load(cert_file: &Path, key_file: &Path) -> Result<Loaded, Error> {
 /// Not an error when it cannot be: rustls has already accepted the chain, and
 /// a status missing one date is better than a listener refusing a certificate
 /// it could serve.
-fn validity(leaf: &CertificateDer<'_>) -> (Option<DateTime<Utc>>, Option<DateTime<Utc>>) {
+fn validity(leaf: &CertificateDer<'_>) -> (Option<Timestamp>, Option<Timestamp>) {
     let Ok((_, parsed)) = x509_parser::parse_x509_certificate(leaf.as_ref()) else {
         return (None, None);
     };
 
-    let at = |time: x509_parser::time::ASN1Time| Utc.timestamp_opt(time.timestamp(), 0).single();
+    let at = |time: x509_parser::time::ASN1Time| Timestamp::from_second(time.timestamp());
 
     (
         at(parsed.validity().not_before),
@@ -447,18 +448,25 @@ fn validity(leaf: &CertificateDer<'_>) -> (Option<DateTime<Utc>>, Option<DateTim
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::SignedDuration;
 
     /// A self-signed pair on disk, valid for `days`, written as an operator's
     /// agent would write it.
     fn write_pair(directory: &Path, name: &str, days: i64) -> (PathBuf, PathBuf, Vec<u8>) {
-        use chrono::Datelike as _;
-
         let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
         let mut params = rcgen::CertificateParams::new(vec![name.to_string()]).unwrap();
-        let now = Utc::now();
-        let end = now + chrono::Duration::days(days);
-        params.not_before = rcgen::date_time_ymd(now.year(), now.month() as u8, now.day() as u8);
-        params.not_after = rcgen::date_time_ymd(end.year(), end.month() as u8, end.day() as u8);
+        let now = Timestamp::now();
+        let end = now + SignedDuration::from_hours(24 * days);
+        params.not_before = rcgen::date_time_ymd(
+            i32::from(now.civil().year()),
+            now.civil().month() as u8,
+            now.civil().day() as u8,
+        );
+        params.not_after = rcgen::date_time_ymd(
+            i32::from(end.civil().year()),
+            end.civil().month() as u8,
+            end.civil().day() as u8,
+        );
         let certificate = params.self_signed(&key).unwrap();
 
         let cert_file = directory.join("chain.pem");
@@ -507,8 +515,8 @@ mod tests {
 
         assert_eq!(loaded.certificates, 1);
         assert_eq!(loaded.certified.end_entity_cert().unwrap().as_ref(), der);
-        assert!(loaded.not_after.unwrap() > Utc::now() + chrono::Duration::days(80));
-        assert!(loaded.not_before.unwrap() <= Utc::now());
+        assert!(loaded.not_after.unwrap() > Timestamp::now() + SignedDuration::from_hours(24 * 80));
+        assert!(loaded.not_before.unwrap() <= Timestamp::now());
     }
 
     #[test]

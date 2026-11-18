@@ -23,6 +23,7 @@
 //! data are therefore impossible, and the one that remains — a reference
 //! removed after the read — only means the blob waits for the next sweep.
 
+use rustak_core::time::{DurationExt, SignedDuration};
 use std::collections::HashSet;
 use std::time::{Duration, SystemTime};
 
@@ -72,7 +73,7 @@ impl Swept {
 pub async fn sweep(
     db: &Database,
     store: &ContentStore,
-    grace: chrono::Duration,
+    grace: SignedDuration,
 ) -> Result<Swept, Error> {
     let cutoff = cutoff(grace);
     let mut swept = Swept {
@@ -175,7 +176,7 @@ async fn referenced_hashes(db: &Database) -> Result<HashSet<String>, Error> {
 }
 
 /// The instant a file has to predate to be swept.
-fn cutoff(grace: chrono::Duration) -> SystemTime {
+fn cutoff(grace: SignedDuration) -> SystemTime {
     let grace = grace.to_std().unwrap_or(Duration::ZERO);
 
     SystemTime::now()
@@ -249,7 +250,7 @@ mod tests {
             Duration::from_secs(60),
         );
 
-        let swept = sweep(&db, &store, chrono::Duration::seconds(1))
+        let swept = sweep(&db, &store, SignedDuration::from_secs(1))
             .await
             .unwrap();
 
@@ -271,7 +272,7 @@ mod tests {
             Duration::from_secs(60),
         );
 
-        let swept = sweep(&db, &store, chrono::Duration::seconds(1))
+        let swept = sweep(&db, &store, SignedDuration::from_secs(1))
             .await
             .unwrap();
 
@@ -290,7 +291,7 @@ mod tests {
         let (dir, store, db) = store().await;
         let stored = store.put_bytes(b"new!").await.unwrap();
 
-        let swept = sweep(&db, &store, chrono::Duration::hours(24))
+        let swept = sweep(&db, &store, SignedDuration::from_hours(24))
             .await
             .unwrap();
 
@@ -315,7 +316,7 @@ mod tests {
             .unwrap();
         backdate(&abandoned, Duration::from_secs(60));
 
-        let swept = sweep(&db, &store, chrono::Duration::seconds(1))
+        let swept = sweep(&db, &store, SignedDuration::from_secs(1))
             .await
             .unwrap();
 
@@ -333,7 +334,7 @@ mod tests {
 
         assert!(referenced_hashes(&db).await.unwrap().is_empty());
         assert!(
-            sweep(&db, &store, chrono::Duration::hours(1))
+            sweep(&db, &store, SignedDuration::from_hours(1))
                 .await
                 .unwrap()
                 .is_empty()

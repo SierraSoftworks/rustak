@@ -16,8 +16,6 @@
 //! `/changes` on its next poll, so a failure to notify is logged and swallowed
 //! rather than propagated into the caller's `Result`.
 
-use chrono::{DateTime, Utc};
-
 use crate::db::repos::{MissionChangeRow, ResourceRow};
 use crate::marti::MartiError;
 use crate::prelude::*;
@@ -25,6 +23,7 @@ use crate::stream::mission_notify::{self, ChangeKind, MissionNotice, NoticeMissi
 use crate::stream::mission_payload::{
     MissionChangeXml, MissionLayerXml, MissionRoleXml, ResourceXml, UidDetailsXml,
 };
+use rustak_core::time::Timestamp;
 
 use super::dto::UidDetailsJson;
 use super::model::Mission;
@@ -357,15 +356,15 @@ fn resource_xml(resource: &ResourceRow) -> ResourceXml {
 /// The log and layer endpoints announce themselves without appending to the
 /// change log, and a client that reads `missionChanges[0].type` still wants a
 /// type to read.
-pub fn synthetic(kind: &str, at: DateTime<Utc>, creator_uid: Option<&str>) -> MissionChangeXml {
+pub fn synthetic(kind: &str, at: Timestamp, creator_uid: Option<&str>) -> MissionChangeXml {
     let mut change = MissionChangeXml::new(kind, at);
     change.creator_uid = creator_uid.map(ToOwned::to_owned);
     change
 }
 
 /// The instant a synthetic change is dated, which is always now.
-pub fn now() -> DateTime<Utc> {
-    Utc::now()
+pub fn now() -> Timestamp {
+    Timestamp::now()
 }
 
 #[cfg(test)]
@@ -389,7 +388,7 @@ mod tests {
             tool: "public".to_string(),
             keywords: Vec::new(),
             creator_uid: None,
-            create_time: DateTime::UNIX_EPOCH,
+            create_time: Timestamp::UNIX_EPOCH,
             last_edited: None,
             default_role: Role::Subscriber,
             invite_only: false,
@@ -450,12 +449,12 @@ mod tests {
 
     #[test]
     fn a_synthetic_change_carries_only_what_it_was_given() {
-        let change = synthetic("ADD_CONTENT", DateTime::UNIX_EPOCH, Some("ANDROID-1"));
+        let change = synthetic("ADD_CONTENT", Timestamp::UNIX_EPOCH, Some("ANDROID-1"));
 
         assert_eq!(change.kind, "ADD_CONTENT");
         assert_eq!(change.creator_uid.as_deref(), Some("ANDROID-1"));
         assert_eq!(change.content_uid, None);
         assert!(change.resource.is_none());
-        assert!(now() > DateTime::UNIX_EPOCH);
+        assert!(now() > Timestamp::UNIX_EPOCH);
     }
 }

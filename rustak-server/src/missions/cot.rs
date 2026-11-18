@@ -23,6 +23,7 @@
 //! separately: the stream resolver already derives the principal's username
 //! from that common name, so the second lookup covers the same case.
 
+use rustak_core::time::Timestamp;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -209,7 +210,7 @@ impl MissionIngest for MissionPublisher {
             .event()
             .time
             .to_datetime()
-            .unwrap_or_else(chrono::Utc::now);
+            .unwrap_or_else(Timestamp::now);
         // `add_content` emits the `t-x-m-c` itself, to the same subscribers the
         // raw relay reaches — both deliveries happen, and neither is the other.
         self.service
@@ -230,6 +231,7 @@ impl MissionIngest for MissionPublisher {
 
 #[cfg(test)]
 mod tests {
+    use rustak_core::time::SignedDuration;
     use rustak_cot::Event;
 
     use super::*;
@@ -433,8 +435,8 @@ mod tests {
                 .mission_changes()
                 .window(
                     mission.id,
-                    chrono::DateTime::UNIX_EPOCH,
-                    chrono::Utc::now() + chrono::Duration::hours(1),
+                    Timestamp::UNIX_EPOCH,
+                    Timestamp::now() + SignedDuration::from_hours(1),
                 )
                 .await
                 .unwrap()

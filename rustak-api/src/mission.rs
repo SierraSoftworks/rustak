@@ -15,7 +15,7 @@
 //! translation table nobody could read a bug report against, so the serialised
 //! form is TAK's and only the Rust identifiers are ours.
 
-use chrono::{DateTime, Utc};
+use crate::time::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::identity::{GroupName, MissionGuid};
@@ -83,7 +83,7 @@ pub struct MissionSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creator_uid: Option<String>,
 
-    pub create_time: DateTime<Utc>,
+    pub create_time: Timestamp,
 
     /// The channels whose members may see it.
     #[serde(default)]
@@ -106,12 +106,12 @@ pub struct MissionSummary {
 
     /// When the mission stops being served, if ever. TAK's `-1` is `None` here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expiration: Option<DateTime<Utc>>,
+    pub expiration: Option<Timestamp>,
 
     /// Set once a mission has been soft-deleted, which is what makes its Marti
     /// routes answer `410` rather than `404`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deleted_at: Option<DateTime<Utc>>,
+    pub deleted_at: Option<Timestamp>,
 }
 
 /// One subscription to a mission.
@@ -123,7 +123,7 @@ pub struct MissionSubscriptionSummary {
     pub username: Option<String>,
 
     pub role: MissionRoleKind,
-    pub create_time: DateTime<Utc>,
+    pub create_time: Timestamp,
 
     /// Whether the subscriber is connected to the stream listener right now,
     /// which is what decides who a `t-x-m-c` actually reaches.
@@ -264,8 +264,8 @@ pub struct MissionChangeSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_hash: Option<String>,
 
-    pub timestamp: DateTime<Utc>,
-    pub server_time: DateTime<Utc>,
+    pub timestamp: Timestamp,
+    pub server_time: Timestamp,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creator_uid: Option<String>,
@@ -291,7 +291,7 @@ mod tests {
             description: None,
             tool: "public".to_string(),
             creator_uid: Some("ANDROID-1".to_string()),
-            create_time: DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+            create_time: Timestamp::new(1_700_000_000, 0).unwrap(),
             groups: vec![GroupName::parse("Blue").unwrap()],
             keywords: vec!["recon".to_string()],
             subscriber_count: 2,
@@ -357,7 +357,7 @@ mod tests {
                 client_uid: "ANDROID-1".to_string(),
                 username: Some("alice".to_string()),
                 role: MissionRoleKind::Owner,
-                create_time: DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+                create_time: Timestamp::new(1_700_000_000, 0).unwrap(),
                 connected: true,
             }],
             layers: vec![MissionLayerSummary {
@@ -390,8 +390,8 @@ mod tests {
             kind: MissionChangeKind::AddContent,
             content_uid: Some("UID-A".to_string()),
             content_hash: None,
-            timestamp: DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
-            server_time: DateTime::from_timestamp(1_700_000_001, 0).unwrap(),
+            timestamp: Timestamp::new(1_700_000_000, 0).unwrap(),
+            server_time: Timestamp::new(1_700_000_001, 0).unwrap(),
             creator_uid: Some("ANDROID-1".to_string()),
             details: Some(UidDetails {
                 kind: Some("a-f-G".to_string()),

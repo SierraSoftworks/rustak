@@ -4,6 +4,7 @@
 //! with nothing new in it compares equal and costs nothing.
 
 use rustak_api::MapFeature;
+use rustak_api::time::Timestamp;
 use yew::prelude::*;
 
 use crate::util::{short_relative, sidc};
@@ -42,7 +43,7 @@ impl RosterEntry {
                 Some(team) => team_color(team),
                 None => affiliation_color(&feature.kind),
             },
-            stale: feature.stale < chrono::Utc::now(),
+            stale: feature.stale < Timestamp::now(),
         }
     }
 }

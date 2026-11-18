@@ -9,8 +9,8 @@
 //! The output is GeoJSON with a handful of properties `js/map.js` styles from.
 //! Nothing here touches the browser, so all of it is tested natively.
 
-use chrono::{DateTime, Utc};
 use rustak_api::MapFeature;
+use rustak_api::time::Timestamp;
 use serde_json::{Value, json};
 
 use crate::util::sidc;
@@ -34,7 +34,7 @@ const DRAWING: &str = "#c2410c";
 pub(super) const MARKER: &str = "#344054";
 
 /// One feature as `js/map.js` takes it: `{ uid, anchor, shape }`.
-pub fn draw(feature: &MapFeature, now: DateTime<Utc>) -> Value {
+pub fn draw(feature: &MapFeature, now: Timestamp) -> Value {
     let stale = feature.stale < now;
     let color = color(feature);
 
@@ -223,7 +223,7 @@ pub(super) mod tests {
         }
     }
 
-    fn now() -> DateTime<Utc> {
+    fn now() -> Timestamp {
         "2026-09-18T12:01:00Z".parse().unwrap()
     }
 

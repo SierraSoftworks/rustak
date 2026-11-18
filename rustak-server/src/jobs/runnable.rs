@@ -7,8 +7,8 @@
 //! delegating. Every [`Job`] gets the blanket implementation, so writing a job
 //! means implementing [`Job`] and calling [`register_job!`](crate::register_job).
 
-use chrono::TimeDelta;
 use rustak_core::prelude::*;
+use rustak_core::time::SignedDuration;
 
 use super::{Job, JobContext};
 use crate::services::AppContext;
@@ -29,7 +29,7 @@ pub trait JobRunnable: Send + Sync {
     fn propagate_parent(&self) -> bool;
 
     /// How long a dequeued message stays reserved while this job runs.
-    fn timeout(&self) -> TimeDelta;
+    fn timeout(&self) -> SignedDuration;
 
     /// Runs the underlying [`Job::setup`].
     ///
@@ -65,7 +65,7 @@ where
         <J as Job>::propagate_parent()
     }
 
-    fn timeout(&self) -> TimeDelta {
+    fn timeout(&self) -> SignedDuration {
         Job::timeout(self)
     }
 
@@ -124,6 +124,7 @@ macro_rules! register_job {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::Timestamp;
 
     use crate::{prelude::*, services::AppContext};
 
@@ -142,8 +143,8 @@ mod tests {
             "test/erased"
         }
 
-        fn timeout(&self) -> TimeDelta {
-            TimeDelta::seconds(17)
+        fn timeout(&self) -> SignedDuration {
+            SignedDuration::from_secs(17)
         }
 
         fn propagate_parent() -> bool {
@@ -178,7 +179,7 @@ mod tests {
 
         JobRunnable::handle(
             &ErasedJob,
-            JobContext::new(context.clone(), chrono::Utc::now(), None, None),
+            JobContext::new(context.clone(), Timestamp::now(), None, None),
             &serde_json::json!({ "key": "k1", "value": "v1" }),
         )
         .await
@@ -194,7 +195,7 @@ mod tests {
 
         let refused = JobRunnable::handle(
             &ErasedJob,
-            JobContext::new(context, chrono::Utc::now(), None, None),
+            JobContext::new(context, Timestamp::now(), None, None),
             &serde_json::json!({ "unexpected": true }),
         )
         .await
@@ -219,7 +220,10 @@ mod tests {
     #[test]
     fn the_erased_view_reports_what_the_job_declared() {
         assert_eq!(JobRunnable::partition(&ErasedJob), "test/erased");
-        assert_eq!(JobRunnable::timeout(&ErasedJob), TimeDelta::seconds(17));
+        assert_eq!(
+            JobRunnable::timeout(&ErasedJob),
+            SignedDuration::from_secs(17)
+        );
         assert!(!JobRunnable::propagate_parent(&ErasedJob));
     }
 }

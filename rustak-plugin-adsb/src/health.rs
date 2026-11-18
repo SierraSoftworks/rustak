@@ -34,6 +34,7 @@
 
 use rustak_api::{Heartbeat, ServiceState};
 use rustak_client::feed::FeedCounters;
+use rustak_core::time::SignedDuration;
 
 use crate::sources::SourceState;
 
@@ -98,8 +99,8 @@ pub fn service_state(state: &SourceState) -> ServiceState {
 ///
 /// Two poll intervals: one missed poll is a packet that went missing, two in a
 /// row is an upstream that has gone.
-fn grace(state: &SourceState) -> chrono::Duration {
-    chrono::Duration::from_std(state.interval() * 2).unwrap_or_else(|_| chrono::Duration::zero())
+fn grace(state: &SourceState) -> SignedDuration {
+    SignedDuration::try_from(state.interval() * 2).unwrap_or(SignedDuration::ZERO)
 }
 
 /// The connection, in one word an administrator can filter on.

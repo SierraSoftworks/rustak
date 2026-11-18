@@ -73,10 +73,10 @@ mod key;
 mod sketch;
 mod view;
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::fmt;
 use std::net::IpAddr;
 
-use chrono::{DateTime, Duration, Utc};
 use rustak_api::LockoutClass;
 
 use crate::config::RateLimitConfig;
@@ -104,11 +104,11 @@ pub struct RateLimiter {
     pairs: Table,
     clock: Clock,
     limits: Limits,
-    lockout: Duration,
+    lockout: SignedDuration,
     ring: Ring,
     counters: class::Counters,
     /// When this limiter started counting, which is when the process did.
-    created_at: DateTime<Utc>,
+    created_at: Timestamp,
 }
 
 impl fmt::Debug for RateLimiter {
@@ -126,10 +126,10 @@ impl fmt::Debug for RateLimiter {
 impl RateLimiter {
     /// Builds a limiter from `[auth.rate_limit]`, with a fresh hash key.
     pub fn new(config: &RateLimitConfig) -> Self {
-        Self::build(config, WIDTH, KeyedHash::random(), Utc::now())
+        Self::build(config, WIDTH, KeyedHash::random(), Timestamp::now())
     }
 
-    fn build(config: &RateLimitConfig, width: usize, keyed: KeyedHash, now: DateTime<Utc>) -> Self {
+    fn build(config: &RateLimitConfig, width: usize, keyed: KeyedHash, now: Timestamp) -> Self {
         let allowance = |attempts: u32| u16::try_from(attempts).unwrap_or(u16::MAX).max(1);
 
         Self {
@@ -155,17 +155,17 @@ impl RateLimiter {
     /// client, the endpoint's own name — so that failures against one account
     /// do not lock out another from the same office, until the office as a
     /// whole has failed too often.
-    pub fn check(&self, client_ip: Option<IpAddr>, subject: &str) -> Result<(), Duration> {
-        self.check_at(Utc::now(), client_ip, subject)
+    pub fn check(&self, client_ip: Option<IpAddr>, subject: &str) -> Result<(), SignedDuration> {
+        self.check_at(Timestamp::now(), client_ip, subject)
     }
 
     /// [`check`](Self::check), at a moment the caller chooses.
     fn check_at(
         &self,
-        now: DateTime<Utc>,
+        now: Timestamp,
         client_ip: Option<IpAddr>,
         subject: &str,
-    ) -> Result<(), Duration> {
+    ) -> Result<(), SignedDuration> {
         let stamp = self.clock.stamp(now);
         let host = Source::host(client_ip);
 
@@ -195,8 +195,12 @@ impl RateLimiter {
     /// Returns the lockout when this failure started one, in either tier, so
     /// the caller can log or audit the moment it starts rather than
     /// discovering it on the next attempt.
-    pub fn record_failure(&self, client_ip: Option<IpAddr>, subject: &str) -> Option<Duration> {
-        self.record_failures_at(Utc::now(), client_ip, &[subject])
+    pub fn record_failure(
+        &self,
+        client_ip: Option<IpAddr>,
+        subject: &str,
+    ) -> Option<SignedDuration> {
+        self.record_failures_at(Timestamp::now(), client_ip, &[subject])
     }
 
     /// One failed attempt that was guessing at several subjects at once — a
@@ -206,18 +210,18 @@ impl RateLimiter {
         &self,
         client_ip: Option<IpAddr>,
         subjects: &[&str],
-    ) -> Option<Duration> {
-        self.record_failures_at(Utc::now(), client_ip, subjects)
+    ) -> Option<SignedDuration> {
+        self.record_failures_at(Timestamp::now(), client_ip, subjects)
     }
 
     /// [`record_failures`](Self::record_failures), at a moment the caller
     /// chooses.
     fn record_failures_at(
         &self,
-        now: DateTime<Utc>,
+        now: Timestamp,
         client_ip: Option<IpAddr>,
         subjects: &[&str],
-    ) -> Option<Duration> {
+    ) -> Option<SignedDuration> {
         let host = Source::host(client_ip);
         let mut began = false;
 
@@ -247,7 +251,7 @@ impl RateLimiter {
     }
 
     /// Counts one failure of `key`; whether it started a lockout.
-    fn count(&self, key: Counted, allowance: u16, now: DateTime<Utc>) -> bool {
+    fn count(&self, key: Counted, allowance: u16, now: Timestamp) -> bool {
         let stamp = self.clock.stamp(now);
         let recorded =
             self.table(key.tier)
@@ -302,8 +306,8 @@ mod simulation_tests;
 mod tests {
     use super::*;
 
-    fn limiter_with(config: RateLimitConfig) -> (RateLimiter, DateTime<Utc>) {
-        let at = Utc::now();
+    fn limiter_with(config: RateLimitConfig) -> (RateLimiter, Timestamp) {
+        let at = Timestamp::now();
 
         (
             RateLimiter::build(&config, 1 << 12, KeyedHash::fixed(3, 5), at),
@@ -313,7 +317,7 @@ mod tests {
 
     /// Every allowance explicit, so a change of default moves none of these
     /// tests; tier 1 well above anything a test here reaches by accident.
-    fn limiter(attempts: u32) -> (RateLimiter, DateTime<Utc>) {
+    fn limiter(attempts: u32) -> (RateLimiter, Timestamp) {
         limiter_with(RateLimitConfig {
             attempts,
             address_attempts: 20,
@@ -351,10 +355,12 @@ mod tests {
         assert_eq!(fail(), None);
         assert_eq!(fail(), None);
         assert!(limiter.check_at(at, address(), "ada").is_ok());
-        assert_eq!(fail(), Some(Duration::minutes(15)));
+        assert_eq!(fail(), Some(SignedDuration::from_mins(15)));
 
         let remaining = limiter.check_at(at, address(), "ada").unwrap_err();
-        assert!(remaining <= Duration::minutes(15) && remaining > Duration::minutes(14));
+        assert!(
+            remaining <= SignedDuration::from_mins(15) && remaining > SignedDuration::from_mins(14)
+        );
     }
 
     #[test]
@@ -370,11 +376,11 @@ mod tests {
         );
         let ends = limiter.check_at(at, address(), "ada").unwrap_err();
 
-        let later = at + Duration::minutes(5);
+        let later = at + SignedDuration::from_mins(5);
         assert_eq!(limiter.record_failures_at(later, address(), &["ada"]), None);
         assert_eq!(
             limiter.check_at(later, address(), "ada").unwrap_err(),
-            ends - Duration::minutes(5)
+            ends - SignedDuration::from_mins(5)
         );
     }
 
@@ -386,12 +392,12 @@ mod tests {
 
         assert!(
             limiter
-                .check_at(at + Duration::seconds(899), address(), "ada")
+                .check_at(at + SignedDuration::from_secs(899), address(), "ada")
                 .is_err()
         );
         assert!(
             limiter
-                .check_at(at + Duration::seconds(900), address(), "ada")
+                .check_at(at + SignedDuration::from_secs(900), address(), "ada")
                 .is_ok()
         );
     }
@@ -443,7 +449,7 @@ mod tests {
 
         assert_eq!(limiter.record_failures_at(at, address(), &["ada"]), None);
 
-        let later = at + Duration::minutes(2);
+        let later = at + SignedDuration::from_mins(2);
         assert_eq!(
             limiter.record_failures_at(later, address(), &["ada"]),
             None,

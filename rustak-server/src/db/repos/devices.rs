@@ -4,16 +4,16 @@
 //! identifier, so it is what everything else joins on: the active-channel
 //! state, the certificate that was issued for it, and the contact list.
 
+use rustak_core::time::Timestamp;
 use std::net::IpAddr;
 
-use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension as _;
 use rustak_core::prelude::*;
 
 use crate::db::{
     Database,
     repos::Page,
-    row::{Timestamp, bool_col, id_col, opt_id_col, ts},
+    row::{DbTime, bool_col, id_col, opt_id_col, ts},
 };
 
 /// The columns [`DeviceRow::from_row`] expects, in order.
@@ -34,8 +34,8 @@ pub struct DeviceRow {
     /// The client asked not to appear in contact lists.
     pub incognito: bool,
     pub last_certificate_id: Option<CertificateId>,
-    pub first_seen_at: DateTime<Utc>,
-    pub last_seen_at: DateTime<Utc>,
+    pub first_seen_at: Timestamp,
+    pub last_seen_at: Timestamp,
     pub last_ip: Option<IpAddr>,
 }
 
@@ -116,7 +116,7 @@ impl<'a> DevicesRepo<'a> {
     pub async fn create(&self, new: NewDevice) -> Result<DeviceRow, Error> {
         self.db
             .write(move |tx| {
-                let now = Timestamp::now();
+                let now = DbTime::now();
 
                 tx.query_one(
                     &format!(
@@ -186,7 +186,7 @@ impl<'a> DevicesRepo<'a> {
 
         self.db
             .write(move |tx| {
-                let now = Timestamp::now();
+                let now = DbTime::now();
 
                 tx.query_one(
                     &format!(

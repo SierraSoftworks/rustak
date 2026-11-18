@@ -9,7 +9,7 @@ use std::fmt;
 use std::ops::{Add, Sub};
 use std::time::Duration;
 
-use chrono::{DateTime, SecondsFormat, TimeZone, Utc};
+use rustak_api::time::{Precision, Timestamp};
 
 use crate::error::BadTime;
 
@@ -26,7 +26,7 @@ impl CotTime {
     /// The current wall-clock time, truncated to milliseconds.
     #[must_use]
     pub fn now() -> Self {
-        Self(Utc::now().timestamp_millis())
+        Self(Timestamp::now().as_millisecond())
     }
 
     /// Wraps a millisecond Unix timestamp.
@@ -55,10 +55,9 @@ impl CotTime {
     /// it lies outside the range representable in milliseconds.
     pub fn parse(value: &str) -> Result<Self, BadTime> {
         let text = value.trim();
-        DateTime::parse_from_rfc3339(text)
-            .map(|dt| dt.with_timezone(&Utc))
+        text.parse::<Timestamp>()
             .or_else(|_| assume_utc(text))
-            .map(|dt| Self(dt.timestamp_millis()))
+            .map(|dt| Self(dt.as_millisecond()))
             .map_err(|()| BadTime {
                 value: value.to_owned(),
             })
@@ -70,25 +69,26 @@ impl CotTime {
         Self(self.0.saturating_add(millis_of(after)))
     }
 
-    /// This instant as a `chrono` timestamp, or [`None`] when the millisecond
-    /// value is outside the calendar range `chrono` can represent.
+    /// This instant as a [`Timestamp`], or [`None`] when the millisecond
+    /// value is outside the calendar range it can represent.
     #[must_use]
-    pub fn to_datetime(self) -> Option<DateTime<Utc>> {
-        Utc.timestamp_millis_opt(self.0).single()
+    pub fn to_datetime(self) -> Option<Timestamp> {
+        Timestamp::from_millisecond(self.0)
     }
 
-    /// Wraps a `chrono` timestamp, truncating to milliseconds.
+    /// Wraps a [`Timestamp`], truncating to milliseconds.
     #[must_use]
-    pub fn from_datetime(value: DateTime<Utc>) -> Self {
-        Self(value.timestamp_millis())
+    pub fn from_datetime(value: Timestamp) -> Self {
+        Self(value.as_millisecond())
     }
 }
 
 /// Reads a zone-less ISO-8601 local time as UTC.
-fn assume_utc(text: &str) -> Result<DateTime<Utc>, ()> {
-    chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S%.f")
-        .map(|naive| naive.and_utc())
-        .map_err(|_| ())
+fn assume_utc(text: &str) -> Result<Timestamp, ()> {
+    jiff::civil::DateTime::strptime("%Y-%m-%dT%H:%M:%S%.f", text)
+        .ok()
+        .and_then(Timestamp::from_civil)
+        .ok_or(())
 }
 
 /// A [`Duration`] as whole milliseconds, clamped to [`i64`].
@@ -103,7 +103,7 @@ impl fmt::Display for CotTime {
     /// count so that a `Display` impl can never panic or lose the value.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.to_datetime() {
-            Some(dt) => f.write_str(&dt.to_rfc3339_opts(SecondsFormat::Millis, true)),
+            Some(dt) => f.write_str(&dt.to_rfc3339(Precision::Millis)),
             None => write!(f, "{}", self.0),
         }
     }
@@ -217,8 +217,8 @@ mod tests {
     }
 
     #[test]
-    fn now_is_close_to_the_chrono_clock() {
-        let gap = (CotTime::now() - CotTime::from_datetime(Utc::now())).abs();
+    fn now_is_close_to_the_system_clock() {
+        let gap = (CotTime::now() - CotTime::from_datetime(Timestamp::now())).abs();
         assert!(gap < 1_000, "clock drifted by {gap}ms");
     }
 

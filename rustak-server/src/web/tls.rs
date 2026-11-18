@@ -353,6 +353,7 @@ fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::{SignedDuration, Timestamp};
 
     async fn database() -> Database {
         Database::open_in_memory().await.unwrap()
@@ -465,8 +466,8 @@ mod tests {
             issued.pem(),
             &key.serialize_der(),
             (
-                chrono::Utc::now(),
-                chrono::Utc::now() + chrono::Duration::days(90),
+                Timestamp::now(),
+                Timestamp::now() + SignedDuration::from_hours(24 * 90),
             ),
             crate::config::AcmeChallenge::TlsAlpn01,
         )

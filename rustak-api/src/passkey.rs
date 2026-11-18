@@ -17,7 +17,7 @@
 //! [`serde_json::Value`] and the parts we do own — which challenge this is, who
 //! it is for, what the passkey is called — are typed.
 
-use chrono::{DateTime, Utc};
+use crate::time::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::identity::{PasskeyId, Username};
@@ -102,12 +102,12 @@ pub struct PasskeySummary {
     /// What its owner called it.
     pub label: String,
 
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
 
     /// When it was last used to sign in. Absent for one that never has been,
     /// which is worth noticing before removing the only other one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_used_at: Option<DateTime<Utc>>,
+    pub last_used_at: Option<Timestamp>,
 }
 
 #[cfg(test)]

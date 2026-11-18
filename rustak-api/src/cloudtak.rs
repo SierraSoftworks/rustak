@@ -18,9 +18,9 @@
 //! and why nothing here is ever re-emitted: a second call mints a second
 //! hand-over rather than repeating the first.
 
+use crate::time::Timestamp;
 use core::fmt;
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::identity::{CertificateId, CredentialId, Username};
@@ -170,7 +170,7 @@ pub struct CloudTakOnboarding {
     pub credential_id: CredentialId,
 
     /// When the download stops working, whether or not it was used.
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
 }
 
 impl fmt::Debug for CloudTakOnboarding {
@@ -207,7 +207,7 @@ mod tests {
             },
             certificate_id: CertificateId::new(7),
             credential_id: CredentialId::new(9),
-            expires_at: Utc::now(),
+            expires_at: Timestamp::now(),
         }
     }
 

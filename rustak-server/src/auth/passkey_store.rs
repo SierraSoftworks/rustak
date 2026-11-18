@@ -30,8 +30,8 @@
 //! five minutes on purpose.
 
 use base64::Engine as _;
-use chrono::{DateTime, Duration, Utc};
 use rustak_core::prelude::*;
+use rustak_core::time::{SignedDuration, Timestamp};
 use webauthn_rp::RegisteredCredential;
 use webauthn_rp::bin::Encode as _;
 use webauthn_rp::request::register::UserHandle16;
@@ -122,7 +122,7 @@ pub struct Ceremony {
     #[serde(default)]
     pub rp_id: String,
     /// When it stops being valid.
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
 }
 
 /// Records a ceremony and returns the handle the browser carries.
@@ -145,7 +145,7 @@ pub async fn begin(
             kind,
             state: B64.encode(state),
             rp_id: rp_id.to_string(),
-            expires_at: Utc::now() + Duration::minutes(CEREMONY_TTL_MINUTES),
+            expires_at: Timestamp::now() + SignedDuration::from_mins(CEREMONY_TTL_MINUTES),
         },
     )
     .await?;
@@ -174,7 +174,7 @@ pub async fn claim(db: &Database, handle: &str) -> Result<Ceremony, Error> {
         return Err(expired());
     };
 
-    if ceremony.expires_at <= Utc::now() {
+    if ceremony.expires_at <= Timestamp::now() {
         return Err(expired());
     }
 
@@ -217,7 +217,7 @@ pub fn state_of(ceremony: &Ceremony) -> Result<Vec<u8>, Error> {
 ///
 /// A [`human_errors::Kind::System`] error if a read or write fails.
 pub async fn sweep(db: &Database) -> Result<usize, Error> {
-    let now = Utc::now();
+    let now = Timestamp::now();
     let stored: Vec<(String, Ceremony)> = db.list(CEREMONY_PARTITION).await?;
     let mut removed = 0;
 
@@ -423,7 +423,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        stored.expires_at = Utc::now() - Duration::seconds(1);
+        stored.expires_at = Timestamp::now() - SignedDuration::from_secs(1);
         db.set(CEREMONY_PARTITION, key, stored).await.unwrap();
 
         let expired = claim(&db, &handle).await.unwrap_err();
@@ -443,7 +443,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        stored.expires_at = Utc::now() - Duration::seconds(1);
+        stored.expires_at = Timestamp::now() - SignedDuration::from_secs(1);
         db.set(CEREMONY_PARTITION, key, stored).await.unwrap();
 
         assert_eq!(sweep(&db).await.unwrap(), 1);
@@ -463,7 +463,7 @@ mod tests {
         db.set(
             crate::auth::setup::AUTH_STATE_PARTITION,
             "setup-token".to_string(),
-            serde_json::json!({ "hash": "x", "created_at": Utc::now() }),
+            serde_json::json!({ "hash": "x", "created_at": Timestamp::now() }),
         )
         .await
         .unwrap();
@@ -474,7 +474,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        stored.expires_at = Utc::now() - Duration::seconds(1);
+        stored.expires_at = Timestamp::now() - SignedDuration::from_secs(1);
         db.set(CEREMONY_PARTITION, key, stored).await.unwrap();
 
         assert_eq!(sweep(&db).await.unwrap(), 1);
@@ -497,7 +497,7 @@ mod tests {
                     kind: CeremonyKind::Discover,
                     state: String::new(),
                     rp_id: String::new(),
-                    expires_at: Utc::now() + Duration::minutes(1),
+                    expires_at: Timestamp::now() + SignedDuration::from_mins(1),
                 },
                 RP,
             )
@@ -604,7 +604,7 @@ mod tests {
             label: "Phone".to_string(),
             backup_eligible: false,
             backup_state: false,
-            created_at: Utc::now(),
+            created_at: Timestamp::now(),
             last_used_at: None,
         }
     }

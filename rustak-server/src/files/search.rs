@@ -208,6 +208,7 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::Timestamp;
 
     fn query(raw: &str) -> CiQuery {
         CiQuery::parse(raw)
@@ -226,7 +227,7 @@ mod tests {
             creator_uid: None,
             submitter_id: None,
             submitter: None,
-            submission_time: chrono::Utc::now(),
+            submission_time: Timestamp::now(),
             expiration: None,
             is_mission_package: false,
             groups: Vec::new(),
@@ -241,7 +242,7 @@ mod tests {
             plugin_class_name: None,
             install_on_enrollment: false,
             deleted_at: None,
-            created_at: chrono::Utc::now(),
+            created_at: Timestamp::now(),
             keywords: Vec::new(),
         }
     }

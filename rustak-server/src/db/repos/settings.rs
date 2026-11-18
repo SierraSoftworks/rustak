@@ -10,13 +10,13 @@
 //! small object without the table having to know which. A scalar is JSON too —
 //! `"rustak"`, not `rustak` — which the `json_valid` check enforces.
 
-use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension as _;
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 
 use crate::db::{
     Database,
-    row::{Timestamp, json_col, to_json, ts},
+    row::{DbTime, json_col, to_json, ts},
 };
 
 /// One row of `settings`.
@@ -25,7 +25,7 @@ pub struct SettingRow {
     pub key: String,
     /// The value, as stored: valid JSON.
     pub value: serde_json::Value,
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
     /// Who last changed it, where a person did.
     pub updated_by: Option<Username>,
 }
@@ -122,7 +122,7 @@ impl<'a> SettingsRepo<'a> {
                        value = excluded.value, \
                        updated_at = excluded.updated_at, \
                        updated_by = excluded.updated_by",
-                    rusqlite::params![key, to_json(&value)?, Timestamp::now(), by],
+                    rusqlite::params![key, to_json(&value)?, DbTime::now(), by],
                 )
             })
             .await?;

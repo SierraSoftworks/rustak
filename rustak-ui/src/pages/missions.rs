@@ -217,6 +217,7 @@ fn mission_row(props: &MissionRowProps) -> Html {
 
 #[cfg(test)]
 mod tests {
+    use rustak_api::time::Timestamp;
     use rustak_api::{GroupName, MissionRoleKind};
 
     use super::*;
@@ -228,7 +229,7 @@ mod tests {
             description: None,
             tool: "public".to_string(),
             creator_uid: None,
-            create_time: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+            create_time: Timestamp::from_second(1_700_000_000).unwrap(),
             groups: vec![GroupName::from_storage("Command")],
             keywords: vec!["recon".to_string()],
             subscriber_count: 1,

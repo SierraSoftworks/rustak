@@ -392,8 +392,8 @@ fn envelope(
 
 #[cfg(test)]
 mod tests {
-    use chrono::{DateTime, Utc};
     use rustak_api::MissionRoleKind;
+    use rustak_core::time::Timestamp;
 
     use super::super::mission_payload::{ResourceXml, UidDetailsXml};
     use super::*;
@@ -410,8 +410,8 @@ mod tests {
         }
     }
 
-    fn at() -> DateTime<Utc> {
-        DateTime::from_timestamp_millis(1_789_646_440_000).unwrap()
+    fn at() -> Timestamp {
+        Timestamp::from_millisecond(1_789_646_440_000).unwrap()
     }
 
     pub(crate) fn rendered(event: &Event) -> String {

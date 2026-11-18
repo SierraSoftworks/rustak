@@ -23,9 +23,9 @@
 //! learns an address or a username. The list of current lockouts does carry
 //! both, which is why it is for administrators only.
 
+use crate::time::Timestamp;
 use std::net::IpAddr;
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// What a limiter key names.
@@ -107,10 +107,10 @@ pub struct Lockout {
     pub key: String,
 
     /// When the failure that crossed the limit happened.
-    pub started_at: DateTime<Utc>,
+    pub started_at: Timestamp,
 
     /// When the key will be let through again on its own.
-    pub ends_at: DateTime<Utc>,
+    pub ends_at: Timestamp,
 
     /// The estimated failures inside the window that earned it: never fewer
     /// than there were, possibly more.
@@ -201,7 +201,7 @@ pub struct Lockouts {
     /// When the counters started counting, which is when this process did:
     /// the limiter is in memory, so a restart forgives every lockout and zeroes
     /// every counter.
-    pub counting_since: DateTime<Utc>,
+    pub counting_since: Timestamp,
 
     /// How full each tier is.
     #[serde(default)]

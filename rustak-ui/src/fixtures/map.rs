@@ -7,9 +7,9 @@
 //! is what makes the page reviewable as the *live* page it is. [`map_history`]
 //! is the same two, walked backwards, so that a track has something to draw.
 
+use rustak_api::time::{SignedDuration, Timestamp};
 use std::cell::RefCell;
 
-use chrono::{DateTime, Duration, Utc};
 use rustak_api::{MapFeature, MapPoint, MapShape, MapUpdate, PublishFeature};
 
 use crate::api::ApiError;
@@ -22,8 +22,8 @@ thread_local! {
     static REMOVED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
-fn ago(seconds: i64) -> DateTime<Utc> {
-    Utc::now() - Duration::seconds(seconds)
+fn ago(seconds: i64) -> Timestamp {
+    Timestamp::now() - SignedDuration::from_secs(seconds)
 }
 
 fn feature(uid: &str, kind: &str, callsign: &str, lat: f64, lon: f64) -> MapFeature {
@@ -70,12 +70,12 @@ fn person(uid: &str, callsign: &str, team: &str, role: &str, lat: f64, lon: f64)
 
 /// The aircraft, `tick` steps around its circuit.
 fn rescue(tick: u32) -> MapFeature {
-    rescue_at(f64::from(tick), Utc::now())
+    rescue_at(f64::from(tick), Timestamp::now())
 }
 
 /// The aircraft where it is `tick` steps in — negative for steps before the
 /// page opened — reported at `time`.
-fn rescue_at(tick: f64, time: DateTime<Utc>) -> MapFeature {
+fn rescue_at(tick: f64, time: Timestamp) -> MapFeature {
     let around = tick * 0.12;
 
     MapFeature {
@@ -100,10 +100,10 @@ fn rescue_at(tick: f64, time: DateTime<Utc>) -> MapFeature {
 
 /// Somebody walking east along the river.
 fn quinn(tick: u32) -> MapFeature {
-    quinn_at(f64::from(tick), Utc::now())
+    quinn_at(f64::from(tick), Timestamp::now())
 }
 
-fn quinn_at(tick: f64, time: DateTime<Utc>) -> MapFeature {
+fn quinn_at(tick: f64, time: Timestamp) -> MapFeature {
     MapFeature {
         time,
         received_at: time,
@@ -139,7 +139,7 @@ pub fn map_history(uid: &str, secago: i64) -> Vec<MapFeature> {
     // A fix from the past was good for as long as any fix is, from when it
     // was made — not, as the live fixtures are, from now.
     let held = |fix: MapFeature| MapFeature {
-        stale: fix.time + Duration::seconds(HELD_SECONDS),
+        stale: fix.time + SignedDuration::from_secs(HELD_SECONDS),
         ..fix
     };
 
@@ -190,9 +190,9 @@ pub fn map_publish(uid: &str, draft: &PublishFeature) -> MapFeature {
         callsign: Some(draft.callsign.clone()),
         team: None,
         role: None,
-        time: Utc::now(),
+        time: Timestamp::now(),
         stale: draft.stale.unwrap_or_else(|| ago(-86_400)),
-        received_at: Utc::now(),
+        received_at: Timestamp::now(),
         point: draft.point,
         // A circle comes back from the server as the ring it draws.
         shape: draft.shape.clone().or_else(|| {

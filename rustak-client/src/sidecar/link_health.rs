@@ -40,11 +40,11 @@
 //! Nothing here is plugin-visible: a sidecar's job is the CoT it publishes, and
 //! a control API that is down has never been a reason to stop.
 
+use rustak_core::time::{DurationExt, Timestamp};
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use rustak_core::prelude::*;
 
 /// How long after a failure the next attempt is worth making.
@@ -111,10 +111,10 @@ pub(crate) struct Link {
 #[derive(Debug, Default)]
 struct State {
     /// When the current run of failures started; [`None`] while calls work.
-    failing_since: Option<DateTime<Utc>>,
+    failing_since: Option<Timestamp>,
 
     /// When this run was last mentioned at `warn`.
-    mentioned_at: Option<DateTime<Utc>>,
+    mentioned_at: Option<Timestamp>,
 
     /// Whether the server is currently out of reach, which is what gates
     /// attempts. A refusal clears it: the server answered.
@@ -127,12 +127,12 @@ struct State {
     outages: u64,
 
     /// The earliest instant another attempt is worth making.
-    retry_at: Option<DateTime<Utc>>,
+    retry_at: Option<Timestamp>,
 }
 
 impl State {
     /// Whether an attempt is worth making now.
-    fn due(&self, now: DateTime<Utc>) -> bool {
+    fn due(&self, now: Timestamp) -> bool {
         match self.retry_at {
             Some(at) => now >= at,
             None => true,
@@ -140,7 +140,7 @@ impl State {
     }
 
     /// Records a failure and answers what to say about it.
-    fn failed(&mut self, failure: Failure, now: DateTime<Utc>) -> Report {
+    fn failed(&mut self, failure: Failure, now: Timestamp) -> Report {
         match failure {
             Failure::Unreachable => {
                 if !self.unreachable {
@@ -160,7 +160,7 @@ impl State {
     }
 
     /// Records a success and answers what to say about it.
-    fn succeeded(&mut self, now: DateTime<Utc>) -> Report {
+    fn succeeded(&mut self, now: Timestamp) -> Report {
         self.reached();
         self.mentioned_at = None;
 
@@ -180,7 +180,7 @@ impl State {
     }
 
     /// Whether this failure is worth a `warn`, and what it should say.
-    fn mention(&mut self, now: DateTime<Utc>) -> Report {
+    fn mention(&mut self, now: Timestamp) -> Report {
         let Some(since) = self.failing_since else {
             self.failing_since = Some(now);
             self.mentioned_at = Some(now);
@@ -216,7 +216,7 @@ fn backoff(failures: u32) -> Duration {
 
 /// `now - before`, never negative — a clock that stepped backwards is not a
 /// negative outage.
-pub(crate) fn elapsed(before: DateTime<Utc>, now: DateTime<Utc>) -> Duration {
+pub(crate) fn elapsed(before: Timestamp, now: Timestamp) -> Duration {
     (now - before).to_std().unwrap_or_default()
 }
 
@@ -241,11 +241,11 @@ impl LinkHealth {
     /// `true` whenever the link is up; while it is down, only once the backoff
     /// has run out.
     pub(crate) fn due(&self) -> bool {
-        self.due_at(Utc::now())
+        self.due_at(Timestamp::now())
     }
 
     /// [`due`](Self::due), at an instant of the caller's choosing.
-    pub(crate) fn due_at(&self, now: DateTime<Utc>) -> bool {
+    pub(crate) fn due_at(&self, now: Timestamp) -> bool {
         self.with(|state| state.due(now))
     }
 
@@ -269,21 +269,21 @@ impl LinkHealth {
 
     /// Records a failure and answers what to say about it.
     pub(crate) fn failed(&self, failure: Failure) -> Report {
-        self.failed_at(failure, Utc::now())
+        self.failed_at(failure, Timestamp::now())
     }
 
     /// [`failed`](Self::failed), at an instant of the caller's choosing.
-    pub(crate) fn failed_at(&self, failure: Failure, now: DateTime<Utc>) -> Report {
+    pub(crate) fn failed_at(&self, failure: Failure, now: Timestamp) -> Report {
         self.with(|state| state.failed(failure, now))
     }
 
     /// Records a success and answers what to say about it.
     pub(crate) fn succeeded(&self) -> Report {
-        self.succeeded_at(Utc::now())
+        self.succeeded_at(Timestamp::now())
     }
 
     /// [`succeeded`](Self::succeeded), at an instant of the caller's choosing.
-    pub(crate) fn succeeded_at(&self, now: DateTime<Utc>) -> Report {
+    pub(crate) fn succeeded_at(&self, now: Timestamp) -> Report {
         self.with(|state| state.succeeded(now))
     }
 
@@ -353,14 +353,14 @@ pub(crate) struct Reopenings {
     outages: u64,
 
     /// When a healthy feed last closed, until the reopening says it counts.
-    pending: Option<DateTime<Utc>>,
+    pending: Option<Timestamp>,
 
     /// When each counted close happened, oldest first, pruned to
     /// [`REMIND_EVERY`].
-    closes: VecDeque<DateTime<Utc>>,
+    closes: VecDeque<Timestamp>,
 
     /// When the churn was last mentioned at `warn`.
-    warned_at: Option<DateTime<Utc>>,
+    warned_at: Option<Timestamp>,
 }
 
 impl Reopenings {
@@ -371,7 +371,7 @@ impl Reopenings {
 
     /// Records that an open feed ended — the server ended the response, it
     /// went idle, or the connection under it went.
-    pub(crate) fn closed(&mut self, link: Link, now: DateTime<Utc>) {
+    pub(crate) fn closed(&mut self, link: Link, now: Timestamp) {
         if self.outage(link) || link.down {
             self.forget();
 
@@ -396,7 +396,7 @@ impl Reopenings {
     /// `recovered` is whether [`LinkHealth`] has just reported the link back
     /// from an outage: that is a change worth announcing, and the reopening is
     /// the line that says the feed came back with it.
-    pub(crate) fn opened(&mut self, recovered: bool, link: Link, now: DateTime<Utc>) -> Opened {
+    pub(crate) fn opened(&mut self, recovered: bool, link: Link, now: Timestamp) -> Opened {
         let outage = self.outage(link);
 
         if !self.opened_once {
@@ -452,7 +452,7 @@ impl Reopenings {
     }
 
     /// Forgets the closes that are older than the window they are counted over.
-    fn prune(&mut self, now: DateTime<Utc>) {
+    fn prune(&mut self, now: Timestamp) {
         while self
             .closes
             .front()
@@ -532,8 +532,8 @@ mod tests {
     use super::*;
 
     /// The clock these tests move by hand, so that nothing here waits.
-    fn at(seconds: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(1_789_646_400 + seconds, 0).expect("an instant")
+    fn at(seconds: i64) -> Timestamp {
+        Timestamp::new(1_789_646_400 + seconds, 0).expect("an instant")
     }
 
     /// The failure an outage is made of.

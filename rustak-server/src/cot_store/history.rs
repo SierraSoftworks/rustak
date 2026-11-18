@@ -35,10 +35,9 @@
 //!
 //! [`sweep`]: super::retention::sweep
 
+use rustak_core::time::Timestamp;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-
-use chrono::{DateTime, Utc};
 
 use crate::db::Database;
 use crate::prelude::*;
@@ -123,7 +122,7 @@ impl HistoryWriter {
     pub async fn append(
         &mut self,
         uid: &str,
-        time: DateTime<Utc>,
+        time: Timestamp,
         payload: &[u8],
     ) -> Result<(), Error> {
         self.touch(uid).await?;
@@ -243,6 +242,7 @@ impl HistoryWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::SignedDuration;
 
     async fn writer(root: &Path) -> (Database, HistoryWriter) {
         let db = Database::open_in_memory().await.unwrap();
@@ -272,7 +272,7 @@ mod tests {
     async fn a_message_is_readable_back_out_of_its_segment() {
         let dir = tempfile::tempdir().unwrap();
         let (db, mut writer) = writer(dir.path()).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         writer.append("UID-A", now, b"first").await.unwrap();
         writer.append("UID-A", now, b"second").await.unwrap();
@@ -290,8 +290,8 @@ mod tests {
 
         let records = log
             .read_range(
-                now - chrono::Duration::hours(1),
-                now + chrono::Duration::hours(1),
+                now - SignedDuration::from_hours(1),
+                now + SignedDuration::from_hours(1),
             )
             .await
             .unwrap();
@@ -303,7 +303,7 @@ mod tests {
     async fn each_uid_gets_its_own_stream() {
         let dir = tempfile::tempdir().unwrap();
         let (_db, mut writer) = writer(dir.path()).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         writer.append("UID-A", now, b"a").await.unwrap();
         writer.append("UID-B", now, b"b").await.unwrap();
@@ -318,7 +318,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (_db, writer) = writer(dir.path()).await;
         let mut writer = writer.with_max_open(2);
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         writer.append("UID-A", now, b"a").await.unwrap();
         writer.append("UID-B", now, b"b").await.unwrap();
@@ -336,7 +336,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (db, writer) = writer(dir.path()).await;
         let mut writer = writer.with_max_open(1);
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         writer.append("UID-A", now, b"first").await.unwrap();
         writer.append("UID-B", now, b"other").await.unwrap();
@@ -355,8 +355,8 @@ mod tests {
 
         let records = log
             .read_range(
-                now - chrono::Duration::hours(1),
-                now + chrono::Duration::hours(1),
+                now - SignedDuration::from_hours(1),
+                now + SignedDuration::from_hours(1),
             )
             .await
             .unwrap();
@@ -376,7 +376,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (db, writer) = writer(dir.path()).await;
         let mut writer = writer.with_max_open(2);
-        let now = Utc::now();
+        let now = Timestamp::now();
         let uids = [
             "UID-A", "UID-B", "UID-C", "UID-D", "UID-E", "UID-F", "UID-G", "UID-H",
         ];
@@ -384,7 +384,7 @@ mod tests {
         for round in 0..10i64 {
             for uid in uids {
                 writer
-                    .append(uid, now + chrono::Duration::milliseconds(round), b"x")
+                    .append(uid, now + SignedDuration::from_millis(round), b"x")
                     .await
                     .unwrap();
             }
@@ -414,8 +414,8 @@ mod tests {
 
         let records = log
             .read_range(
-                now - chrono::Duration::hours(1),
-                now + chrono::Duration::hours(1),
+                now - SignedDuration::from_hours(1),
+                now + SignedDuration::from_hours(1),
             )
             .await
             .unwrap();
@@ -431,7 +431,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (db, writer) = writer(dir.path()).await;
         let mut writer = writer.with_max_open(1);
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         writer.append("UID-A", now, b"first").await.unwrap();
         writer.append("UID-B", now, b"other").await.unwrap();

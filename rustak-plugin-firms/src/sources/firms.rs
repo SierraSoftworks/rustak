@@ -23,9 +23,9 @@
 //! makes it faster than [`POLL_FLOOR`]. A `429` is waited out for as long as
 //! it asks.
 
+use rustak_core::time::Timestamp;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use rustak_client::feed::Area;
 use rustak_client::feed::upstream::{RETRY_AFTER, retry_after};
 use rustak_client::sidecar::async_trait;
@@ -214,7 +214,7 @@ impl FirmsFeed {
     /// # Errors
     ///
     /// Whatever went wrong, already recorded in [`HotspotFeed::state`].
-    pub async fn poll_at(&mut self, now: DateTime<Utc>) -> Result<Vec<Detection>, Error> {
+    pub async fn poll_at(&mut self, now: Timestamp) -> Result<Vec<Detection>, Error> {
         if !self.state.ready_at(now) {
             return Ok(Vec::new());
         }
@@ -342,7 +342,7 @@ impl HotspotFeed for FirmsFeed {
     }
 
     async fn poll(&mut self) -> Result<Vec<Detection>, Error> {
-        self.poll_at(Utc::now()).await
+        self.poll_at(Timestamp::now()).await
     }
 
     fn state(&self) -> &SourceState {
@@ -357,6 +357,7 @@ impl HotspotFeed for FirmsFeed {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::SignedDuration;
 
     const KEY: &str = "0123456789abcdef0123456789abcdef";
 
@@ -481,17 +482,17 @@ mod tests {
         )
         .expect("it opens");
         let requests = async || server.received_requests().await.map(|all| all.len());
-        let start = Utc::now();
+        let start = Timestamp::now();
 
         for seconds in [0, 60, 120, 899] {
-            feed.poll_at(start + chrono::Duration::seconds(seconds))
+            feed.poll_at(start + SignedDuration::from_secs(seconds))
                 .await
                 .expect("a 429 is not an error");
         }
 
         assert_eq!(requests().await, Some(1), "not once a minute");
 
-        let _ = feed.poll_at(start + chrono::Duration::seconds(900)).await;
+        let _ = feed.poll_at(start + SignedDuration::from_secs(900)).await;
 
         assert_eq!(requests().await, Some(2), "and at once when FIRMS said");
         assert_eq!(feed.state().rate_limited(), 2);

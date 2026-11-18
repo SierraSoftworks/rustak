@@ -10,9 +10,9 @@
 //! per transaction** ([`REMOVE_BATCH`]), because the single SQLite writer has
 //! other callers.
 
+use rustak_core::time::Timestamp;
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
 use rustak_core::prelude::*;
 
 use super::AppendLog;
@@ -38,7 +38,7 @@ const REMOVE_BATCH: usize = 500;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Surplus<'a> {
     /// Sealed segments of any kind whose newest record predates the instant.
-    ExpiredBefore(DateTime<Utc>),
+    ExpiredBefore(Timestamp),
     /// Sealed segments of a stream kind past a per-stream-key record cap.
     OverRowCap(&'a str, u64),
     /// Sealed segments of a stream kind past a cap on the kind's total bytes.
@@ -75,7 +75,7 @@ impl AppendLog {
     pub async fn prune_before(
         db: &Database,
         root: &Path,
-        before: DateTime<Utc>,
+        before: Timestamp,
     ) -> Result<usize, Error> {
         let removed =
             Self::remove_paged(db, root, Surplus::ExpiredBefore(before), PRUNE_PAGE).await?;
@@ -179,6 +179,7 @@ impl AppendLog {
 mod tests {
     use super::*;
     use crate::db::repos::NewStreamSegment;
+    use rustak_core::time::SignedDuration;
 
     /// A sealed, indexed segment an hour old, with whatever is at its path.
     async fn sealed_row(db: &Database, path: &str) {
@@ -188,7 +189,7 @@ mod tests {
                 stream_kind: "cot".into(),
                 stream_key: path.into(),
                 segment_path: path.into(),
-                first_time: Utc::now() - chrono::Duration::hours(1),
+                first_time: Timestamp::now() - SignedDuration::from_hours(1),
             })
             .await
             .unwrap();
@@ -197,7 +198,7 @@ mod tests {
 
     async fn everything(db: &Database) -> Vec<StreamSegmentRow> {
         db.stream_segments()
-            .expired_before(Utc::now(), 100)
+            .expired_before(Timestamp::now(), 100)
             .await
             .unwrap()
     }
@@ -211,7 +212,7 @@ mod tests {
         }
 
         let removed =
-            AppendLog::remove_paged(&db, dir.path(), Surplus::ExpiredBefore(Utc::now()), 2)
+            AppendLog::remove_paged(&db, dir.path(), Surplus::ExpiredBefore(Timestamp::now()), 2)
                 .await
                 .unwrap();
 
@@ -229,7 +230,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("cot/stuck/0001.log/occupied")).unwrap();
 
         let removed =
-            AppendLog::remove_paged(&db, dir.path(), Surplus::ExpiredBefore(Utc::now()), 1)
+            AppendLog::remove_paged(&db, dir.path(), Surplus::ExpiredBefore(Timestamp::now()), 1)
                 .await
                 .unwrap();
 

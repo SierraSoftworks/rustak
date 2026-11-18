@@ -24,9 +24,8 @@
 //! bare date. [`parse_date`] accepts all of them. What we *emit* is exactly one
 //! spelling per field, because that is the half a client parses strictly.
 
-use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
-
 use super::error::MartiError;
+use rustak_core::time::{Precision, SignedDuration, Timestamp, civil};
 
 /// The longest span a history query may cover.
 ///
@@ -41,8 +40,8 @@ pub const MAX_WINDOW_HOURS: i64 = 24;
 /// The default for every Marti timestamp. The `Z` is literal — we always render
 /// in UTC rather than emitting a real offset, because ATAK's patterns end in a
 /// quoted `'Z'` and would not parse `+00:00`.
-pub fn cot_date(at: DateTime<Utc>) -> String {
-    at.to_rfc3339_opts(SecondsFormat::Millis, true)
+pub fn cot_date(at: Timestamp) -> String {
+    at.to_rfc3339(Precision::Millis)
 }
 
 /// The unpadded-millisecond spelling, for `clientEndPoints`'s `lastEventTime`.
@@ -50,7 +49,7 @@ pub fn cot_date(at: DateTime<Utc>) -> String {
 /// One to three digits with no trailing zeros, which is what Java renders from
 /// a single-`S` pattern. `contacts.md` calls this out as one of the few fields
 /// that genuinely needs it rather than the padded form.
-pub fn cot_date_unpadded(at: DateTime<Utc>) -> String {
+pub fn cot_date_unpadded(at: Timestamp) -> String {
     let padded = cot_date(at);
     let Some((head, tail)) = padded.split_once('.') else {
         return padded;
@@ -66,8 +65,8 @@ pub fn cot_date_unpadded(at: DateTime<Utc>) -> String {
 ///
 /// What a channel's `created` field carries. ATAK parses that field with a
 /// date-only pattern and will not accept an instant there.
-pub fn group_date(at: DateTime<Utc>) -> String {
-    at.format("%Y-%m-%d").to_string()
+pub fn group_date(at: Timestamp) -> String {
+    at.strftime("%Y-%m-%d").to_string()
 }
 
 /// Java's `Date.toString()`: `Wed Jan 31 09:07:05 UTC 2024`.
@@ -76,8 +75,8 @@ pub fn group_date(at: DateTime<Utc>) -> String {
 /// interpolated into a string rather than formatted, so this is what clients
 /// have learned to read there. The zone abbreviation is always `UTC` because we
 /// never run the server's formatting in a local zone.
-pub fn java_date_string(at: DateTime<Utc>) -> String {
-    at.format("%a %b %d %H:%M:%S UTC %Y").to_string()
+pub fn java_date_string(at: Timestamp) -> String {
+    at.strftime("%a %b %d %H:%M:%S UTC %Y").to_string()
 }
 
 /// Parses a timestamp a client sent, in any of the spellings they send.
@@ -90,23 +89,29 @@ pub fn java_date_string(at: DateTime<Utc>) -> String {
 ///
 /// [`MartiError::InvalidRequest`] naming the value, so that an operator reading
 /// a client's failure can see what it sent.
-pub fn parse_date(value: &str) -> Result<DateTime<Utc>, MartiError> {
+pub fn parse_date(value: &str) -> Result<Timestamp, MartiError> {
     let value = value.trim();
 
-    if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
-        return Ok(parsed.with_timezone(&Utc));
+    if let Ok(parsed) = value.parse::<Timestamp>() {
+        return Ok(parsed);
     }
 
-    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f") {
-        return Ok(naive.and_utc());
+    if let Some(naive) = civil::DateTime::strptime("%Y-%m-%dT%H:%M:%S%.f", value)
+        .ok()
+        .and_then(Timestamp::from_civil)
+    {
+        return Ok(naive);
     }
 
-    if let Ok(date) = NaiveDate::parse_from_str(value, "%Y-%m-%d") {
-        return Ok(date.and_hms_opt(0, 0, 0).unwrap_or_default().and_utc());
+    if let Some(date) = civil::Date::strptime("%Y-%m-%d", value)
+        .ok()
+        .and_then(|date| Timestamp::from_civil(date.to_datetime(civil::Time::midnight())))
+    {
+        return Ok(date);
     }
 
     if let Ok(millis) = value.parse::<i64>()
-        && let Some(at) = DateTime::from_timestamp_millis(millis)
+        && let Some(at) = Timestamp::from_millisecond(millis)
     {
         return Ok(at);
     }
@@ -120,9 +125,9 @@ pub fn parse_date(value: &str) -> Result<DateTime<Utc>, MartiError> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimeWindow {
     /// The earliest instant included.
-    pub start: DateTime<Utc>,
+    pub start: Timestamp,
     /// The latest instant included.
-    pub end: DateTime<Utc>,
+    pub end: Timestamp,
     /// Whether the window asked for was longer than [`MAX_WINDOW_HOURS`] and
     /// has been narrowed to its most recent day.
     pub capped: bool,
@@ -146,7 +151,7 @@ impl TimeWindow {
         start: Option<&str>,
         end: Option<&str>,
     ) -> Result<Self, MartiError> {
-        Self::parse_at(Utc::now(), secago, start, end)
+        Self::parse_at(Timestamp::now(), secago, start, end)
     }
 
     /// [`parse`](Self::parse) against a fixed "now", so a test can assert the
@@ -156,12 +161,12 @@ impl TimeWindow {
     ///
     /// As [`parse`](Self::parse).
     pub fn parse_at(
-        now: DateTime<Utc>,
+        now: Timestamp,
         secago: Option<i64>,
         start: Option<&str>,
         end: Option<&str>,
     ) -> Result<Self, MartiError> {
-        let cap = chrono::Duration::hours(MAX_WINDOW_HOURS);
+        let cap = SignedDuration::from_hours(MAX_WINDOW_HOURS);
 
         let (start, end) = match (start, end) {
             (None, None) => match secago {
@@ -170,7 +175,7 @@ impl TimeWindow {
                         "secago cannot be negative".to_string(),
                     ));
                 }
-                Some(seconds) => (now - chrono::Duration::seconds(seconds), now),
+                Some(seconds) => (now - SignedDuration::from_secs(seconds), now),
                 None => (now - cap, now),
             },
             (start, end) => {
@@ -194,28 +199,26 @@ impl TimeWindow {
     }
 
     /// How long the resolved window covers.
-    pub fn duration(&self) -> chrono::Duration {
+    pub fn duration(&self) -> SignedDuration {
         self.end - self.start
     }
 
     /// Whether an instant falls inside the window.
-    pub fn contains(&self, at: DateTime<Utc>) -> bool {
+    pub fn contains(&self, at: Timestamp) -> bool {
         at >= self.start && at <= self.end
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone as _;
 
     use super::*;
 
     /// The instant every formatter assertion is written against.
-    fn fixture() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2024, 1, 31, 9, 7, 5)
-            .single()
+    fn fixture() -> Timestamp {
+        Timestamp::from_civil(rustak_core::time::civil::datetime(2024, 1, 31, 9, 7, 5, 0))
             .expect("a real instant")
-            + chrono::Duration::milliseconds(120)
+            + SignedDuration::from_millis(120)
     }
 
     #[test]
@@ -224,7 +227,9 @@ mod tests {
         // fraction is refused by the pattern, not coerced.
         assert_eq!(cot_date(fixture()), "2024-01-31T09:07:05.120Z");
 
-        let whole = Utc.with_ymd_and_hms(2024, 1, 31, 9, 7, 5).unwrap();
+        let whole =
+            Timestamp::from_civil(rustak_core::time::civil::datetime(2024, 1, 31, 9, 7, 5, 0))
+                .unwrap();
         assert_eq!(cot_date(whole), "2024-01-31T09:07:05.000Z");
     }
 
@@ -234,10 +239,12 @@ mod tests {
         // one there is the mistake this function exists to avoid.
         assert_eq!(cot_date_unpadded(fixture()), "2024-01-31T09:07:05.12Z");
 
-        let whole = Utc.with_ymd_and_hms(2024, 1, 31, 9, 7, 5).unwrap();
+        let whole =
+            Timestamp::from_civil(rustak_core::time::civil::datetime(2024, 1, 31, 9, 7, 5, 0))
+                .unwrap();
         assert_eq!(cot_date_unpadded(whole), "2024-01-31T09:07:05.0Z");
 
-        let one = whole + chrono::Duration::milliseconds(100);
+        let one = whole + SignedDuration::from_millis(100);
         assert_eq!(cot_date_unpadded(one), "2024-01-31T09:07:05.1Z");
     }
 
@@ -253,7 +260,9 @@ mod tests {
 
     #[test]
     fn every_spelling_a_client_sends_parses_back_to_the_same_instant() {
-        let expected = Utc.with_ymd_and_hms(2024, 1, 31, 9, 7, 5).unwrap();
+        let expected =
+            Timestamp::from_civil(rustak_core::time::civil::datetime(2024, 1, 31, 9, 7, 5, 0))
+                .unwrap();
 
         for value in [
             "2024-01-31T09:07:05Z",
@@ -272,10 +281,11 @@ mod tests {
         );
         assert_eq!(
             parse_date("2024-01-31").unwrap(),
-            Utc.with_ymd_and_hms(2024, 1, 31, 0, 0, 0).unwrap(),
+            Timestamp::from_civil(rustak_core::time::civil::datetime(2024, 1, 31, 0, 0, 0, 0))
+                .unwrap(),
         );
         assert_eq!(
-            parse_date(&expected.timestamp_millis().to_string()).unwrap(),
+            parse_date(&expected.as_millisecond().to_string()).unwrap(),
             expected,
             "ATAK sends a channel's `created` as epoch milliseconds",
         );
@@ -304,7 +314,7 @@ mod tests {
         let window = TimeWindow::parse_at(now, None, None, None).unwrap();
 
         assert_eq!(window.end, now);
-        assert_eq!(window.duration(), chrono::Duration::hours(24));
+        assert_eq!(window.duration(), SignedDuration::from_hours(24));
         assert!(!window.capped);
     }
 
@@ -314,10 +324,10 @@ mod tests {
         let window = TimeWindow::parse_at(now, Some(600), None, None).unwrap();
 
         assert_eq!(window.end, now);
-        assert_eq!(window.start, now - chrono::Duration::seconds(600));
+        assert_eq!(window.start, now - SignedDuration::from_secs(600));
         assert!(!window.capped);
-        assert!(window.contains(now - chrono::Duration::seconds(1)));
-        assert!(!window.contains(now - chrono::Duration::seconds(601)));
+        assert!(window.contains(now - SignedDuration::from_secs(1)));
+        assert!(!window.contains(now - SignedDuration::from_secs(601)));
     }
 
     #[test]
@@ -342,10 +352,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(window.duration(), chrono::Duration::hours(6));
+        assert_eq!(window.duration(), SignedDuration::from_hours(6));
         assert_eq!(
             window.start,
-            Utc.with_ymd_and_hms(2024, 1, 31, 0, 0, 0).unwrap()
+            Timestamp::from_civil(rustak_core::time::civil::datetime(2024, 1, 31, 0, 0, 0, 0))
+                .unwrap()
         );
     }
 
@@ -358,10 +369,11 @@ mod tests {
         assert_eq!(from_start.end, now);
 
         let to_end = TimeWindow::parse_at(now, None, None, Some("2024-01-31T06:00:00Z")).unwrap();
-        assert_eq!(to_end.duration(), chrono::Duration::hours(24));
+        assert_eq!(to_end.duration(), SignedDuration::from_hours(24));
         assert_eq!(
             to_end.end,
-            Utc.with_ymd_and_hms(2024, 1, 31, 6, 0, 0).unwrap()
+            Timestamp::from_civil(rustak_core::time::civil::datetime(2024, 1, 31, 6, 0, 0, 0))
+                .unwrap()
         );
     }
 
@@ -379,10 +391,11 @@ mod tests {
         .unwrap();
 
         assert!(window.capped);
-        assert_eq!(window.duration(), chrono::Duration::hours(24));
+        assert_eq!(window.duration(), SignedDuration::from_hours(24));
         assert_eq!(
             window.end,
-            Utc.with_ymd_and_hms(2024, 1, 31, 0, 0, 0).unwrap(),
+            Timestamp::from_civil(rustak_core::time::civil::datetime(2024, 1, 31, 0, 0, 0, 0))
+                .unwrap(),
             "the day kept is the most recent one",
         );
     }
@@ -393,7 +406,7 @@ mod tests {
         let window = TimeWindow::parse_at(now, Some(7 * 24 * 3600), None, None).unwrap();
 
         assert!(window.capped);
-        assert_eq!(window.duration(), chrono::Duration::hours(24));
+        assert_eq!(window.duration(), SignedDuration::from_hours(24));
     }
 
     #[test]

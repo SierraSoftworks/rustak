@@ -14,6 +14,7 @@
 //! [`Cadence`](super::Cadence) — a restart, a changed `poll`, another
 //! provider — starts with a clean slate.
 
+use rustak_core::time::SignedDuration;
 use std::time::Duration;
 
 use super::cadence::CLEAN_RUN;
@@ -76,7 +77,7 @@ fn both(span: Duration) -> String {
 
 /// A span the way the configuration file would write it: `"3h"`, `"90m"`.
 fn humane(span: Duration) -> String {
-    chrono::Duration::from_std(span)
+    SignedDuration::try_from(span)
         .ok()
         .and_then(|span| rustak_core::config::duration::format(span).ok())
         .unwrap_or_else(|| format!("{}s", span.as_secs()))

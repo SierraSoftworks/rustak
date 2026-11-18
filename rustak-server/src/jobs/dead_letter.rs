@@ -7,8 +7,8 @@
 //! that could still be fixed. Past the ceiling the message is kept here with
 //! the error that ended it, and taken off the queue.
 
-use chrono::Utc;
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 
 use crate::{
     db::{KeyValueStore, Queue, QueueMessage},
@@ -42,7 +42,7 @@ pub async fn set_aside(
         "payload": item.payload,
         "attempts": attempts,
         "scheduled_at": item.scheduled_at,
-        "failed_at": Utc::now(),
+        "failed_at": Timestamp::now(),
         "error": err.to_string(),
     });
     let letter_key = format!("{}/{}", item.partition, item.key);

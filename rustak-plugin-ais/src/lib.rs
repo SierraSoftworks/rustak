@@ -42,10 +42,10 @@ pub mod sources;
 pub mod status;
 pub mod vessels;
 
+use rustak_core::time::{DurationExt, SignedDuration, Timestamp};
 use std::collections::HashSet;
 use std::time::Duration;
 
-use chrono::Utc;
 use rustak_api::Heartbeat;
 use rustak_client::feed::{
     Affiliation, Area, Feed, FeedConfig, FeedCounters, FeedPublisher, PublishPolicy, Symbology,
@@ -62,8 +62,8 @@ use sources::{Source, SourceContext};
 use status::{ConnectionRx, FeedStatus};
 
 /// How long a vessel that is under way stays on a map without another report.
-fn default_under_way_stale() -> chrono::Duration {
-    chrono::Duration::seconds(120)
+fn default_under_way_stale() -> SignedDuration {
+    SignedDuration::from_secs(120)
 }
 
 /// The publishing policy this plugin starts from.
@@ -74,8 +74,8 @@ fn default_under_way_stale() -> chrono::Duration {
 /// refreshed before it expires.
 fn default_publish() -> PublishPolicy {
     PublishPolicy {
-        stale: chrono::Duration::seconds(600),
-        max_interval: chrono::Duration::seconds(180),
+        stale: SignedDuration::from_secs(600),
+        max_interval: SignedDuration::from_secs(180),
         ..PublishPolicy::default()
     }
 }
@@ -101,7 +101,7 @@ pub struct Settings {
     /// at `info` when it is: a track whose staleness is shorter than the gap
     /// between two refreshes drops off the map and comes back.
     #[serde(default = "default_under_way_stale", with = "duration::humane")]
-    pub under_way_stale: chrono::Duration,
+    pub under_way_stale: SignedDuration,
 
     /// What these tracks are to the operator. Default: `unknown`, because open
     /// AIS says nothing about whose side a hull is on.
@@ -449,7 +449,7 @@ impl Sidecar for AisSidecar {
     async fn health(&mut self) -> Option<Heartbeat> {
         let poll = self.context.as_ref()?.config().sidecar.tick();
 
-        Some(self.snapshot().heartbeat(poll, Utc::now()))
+        Some(self.snapshot().heartbeat(poll, Timestamp::now()))
     }
 
     async fn on_event(&mut self, event: SidecarEvent) -> Result<Vec<Event>, Error> {
@@ -641,7 +641,7 @@ mod tests {
                 cog_deg: None,
                 heading_deg: None,
                 nav_status: Some(5),
-                observed_at: chrono::Utc::now(),
+                observed_at: Timestamp::now(),
             },
             None,
             "replay",
@@ -654,7 +654,7 @@ mod tests {
                 cog_deg: Some(90.0),
                 heading_deg: None,
                 nav_status: Some(0),
-                observed_at: chrono::Utc::now(),
+                observed_at: Timestamp::now(),
             },
             None,
             "replay",
@@ -708,7 +708,7 @@ mod tests {
             "AIS-1",
             TrackKind::Vessel(VesselClass::Merchant),
             (51.95, 4.13),
-            chrono::Utc::now(),
+            Timestamp::now(),
         ));
         let _ = publisher.drain();
 
@@ -728,7 +728,7 @@ mod tests {
                 "AIS-1",
                 TrackKind::Vessel(VesselClass::Merchant),
                 (51.95, 4.13),
-                chrono::Utc::now(),
+                Timestamp::now(),
             )),
             "an interval that would have suppressed this was cleared",
         );

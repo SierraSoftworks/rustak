@@ -23,11 +23,11 @@
 
 #![cfg(feature = "testing")]
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::sync::Arc;
 
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
-use chrono::{Duration, Utc};
 use rustak_api::{
     ClientHistoryEntry, ConnectedClient, CotDetail, CotSummary, FileSettings, StreamStatus,
 };
@@ -47,13 +47,7 @@ macro_rules! app {
 }
 
 /// A stored message from one uid, published into `bits`.
-fn record(
-    uid: &str,
-    kind: &str,
-    callsign: &str,
-    at: chrono::DateTime<Utc>,
-    bits: &[u32],
-) -> CotRecord {
+fn record(uid: &str, kind: &str, callsign: &str, at: Timestamp, bits: &[u32]) -> CotRecord {
     let mut groups = GroupSet::new();
     for bitpos in bits {
         groups.set(*bitpos, Direction::In);
@@ -214,7 +208,13 @@ async fn the_client_history_lists_devices_that_are_not_connected() {
 
     upsert_batch(
         server.db(),
-        vec![record("ANDROID-1", "a-f-G-U-C", "ALPHA", Utc::now(), &[])],
+        vec![record(
+            "ANDROID-1",
+            "a-f-G-U-C",
+            "ALPHA",
+            Timestamp::now(),
+            &[],
+        )],
     )
     .await
     .expect("a stored message");
@@ -260,7 +260,7 @@ async fn the_client_history_lists_devices_that_are_not_connected() {
 async fn the_cot_browser_lists_the_latest_message_per_uid_and_pages_it() {
     let server = TestServer::start().await;
     let (_, admin) = server.signed_in("grace", true).await;
-    let now = Utc::now();
+    let now = Timestamp::now();
 
     upsert_batch(
         server.db(),
@@ -269,7 +269,7 @@ async fn the_cot_browser_lists_the_latest_message_per_uid_and_pages_it() {
                 "UID-A",
                 "a-f-G-U-C",
                 "ALPHA",
-                now - Duration::seconds(60),
+                now - SignedDuration::from_secs(60),
                 &[],
             ),
             record("UID-B", "a-f-G-U-C", "BRAVO", now, &[]),
@@ -343,7 +343,7 @@ async fn one_message_carries_its_xml_and_a_uid_nobody_stored_is_not_found() {
 
     upsert_batch(
         server.db(),
-        vec![record("UID-A", "a-f-G-U-C", "ALPHA", Utc::now(), &[])],
+        vec![record("UID-A", "a-f-G-U-C", "ALPHA", Timestamp::now(), &[])],
     )
     .await
     .expect("a stored message");
@@ -387,7 +387,13 @@ async fn a_message_published_into_a_channel_somebody_is_not_in_is_not_there_for_
     // Bit 9 is a channel nobody in this test holds in the `OUT` direction.
     upsert_batch(
         server.db(),
-        vec![record("UID-SECRET", "a-f-G-U-C", "ALPHA", Utc::now(), &[9])],
+        vec![record(
+            "UID-SECRET",
+            "a-f-G-U-C",
+            "ALPHA",
+            Timestamp::now(),
+            &[9],
+        )],
     )
     .await
     .expect("a stored message");
@@ -436,7 +442,7 @@ async fn a_message_published_into_a_channel_somebody_is_not_in_is_not_there_for_
 async fn history_is_newest_first_and_a_backwards_window_is_refused() {
     let server = TestServer::start().await;
     let (_, admin) = server.signed_in("grace", true).await;
-    let now = Utc::now();
+    let now = Timestamp::now();
 
     upsert_batch(
         server.db(),
@@ -466,8 +472,8 @@ async fn history_is_newest_first_and_a_backwards_window_is_refused() {
         test::TestRequest::get()
             .uri(&format!(
                 "/api/v1/cot/UID-A/history?start={}&end={}",
-                urlencoding(&now.to_rfc3339()),
-                urlencoding(&(now - Duration::hours(1)).to_rfc3339()),
+                urlencoding(&now.to_string()),
+                urlencoding(&(now - SignedDuration::from_hours(1)).to_string()),
             ))
             .insert_header(("authorization", bearer(&admin)))
             .to_request(),
@@ -485,7 +491,7 @@ async fn deleting_a_stored_message_is_administrative_and_takes_the_row() {
 
     upsert_batch(
         server.db(),
-        vec![record("UID-A", "a-f-G-U-C", "ALPHA", Utc::now(), &[])],
+        vec![record("UID-A", "a-f-G-U-C", "ALPHA", Timestamp::now(), &[])],
     )
     .await
     .expect("a stored message");
@@ -669,7 +675,7 @@ async fn the_cot_listing_takes_the_same_window_the_history_does() {
     // ended an hour ago has none of its rows in the newest hundred.
     let server = TestServer::start().await;
     let (_, admin) = server.signed_in("grace", true).await;
-    let now = Utc::now();
+    let now = Timestamp::now();
 
     upsert_batch(
         server.db(),
@@ -679,7 +685,7 @@ async fn the_cot_listing_takes_the_same_window_the_history_does() {
                 "UID-THEN",
                 "a-f-G-U-C",
                 "BRAVO",
-                now - Duration::hours(6),
+                now - SignedDuration::from_hours(6),
                 &[],
             ),
         ],
@@ -723,8 +729,8 @@ async fn the_cot_listing_takes_the_same_window_the_history_does() {
         test::TestRequest::get()
             .uri(&format!(
                 "/api/v1/cot?start={}&end={}",
-                urlencoding(&(now - Duration::hours(7)).to_rfc3339()),
-                urlencoding(&(now - Duration::hours(5)).to_rfc3339()),
+                urlencoding(&(now - SignedDuration::from_hours(7)).to_string()),
+                urlencoding(&(now - SignedDuration::from_hours(5)).to_string()),
             ))
             .insert_header(("authorization", bearer(&admin)))
             .to_request(),
@@ -737,8 +743,8 @@ async fn the_cot_listing_takes_the_same_window_the_history_does() {
         test::TestRequest::get()
             .uri(&format!(
                 "/api/v1/cot?start={}&end={}",
-                urlencoding(&now.to_rfc3339()),
-                urlencoding(&(now - Duration::hours(1)).to_rfc3339()),
+                urlencoding(&now.to_string()),
+                urlencoding(&(now - SignedDuration::from_hours(1)).to_string()),
             ))
             .insert_header(("authorization", bearer(&admin)))
             .to_request(),

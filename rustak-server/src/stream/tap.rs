@@ -19,9 +19,9 @@
 //! known only at the other end. It is the same pair `cot_latest` keeps, for
 //! the same reason.
 
+use rustak_core::time::Timestamp;
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
 use rustak_cot::codec::EncodedEvent;
 use tokio::sync::broadcast;
 
@@ -43,7 +43,7 @@ pub struct RelayedCot {
     pub groups: Arc<GroupSet>,
 
     /// When this server handled it.
-    pub received_at: DateTime<Utc>,
+    pub received_at: Timestamp,
 }
 
 /// The publishing end, held by the router.
@@ -76,7 +76,7 @@ impl CotTap {
         let _ = self.tx.send(Arc::new(RelayedCot {
             encoded: Arc::clone(encoded),
             groups: Arc::clone(&sender.groups),
-            received_at: Utc::now(),
+            received_at: Timestamp::now(),
         }));
     }
 

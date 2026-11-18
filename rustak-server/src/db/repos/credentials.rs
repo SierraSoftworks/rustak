@@ -24,15 +24,15 @@
 
 pub mod spend;
 
-use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension as _;
 use rustak_api::CredentialKind;
+use rustak_core::time::Timestamp;
 use rustak_core::{identity::PasswordHash, prelude::*};
 
 use crate::db::{
     Database,
     repos::Page,
-    row::{Timestamp, enum_col, id_col, opt_ts, ts},
+    row::{DbTime, enum_col, id_col, opt_ts, ts},
 };
 
 /// The columns [`CredentialRow::from_row`] expects, in order.
@@ -52,18 +52,18 @@ pub struct CredentialRow {
     pub lookup_hint: String,
     pub max_uses: Option<u32>,
     pub uses: u32,
-    pub expires_at: Option<DateTime<Utc>>,
-    pub last_used_at: Option<DateTime<Utc>>,
-    pub revoked_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<Timestamp>,
+    pub last_used_at: Option<Timestamp>,
+    pub revoked_at: Option<Timestamp>,
     pub created_by: Option<Username>,
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
 
     /// When a one-time credential was claimed for an issuance that then
     /// succeeded. `None` for everything else, including a credential an
     /// administrator revoked: the grace window in
     /// [`identity::verify`](crate::identity::verify) reads this and nothing
     /// else, so a revocation clears it.
-    pub spent_at: Option<DateTime<Utc>>,
+    pub spent_at: Option<Timestamp>,
 
     /// The `clientUid` the signing request that spent it carried, which is the
     /// only device the grace window answers to.
@@ -105,7 +105,7 @@ impl CredentialRow {
     ///
     /// Revocation, expiry and exhaustion are all checked here rather than in
     /// SQL, so that a caller cannot accidentally use a query that forgot one.
-    pub fn is_usable_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_usable_at(&self, now: Timestamp) -> bool {
         self.revoked_at.is_none()
             && self.expires_at.is_none_or(|expires| expires > now)
             && self.max_uses.is_none_or(|max| self.uses < max)
@@ -120,7 +120,7 @@ pub struct NewCredential {
     pub label: String,
     pub secret_hash: PasswordHash,
     pub lookup_hint: String,
-    pub expires_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<Timestamp>,
     pub max_uses: Option<u32>,
     pub created_by: Option<Username>,
 }
@@ -161,9 +161,9 @@ impl<'a> CredentialsRepo<'a> {
                         new.secret_hash.as_str(),
                         new.lookup_hint,
                         new.max_uses.map(i64::from),
-                        new.expires_at.map(Timestamp::from),
+                        new.expires_at.map(DbTime::from),
                         new.created_by.map(|by| by.into_inner()),
-                        Timestamp::now(),
+                        DbTime::now(),
                     ],
                     CredentialRow::from_row,
                 )
@@ -293,7 +293,7 @@ impl<'a> CredentialsRepo<'a> {
     pub async fn record_use(&self, id: CredentialId, consumed: bool) -> Result<(), Error> {
         self.db
             .write(move |tx| {
-                let now = Timestamp::now();
+                let now = DbTime::now();
                 tx.execute(
                     "UPDATE credentials SET uses = uses + 1, last_used_at = ?2 WHERE id = ?1",
                     rusqlite::params![id.get(), now],
@@ -324,7 +324,7 @@ impl<'a> CredentialsRepo<'a> {
                 let live = tx.execute(
                     "UPDATE credentials SET revoked_at = ?2 \
                      WHERE id = ?1 AND revoked_at IS NULL",
-                    rusqlite::params![id.get(), Timestamp::now()],
+                    rusqlite::params![id.get(), DbTime::now()],
                 )?;
 
                 // Separately, and unconditionally: a credential that was
@@ -352,7 +352,7 @@ impl<'a> CredentialsRepo<'a> {
                 let live = tx.execute(
                     "UPDATE credentials SET revoked_at = ?2 \
                      WHERE user_id = ?1 AND revoked_at IS NULL",
-                    rusqlite::params![user_id.get(), Timestamp::now()],
+                    rusqlite::params![user_id.get(), DbTime::now()],
                 )?;
 
                 // As `revoke`: a disabled account's spent token keeps no grace.
@@ -368,8 +368,8 @@ impl<'a> CredentialsRepo<'a> {
     /// # Errors
     ///
     /// A [`human_errors::Kind::System`] error if the write fails.
-    pub async fn prune(&self, before: DateTime<Utc>) -> Result<usize, Error> {
-        let before = Timestamp::from(before);
+    pub async fn prune(&self, before: Timestamp) -> Result<usize, Error> {
+        let before = DbTime::from(before);
 
         self.db
             .write(move |tx| {
@@ -388,6 +388,7 @@ impl<'a> CredentialsRepo<'a> {
 mod tests {
     use super::*;
     use crate::db::repos::NewUser;
+    use rustak_core::time::SignedDuration;
 
     async fn fixture() -> (Database, UserId) {
         let db = Database::open_in_memory().await.unwrap();
@@ -430,7 +431,7 @@ mod tests {
         assert_eq!(created.uses, 0);
         assert_eq!(created.max_uses, Some(1));
         assert_eq!(created.created_by.as_ref().unwrap().as_str(), "admin");
-        assert!(created.is_usable_at(Utc::now()));
+        assert!(created.is_usable_at(Timestamp::now()));
         assert_eq!(
             db.credentials().get(created.id).await.unwrap().unwrap(),
             created
@@ -518,7 +519,7 @@ mod tests {
         let read = db.credentials().get(token.id).await.unwrap().unwrap();
         assert_eq!(read.uses, 1);
         assert!(read.revoked_at.is_some());
-        assert!(!read.is_usable_at(Utc::now()));
+        assert!(!read.is_usable_at(Timestamp::now()));
         assert!(
             db.credentials()
                 .find_by_hint(&read.lookup_hint)
@@ -544,7 +545,7 @@ mod tests {
 
         let read = db.credentials().get(password.id).await.unwrap().unwrap();
         assert_eq!(read.uses, 1);
-        assert!(read.is_usable_at(Utc::now()));
+        assert!(read.is_usable_at(Timestamp::now()));
     }
 
     #[tokio::test]
@@ -553,13 +554,13 @@ mod tests {
         let expired = db
             .credentials()
             .create(NewCredential {
-                expires_at: Some(Utc::now() - chrono::TimeDelta::hours(1)),
+                expires_at: Some(Timestamp::now() - SignedDuration::from_hours(1)),
                 ..minted(user, CredentialKind::EnrollmentToken, "s3cret")
             })
             .await
             .unwrap();
 
-        assert!(!expired.is_usable_at(Utc::now()));
+        assert!(!expired.is_usable_at(Timestamp::now()));
         // Still returned by the hint lookup, because refusing it is the
         // verifier's job and it has to be able to say *why*.
         assert_eq!(
@@ -628,7 +629,7 @@ mod tests {
         let (db, user) = fixture().await;
         db.credentials()
             .create(NewCredential {
-                expires_at: Some(Utc::now() - chrono::TimeDelta::days(60)),
+                expires_at: Some(Timestamp::now() - SignedDuration::from_hours(24 * 60)),
                 ..minted(user, CredentialKind::EnrollmentToken, "old")
             })
             .await
@@ -640,7 +641,7 @@ mod tests {
 
         assert_eq!(
             db.credentials()
-                .prune(Utc::now() - chrono::TimeDelta::days(30))
+                .prune(Timestamp::now() - SignedDuration::from_hours(24 * 30))
                 .await
                 .unwrap(),
             1

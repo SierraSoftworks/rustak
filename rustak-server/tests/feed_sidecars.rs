@@ -22,9 +22,9 @@
 mod feed_support;
 mod stream_support;
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::time::Duration;
 
-use chrono::Utc;
 use rustak_client::feed::{AircraftClass, Track, TrackKind, VesselClass};
 use rustak_client::sidecar::Sidecar;
 use rustak_plugin_adsb::AdsbSidecar;
@@ -37,7 +37,7 @@ use stream_support::{EXPECT, SETTLE};
 
 /// Five vessels, as an AIS source would have reported them.
 fn vessels() -> Vec<Track> {
-    let now = Utc::now();
+    let now = Timestamp::now();
 
     vec![
         Track::new(
@@ -82,7 +82,7 @@ fn vessels() -> Vec<Track> {
 
 /// Five aircraft, as an ADS-B source would have reported them.
 fn aircraft() -> Vec<Track> {
-    let now = Utc::now();
+    let now = Timestamp::now();
 
     vec![
         Track::new(
@@ -302,7 +302,7 @@ async fn one_vessel_reported_ten_times_in_a_second_is_published_once() {
     // reporting every two seconds must not be a thousand messages a second on a
     // channel a phone is holding open over a cellular link.
     let directory = tempfile::tempdir().expect("a directory for the fixture");
-    let now = Utc::now();
+    let now = Timestamp::now();
     let repeated: Vec<Track> = (0..10)
         .map(|nth| {
             Track::new(
@@ -310,7 +310,7 @@ async fn one_vessel_reported_ten_times_in_a_second_is_published_once() {
                 TrackKind::Vessel(VesselClass::Merchant),
                 // Moving, so that only the interval can be suppressing them.
                 (51.9512 + f64::from(nth) * 0.001, 4.1338),
-                now + chrono::Duration::milliseconds(i64::from(nth) * 100),
+                now + SignedDuration::from_millis(i64::from(nth) * 100),
             )
             .with_callsign("ZEEBRUGGE")
         })
@@ -366,7 +366,7 @@ async fn a_feed_publishes_nothing_for_a_track_outside_its_area() {
             "AIS-999000111",
             TrackKind::Vessel(VesselClass::Merchant),
             (36.1, -5.35),
-            Utc::now(),
+            Timestamp::now(),
         )
         .with_callsign("GIBRALTAR"),
     ];

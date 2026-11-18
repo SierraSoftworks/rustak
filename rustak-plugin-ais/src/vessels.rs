@@ -22,10 +22,10 @@
 //! is longer because it is broadcast far less often — a cache expiring between
 //! two type 5 reports would rename every vessel `MMSI …` twice an hour.
 
+use rustak_core::time::{DurationExt, Timestamp};
 use std::collections::HashMap;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use rustak_client::feed::Track;
 
 use crate::mapping::{self, Position, StaticData};
@@ -50,7 +50,7 @@ pub enum Observation {
 #[derive(Clone, Debug)]
 struct Heard<T> {
     value: T,
-    at: DateTime<Utc>,
+    at: Timestamp,
 }
 
 /// The per-MMSI memory one source keeps.
@@ -84,7 +84,7 @@ impl Vessels {
     }
 
     /// Absorbs one observation, answering the track it makes publishable.
-    pub fn absorb(&mut self, observation: Observation, now: DateTime<Utc>) -> Option<Track> {
+    pub fn absorb(&mut self, observation: Observation, now: Timestamp) -> Option<Track> {
         match observation {
             Observation::Position(position) => self.position(position, now),
             Observation::Static(statics) => self.statics(statics, now),
@@ -96,7 +96,7 @@ impl Vessels {
         &mut self,
         observations: impl IntoIterator<Item = Observation>,
     ) -> Vec<Track> {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let tracks: Vec<Track> = observations
             .into_iter()
             .filter_map(|observation| self.absorb(observation, now))
@@ -115,7 +115,7 @@ impl Vessels {
 
     /// Forgets what has not been heard for long enough, and trims what is left
     /// to the capacity.
-    pub fn expire(&mut self, now: DateTime<Utc>) {
+    pub fn expire(&mut self, now: Timestamp) {
         let retention = self.retention;
         Self::retain_newer_than(&mut self.positions, now, retention);
         Self::retain_newer_than(&mut self.statics, now, STATIC_RETENTION.max(retention));
@@ -125,7 +125,7 @@ impl Vessels {
     }
 
     /// A position: always a track, enriched with whatever we already know.
-    fn position(&mut self, position: Position, now: DateTime<Utc>) -> Option<Track> {
+    fn position(&mut self, position: Position, now: Timestamp) -> Option<Track> {
         if !position.is_usable() {
             return None;
         }
@@ -148,7 +148,7 @@ impl Vessels {
     }
 
     /// Static data: a track only if we have somewhere to put the hull.
-    fn statics(&mut self, statics: StaticData, now: DateTime<Utc>) -> Option<Track> {
+    fn statics(&mut self, statics: StaticData, now: Timestamp) -> Option<Track> {
         let mmsi = statics.mmsi;
         self.statics.insert(
             mmsi,
@@ -173,7 +173,7 @@ impl Vessels {
     /// Drops everything last heard longer ago than `retention`.
     fn retain_newer_than<T>(
         held: &mut HashMap<u32, Heard<T>>,
-        now: DateTime<Utc>,
+        now: Timestamp,
         retention: Duration,
     ) {
         held.retain(|_, heard| (now - heard.at).to_std().unwrap_or_default() <= retention);
@@ -198,8 +198,9 @@ impl Vessels {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustak_core::time::SignedDuration;
 
-    fn now() -> DateTime<Utc> {
+    fn now() -> Timestamp {
         "2026-09-20T12:00:00Z".parse().expect("an instant")
     }
 
@@ -295,12 +296,12 @@ mod tests {
         let _ = vessels.absorb(Observation::Position(position(1)), now());
         let _ = vessels.absorb(Observation::Static(statics(1)), now());
 
-        vessels.expire(now() + chrono::Duration::seconds(121));
+        vessels.expire(now() + SignedDuration::from_secs(121));
 
         assert_eq!(vessels.positions.len(), 0, "past the publisher's stale");
         assert_eq!(vessels.named(), 1, "a type 5 report is six minutes apart");
 
-        vessels.expire(now() + chrono::Duration::seconds(1_801));
+        vessels.expire(now() + SignedDuration::from_secs(1_801));
 
         assert_eq!(vessels.named(), 0);
     }
@@ -310,7 +311,7 @@ mod tests {
         let mut vessels = Vessels::new("receiver", Duration::from_secs(120), 2);
 
         for (nth, mmsi) in [10, 11, 12].into_iter().enumerate() {
-            let at = now() + chrono::Duration::seconds(nth as i64);
+            let at = now() + SignedDuration::from_secs(nth as i64);
             let _ = vessels.absorb(Observation::Position(position(mmsi)), at);
             vessels.expire(at);
         }

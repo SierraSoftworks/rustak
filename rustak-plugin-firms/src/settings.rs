@@ -3,6 +3,7 @@
 //! Every key is documented with its default in `config.example.toml`, which
 //! this crate's test suite loads so that the two cannot drift apart.
 
+use rustak_core::time::{DurationExt, SignedDuration};
 use std::path::PathBuf;
 
 use rustak_client::feed::Area;
@@ -48,7 +49,7 @@ pub enum Source {
 
         /// How often to ask. Default: `"10m"`, and never faster than `"1m"`.
         #[serde(default, with = "duration::humane_option")]
-        poll: Option<chrono::Duration>,
+        poll: Option<SignedDuration>,
 
         /// A mirror or proxy to ask instead of FIRMS itself. Default: none.
         #[serde(default)]
@@ -215,7 +216,7 @@ mod tests {
         assert_eq!(settings.filter.min_confidence, Confidence::Nominal);
         assert_eq!(settings.display.shape, Shape::Both);
         assert_eq!(settings.display.colour_by, ColourBy::Intensity);
-        assert_eq!(settings.publish.max_age, chrono::Duration::hours(12));
+        assert_eq!(settings.publish.max_age, SignedDuration::from_hours(12));
         assert_eq!(
             settings.publish.republish,
             Publish::default().republish,

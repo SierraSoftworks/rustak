@@ -19,11 +19,11 @@
 
 #![cfg(feature = "testing")]
 
+use rustak_core::time::{Precision, SignedDuration, Timestamp};
 use std::sync::Arc;
 
 use actix_web::http::header::CONTENT_TYPE;
 use actix_web::{App, test};
-use chrono::{SecondsFormat, Utc};
 use rustak_cot::codec::EncodedEvent;
 use rustak_cot::detail::{Contact, contact::STREAMING_ENDPOINT};
 use rustak_cot::{CotTime, Event};
@@ -63,7 +63,7 @@ async fn store(server: &TestServer, uid: &str, kind: &str, lat: f64, lon: f64, b
     // The sender is not one of this test server's accounts, and none of these
     // reads is about its row.
     record.user_id = None;
-    record.received_at = Utc::now();
+    record.received_at = Timestamp::now();
 
     latest::upsert_batch(server.context.db(), vec![record])
         .await
@@ -287,12 +287,10 @@ async fn situational_awareness_needs_a_window_and_refuses_one_over_a_day() {
     store(&server, "UID-A", "a-f-G-U-C", 51.5, -0.12, &[bitpos]).await;
 
     let app = test::init_service(App::new().configure(server.app())).await;
-    let start =
-        (Utc::now() - chrono::Duration::hours(1)).to_rfc3339_opts(SecondsFormat::Millis, true);
-    let end =
-        (Utc::now() + chrono::Duration::hours(1)).to_rfc3339_opts(SecondsFormat::Millis, true);
+    let start = (Timestamp::now() - SignedDuration::from_hours(1)).to_rfc3339(Precision::Millis);
+    let end = (Timestamp::now() + SignedDuration::from_hours(1)).to_rfc3339(Precision::Millis);
     let long_ago =
-        (Utc::now() - chrono::Duration::days(3)).to_rfc3339_opts(SecondsFormat::Millis, true);
+        (Timestamp::now() - SignedDuration::from_hours(24 * 3)).to_rfc3339(Precision::Millis);
 
     let (missing, _, _) = get!(app, "/Marti/api/cot/sa", Some(&token));
     assert_eq!(missing, 400, "start and end are both required");
@@ -323,10 +321,8 @@ async fn a_bounding_box_narrows_the_answer_and_half_a_box_is_refused() {
     store(&server, "UID-CAPETOWN", "a-f-G-U-C", -33.9, 18.4, &[bitpos]).await;
 
     let app = test::init_service(App::new().configure(server.app())).await;
-    let start =
-        (Utc::now() - chrono::Duration::hours(1)).to_rfc3339_opts(SecondsFormat::Millis, true);
-    let end =
-        (Utc::now() + chrono::Duration::hours(1)).to_rfc3339_opts(SecondsFormat::Millis, true);
+    let start = (Timestamp::now() - SignedDuration::from_hours(1)).to_rfc3339(Precision::Millis);
+    let end = (Timestamp::now() + SignedDuration::from_hours(1)).to_rfc3339(Precision::Millis);
 
     let (status, _, body) = get!(
         app,

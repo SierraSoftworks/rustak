@@ -7,6 +7,7 @@
 //! in that plugin; what the machine does with a choice is tested here.
 
 use super::*;
+use rustak_core::time::{SignedDuration, Timestamp};
 
 #[derive(Clone, Copy, Debug)]
 struct Guest;
@@ -45,8 +46,8 @@ impl Rules for Answering {
     }
 }
 
-fn at(seconds: i64) -> DateTime<Utc> {
-    DateTime::from_timestamp(1_789_646_400 + seconds, 0).expect("an instant")
+fn at(seconds: i64) -> Timestamp {
+    Timestamp::new(1_789_646_400 + seconds, 0).expect("an instant")
 }
 
 fn every<R: Rules>(seconds: u64) -> SourceState<R> {
@@ -100,7 +101,7 @@ fn the_backoff_doubles_and_then_stops_doubling() {
         assert_eq!(state.failures(), failures);
         assert_eq!(
             state.next_attempt() - at(0),
-            chrono::Duration::seconds(expected),
+            SignedDuration::from_secs(expected),
             "after {failures} failures",
         );
     }
@@ -111,7 +112,7 @@ fn the_backoff_doubles_and_then_stops_doubling() {
 
     assert_eq!(
         state.next_attempt() - at(0),
-        chrono::Duration::seconds(300),
+        SignedDuration::from_secs(300),
         "and the shift never overflows",
     );
 }

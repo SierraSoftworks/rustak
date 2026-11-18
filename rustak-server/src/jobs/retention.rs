@@ -28,11 +28,10 @@
 //! where it is, unless it is further out than the interval the file now asks
 //! for; see [`Job::arm_recurring`], which every job that arms with a delay shares.
 
-use chrono::{TimeDelta, Utc};
-
 use crate::cot_store::retention::{self, Limits};
 use crate::prelude::*;
 use crate::register_job;
+use rustak_core::time::{SignedDuration, Timestamp};
 
 /// The queue partition this job owns.
 pub const COT_RETENTION_PARTITION: &str = "housekeeping/cot-retention";
@@ -43,7 +42,7 @@ pub const COT_RETENTION_PARTITION: &str = "housekeeping/cot-retention";
 /// in a crash loop should not pay for a scan of the index on every lap. Not a
 /// whole interval either, or an installation that came up over its limits
 /// stays over them for as long as the interval is.
-pub const FIRST_SWEEP_DELAY: TimeDelta = TimeDelta::minutes(5);
+pub const FIRST_SWEEP_DELAY: SignedDuration = SignedDuration::from_mins(5);
 
 /// The message this job runs on. The limits come from the configuration at run
 /// time, so there is nothing to carry.
@@ -57,7 +56,7 @@ register_job!(CotRetentionJob);
 
 impl CotRetentionJob {
     /// Arms (or re-arms) the one scheduled sweep, `delay` from now.
-    async fn arm(delay: TimeDelta, services: &impl Services) -> Result<(), Error> {
+    async fn arm(delay: SignedDuration, services: &impl Services) -> Result<(), Error> {
         Self::dispatch_delayed(
             CotRetentionTask {},
             Some(COT_RETENTION_PARTITION.into()),
@@ -103,7 +102,7 @@ impl Job for CotRetentionJob {
         let swept = retention::sweep(
             services.db(),
             &config.streams_dir(),
-            Limits::from_config(&config.retention, Utc::now()),
+            Limits::from_config(&config.retention, Timestamp::now()),
         )
         .await?;
 
@@ -123,7 +122,7 @@ mod tests {
     use crate::store::append_log::{AppendLog, AppendLogOptions};
 
     /// A context whose streams live under `directory`, sweeping on `interval`.
-    async fn context(directory: &tempfile::TempDir, interval: TimeDelta) -> AppContext {
+    async fn context(directory: &tempfile::TempDir, interval: SignedDuration) -> AppContext {
         let path = directory.path().to_path_buf();
 
         AppContext::new_mock(move |config| {
@@ -135,7 +134,7 @@ mod tests {
     }
 
     /// When the one scheduled sweep becomes due.
-    async fn armed_for(context: &AppContext) -> chrono::DateTime<Utc> {
+    async fn armed_for(context: &AppContext) -> Timestamp {
         let armed = context
             .queue()
             .peek::<_, CotRetentionTask>(COT_RETENTION_PARTITION, 10)
@@ -149,20 +148,20 @@ mod tests {
     #[tokio::test]
     async fn the_first_sweep_is_soon_after_start_up_rather_than_an_interval_away() {
         let directory = tempfile::tempdir().unwrap();
-        let context = context(&directory, TimeDelta::hours(6)).await;
+        let context = context(&directory, SignedDuration::from_hours(6)).await;
 
         Job::setup(&CotRetentionJob, context.clone()).await.unwrap();
 
         let due = armed_for(&context).await;
-        assert!(due > Utc::now(), "not during start-up itself");
-        assert!(due <= Utc::now() + FIRST_SWEEP_DELAY);
+        assert!(due > Timestamp::now(), "not during start-up itself");
+        assert!(due <= Timestamp::now() + FIRST_SWEEP_DELAY);
     }
 
     #[tokio::test]
     async fn a_restart_does_not_postpone_a_sweep_that_is_already_armed() {
         let directory = tempfile::tempdir().unwrap();
-        let context = context(&directory, TimeDelta::hours(1)).await;
-        CotRetentionJob::arm(TimeDelta::minutes(40), &context)
+        let context = context(&directory, SignedDuration::from_hours(1)).await;
+        CotRetentionJob::arm(SignedDuration::from_mins(40), &context)
             .await
             .unwrap();
         let before = armed_for(&context).await;
@@ -175,20 +174,20 @@ mod tests {
     #[tokio::test]
     async fn a_shortened_interval_pulls_in_a_sweep_armed_under_the_old_one() {
         let directory = tempfile::tempdir().unwrap();
-        let context = context(&directory, TimeDelta::hours(1)).await;
-        CotRetentionJob::arm(TimeDelta::hours(6), &context)
+        let context = context(&directory, SignedDuration::from_hours(1)).await;
+        CotRetentionJob::arm(SignedDuration::from_hours(6), &context)
             .await
             .unwrap();
 
         Job::setup(&CotRetentionJob, context.clone()).await.unwrap();
 
-        assert!(armed_for(&context).await <= Utc::now() + FIRST_SWEEP_DELAY);
+        assert!(armed_for(&context).await <= Timestamp::now() + FIRST_SWEEP_DELAY);
     }
 
     #[tokio::test]
     async fn a_run_removes_expired_history_and_re_arms_on_the_configured_interval() {
         let directory = tempfile::tempdir().unwrap();
-        let context = context(&directory, TimeDelta::minutes(30)).await;
+        let context = context(&directory, SignedDuration::from_mins(30)).await;
         let streams = context.config().streams_dir();
 
         let mut log = AppendLog::open(
@@ -200,14 +199,17 @@ mod tests {
         )
         .await
         .unwrap();
-        log.append(Utc::now() - TimeDelta::days(30), b"ancient")
-            .await
-            .unwrap();
+        log.append(
+            Timestamp::now() - SignedDuration::from_hours(24 * 30),
+            b"ancient",
+        )
+        .await
+        .unwrap();
         log.seal().await.unwrap();
 
         Job::handle(
             &CotRetentionJob,
-            JobContext::new(context.clone(), Utc::now(), None, None),
+            JobContext::new(context.clone(), Timestamp::now(), None, None),
             &CotRetentionTask {},
         )
         .await
@@ -216,24 +218,24 @@ mod tests {
         let kept = context
             .db()
             .stream_segments()
-            .expired_before(Utc::now(), 10)
+            .expired_before(Timestamp::now(), 10)
             .await
             .unwrap();
         assert!(kept.is_empty(), "the month-old segment should be gone");
 
         let due = armed_for(&context).await;
-        assert!(due > Utc::now() + TimeDelta::minutes(29));
-        assert!(due <= Utc::now() + TimeDelta::minutes(30));
+        assert!(due > Timestamp::now() + SignedDuration::from_mins(29));
+        assert!(due <= Timestamp::now() + SignedDuration::from_mins(30));
     }
 
     #[tokio::test]
     async fn a_sweep_with_nothing_to_remove_is_not_a_failure() {
         let directory = tempfile::tempdir().unwrap();
-        let context = context(&directory, TimeDelta::hours(1)).await;
+        let context = context(&directory, SignedDuration::from_hours(1)).await;
 
         Job::handle(
             &CotRetentionJob,
-            JobContext::new(context.clone(), Utc::now(), None, None),
+            JobContext::new(context.clone(), Timestamp::now(), None, None),
             &CotRetentionTask {},
         )
         .await

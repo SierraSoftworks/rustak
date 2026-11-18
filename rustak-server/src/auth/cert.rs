@@ -23,9 +23,9 @@
 //! the answer to "which account is this?" comes from the row, so a certificate
 //! without one has no identity to offer whatever the verifier decided.
 
-use chrono::Utc;
 use rustak_core::identity::{AuthMethod, Principal};
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 
 use crate::db::Database;
 use crate::db::repos::{CertificateRow, UserRow};
@@ -105,7 +105,7 @@ async fn live_row(db: &Database, peer: &PeerCertificate) -> Result<CertificateRo
         return Err(AuthFailure::Rejected);
     };
 
-    if !row.is_valid_at(Utc::now()) {
+    if !row.is_valid_at(Timestamp::now()) {
         debug!(
             revoked = row.revoked_at.is_some(),
             "Refused a client certificate that is revoked or outside its validity window.",
@@ -211,6 +211,7 @@ mod tests {
     use crate::pki::testing::TestAuthority;
     use crate::testing::TestServer;
     use rustak_api::{CertificateKind, CertificateSource};
+    use rustak_core::time::SignedDuration;
 
     /// Records a certificate for `user`, exactly as enrolment would.
     async fn enrol(
@@ -240,8 +241,8 @@ mod tests {
                 issuer_id: None,
                 der: peer.der.to_vec(),
                 key_sealed: None,
-                not_before: Utc::now() - chrono::Duration::minutes(5),
-                not_after: Utc::now() + chrono::Duration::days(1),
+                not_before: Timestamp::now() - SignedDuration::from_mins(5),
+                not_after: Timestamp::now() + SignedDuration::from_hours(24),
             })
             .await
             .expect("record the certificate under test");

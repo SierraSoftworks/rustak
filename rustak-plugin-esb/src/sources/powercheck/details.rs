@@ -1,9 +1,9 @@
 //! The second of PowerCheck's two requests: `GET /outages/<id>/`, a few per
 //! tick, for the outages the list says are worth one.
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Utc};
 use rustak_core::prelude::*;
 
 use super::{DETAIL_BUDGET, DETAIL_COOLDOWN, DETAIL_REFRESH, Fetched, PowerCheckFeed};
@@ -13,8 +13,8 @@ use crate::wire::Detail;
 impl PowerCheckFeed {
     /// The outages worth a detail request, most urgent first: never fetched,
     /// then longest since fetched. Final ones are never asked about again.
-    fn wanting_detail(&self, now: DateTime<Utc>) -> Vec<String> {
-        let refresh = chrono::Duration::from_std(DETAIL_REFRESH).unwrap_or_default();
+    fn wanting_detail(&self, now: Timestamp) -> Vec<String> {
+        let refresh = SignedDuration::try_from(DETAIL_REFRESH).unwrap_or_default();
         let mut wanting: Vec<_> = self
             .entries
             .values()
@@ -32,7 +32,7 @@ impl PowerCheckFeed {
     }
 
     /// One tick's worth of detail requests.
-    pub(super) async fn details(&mut self, now: DateTime<Utc>) {
+    pub(super) async fn details(&mut self, now: Timestamp) {
         let started = Instant::now();
 
         for id in self.wanting_detail(now) {
@@ -87,13 +87,13 @@ impl PowerCheckFeed {
 
     /// Leaves the detail endpoint alone for a while; the top of the batch
     /// loop is what honours it.
-    pub(super) fn hold_details(&mut self, now: DateTime<Utc>, wait: Duration) {
+    pub(super) fn hold_details(&mut self, now: Timestamp, wait: Duration) {
         self.details_after = self.details_after.max(now + wait);
     }
 
     /// Records an answer about one outage, which is also the key being
     /// accepted: refusals only count when they are consecutive.
-    fn detailed(&mut self, id: &str, now: DateTime<Utc>, detail: Option<Detail>) {
+    fn detailed(&mut self, id: &str, now: Timestamp, detail: Option<Detail>) {
         self.denied = 0;
 
         if let Some(entry) = self.entries.get_mut(id) {

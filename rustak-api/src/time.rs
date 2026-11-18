@@ -24,7 +24,29 @@ use std::{
     str::FromStr,
 };
 
-pub use jiff::SignedDuration;
+pub use jiff::{SignedDuration, civil};
+
+/// The chrono `TimeDelta` conveniences that have no direct jiff spelling.
+pub trait DurationExt {
+    /// The duration as a `std::time::Duration`; an error if it is negative.
+    fn to_std(self) -> Result<std::time::Duration, jiff::Error>;
+    /// Whole milliseconds, saturating at the `i64` range.
+    fn whole_millis(self) -> i64;
+}
+
+impl DurationExt for SignedDuration {
+    fn to_std(self) -> Result<std::time::Duration, jiff::Error> {
+        std::time::Duration::try_from(self)
+    }
+
+    fn whole_millis(self) -> i64 {
+        i64::try_from(self.as_millis()).unwrap_or(if self.is_negative() {
+            i64::MIN
+        } else {
+            i64::MAX
+        })
+    }
+}
 
 /// A UTC instant with nanosecond resolution.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -44,6 +66,12 @@ pub enum Precision {
 impl Timestamp {
     /// 1970-01-01T00:00:00Z.
     pub const UNIX_EPOCH: Self = Self(jiff::Timestamp::UNIX_EPOCH);
+
+    /// The earliest representable instant (year -9999).
+    pub const MIN: Self = Self(jiff::Timestamp::MIN);
+
+    /// The latest representable instant (year 9999).
+    pub const MAX: Self = Self(jiff::Timestamp::MAX);
 
     /// The current instant.
     ///
@@ -105,6 +133,21 @@ impl Timestamp {
     /// The time elapsed from `earlier` to `self` (negative if `earlier` is later).
     pub fn duration_since(self, earlier: Self) -> SignedDuration {
         self.0.duration_since(earlier.0)
+    }
+
+    /// The UTC calendar date and wall-clock time of this instant.
+    pub fn civil(self) -> jiff::civil::DateTime {
+        jiff::tz::Offset::UTC.to_datetime(self.0)
+    }
+
+    /// The instant a UTC calendar date and time names; `None` when out of range.
+    pub fn from_civil(datetime: jiff::civil::DateTime) -> Option<Self> {
+        jiff::tz::Offset::UTC.to_timestamp(datetime).ok().map(Self)
+    }
+
+    /// `strftime`-style rendering in UTC (jiff's directives, a superset of the common chrono ones).
+    pub fn strftime<'f, F: AsRef<[u8]> + ?Sized>(self, format: &'f F) -> impl fmt::Display + 'f {
+        self.0.strftime(format)
     }
 
     /// RFC 3339 in UTC with a `Z` suffix, at the given precision.
@@ -171,6 +214,40 @@ impl FromStr for Timestamp {
     }
 }
 
+impl Default for Timestamp {
+    /// The Unix epoch, as chrono's `DateTime<Utc>::default()`.
+    fn default() -> Self {
+        Self::UNIX_EPOCH
+    }
+}
+
+impl From<std::time::SystemTime> for Timestamp {
+    /// Clamps to jiff's range, which spans years -9999 to 9999.
+    fn from(value: std::time::SystemTime) -> Self {
+        jiff::Timestamp::try_from(value)
+            .map(Self)
+            .unwrap_or_else(|_| {
+                if value > std::time::UNIX_EPOCH {
+                    Self(jiff::Timestamp::MAX)
+                } else {
+                    Self(jiff::Timestamp::MIN)
+                }
+            })
+    }
+}
+
+impl From<Timestamp> for std::time::SystemTime {
+    fn from(value: Timestamp) -> Self {
+        let offset = value.duration_since(Timestamp::UNIX_EPOCH);
+        let magnitude = offset.unsigned_abs();
+        if offset.is_negative() {
+            std::time::UNIX_EPOCH - magnitude
+        } else {
+            std::time::UNIX_EPOCH + magnitude
+        }
+    }
+}
+
 impl From<jiff::Timestamp> for Timestamp {
     fn from(value: jiff::Timestamp) -> Self {
         Self(value)
@@ -209,6 +286,36 @@ impl Sub<SignedDuration> for Timestamp {
 
 impl SubAssign<SignedDuration> for Timestamp {
     fn sub_assign(&mut self, rhs: SignedDuration) {
+        *self = *self - rhs;
+    }
+}
+
+impl Add<std::time::Duration> for Timestamp {
+    type Output = Self;
+
+    /// Panics on overflow, like chrono's `DateTime + std::time::Duration`.
+    fn add(self, rhs: std::time::Duration) -> Self {
+        Self(self.0.checked_add(rhs).expect("timestamp overflow"))
+    }
+}
+
+impl AddAssign<std::time::Duration> for Timestamp {
+    fn add_assign(&mut self, rhs: std::time::Duration) {
+        *self = *self + rhs;
+    }
+}
+
+impl Sub<std::time::Duration> for Timestamp {
+    type Output = Self;
+
+    /// Panics on overflow, like chrono's `DateTime - std::time::Duration`.
+    fn sub(self, rhs: std::time::Duration) -> Self {
+        Self(self.0.checked_sub(rhs).expect("timestamp overflow"))
+    }
+}
+
+impl SubAssign<std::time::Duration> for Timestamp {
+    fn sub_assign(&mut self, rhs: std::time::Duration) {
         *self = *self - rhs;
     }
 }
@@ -396,5 +503,67 @@ mod tests {
         let json = serde_json::from_str::<Timestamp>("42").unwrap_err();
         assert!(json.to_string().contains("RFC 3339"));
         assert!(serde_json::from_str::<Timestamp>("\"nope\"").is_err());
+    }
+
+    #[rstest]
+    #[case::positive(SignedDuration::from_millis(1_500), Some(1_500))]
+    #[case::negative(SignedDuration::from_millis(-1_500), None)]
+    fn duration_to_std(#[case] d: SignedDuration, #[case] millis: Option<u128>) {
+        assert_eq!(d.to_std().ok().map(|s| s.as_millis()), millis);
+    }
+
+    #[rstest]
+    #[case::small(SignedDuration::from_millis(-42), -42)]
+    #[case::saturates_high(SignedDuration::MAX, i64::MAX)]
+    #[case::saturates_low(SignedDuration::MIN, i64::MIN)]
+    fn duration_whole_millis(#[case] d: SignedDuration, #[case] expected: i64) {
+        assert_eq!(d.whole_millis(), expected);
+    }
+
+    #[test]
+    fn civil_round_trip() {
+        let ts = Timestamp::from_second(BASE).unwrap();
+        let civil = ts.civil();
+        assert_eq!(
+            (civil.year(), civil.month(), civil.day(), civil.hour()),
+            (2025, 9, 18, 10)
+        );
+        assert_eq!(Timestamp::from_civil(civil), Some(ts));
+        assert_eq!(
+            ts.strftime("%Y-%m-%d %H:%M").to_string(),
+            "2025-09-18 10:00"
+        );
+    }
+
+    #[test]
+    fn default_is_epoch() {
+        assert_eq!(Timestamp::default(), Timestamp::UNIX_EPOCH);
+    }
+
+    #[rstest]
+    #[case::after_epoch(BASE)]
+    #[case::before_epoch(-BASE)]
+    fn system_time_round_trip(#[case] second: i64) {
+        let ts = Timestamp::new(second, 250_000_000).unwrap();
+        let st = std::time::SystemTime::from(ts);
+        assert_eq!(Timestamp::from(st), ts);
+    }
+
+    #[test]
+    fn system_time_clamps_out_of_range() {
+        let far = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1 << 40);
+        assert_eq!(Timestamp::from(far), Timestamp::MAX);
+    }
+
+    #[test]
+    fn std_duration_arithmetic() {
+        let start = Timestamp::from_second(BASE).unwrap();
+        let step = std::time::Duration::from_secs(90);
+        let mut ts = start + step;
+        assert_eq!(ts.as_second(), BASE + 90);
+        ts -= step;
+        assert_eq!(ts, start);
+        ts += step;
+        assert_eq!(ts - step, start);
     }
 }

@@ -16,13 +16,14 @@
 //! exported, so a token, a password or key material must never reach `detail` —
 //! what belongs there is the identifier of the credential that was used.
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::borrow::Cow;
 
 use rustak_core::prelude::*;
 
 use super::{
     ADVICE_REPORT_DEV, Database,
-    row::{Timestamp, enum_col, ts},
+    row::{DbTime, enum_col, ts},
 };
 
 pub use rustak_api::{AuditCategory, AuditOutcome, AuditRecord};
@@ -161,7 +162,7 @@ pub trait AuditStore {
     /// were removed.
     async fn prune_audit_log(
         &self,
-        retain_for: chrono::Duration,
+        retain_for: SignedDuration,
         max_entries: usize,
     ) -> Result<usize, Error>;
 }
@@ -186,7 +187,7 @@ impl AuditStore for Database {
                    (occurred_at, category, action, outcome, subject, actor, message, detail) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 rusqlite::params![
-                    Timestamp::now(),
+                    DbTime::now(),
                     entry.category.as_str(),
                     entry.action.as_ref(),
                     entry.outcome.as_str(),
@@ -221,10 +222,10 @@ impl AuditStore for Database {
     #[instrument("db.audit.prune", skip(self), err(Display))]
     async fn prune_audit_log(
         &self,
-        retain_for: chrono::Duration,
+        retain_for: SignedDuration,
         max_entries: usize,
     ) -> Result<usize, Error> {
-        let cutoff = Timestamp::from(chrono::Utc::now() - retain_for);
+        let cutoff = DbTime::from(Timestamp::now() - retain_for);
         let max_entries = max_entries as i64;
 
         self.write(move |tx| {
@@ -417,14 +418,14 @@ mod tests {
         }
 
         let removed = db
-            .prune_audit_log(chrono::TimeDelta::days(30), 3)
+            .prune_audit_log(SignedDuration::from_hours(24 * 30), 3)
             .await
             .unwrap();
         assert_eq!(removed, 2);
         assert_eq!(db.audit(AuditQuery::recent(10)).await.unwrap().len(), 3);
 
         let removed = db
-            .prune_audit_log(chrono::TimeDelta::seconds(-1), 100)
+            .prune_audit_log(SignedDuration::from_secs(-1), 100)
             .await
             .unwrap();
         assert_eq!(removed, 3);

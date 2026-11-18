@@ -18,10 +18,10 @@
 //! - it is **forgotten** `max_age` after the satellite saw it, which is also
 //!   the `stale` every client was given. No delete is ever sent.
 
+use rustak_core::time::{DurationExt, SignedDuration, Timestamp};
 use std::collections::HashMap;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use rustak_client::feed::Area;
 use rustak_client::feed::upstream::{self, Every};
 use rustak_core::config::duration;
@@ -55,11 +55,11 @@ pub struct Filter {
 pub struct Publish {
     /// How long after its acquisition a detection stays on a map.
     #[serde(default = "default_max_age", with = "duration::humane")]
-    pub max_age: chrono::Duration,
+    pub max_age: SignedDuration,
 
     /// How often a detection that is still on the map is said again.
     #[serde(default = "default_republish", with = "duration::humane")]
-    pub republish: chrono::Duration,
+    pub republish: SignedDuration,
 
     /// How many detections are held before the oldest are dropped.
     #[serde(default = "default_max_detections")]
@@ -91,12 +91,12 @@ impl Publish {
     }
 }
 
-fn default_max_age() -> chrono::Duration {
-    chrono::Duration::hours(24)
+fn default_max_age() -> SignedDuration {
+    SignedDuration::from_hours(24)
 }
 
-fn default_republish() -> chrono::Duration {
-    chrono::Duration::minutes(10)
+fn default_republish() -> SignedDuration {
+    SignedDuration::from_mins(10)
 }
 
 const fn default_max_detections() -> usize {
@@ -129,7 +129,7 @@ pub struct Counters {
 #[derive(Debug)]
 struct Known {
     detection: Detection,
-    published_at: Option<DateTime<Utc>>,
+    published_at: Option<Timestamp>,
 }
 
 /// The detections this sidecar is carrying.
@@ -177,11 +177,11 @@ impl Hotspots {
 
     /// Takes a detection, and answers whether it was new and wanted.
     pub fn offer(&mut self, detection: Detection) -> bool {
-        self.offer_at(detection, Utc::now())
+        self.offer_at(detection, Timestamp::now())
     }
 
     /// [`offer`](Self::offer), at an instant of the caller's choosing.
-    pub fn offer_at(&mut self, detection: Detection, now: DateTime<Utc>) -> bool {
+    pub fn offer_at(&mut self, detection: Detection, now: Timestamp) -> bool {
         self.counters.offered += 1;
 
         let uid = mapping::uid(&detection);
@@ -226,7 +226,7 @@ impl Hotspots {
     }
 
     /// Whether this detection passes every filter.
-    fn wanted(&self, detection: &Detection, now: DateTime<Utc>) -> bool {
+    fn wanted(&self, detection: &Detection, now: Timestamp) -> bool {
         let age = now - detection.acquired_at;
         let fresh = age < self.publish.max_age && -age <= skew();
         let confident =
@@ -241,11 +241,11 @@ impl Hotspots {
 
     /// Forgets what is too old or too much, and answers how many that was.
     pub fn tick(&mut self) -> usize {
-        self.tick_at(Utc::now())
+        self.tick_at(Timestamp::now())
     }
 
     /// [`tick`](Self::tick), at an instant of the caller's choosing.
-    pub fn tick_at(&mut self, now: DateTime<Utc>) -> usize {
+    pub fn tick_at(&mut self, now: Timestamp) -> usize {
         let before = self.known.len();
         let max_age = self.publish.max_age;
 
@@ -253,7 +253,7 @@ impl Hotspots {
             .retain(|_, known| now - known.detection.acquired_at < max_age);
 
         if self.known.len() > self.publish.max_detections {
-            let mut oldest: Vec<(DateTime<Utc>, String)> = self
+            let mut oldest: Vec<(Timestamp, String)> = self
                 .known
                 .iter()
                 .map(|(uid, known)| (known.detection.acquired_at, uid.clone()))
@@ -276,13 +276,13 @@ impl Hotspots {
     /// The events that are due: never-published detections first, newest
     /// acquisition first, then the ones whose `republish` has come round.
     pub fn drain(&mut self) -> Vec<Event> {
-        self.drain_at(Utc::now())
+        self.drain_at(Timestamp::now())
     }
 
     /// [`drain`](Self::drain), at an instant of the caller's choosing.
-    pub fn drain_at(&mut self, now: DateTime<Utc>) -> Vec<Event> {
+    pub fn drain_at(&mut self, now: Timestamp) -> Vec<Event> {
         let republish = self.publish.republish;
-        let mut due: Vec<(Option<DateTime<Utc>>, DateTime<Utc>, String)> = self
+        let mut due: Vec<(Option<Timestamp>, Timestamp, String)> = self
             .known
             .iter()
             .filter(|(_, known)| known.published_at.is_none_or(|at| now - at >= republish))
@@ -355,7 +355,7 @@ impl Hotspots {
     /// plugins that publish through `rustak_client::feed::FeedPublisher`.
     ///
     /// Answers whether it logged, for the tests.
-    pub fn report_at(&mut self, now: DateTime<Utc>) -> bool {
+    pub fn report_at(&mut self, now: Timestamp) -> bool {
         if !self.report.due_at(now) {
             return false;
         }
@@ -375,21 +375,21 @@ impl Hotspots {
     }
 }
 
-/// [`CLOCK_SKEW`] as chrono spells it.
-fn skew() -> chrono::Duration {
-    chrono::Duration::from_std(CLOCK_SKEW).unwrap_or_else(|_| chrono::Duration::zero())
+/// [`CLOCK_SKEW`] as a signed duration.
+fn skew() -> SignedDuration {
+    SignedDuration::try_from(CLOCK_SKEW).unwrap_or(SignedDuration::ZERO)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn now() -> DateTime<Utc> {
+    fn now() -> Timestamp {
         "2026-09-22T14:00:00Z".parse().expect("an instant")
     }
 
-    fn minutes(count: i64) -> chrono::Duration {
-        chrono::Duration::minutes(count)
+    fn minutes(count: i64) -> SignedDuration {
+        SignedDuration::from_mins(count)
     }
 
     /// A detection `age` minutes old, `offset` hundredths of a degree along.
@@ -416,7 +416,7 @@ mod tests {
         let mut map = hotspots(Filter::default(), Publish::default());
 
         assert!(map.report_at(now()), "the first tick says where it is");
-        assert!(!map.report_at(now() + chrono::Duration::seconds(299)));
+        assert!(!map.report_at(now() + SignedDuration::from_secs(299)));
         assert!(map.report_at(now() + minutes(5)));
         assert!(!map.report_at(now() + minutes(9)));
         assert!(map.report_at(now() + minutes(10)));

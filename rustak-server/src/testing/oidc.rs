@@ -16,6 +16,7 @@
 //! nothing notices when they drift. Nothing in `src/` outside this module knows
 //! a test is running.
 
+use rustak_core::time::Timestamp;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -369,7 +370,7 @@ impl TestIdentityProvider {
 
 /// The claims a provider would issue for somebody.
 fn claims_for(issuer: &str, username: &str) -> serde_json::Value {
-    let now = chrono::Utc::now().timestamp();
+    let now = Timestamp::now().as_second();
 
     serde_json::json!({
         "iss": issuer,

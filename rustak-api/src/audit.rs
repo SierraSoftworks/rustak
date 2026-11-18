@@ -4,7 +4,7 @@
 //! lives here rather than beside the storage that holds it — a second
 //! definition of these values would be a second place for them to drift.
 
-use chrono::{DateTime, Utc};
+use crate::time::Timestamp;
 use serde::{Deserialize, Serialize};
 
 /// The area of the system an entry concerns.
@@ -167,7 +167,7 @@ pub struct AuditRecord {
     /// Monotonic identifier, which is also the pagination cursor.
     pub id: i64,
 
-    pub occurred_at: DateTime<Utc>,
+    pub occurred_at: Timestamp,
     pub category: AuditCategory,
 
     /// What happened, as a dotted token: `login`, `certificate.issued`,

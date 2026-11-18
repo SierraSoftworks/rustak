@@ -13,11 +13,11 @@
 //! subscription already had, because a device reconnecting is not a request to
 //! be demoted to the default.
 
-use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension as _;
 use rustak_core::prelude::*;
+use rustak_core::time::Timestamp;
 
-use crate::db::{Database, row::Timestamp, row::ts};
+use crate::db::{Database, row::DbTime, row::ts};
 
 /// Every column [`MissionSubscriptionRow::from_row`] reads, in order.
 const COLUMNS: &str = "id, mission_id, subscription_uid, client_uid, username, role, token_jti, \
@@ -36,7 +36,7 @@ pub struct MissionSubscriptionRow {
     pub role: String,
     /// The `jti` of the token last minted for this subscription.
     pub token_jti: Option<String>,
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
 }
 
 impl MissionSubscriptionRow {
@@ -102,7 +102,7 @@ impl<'a> MissionSubscriptionsRepo<'a> {
                         new.username,
                         new.role,
                         new.token_jti,
-                        Timestamp::now(),
+                        DbTime::now(),
                     ],
                     MissionSubscriptionRow::from_row,
                 )

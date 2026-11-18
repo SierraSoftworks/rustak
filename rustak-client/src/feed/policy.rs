@@ -7,6 +7,7 @@
 //! not need repeating, and a track that has moved does not need repeating twice
 //! in the same second.
 
+use rustak_core::time::{DurationExt, SignedDuration};
 use std::time::Duration;
 
 use rustak_core::config::duration;
@@ -14,18 +15,18 @@ use serde::{Deserialize, Serialize};
 
 /// How long a track lives on a map without another report. Long enough that a
 /// vessel at anchor (a position report every three minutes) does not flicker.
-fn default_stale() -> chrono::Duration {
-    chrono::Duration::seconds(120)
+fn default_stale() -> SignedDuration {
+    SignedDuration::from_secs(120)
 }
 
 /// The floor between two publications of the same track.
-fn default_min_interval() -> chrono::Duration {
-    chrono::Duration::seconds(5)
+fn default_min_interval() -> SignedDuration {
+    SignedDuration::from_secs(5)
 }
 
 /// How long a track may go unpublished while it is still being seen.
-fn default_max_interval() -> chrono::Duration {
-    chrono::Duration::seconds(60)
+fn default_max_interval() -> SignedDuration {
+    SignedDuration::from_secs(60)
 }
 
 /// How far a track moves before it is worth saying so, in metres.
@@ -62,17 +63,17 @@ pub struct PublishPolicy {
     /// `stale` attribute, which means a sidecar that is killed leaves a map
     /// that empties itself rather than one full of ghosts.
     #[serde(default = "default_stale", with = "duration::humane")]
-    pub stale: chrono::Duration,
+    pub stale: SignedDuration,
 
     /// The shortest gap between two publications of the same track.
     #[serde(default = "default_min_interval", with = "duration::humane")]
-    pub min_interval: chrono::Duration,
+    pub min_interval: SignedDuration,
 
     /// The longest a track that is still being seen goes unpublished. This is
     /// what keeps a motionless vessel on the map: it is republished before its
     /// `stale` passes even though nothing about it changed.
     #[serde(default = "default_max_interval", with = "duration::humane")]
-    pub max_interval: chrono::Duration,
+    pub max_interval: SignedDuration,
 
     /// How far a track must move since its last publication to be published
     /// again, in metres.
@@ -106,7 +107,7 @@ impl PublishPolicy {
     /// gone in ninety, a vessel at anchor reports every three minutes.
     #[must_use]
     pub fn with_stale(mut self, stale: Duration) -> Self {
-        self.stale = chrono::Duration::from_std(stale).unwrap_or_else(|_| default_stale());
+        self.stale = SignedDuration::try_from(stale).unwrap_or_else(|_| default_stale());
         self
     }
 
@@ -132,7 +133,7 @@ impl PublishPolicy {
 
 /// Converts a configured span for the standard library, falling back rather
 /// than panicking on a negative one the adapter would already have refused.
-fn to_std(value: chrono::Duration, fallback: chrono::Duration) -> Duration {
+fn to_std(value: SignedDuration, fallback: SignedDuration) -> Duration {
     value
         .to_std()
         .unwrap_or_else(|_| fallback.to_std().unwrap_or(Duration::from_secs(60)))

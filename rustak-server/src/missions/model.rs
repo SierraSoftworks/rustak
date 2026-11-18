@@ -6,7 +6,7 @@
 //! was asked for, assembled by the route file from query parameters and an
 //! optional JSON body, and handed to the service as one value.
 
-use chrono::{DateTime, Utc};
+use rustak_core::time::Timestamp;
 use uuid::Uuid;
 
 use crate::db::repos::MissionRow;
@@ -54,8 +54,8 @@ pub struct Mission {
     pub tool: String,
     pub keywords: Vec<String>,
     pub creator_uid: Option<String>,
-    pub create_time: DateTime<Utc>,
-    pub last_edited: Option<DateTime<Utc>>,
+    pub create_time: Timestamp,
+    pub last_edited: Option<Timestamp>,
     /// The role a caller gets when nothing else names them.
     pub default_role: Role,
     pub invite_only: bool,
@@ -65,7 +65,7 @@ pub struct Mission {
     pub expiration: Option<i64>,
     pub groups: Vec<String>,
     pub parent_id: Option<i64>,
-    pub deleted_at: Option<DateTime<Utc>>,
+    pub deleted_at: Option<Timestamp>,
 }
 
 impl Mission {
@@ -405,7 +405,7 @@ mod tests {
             tool: DEFAULT_TOOL.to_string(),
             keywords: Vec::new(),
             creator_uid: None,
-            create_time: Utc::now(),
+            create_time: Timestamp::now(),
             last_edited: None,
             default_role: "MISSION_SUBSCRIBER".to_string(),
             invite_only: false,

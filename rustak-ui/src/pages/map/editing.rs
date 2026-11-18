@@ -8,10 +8,10 @@
 //! sees. What the feed then echoes is the same feature again, and the store
 //! keeps the newer, which is a no-op.
 
+use rustak_api::time::Timestamp;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use chrono::Utc;
 use rustak_api::{Direction, MapFeature, Username};
 use wasm_bindgen_futures::spawn_local;
 use yew::Callback;
@@ -66,7 +66,7 @@ impl Session {
 
     /// Puts a feature the server has just relayed on the map.
     pub(super) fn take(&mut self, feature: MapFeature) {
-        let changes = self.store.upsert(feature, Utc::now());
+        let changes = self.store.upsert(feature, Timestamp::now());
         if let Some(map) = &self.map {
             map.apply(&changes.upserts, &changes.removes);
         }

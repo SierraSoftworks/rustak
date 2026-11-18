@@ -21,8 +21,8 @@
 //! on. [`setup`](Job::setup) now leaves an armed sweep where it is; see
 //! [`Job::arm_recurring`].
 
-use chrono::TimeDelta;
 use rustak_core::prelude::*;
+use rustak_core::time::SignedDuration;
 
 use crate::{
     jobs::{Job, JobContext},
@@ -41,7 +41,7 @@ pub const CONTENT_ORPHANS_PARTITION: &str = "housekeeping/content-orphans";
 /// has just deleted a large package should see the space back the same
 /// afternoon. Not configurable — `[retention] content_orphans` is, and that is
 /// what an operator has an opinion about.
-pub const SWEEP_INTERVAL: TimeDelta = TimeDelta::hours(1);
+pub const SWEEP_INTERVAL: SignedDuration = SignedDuration::from_hours(1);
 
 /// The message this job runs on. The grace period comes from the configuration
 /// at run time, so there is nothing to carry.
@@ -118,13 +118,12 @@ impl Job for ContentOrphansJob {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use chrono::{DateTime, Utc};
+    use rustak_core::time::Timestamp;
 
     use crate::{db::Queue, services::AppContext};
 
     /// When the one scheduled sweep becomes due.
-    async fn armed_for(context: &AppContext) -> DateTime<Utc> {
+    async fn armed_for(context: &AppContext) -> Timestamp {
         let armed = context
             .queue()
             .peek::<_, ContentOrphansTask>(CONTENT_ORPHANS_PARTITION, 10)
@@ -149,8 +148,8 @@ mod tests {
             .unwrap();
 
         let due = armed_for(&context).await;
-        assert!(due > Utc::now());
-        assert!(due <= Utc::now() + SWEEP_INTERVAL);
+        assert!(due > Timestamp::now());
+        assert!(due <= Timestamp::now() + SWEEP_INTERVAL);
     }
 
     #[tokio::test]
@@ -159,7 +158,7 @@ mod tests {
         ContentOrphansJob::dispatch_delayed(
             ContentOrphansTask {},
             Some(CONTENT_ORPHANS_PARTITION.into()),
-            TimeDelta::minutes(40),
+            SignedDuration::from_mins(40),
             &context,
         )
         .await

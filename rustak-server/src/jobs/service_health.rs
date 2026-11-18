@@ -12,8 +12,8 @@
 //! works, so a sweep that fails is one missed sweep rather than the end of the
 //! schedule.
 
-use chrono::TimeDelta;
 use rustak_core::prelude::*;
+use rustak_core::time::SignedDuration;
 
 use crate::{
     jobs::{Job, JobContext},
@@ -30,7 +30,7 @@ pub const SERVICE_HEALTH_PARTITION: &str = "housekeeping/service-health";
 /// A third of the grace period, so a sidecar that stops is reported as quiet
 /// within about one extra tick of the harness's default rather than within a
 /// whole grace period of it.
-pub const SERVICE_HEALTH_INTERVAL: TimeDelta = TimeDelta::seconds(30);
+pub const SERVICE_HEALTH_INTERVAL: SignedDuration = SignedDuration::from_secs(30);
 
 /// The message this job runs on. The grace period is a constant, so there is
 /// nothing to carry.
@@ -99,6 +99,7 @@ impl Job for ServiceHealthJob {
 #[cfg(test)]
 mod tests {
     use rustak_api::{Heartbeat, ServiceState};
+    use rustak_core::time::Timestamp;
 
     use super::*;
     use crate::db::repos::{NewService, NewUser};
@@ -143,7 +144,7 @@ mod tests {
 
         let due = context
             .queue()
-            .try_dequeue_any(TimeDelta::seconds(30))
+            .try_dequeue_any(SignedDuration::from_secs(30))
             .await
             .unwrap()
             .expect("the sweep should be due immediately");
@@ -158,7 +159,7 @@ mod tests {
 
         Job::handle(
             &ServiceHealthJob,
-            JobContext::new(context.clone(), chrono::Utc::now(), None, None),
+            JobContext::new(context.clone(), Timestamp::now(), None, None),
             &ServiceHealthTask {},
         )
         .await
@@ -185,7 +186,7 @@ mod tests {
 
         Job::handle(
             &ServiceHealthJob,
-            JobContext::new(context.clone(), chrono::Utc::now(), None, None),
+            JobContext::new(context.clone(), Timestamp::now(), None, None),
             &ServiceHealthTask {},
         )
         .await
@@ -198,6 +199,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(armed.len(), 1);
-        assert!(armed[0].hidden_until > chrono::Utc::now());
+        assert!(armed[0].hidden_until > Timestamp::now());
     }
 }

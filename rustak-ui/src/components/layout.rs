@@ -1,4 +1,4 @@
-use chrono::{Datelike, Utc};
+use rustak_api::time::Timestamp;
 use yew::prelude::*;
 
 #[derive(Properties, PartialEq)]
@@ -23,7 +23,7 @@ pub fn layout(props: &LayoutProps) -> Html {
             { props.children.clone() }
 
             <footer class="app-footer">
-                <p>{ format!("Copyright © Sierra Softworks {}", Utc::now().year()) }</p>
+                <p>{ format!("Copyright © Sierra Softworks {}", Timestamp::now().civil().year()) }</p>
             </footer>
         </>
     }

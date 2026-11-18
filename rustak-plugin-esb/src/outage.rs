@@ -12,9 +12,9 @@
 //! | `restored` | green |
 //! | `other` | white |
 
+use rustak_core::time::Timestamp;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use rustak_cot::detail::{Contact, Element, Remarks};
 use rustak_cot::{CotTime, Event};
 use serde::{Deserialize, Serialize};
@@ -109,13 +109,13 @@ pub struct Outage {
     pub customers: Option<u64>,
     /// When supply was lost, or the works begin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub started_at: Option<DateTime<Utc>>,
+    pub started_at: Option<Timestamp>,
     /// When ESB expects supply back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub estimated_restore_at: Option<DateTime<Utc>>,
+    pub estimated_restore_at: Option<Timestamp>,
     /// When supply came back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub restored_at: Option<DateTime<Utc>>,
+    pub restored_at: Option<Timestamp>,
     /// ESB's status message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
@@ -191,7 +191,7 @@ impl Outage {
 
     /// The event a client draws, valid from `now` for `stale`.
     #[must_use]
-    pub fn to_event(&self, now: DateTime<Utc>, stale: Duration) -> Event {
+    pub fn to_event(&self, now: Timestamp, stale: Duration) -> Event {
         let time = CotTime::from_datetime(now);
         let argb = self.kind.argb().to_string();
 
@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn the_remarks_carry_what_esb_said_and_nothing_it_did_not() {
-        let event = fault().to_event(Utc::now(), Duration::from_secs(900));
+        let event = fault().to_event(Timestamp::now(), Duration::from_secs(900));
         let remarks = event.detail.get::<Remarks>().expect("remarks").text;
 
         assert!(remarks.contains("Customers affected: 412"), "{remarks}");
@@ -279,7 +279,7 @@ mod tests {
         #[case] kind: OutageKind,
         #[case] argb: &str,
     ) {
-        let event = Outage::new("1", kind, (53.0, -8.0)).to_event(Utc::now(), Duration::ZERO);
+        let event = Outage::new("1", kind, (53.0, -8.0)).to_event(Timestamp::now(), Duration::ZERO);
 
         let color = event.detail.find("color").expect("a colour");
         let icon = event.detail.find("usericon").expect("an icon");
@@ -296,7 +296,7 @@ mod tests {
         let mut outage = Outage::new("1", OutageKind::Restored, (53.0, -8.0));
         assert!(!outage.is_final(), "ESB sends the time a little later");
 
-        outage.restored_at = Some(Utc::now());
+        outage.restored_at = Some(Timestamp::now());
         assert!(outage.is_final());
     }
 }

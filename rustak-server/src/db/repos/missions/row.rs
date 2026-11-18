@@ -6,8 +6,8 @@
 //! string rather than as a parsed enum so that this file does not have to know
 //! what a mission role means. [`crate::missions::model`] does that conversion.
 
-use chrono::{DateTime, Utc};
 use rusqlite::types::Value;
+use rustak_core::time::Timestamp;
 use uuid::Uuid;
 
 use crate::db::row::{bool_col, json_col, opt_json_col, opt_ts, ts};
@@ -40,8 +40,8 @@ pub struct MissionRow {
     pub tool: String,
     pub keywords: Vec<String>,
     pub creator_uid: Option<String>,
-    pub create_time: DateTime<Utc>,
-    pub last_edited: Option<DateTime<Utc>>,
+    pub create_time: Timestamp,
+    pub last_edited: Option<Timestamp>,
     /// The stored spelling of the role an unlisted caller gets.
     pub default_role: String,
     pub invite_only: bool,
@@ -53,7 +53,7 @@ pub struct MissionRow {
     pub groups: Vec<String>,
     pub parent_id: Option<i64>,
     /// Set by a soft delete, which is what makes a later `GET` a `410`.
-    pub deleted_at: Option<DateTime<Utc>>,
+    pub deleted_at: Option<Timestamp>,
 }
 
 impl MissionRow {

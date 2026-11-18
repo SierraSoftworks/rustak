@@ -17,9 +17,9 @@
 //! back-off survives a restart — which is when an operator is most likely to
 //! be retrying by hand.
 
+use rustak_core::time::{SignedDuration, Timestamp};
 use std::sync::Arc;
 
-use chrono::{DateTime, TimeDelta, Utc};
 use rustak_api::{AuditCategory, AuditOutcome, TlsCertificateState, TlsSource, TlsStatus};
 
 use crate::config::TlsMode;
@@ -36,9 +36,9 @@ pub enum CertState {
     /// No certificate has been issued for these names yet.
     Missing,
     /// Issued, and not yet inside its renewal window.
-    Valid { not_after: DateTime<Utc> },
+    Valid { not_after: Timestamp },
     /// Issued, and due for renewal — or already past its expiry.
-    Expiring { not_after: DateTime<Utc> },
+    Expiring { not_after: Timestamp },
     /// The last order failed; `attempts` is how many in a row.
     Failed { attempts: i64, last_error: String },
 }
@@ -51,7 +51,7 @@ pub enum Decision {
     /// The certificate is current; look again at the next tick.
     Wait,
     /// A recent failure is still backing off, until this instant.
-    BackOff { until: DateTime<Utc> },
+    BackOff { until: Timestamp },
 }
 
 /// How long to wait after `attempts` consecutive failures.
@@ -59,19 +59,19 @@ pub enum Decision {
 /// An hour, four hours, then daily: long enough that a misconfigured name does
 /// not spend an installation's rate-limit allowance, short enough that fixing
 /// the DNS is followed by a working certificate the same morning.
-pub fn backoff(attempts: i64) -> TimeDelta {
+pub fn backoff(attempts: i64) -> SignedDuration {
     match attempts {
-        ..=1 => TimeDelta::hours(1),
-        2 => TimeDelta::hours(4),
-        _ => TimeDelta::hours(24),
+        ..=1 => SignedDuration::from_hours(1),
+        2 => SignedDuration::from_hours(4),
+        _ => SignedDuration::from_hours(24),
     }
 }
 
 /// Whether to order now, given what is stored.
 pub fn decide(
     stored: Option<&AcmeCertificateRow>,
-    renew_before: TimeDelta,
-    now: DateTime<Utc>,
+    renew_before: SignedDuration,
+    now: Timestamp,
 ) -> Decision {
     let Some(row) = stored else {
         return Decision::Order;
@@ -107,8 +107,8 @@ pub fn decide(
 /// How the stored row should be described to an administrator.
 pub fn state(
     stored: Option<&AcmeCertificateRow>,
-    renew_before: TimeDelta,
-    now: DateTime<Utc>,
+    renew_before: SignedDuration,
+    now: Timestamp,
 ) -> CertState {
     let Some(row) = stored else {
         return CertState::Missing;
@@ -136,8 +136,8 @@ pub fn state(
 /// When the next renewal is due, which is what the admin API reports.
 pub fn next_renewal(
     stored: Option<&AcmeCertificateRow>,
-    renew_before: TimeDelta,
-) -> Option<DateTime<Utc>> {
+    renew_before: SignedDuration,
+) -> Option<Timestamp> {
     let row = stored?;
     let not_after = row.not_after.filter(|_| row.is_issued())?;
 
@@ -173,7 +173,7 @@ pub async fn status(services: &impl Services) -> Result<TlsStatus, Error> {
     let domains = store::normalise(config.acme.domains(&config.server));
     let stored = store::load(services.db(), &domains).await?;
     let held = stored.as_ref();
-    let now = Utc::now();
+    let now = Timestamp::now();
 
     Ok(TlsStatus {
         source,
@@ -250,7 +250,7 @@ pub async fn run(services: &impl Services, forced: bool) -> Result<CertState, Er
     }
 
     let stored = store::load(services.db(), &domains).await?;
-    let now = Utc::now();
+    let now = Timestamp::now();
 
     if !forced {
         match decide(stored.as_ref(), acme.renew_before, now) {
@@ -369,7 +369,7 @@ mod tests {
     use crate::config::AcmeChallenge;
     use crate::db::Database;
 
-    async fn row(chain: bool, not_after: Option<DateTime<Utc>>) -> AcmeCertificateRow {
+    async fn row(chain: bool, not_after: Option<Timestamp>) -> AcmeCertificateRow {
         let db = Database::open_in_memory().await.unwrap();
         let secrets = crate::crypto::SecretStore::ephemeral();
         let domains = vec!["tak.example.com".to_string()];
@@ -388,7 +388,7 @@ mod tests {
                 id,
                 certificate.pem(),
                 &key.serialize_der(),
-                (Utc::now(), not_after.unwrap_or_else(Utc::now)),
+                (Timestamp::now(), not_after.unwrap_or_else(Timestamp::now)),
                 AcmeChallenge::Http01,
             )
             .await
@@ -398,14 +398,20 @@ mod tests {
         store::load(&db, &domains).await.unwrap().unwrap()
     }
 
-    fn renew_before() -> TimeDelta {
-        TimeDelta::days(30)
+    fn renew_before() -> SignedDuration {
+        SignedDuration::from_hours(24 * 30)
     }
 
     #[tokio::test]
     async fn nothing_stored_means_order_now() {
-        assert_eq!(decide(None, renew_before(), Utc::now()), Decision::Order);
-        assert_eq!(state(None, renew_before(), Utc::now()), CertState::Missing);
+        assert_eq!(
+            decide(None, renew_before(), Timestamp::now()),
+            Decision::Order
+        );
+        assert_eq!(
+            state(None, renew_before(), Timestamp::now()),
+            CertState::Missing
+        );
     }
 
     #[tokio::test]
@@ -413,19 +419,19 @@ mod tests {
         let reserved = row(false, None).await;
 
         assert_eq!(
-            decide(Some(&reserved), renew_before(), Utc::now()),
+            decide(Some(&reserved), renew_before(), Timestamp::now()),
             Decision::Order,
         );
         assert_eq!(
-            state(Some(&reserved), renew_before(), Utc::now()),
+            state(Some(&reserved), renew_before(), Timestamp::now()),
             CertState::Missing,
         );
     }
 
     #[tokio::test]
     async fn a_fresh_certificate_is_left_alone() {
-        let now = Utc::now();
-        let issued = row(true, Some(now + TimeDelta::days(90))).await;
+        let now = Timestamp::now();
+        let issued = row(true, Some(now + SignedDuration::from_hours(24 * 90))).await;
 
         assert_eq!(decide(Some(&issued), renew_before(), now), Decision::Wait);
         assert!(matches!(
@@ -436,8 +442,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_certificate_inside_its_renewal_window_is_ordered_again() {
-        let now = Utc::now();
-        let issued = row(true, Some(now + TimeDelta::days(29))).await;
+        let now = Timestamp::now();
+        let issued = row(true, Some(now + SignedDuration::from_hours(24 * 29))).await;
 
         assert_eq!(decide(Some(&issued), renew_before(), now), Decision::Order);
         assert!(matches!(
@@ -448,7 +454,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_boundary_is_inclusive_so_the_window_is_never_skipped() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let issued = row(true, Some(now + renew_before())).await;
 
         assert_eq!(decide(Some(&issued), renew_before(), now), Decision::Order);
@@ -456,8 +462,8 @@ mod tests {
 
     #[tokio::test]
     async fn an_expired_certificate_is_renewed_rather_than_reported_as_valid() {
-        let now = Utc::now();
-        let issued = row(true, Some(now - TimeDelta::days(1))).await;
+        let now = Timestamp::now();
+        let issued = row(true, Some(now - SignedDuration::from_hours(24))).await;
 
         assert_eq!(decide(Some(&issued), renew_before(), now), Decision::Order);
         assert!(matches!(
@@ -468,17 +474,17 @@ mod tests {
 
     #[tokio::test]
     async fn a_recent_failure_backs_off_before_trying_again() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut failed = row(false, None).await;
         failed.attempts = 1;
-        failed.last_attempt_at = Some(now - TimeDelta::minutes(10));
+        failed.last_attempt_at = Some(now - SignedDuration::from_mins(10));
 
         assert!(matches!(
             decide(Some(&failed), renew_before(), now),
             Decision::BackOff { .. },
         ));
 
-        failed.last_attempt_at = Some(now - TimeDelta::hours(2));
+        failed.last_attempt_at = Some(now - SignedDuration::from_hours(2));
         assert_eq!(decide(Some(&failed), renew_before(), now), Decision::Order);
 
         failed.attempts = 3;
@@ -490,17 +496,17 @@ mod tests {
 
     #[test]
     fn the_back_off_grows_and_then_stops_growing() {
-        assert_eq!(backoff(0), TimeDelta::hours(1));
-        assert_eq!(backoff(1), TimeDelta::hours(1));
-        assert_eq!(backoff(2), TimeDelta::hours(4));
-        assert_eq!(backoff(3), TimeDelta::hours(24));
-        assert_eq!(backoff(50), TimeDelta::hours(24));
+        assert_eq!(backoff(0), SignedDuration::from_hours(1));
+        assert_eq!(backoff(1), SignedDuration::from_hours(1));
+        assert_eq!(backoff(2), SignedDuration::from_hours(4));
+        assert_eq!(backoff(3), SignedDuration::from_hours(24));
+        assert_eq!(backoff(50), SignedDuration::from_hours(24));
     }
 
     #[tokio::test]
     async fn a_failure_is_what_an_administrator_is_shown_even_while_the_old_certificate_serves() {
-        let now = Utc::now();
-        let mut failed = row(true, Some(now + TimeDelta::days(90))).await;
+        let now = Timestamp::now();
+        let mut failed = row(true, Some(now + SignedDuration::from_hours(24 * 90))).await;
         failed.attempts = 2;
         failed.last_error = Some("dns problem: NXDOMAIN".to_string());
 
@@ -515,13 +521,13 @@ mod tests {
 
     #[tokio::test]
     async fn the_next_renewal_is_the_expiry_less_the_window() {
-        let now = Utc::now();
-        let issued = row(true, Some(now + TimeDelta::days(90))).await;
+        let now = Timestamp::now();
+        let issued = row(true, Some(now + SignedDuration::from_hours(24 * 90))).await;
 
         let due = next_renewal(Some(&issued), renew_before()).unwrap();
 
-        assert!(due > now + TimeDelta::days(59));
-        assert!(due < now + TimeDelta::days(61));
+        assert!(due > now + SignedDuration::from_hours(24 * 59));
+        assert!(due < now + SignedDuration::from_hours(24 * 61));
         assert_eq!(next_renewal(None, renew_before()), None);
     }
 

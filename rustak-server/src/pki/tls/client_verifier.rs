@@ -169,6 +169,7 @@ impl ClientCertVerifier for RustakClientVerifier {
 mod tests {
     use super::*;
     use crate::pki::testing::TestAuthority;
+    use rustak_core::time::{SignedDuration, Timestamp};
 
     fn verifier(
         authority: &TestAuthority,
@@ -180,7 +181,7 @@ mod tests {
 
     fn now() -> UnixTime {
         UnixTime::since_unix_epoch(std::time::Duration::from_secs(
-            chrono::Utc::now().timestamp() as u64,
+            Timestamp::now().as_second() as u64
         ))
     }
 
@@ -265,7 +266,7 @@ mod tests {
         let issued = authority.issue("alice");
         let cache = RevocationCache::new(false);
         let long_after = UnixTime::since_unix_epoch(std::time::Duration::from_secs(
-            (chrono::Utc::now() + chrono::Duration::days(10_000)).timestamp() as u64,
+            (Timestamp::now() + SignedDuration::from_hours(24 * 10_000)).as_second() as u64,
         ));
 
         assert!(

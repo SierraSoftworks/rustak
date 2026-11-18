@@ -11,7 +11,7 @@
 
 use rustak_core::prelude::*;
 
-use crate::db::row::Timestamp;
+use crate::db::row::DbTime;
 
 use super::{COLUMNS, UserRow, UsersRepo};
 
@@ -50,7 +50,7 @@ impl UsersRepo<'_> {
 
         self.db
             .write(move |tx| {
-                let now = Timestamp::now();
+                let now = DbTime::now();
 
                 tx.query_one(
                     &format!(
@@ -112,7 +112,7 @@ impl UsersRepo<'_> {
 
         self.db
             .write(move |tx| {
-                let now = Timestamp::now();
+                let now = DbTime::now();
 
                 tx.query_one(
                     &format!(

@@ -460,6 +460,7 @@ mod tests {
     use super::*;
     use rustak_client::feed::{AircraftClass, Track, TrackKind};
     use rustak_client::sidecar::SidecarConfig;
+    use rustak_core::time::Timestamp;
     use std::path::PathBuf;
 
     /// The file an operator is handed, loaded the way the binary loads it.
@@ -639,7 +640,7 @@ mod tests {
             "ADSB-3c6444",
             TrackKind::Aircraft(AircraftClass::CivilFixedWing),
             (51.4775, -0.4614),
-            chrono::Utc::now(),
+            Timestamp::now(),
         ));
         let _ = publisher.drain();
 
@@ -659,7 +660,7 @@ mod tests {
                 "ADSB-3c6444",
                 TrackKind::Aircraft(AircraftClass::CivilFixedWing),
                 (51.4775, -0.4614),
-                chrono::Utc::now(),
+                Timestamp::now(),
             )),
             "an interval that would have suppressed this was cleared",
         );

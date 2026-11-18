@@ -8,9 +8,9 @@
 //! saying what it does, then reports its health on a heartbeat, so an
 //! administrator can see at a glance that the weather feed stopped an hour ago.
 
+use crate::time::Timestamp;
 use core::fmt;
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::identity::newtype::string_newtype;
@@ -264,7 +264,7 @@ pub struct ServiceStatus {
 
     /// When it last reported. Absent means it never has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_heartbeat_at: Option<DateTime<Utc>>,
+    pub last_heartbeat_at: Option<Timestamp>,
 }
 
 /// A service reporting in.
@@ -306,7 +306,7 @@ pub struct ServiceSummary {
     #[serde(default)]
     pub status: ServiceStatus,
 
-    pub registered_at: DateTime<Utc>,
+    pub registered_at: Timestamp,
 
     /// The latest metrics the service reported.
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
