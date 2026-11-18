@@ -4394,6 +4394,21 @@ dependencies = [
  "fallible-streaming-iterator",
  "hashlink",
  "libsqlite3-sys",
+ "smallvec",
+ "sqlite-wasm-rs",
+]
+
+[[package]]
+name = "rusqlite"
+version = "0.43.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f172c4812a19b26d1c23cdb0070e69db335503dfa378b910eb857386e5b8beba"
+dependencies = [
+ "bitflags",
+ "fallible-iterator",
+ "fallible-streaming-iterator",
+ "hashlink",
+ "libsqlite3-sys",
  "serde_json",
  "smallvec",
  "sqlite-wasm-rs",
@@ -4556,40 +4571,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustak-plugin-example"
-version = "0.1.0"
-dependencies = [
- "clap",
- "human-errors",
- "rustak-client",
- "rustak-core",
- "rustak-cot",
- "schemars",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "rustak-plugin-firms"
-version = "0.1.0"
-dependencies = [
- "human-errors",
- "reqwest 0.13.5",
- "rustak-api",
- "rustak-client",
- "rustak-core",
- "rustak-cot",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "wiremock",
-]
-
-[[package]]
 name = "rustak-server"
 version = "0.1.0"
 dependencies = [
@@ -4632,7 +4613,7 @@ dependencies = [
  "reqwest 0.13.5",
  "rsa",
  "rstest",
- "rusqlite",
+ "rusqlite 0.43.0",
  "rustak-api",
  "rustak-client",
  "rustak-core",
@@ -5586,7 +5567,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cef2b2b09428079c22bf68cb48170c80b4f8c9c3ae1879aabfc22a94b5eaf2a1"
 dependencies = [
  "crossbeam-channel",
- "rusqlite",
+ "rusqlite 0.42.0",
  "tokio",
 ]
 
