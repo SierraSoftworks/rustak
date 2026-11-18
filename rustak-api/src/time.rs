@@ -346,5 +346,55 @@ mod tests {
         assert_eq!(later - start, SignedDuration::from_hours(2));
         assert_eq!(later - SignedDuration::from_hours(2), start);
         assert!(later > start);
+
+        let mut moving = start;
+        moving += SignedDuration::from_mins(5);
+        moving -= SignedDuration::from_mins(5);
+        assert_eq!(moving, start);
+
+        assert_eq!(
+            start.checked_add(SignedDuration::from_secs(1)),
+            Timestamp::from_second(BASE + 1)
+        );
+        assert_eq!(
+            start.checked_sub(SignedDuration::from_secs(1)),
+            Timestamp::from_second(BASE - 1)
+        );
+        assert_eq!(Timestamp::UNIX_EPOCH.checked_sub(SignedDuration::MAX), None);
+    }
+
+    #[rstest]
+    #[case(i64::MAX, 0)]
+    #[case(0, 1_000_000_000)]
+    fn out_of_range_constructors_return_none(#[case] second: i64, #[case] nanosecond: i32) {
+        assert!(Timestamp::new(second, nanosecond).is_none());
+    }
+
+    #[test]
+    fn conversions_round_trip() {
+        let ours = Timestamp::from_millisecond(BASE * 1_000 + 123).unwrap();
+        let jiff: jiff::Timestamp = ours.into();
+
+        assert_eq!(Timestamp::from(jiff), ours);
+        assert_eq!(ours.get(), jiff);
+        assert_eq!(ours.as_millisecond(), BASE * 1_000 + 123);
+        assert_eq!(format!("{ours:?}"), ours.to_string());
+        assert!(Timestamp::from_millisecond(i64::MAX).is_none());
+    }
+
+    #[test]
+    fn now_is_after_the_epoch() {
+        assert!(Timestamp::now() > Timestamp::UNIX_EPOCH);
+    }
+
+    #[test]
+    fn invalid_input_is_reported() {
+        let err = "nope".parse::<Timestamp>().unwrap_err();
+        assert!(err.to_string().starts_with("invalid timestamp"));
+        assert!(std::error::Error::source(&err).is_none());
+
+        let json = serde_json::from_str::<Timestamp>("42").unwrap_err();
+        assert!(json.to_string().contains("RFC 3339"));
+        assert!(serde_json::from_str::<Timestamp>("\"nope\"").is_err());
     }
 }
