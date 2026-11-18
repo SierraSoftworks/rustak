@@ -504,4 +504,66 @@ mod tests {
         assert!(json.to_string().contains("RFC 3339"));
         assert!(serde_json::from_str::<Timestamp>("\"nope\"").is_err());
     }
+
+    #[rstest]
+    #[case::positive(SignedDuration::from_millis(1_500), Some(1_500))]
+    #[case::negative(SignedDuration::from_millis(-1_500), None)]
+    fn duration_to_std(#[case] d: SignedDuration, #[case] millis: Option<u128>) {
+        assert_eq!(d.to_std().ok().map(|s| s.as_millis()), millis);
+    }
+
+    #[rstest]
+    #[case::small(SignedDuration::from_millis(-42), -42)]
+    #[case::saturates_high(SignedDuration::MAX, i64::MAX)]
+    #[case::saturates_low(SignedDuration::MIN, i64::MIN)]
+    fn duration_whole_millis(#[case] d: SignedDuration, #[case] expected: i64) {
+        assert_eq!(d.whole_millis(), expected);
+    }
+
+    #[test]
+    fn civil_round_trip() {
+        let ts = Timestamp::from_second(BASE).unwrap();
+        let civil = ts.civil();
+        assert_eq!(
+            (civil.year(), civil.month(), civil.day(), civil.hour()),
+            (2025, 9, 18, 10)
+        );
+        assert_eq!(Timestamp::from_civil(civil), Some(ts));
+        assert_eq!(
+            ts.strftime("%Y-%m-%d %H:%M").to_string(),
+            "2025-09-18 10:00"
+        );
+    }
+
+    #[test]
+    fn default_is_epoch() {
+        assert_eq!(Timestamp::default(), Timestamp::UNIX_EPOCH);
+    }
+
+    #[rstest]
+    #[case::after_epoch(BASE)]
+    #[case::before_epoch(-BASE)]
+    fn system_time_round_trip(#[case] second: i64) {
+        let ts = Timestamp::new(second, 250_000_000).unwrap();
+        let st = std::time::SystemTime::from(ts);
+        assert_eq!(Timestamp::from(st), ts);
+    }
+
+    #[test]
+    fn system_time_clamps_out_of_range() {
+        let far = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1 << 40);
+        assert_eq!(Timestamp::from(far), Timestamp::MAX);
+    }
+
+    #[test]
+    fn std_duration_arithmetic() {
+        let start = Timestamp::from_second(BASE).unwrap();
+        let step = std::time::Duration::from_secs(90);
+        let mut ts = start + step;
+        assert_eq!(ts.as_second(), BASE + 90);
+        ts -= step;
+        assert_eq!(ts, start);
+        ts += step;
+        assert_eq!(ts - step, start);
+    }
 }
