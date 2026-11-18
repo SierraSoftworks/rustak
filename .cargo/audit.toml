@@ -13,4 +13,9 @@ ignore = [
     # 2026-09-19: `h2 0.3` reached only through actix-http/actix-web 4, which
     # pins h2 ^0.3. actix-web 4 has no release on h2 0.4; revisit at actix-web 5.
     "RUSTSEC-2026-0258",
+    # 2026-11-18: `crypto-bigint 0.5` reached only through webauthn_rp 0.3.0
+    # (latest) -> p256/p384 0.13. Timing leaks matter for secret operands;
+    # rustak only verifies WebAuthn signatures against public keys. Revisit
+    # when webauthn_rp moves to p256 0.14.
+    "RUSTSEC-2026-0387",
 ]
