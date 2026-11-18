@@ -954,9 +954,9 @@ async fn a_package_uploaded_over_http_2_is_advertised_at_the_authority_it_was_se
     })
     .workers(1)
     .disable_signals()
-    // `listen_auto_h2c`, because a plain `listen` speaks HTTP/1 only. The
+    // Plain `listen` detects h2c automatically (actix-web >= 4.19). The
     // real listeners reach the same h2 dispatcher through ALPN instead.
-    .listen_auto_h2c(socket)
+    .listen(socket)
     .expect("the test listener binds")
     .run();
     let handle = listener.handle();
