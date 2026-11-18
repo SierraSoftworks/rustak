@@ -654,7 +654,7 @@ mod tests {
         let hs256 = jsonwebtoken::encode(
             &jsonwebtoken::Header::new(Algorithm::HS256),
             &claims,
-            &EncodingKey::from_secret(b"guess"),
+            &EncodingKey::from_secret(b"guess").unwrap(),
         )
         .unwrap();
         assert!(jwt.verify(&hs256).is_err());

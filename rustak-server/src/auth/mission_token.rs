@@ -254,12 +254,11 @@ impl MissionTokens {
             mission_guid: mission_guid.to_string(),
         };
 
-        jsonwebtoken::encode(
-            &Header::new(Algorithm::HS256),
-            &claims,
-            &EncodingKey::from_secret(&self.secret),
-        )
-        .or_system_err(&["This is unexpected; please report it with the surrounding log entries."])
+        const ADVICE: &[&str] =
+            &["This is unexpected; please report it with the surrounding log entries."];
+
+        let key = EncodingKey::from_secret(&self.secret).or_system_err(ADVICE)?;
+        jsonwebtoken::encode(&Header::new(Algorithm::HS256), &claims, &key).or_system_err(ADVICE)
     }
 
     /// Verifies a token and reports what it claimed.
@@ -281,12 +280,9 @@ impl MissionTokens {
         validation.validate_aud = false;
         validation.required_spec_claims = HashSet::new();
 
-        let decoded = jsonwebtoken::decode::<RawClaims>(
-            token,
-            &DecodingKey::from_secret(&self.secret),
-            &validation,
-        )
-        .map_err(|_| TokenError::Rejected)?;
+        let key = DecodingKey::from_secret(&self.secret).map_err(|_| TokenError::Rejected)?;
+        let decoded = jsonwebtoken::decode::<RawClaims>(token, &key, &validation)
+            .map_err(|_| TokenError::Rejected)?;
 
         claims_of(decoded.claims)
     }
