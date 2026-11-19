@@ -4554,40 +4554,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustak-plugin-example"
-version = "0.1.0"
-dependencies = [
- "clap",
- "human-errors",
- "rustak-client",
- "rustak-core",
- "rustak-cot",
- "schemars",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "rustak-plugin-firms"
-version = "0.1.0"
-dependencies = [
- "human-errors",
- "reqwest 0.13.5",
- "rustak-api",
- "rustak-client",
- "rustak-core",
- "rustak-cot",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "wiremock",
-]
-
-[[package]]
 name = "rustak-server"
 version = "0.1.0"
 dependencies = [
@@ -5836,7 +5802,7 @@ dependencies = [
 [[package]]
 name = "tracing-batteries"
 version = "0.1.0"
-source = "git+https://github.com/sierrasoftworks/tracing-batteries-rs.git#d05fcacbc1bea866d5989ec1e2766889b9b2adb9"
+source = "git+https://github.com/sierrasoftworks/tracing-batteries-rs.git#b49eab5edc490adee30f37ad421d379d5042c011"
 dependencies = [
  "chrono",
  "flate2",
