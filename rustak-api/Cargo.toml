@@ -34,6 +34,4 @@ jiff = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-# The golden tests in `time` compare against chrono until it leaves the tree.
-chrono = { workspace = true }
 rstest = { workspace = true }

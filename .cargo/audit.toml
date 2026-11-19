@@ -18,4 +18,9 @@ ignore = [
     # rustak only verifies WebAuthn signatures against public keys. Revisit
     # when webauthn_rp moves to p256 0.14.
     "RUSTSEC-2026-0387",
+    # 2026-11-18: `chrono` (unmaintained) reached only through tracing-batteries
+    # (SierraSoftworks/tracing-batteries-rs) and nmea-parser 0.11 (latest, AIS
+    # plugin); rustak itself uses jiff (#169). rustak-ui reaches it only via
+    # yewi's `chrono` feature. Remove once those drop chrono.
+    "RUSTSEC-2026-0543",
 ]
