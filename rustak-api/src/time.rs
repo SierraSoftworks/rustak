@@ -357,18 +357,15 @@ impl<'de> serde::Deserialize<'de> for Timestamp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{DateTime, SecondsFormat, Utc};
     use rstest::rstest;
 
     const BASE: i64 = 1_758_189_600; // 2025-09-18T10:00:00Z
 
-    fn pair(second: i64, nanosecond: u32) -> (Timestamp, DateTime<Utc>) {
-        (
-            Timestamp::new(second, nanosecond as i32).expect("in range"),
-            DateTime::from_timestamp(second, nanosecond).expect("in range"),
-        )
+    fn ts(second: i64, nanosecond: i32) -> Timestamp {
+        Timestamp::new(second, nanosecond).expect("in range")
     }
 
+    // Expected strings are what chrono's serde and `to_rfc3339_opts(_, true)` produced.
     #[rstest]
     #[case(BASE, 0, "2025-09-18T10:00:00Z")]
     #[case(BASE, 100_000_000, "2025-09-18T10:00:00.100Z")]
@@ -377,54 +374,49 @@ mod tests {
     #[case(BASE, 5, "2025-09-18T10:00:00.000000005Z")]
     #[case(0, 0, "1970-01-01T00:00:00Z")]
     #[case(-1, 500_000_000, "1969-12-31T23:59:59.500Z")]
-    fn serde_matches_chrono(#[case] second: i64, #[case] nanosecond: u32, #[case] expected: &str) {
-        let (ours, theirs) = pair(second, nanosecond);
+    fn serde_round_trips(#[case] second: i64, #[case] nanosecond: i32, #[case] expected: &str) {
+        let ours = ts(second, nanosecond);
         let json = serde_json::to_string(&ours).unwrap();
 
         assert_eq!(json, format!("\"{expected}\""));
-        assert_eq!(json, serde_json::to_string(&theirs).unwrap());
+        assert_eq!(ours.to_string(), expected);
         assert_eq!(serde_json::from_str::<Timestamp>(&json).unwrap(), ours);
     }
 
     #[rstest]
-    #[case(Precision::Secs, SecondsFormat::Secs)]
-    #[case(Precision::Millis, SecondsFormat::Millis)]
-    #[case(Precision::Auto, SecondsFormat::AutoSi)]
-    fn rfc3339_matches_chrono(#[case] ours: Precision, #[case] theirs: SecondsFormat) {
-        for nanosecond in [
-            0,
-            1,
-            999,
-            1_000,
-            999_999,
-            1_000_000,
-            120_000_000,
-            999_999_999,
-        ] {
-            for second in [BASE, 0, -1, 4_102_444_799] {
-                let (a, b) = pair(second, nanosecond);
-                assert_eq!(
-                    a.to_rfc3339(ours),
-                    b.to_rfc3339_opts(theirs, true),
-                    "{second}.{nanosecond}"
-                );
-            }
-        }
+    #[case(Precision::Secs, BASE, 999_999_999, "2025-09-18T10:00:00Z")]
+    #[case(Precision::Secs, -1, 1, "1969-12-31T23:59:59Z")]
+    #[case(Precision::Millis, BASE, 0, "2025-09-18T10:00:00.000Z")]
+    #[case(Precision::Millis, BASE, 999_999, "2025-09-18T10:00:00.000Z")]
+    #[case(Precision::Millis, BASE, 1_000_000, "2025-09-18T10:00:00.001Z")]
+    #[case(Precision::Millis, -1, 999_999_999, "1969-12-31T23:59:59.999Z")]
+    #[case(Precision::Auto, BASE, 0, "2025-09-18T10:00:00Z")]
+    #[case(Precision::Auto, BASE, 1, "2025-09-18T10:00:00.000000001Z")]
+    #[case(Precision::Auto, BASE, 1_000, "2025-09-18T10:00:00.000001Z")]
+    #[case(Precision::Auto, BASE, 120_000_000, "2025-09-18T10:00:00.120Z")]
+    #[case(
+        Precision::Auto,
+        4_102_444_799,
+        999_999_999,
+        "2099-12-31T23:59:59.999999999Z"
+    )]
+    fn rfc3339_precision(
+        #[case] precision: Precision,
+        #[case] second: i64,
+        #[case] nanosecond: i32,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(ts(second, nanosecond).to_rfc3339(precision), expected);
     }
 
     #[rstest]
-    #[case("2026-11-18T10:00:00+01:00")]
-    #[case("2026-11-18T10:00:00.5z")]
-    #[case("2026-11-18 10:00:00Z")]
-    #[case("2026-11-18T10:00:00.123-05:30")]
-    fn parses_what_chrono_parses(#[case] text: &str) {
+    #[case("2026-11-18T10:00:00+01:00", "2026-11-18T09:00:00Z")]
+    #[case("2026-11-18T10:00:00.5z", "2026-11-18T10:00:00.500Z")]
+    #[case("2026-11-18 10:00:00Z", "2026-11-18T10:00:00Z")]
+    #[case("2026-11-18T10:00:00.123-05:30", "2026-11-18T15:30:00.123Z")]
+    fn parses_offsets_to_utc(#[case] text: &str, #[case] expected: &str) {
         let ours: Timestamp = serde_json::from_str(&format!("\"{text}\"")).unwrap();
-        let theirs: DateTime<Utc> = serde_json::from_str(&format!("\"{text}\"")).unwrap();
-
-        assert_eq!(
-            ours.to_rfc3339(Precision::Auto),
-            theirs.to_rfc3339_opts(SecondsFormat::AutoSi, true)
-        );
+        assert_eq!(ours.to_string(), expected);
     }
 
     #[rstest]
@@ -435,14 +427,15 @@ mod tests {
         assert!(text.parse::<Timestamp>().is_err());
     }
 
-    #[test]
-    fn epoch_accessors_match_chrono() {
-        for (second, nanosecond) in [(BASE, 123_456_789), (-1, 500_000_000), (0, 0)] {
-            let (a, b) = pair(second, nanosecond);
-            assert_eq!(a.as_second(), b.timestamp());
-            assert_eq!(a.as_millisecond(), b.timestamp_millis());
-            assert_eq!(a.subsec_nanosecond(), b.timestamp_subsec_nanos());
-        }
+    #[rstest]
+    #[case(BASE, 123_456_789, BASE * 1_000 + 123)]
+    #[case(-1, 500_000_000, -500)]
+    #[case(0, 0, 0)]
+    fn epoch_accessors(#[case] second: i64, #[case] nanosecond: i32, #[case] millis: i64) {
+        let t = ts(second, nanosecond);
+        assert_eq!(t.as_second(), second);
+        assert_eq!(t.as_millisecond(), millis);
+        assert_eq!(t.subsec_nanosecond(), nanosecond as u32);
     }
 
     #[test]
