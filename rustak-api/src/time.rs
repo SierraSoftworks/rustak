@@ -544,7 +544,10 @@ mod tests {
 
     #[test]
     fn system_time_clamps_out_of_range() {
-        let far = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1 << 40);
+        // About the year 10680: past jiff's 9999-12-31, but inside what every
+        // platform's `SystemTime` holds. Windows stops at 30828, so `1 << 40`
+        // seconds (about 36800) overflows there and panics before the test runs.
+        let far = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1 << 38);
         assert_eq!(Timestamp::from(far), Timestamp::MAX);
     }
 
