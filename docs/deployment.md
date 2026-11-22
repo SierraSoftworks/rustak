@@ -422,6 +422,7 @@ multi-arch images:
 | `ghcr.io/sierrasoftworks/rustak-plugin-adsb` | Aircraft from a local readsb receiver, the adsb.lol/adsb.fi aggregators or OpenSky |
 | `ghcr.io/sierrasoftworks/rustak-plugin-esb` | Irish power outages from ESB Networks' PowerCheck, as coloured spot markers |
 | `ghcr.io/sierrasoftworks/rustak-plugin-firms` | Active-fire detections from NASA FIRMS, as markers or satellite-pixel footprints |
+| `ghcr.io/sierrasoftworks/rustak-plugin-remoteid` | Drones and their operators from a Remote ID capture (pcap, pcapng or RIDF), with a spoof verdict |
 
 A sidecar dials out and listens on nothing, so there are no ports to publish.
 Each reads `/data/plugin.toml` and keeps its certificate, key and truststore

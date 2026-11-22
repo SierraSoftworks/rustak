@@ -84,6 +84,8 @@ database is embedded.
   OpenSky Network) and `rustak-plugin-firms` (active fires, from NASA FIRMS satellite detections)
   put open data feeds on the map through the same contract, and
   `rustak-plugin-esb` does the same for Irish power outages from ESB Networks' PowerCheck.
+  `rustak-plugin-remoteid` puts drones and their operators on the map from a Remote ID
+  receiver's capture file, with a spoof verdict on each one.
 - **Compatibility proven in CI, not by hand.** Every push runs a TypeScript suite against the
   real `@tak-ps/node-tak` client CloudTAK uses; nightly, ATAK's own networking core
   (`commoncommo`, built from source in a container) enrols, negotiates TAK Protocol v1, routes
@@ -170,7 +172,7 @@ behaviour are out of scope for now.
 The workspace holds the server (`rustak-server`, the `rustak` binary), the protocol crate
 (`rustak-cot`), shared DTOs (`rustak-api`), the foundations crate (`rustak-core`), the sidecar
 SDK (`rustak-client`), the plugins (`rustak-plugin-example`, `rustak-plugin-ais`,
-`rustak-plugin-adsb`, `rustak-plugin-esb`, `rustak-plugin-firms`) and the Yew admin UI (`rustak-ui`,
+`rustak-plugin-adsb`, `rustak-plugin-esb`, `rustak-plugin-firms`, `rustak-plugin-remoteid`) and the Yew admin UI (`rustak-ui`,
 built with Trunk and embedded into the binary).
 
 ```sh
