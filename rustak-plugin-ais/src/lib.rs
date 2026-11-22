@@ -575,7 +575,7 @@ mod tests {
 
         // Started from a file that names no edition, which is the type alone.
         let mut sidecar = started(&format!(
-            "[settings.source]\nkind = \"replay\"\npath = \"{}\"\n",
+            "[settings.source]\nkind = \"replay\"\npath = '{}'\n",
             path.display(),
         ))
         .await;
@@ -605,7 +605,7 @@ mod tests {
         std::fs::write(&path, FIXTURE).expect("the fixture lands");
 
         let mut sidecar = started(&format!(
-            "[settings.source]\nkind = \"replay\"\npath = \"{}\"\n",
+            "[settings.source]\nkind = \"replay\"\npath = '{}'\n",
             path.display(),
         ))
         .await;
@@ -670,7 +670,7 @@ mod tests {
         .expect("the fixture lands");
 
         let mut sidecar = started(&format!(
-            "[settings.source]\nkind = \"replay\"\npath = \"{}\"\n",
+            "[settings.source]\nkind = \"replay\"\npath = '{}'\n",
             path.display(),
         ))
         .await;
@@ -752,7 +752,7 @@ mod tests {
         std::fs::write(&path, FIXTURE).expect("the fixture lands");
 
         let mut sidecar = started(&format!(
-            "[settings.source]\nkind = \"replay\"\npath = \"{}\"\n",
+            "[settings.source]\nkind = \"replay\"\npath = '{}'\n",
             path.display(),
         ))
         .await;

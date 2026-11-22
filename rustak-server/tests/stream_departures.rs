@@ -118,9 +118,9 @@ async fn a_sidecar_that_is_stopped_closes_its_stream_rather_than_vanishing() {
         r#"
         [service]
         name = "probe"
-        certificate = "{certificate}"
-        key = "{key}"
-        truststore = "{truststore}"
+        certificate = '{certificate}'
+        key = '{key}'
+        truststore = '{truststore}'
 
         [server]
         stream = "ssl://{}"

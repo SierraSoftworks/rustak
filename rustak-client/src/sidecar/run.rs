@@ -1117,10 +1117,10 @@ mod tests {
                 r#"
                 [service]
                 name = "example"
-                pki_dir = "{pki}"
-                certificate = "{pki}/example.pem"
-                key = "{pki}/example.key"
-                truststore = "{pki}/truststore.pem"
+                pki_dir = '{pki}'
+                certificate = '{pki}/example.pem'
+                key = '{pki}/example.key'
+                truststore = '{pki}/truststore.pem'
 
                 [server]
                 stream = "ssl://tak.example.com:8089"

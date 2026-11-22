@@ -679,7 +679,7 @@ async fn the_esb_sidecar_publishes_its_replayed_outages_as_coloured_markers() {
     std::fs::write(&path, OUTAGES).expect("the fixture lands");
 
     let settings = format!(
-        "[settings.source]\nkind = \"replay\"\npath = \"{}\"\n",
+        "[settings.source]\nkind = \"replay\"\npath = '{}'\n",
         path.display(),
     );
     let mut feed = RunningFeed::start::<EsbSidecar>("esb", &settings).await;

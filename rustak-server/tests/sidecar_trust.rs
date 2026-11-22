@@ -289,7 +289,7 @@ async fn different_roots(harness: &Harness, base: &str, authority: &PublicCa) {
             capabilities = ["cot.publish"]
             token = "{service_token}"
             enrollment_token = "{enrolment_token}"
-            control_truststore = "{}"
+            control_truststore = '{}'
 
             [server]
             stream = "ssl://{}"

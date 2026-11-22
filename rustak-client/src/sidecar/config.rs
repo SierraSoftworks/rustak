@@ -704,7 +704,7 @@ mod tests {
     /// A configuration whose `control_truststore` is `path`.
     fn pinned(path: &std::path::Path) -> SidecarConfig<NoSettings> {
         load(&format!(
-            "[service]\nname = \"example\"\ncontrol_truststore = \"{}\"\n",
+            "[service]\nname = \"example\"\ncontrol_truststore = '{}'\n",
             path.display()
         ))
     }

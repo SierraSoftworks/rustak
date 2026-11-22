@@ -480,7 +480,7 @@ mod tests {
         std::fs::write(&path, FIXTURE).expect("the fixture lands");
 
         let config: SidecarConfig<Settings> = rustak_core::config::load_str(&format!(
-            "[service]\nname = \"adsb\"\n\n[settings.source]\nkind = \"replay\"\npath = \"{}\"\n",
+            "[service]\nname = \"adsb\"\n\n[settings.source]\nkind = \"replay\"\npath = '{}'\n",
             path.display(),
         ))
         .expect("the configuration loads");

@@ -409,7 +409,7 @@ mod tests {
             "[service]\nname = \"firms\"\ntoken = \"rsk_a_service_token\"\n\n\
              [server]\ncontrol = \"{}\"\n\n\
              [settings.area]\nkind = \"circle\"\nlat = 40.0\nlon = -8.0\nradius_km = 100.0\n\n\
-             [settings.source]\nkind = \"replay\"\npath = \"{fixture}\"\n",
+             [settings.source]\nkind = \"replay\"\npath = '{fixture}'\n",
             control.uri(),
         ))
         .expect("the configuration loads");
