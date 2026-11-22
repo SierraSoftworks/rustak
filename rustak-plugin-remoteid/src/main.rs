@@ -13,16 +13,18 @@
 //!
 //! The decoding, tracking, spoof detection and CoT mapping are `uas-cot`'s.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rustak_client::sidecar::{Sidecar, SidecarContext, async_trait, run};
 use rustak_core::prelude::*;
 use rustak_cot::Event;
-use uas_cot::remoteid::capture::{self, CapturedFrame};
-use uas_cot::remoteid::{Tracker, TrackerConfig, Transmitter, Verdict};
+use uas_cot::remoteid::capture::CapturedFrame;
+use uas_cot::remoteid::{TrackedUas, Tracker, Transmitter, Verdict};
 use uas_cot::rid;
+
+mod tail;
 
 fn default_true() -> bool {
     true
@@ -63,31 +65,52 @@ impl Default for Settings {
 struct RemoteIdSidecar {
     context: Option<SidecarContext<Settings>>,
     tracker: Tracker,
-    /// How many frames of the capture have been fed to the tracker already.
-    consumed: usize,
+    /// How far the capture has been read, and which file it was.
+    tail: tail::CaptureTail,
 }
 
 impl RemoteIdSidecar {
-    /// Feeds the frames after the ones already consumed to the tracker and
-    /// returns the markers of every transmitter that was heard in them.
+    /// Feeds newly appended frames to the tracker and returns the markers of
+    /// every drone heard in them recently enough to still be live.
     fn ingest(&mut self, frames: &[CapturedFrame], settings: &Settings, now_us: u64) -> Vec<Event> {
-        if frames.len() < self.consumed {
-            // The receiver rotated or truncated its file: start again.
-            self.tracker = Tracker::new(TrackerConfig::default());
-            self.consumed = 0;
-        }
-
+        let fresh_after = now_us.saturating_sub(settings.stale_secs.saturating_mul(1_000_000));
         let mut heard = BTreeSet::new();
-        for frame in &frames[self.consumed..] {
+        for frame in frames {
             self.tracker
                 .observe(frame.transmitter, &frame.observation(frame.utc_clock));
-            heard.insert(frame.transmitter);
+            // A frame from before a restart, or one that a backlog has carried
+            // past its stale time, says where a drone was, not where it is.
+            if !frame.utc_clock || frame.time_us >= fresh_after {
+                heard.insert(frame.transmitter);
+            }
         }
-        self.consumed = frames.len();
 
-        heard
-            .iter()
-            .filter_map(|tx| self.tracker.get(tx).map(|uas| (tx, uas)))
+        // One drone on several radios is several transmitters with one ID:
+        // draw it once, from its worst verdict (then its freshest report), so
+        // that the remarks and the affiliation agree and the marker does not
+        // flip between suspect and unknown within one batch.
+        let mut drones: BTreeMap<String, (&Transmitter, &TrackedUas)> = BTreeMap::new();
+        for tx in &heard {
+            let Some(uas) = self.tracker.get(tx) else {
+                continue;
+            };
+            let id = uas
+                .data
+                .primary_id()
+                .map_or_else(|| transmitter_id(tx), str::to_owned);
+            let rank = |u: &TrackedUas| (u.assessment.verdict, std::cmp::Reverse(u.last_seen));
+            drones
+                .entry(id)
+                .and_modify(|best| {
+                    if rank(uas) < rank(best.1) {
+                        *best = (tx, uas);
+                    }
+                })
+                .or_insert((tx, uas));
+        }
+
+        drones
+            .into_values()
             .flat_map(|(tx, uas)| {
                 let affiliation =
                     if settings.spoofed_as_suspect && uas.assessment.verdict == Verdict::Spoofed {
@@ -137,6 +160,14 @@ impl Sidecar for RemoteIdSidecar {
     type Settings = Settings;
 
     async fn start(&mut self, ctx: SidecarContext<Self::Settings>) -> Result<(), Error> {
+        if ctx.settings().capture.is_none() {
+            return Err(human_errors::user(
+                "`[settings] capture` is not set, so there is no capture file to read Remote ID from.",
+                &[
+                    "Set it to the pcap, pcapng or RIDF file your receiver writes, for example `capture = \"/data/rid.pcap\"`.",
+                ],
+            ));
+        }
         info!(capture = ?ctx.settings().capture, "The Remote ID sidecar is starting.");
         self.context = Some(ctx);
         Ok(())
@@ -148,25 +179,22 @@ impl Sidecar for RemoteIdSidecar {
         };
         let settings = context.settings();
         let Some(path) = &settings.capture else {
-            warn!("No [settings] capture is configured, so there is nothing to read.");
             return Ok(Vec::new());
         };
 
-        let frames = match tokio::fs::read(path).await {
-            Ok(bytes) => match capture::frames(&bytes) {
-                Ok(frames) => frames,
-                Err(error) => {
-                    warn!(path = %path.display(), %error, "The capture could not be read yet.");
-                    return Ok(Vec::new());
-                }
-            },
+        let appended = match self.tail.read(path).await {
+            Ok(appended) => appended,
             Err(error) => {
-                warn!(path = %path.display(), %error, "The capture could not be opened.");
+                warn!(path = %path.display(), %error, "The capture could not be read.");
                 return Ok(Vec::new());
             }
         };
+        if appended.restarted {
+            info!(path = %path.display(), "The capture was replaced or truncated, so it is being read again from the start.");
+            self.tracker = Tracker::default();
+        }
 
-        Ok(self.ingest(&frames, settings, now_us()))
+        Ok(self.ingest(&appended.frames, settings, now_us()))
     }
 }
 
@@ -179,6 +207,7 @@ async fn main() {
 mod tests {
     use super::*;
     use rustak_client::sidecar::SidecarConfig;
+    use uas_cot::remoteid::capture;
     use uas_cot::remoteid::{
         BasicId, IdType, Location, Message, OperatorLocationType, System, Transport, UaType,
     };
@@ -259,8 +288,39 @@ mod tests {
         // Nothing new appended: nothing to publish again.
         assert!(
             sidecar
-                .ingest(&frames, &Settings::default(), 1_763_700_002_000_000)
+                .ingest(&[], &Settings::default(), 1_763_700_002_000_000)
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_drone_heard_on_two_radios_is_drawn_once() {
+        let mut frames = drone();
+        frames.extend(drone().into_iter().map(|mut frame| {
+            frame.transmitter = Transmitter::Ble([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+            frame.transport = Transport::Bluetooth5;
+            frame
+        }));
+        let frames = capture::frames(&capture::to_ridf(&frames).unwrap()).unwrap();
+
+        let mut sidecar = RemoteIdSidecar::default();
+        let events = sidecar.ingest(&frames, &Settings::default(), 1_763_700_001_000_000);
+
+        let uids: Vec<&str> = events.iter().map(|event| event.uid.as_str()).collect();
+        assert_eq!(
+            uids,
+            ["rid-1596F35074529ABCDEFG", "rid-op-1596F35074529ABCDEFG"],
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn a_drone_last_heard_before_its_stale_time_is_not_published_as_live() {
+        let frames = capture::frames(&capture::to_ridf(&drone()).unwrap()).unwrap();
+        let mut sidecar = RemoteIdSidecar::default();
+
+        // An hour after the capture: a restart reading an old file.
+        let events = sidecar.ingest(&frames, &Settings::default(), 1_763_703_600_000_000);
+        assert!(events.is_empty(), "{events:?}");
     }
 }

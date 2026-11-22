@@ -27,3 +27,6 @@ tracing = { workspace = true }
 human-errors = { workspace = true }
 clap = { workspace = true }
 uas-cot = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

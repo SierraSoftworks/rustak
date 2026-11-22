@@ -4603,6 +4603,7 @@ dependencies = [
  "rustak-core",
  "rustak-cot",
  "serde",
+ "tempfile",
  "tokio",
  "tracing",
  "uas-cot",

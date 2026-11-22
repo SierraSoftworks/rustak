@@ -15,7 +15,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ADD ./dist/rustak-plugin-remoteid /usr/local/bin/rustak-plugin-remoteid
 
+# A sidecar dials out and listens on nothing, so there is no port to expose.
+# /data holds the configuration file, the certificate and key, and the capture
+# the receiver writes.
 VOLUME /data
-EXPOSE 443 8446 8443 8089 8087
 
 ENTRYPOINT ["/usr/local/bin/rustak-plugin-remoteid", "--config", "/data/plugin.toml"]

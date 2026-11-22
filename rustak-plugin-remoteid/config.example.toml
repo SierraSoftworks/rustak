@@ -17,8 +17,11 @@ tick = "2s"
 [settings]
 # The capture the Remote ID receiver is writing: pcap or pcapng from a Wi-Fi
 # card in monitor mode (`tcpdump -i wlan0mon -w /data/rid.pcap`) or a Bluetooth
-# LE sniffer, or a RIDF recording. Frames appended since the last tick are read
-# on every tick; a file that shrinks is read again from the start.
+# LE sniffer, or a RIDF recording. Required: the sidecar refuses to start
+# without it. Only the complete records appended since the last tick are read
+# on every tick, and a file that is truncated (or, on Unix, replaced, as
+# logrotate or `tcpdump -C/-G` do) is read again from the start. Drones last
+# heard longer ago than `stale_secs` are fed to the tracker but not published.
 capture = "/data/rid.pcap"
 
 # Draw a drone whose broadcast the tracker judges spoofed as a suspect (a-s-...)
