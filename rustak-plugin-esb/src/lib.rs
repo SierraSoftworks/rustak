@@ -287,7 +287,7 @@ mod tests {
         let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/outages.example.ndjson");
 
         started_over(&format!(
-            "[settings]\n{settings}\n\n[settings.source]\nkind = \"replay\"\npath = \"{fixture}\"\n",
+            "[settings]\n{settings}\n\n[settings.source]\nkind = \"replay\"\npath = '{fixture}'\n",
         ))
         .await
     }
@@ -441,7 +441,7 @@ mod tests {
         let config: SidecarConfig<Settings> = rustak_core::config::load_str(&format!(
             "[service]\nname = \"esb\"\ntoken = \"rsk_a_service_token\"\n\n\
              [server]\ncontrol = \"{}\"\n\n\
-             [settings.source]\nkind = \"replay\"\npath = \"{fixture}\"\n",
+             [settings.source]\nkind = \"replay\"\npath = '{fixture}'\n",
             control.uri(),
         ))
         .expect("the configuration loads");

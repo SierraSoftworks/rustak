@@ -137,9 +137,9 @@ impl RunningFeed {
             name = "{service}"
             capabilities = ["cot.publish"]
             token = "{service_token}"
-            certificate = "{}"
-            key = "{}"
-            truststore = "{}"
+            certificate = '{}'
+            key = '{}'
+            truststore = '{}'
 
             [server]
             stream = "ssl://{}"
@@ -216,7 +216,7 @@ pub fn replay_settings(directory: &tempfile::TempDir, tracks: &[Track]) -> (Path
     std::fs::write(&path, body).expect("the fixture lands");
 
     let settings = format!(
-        "[settings.source]\nkind = \"replay\"\npath = \"{}\"\n",
+        "[settings.source]\nkind = \"replay\"\npath = '{}'\n",
         path.display(),
     );
 

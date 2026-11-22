@@ -411,7 +411,7 @@ mod tests {
         let absent = directory.path().join("fullchain.pem");
 
         let waiting = format!(
-            "[web.public.tls]\nmode = \"files\"\ncert_file = \"{}\"\nkey_file = \"{}\"\n",
+            "[web.public.tls]\nmode = \"files\"\ncert_file = '{}'\nkey_file = '{}'\n",
             absent.display(),
             directory.path().join("privkey.pem").display(),
         );

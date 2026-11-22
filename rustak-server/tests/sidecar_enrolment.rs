@@ -614,7 +614,7 @@ async fn no_rustak_secret_at_all(
         directory.path(),
         harness.addr,
         base,
-        &format!("{{ file = \"{}\" }}", token.display()),
+        &format!("{{ file = '{}' }}", token.display()),
         (SERVICE, ACCOUNT),
     );
     let args = |enroll: bool| Args {
@@ -766,7 +766,7 @@ async fn check_names_the_workload_identity_a_first_start_would_use() {
         directory.path(),
         std::net::SocketAddr::from(([127, 0, 0, 1], 9)),
         "https://tak.example.com:8446",
-        &format!("{{ file = \"{}\" }}", token.display()),
+        &format!("{{ file = '{}' }}", token.display()),
         (SERVICE, ACCOUNT),
     );
 

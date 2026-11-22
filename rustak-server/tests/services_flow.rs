@@ -215,9 +215,9 @@ fn sidecar_config(
         name = "{SERVICE}"
         capabilities = ["cot.publish"]
         token = "{token}"
-        certificate = "{}"
-        key = "{}"
-        truststore = "{}"
+        certificate = '{}'
+        key = '{}'
+        truststore = '{}'
 
         [server]
         stream = "ssl://{stream}"

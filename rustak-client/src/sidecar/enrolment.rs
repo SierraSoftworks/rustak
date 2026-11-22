@@ -657,7 +657,7 @@ mod tests {
     async fn a_token_with_nowhere_to_enrol_is_refused_before_it_is_sent() {
         let directory = tempfile::tempdir().unwrap();
         let mut config = config(&format!(
-            "[service]\nname = \"example\"\nenrollment_token = \"one-time\"\npki_dir = \"{}\"\n",
+            "[service]\nname = \"example\"\nenrollment_token = \"one-time\"\npki_dir = '{}'\n",
             directory.path().display(),
         ));
 
@@ -751,7 +751,7 @@ mod tests {
         let pki = directory.path().join("data");
         let file = |token: &str| {
             format!(
-                "[service]\nname = \"example\"\npki_dir = \"{}\"\n{token}\n\n[server]\ncontrol = \"{}\"\n",
+                "[service]\nname = \"example\"\npki_dir = '{}'\n{token}\n\n[server]\ncontrol = \"{}\"\n",
                 pki.display(),
                 server.uri(),
             )
@@ -798,7 +798,7 @@ mod tests {
         // enrolment is going to write are not paths to read now.
         let directory = tempfile::tempdir().unwrap();
         let mut config = config(&format!(
-            "[service]\nname = \"example\"\npki_dir = \"{}\"\ncertificate = \"/data/example.pem\"\nkey = \"/data/example.key\"\ntruststore = \"/data/truststore.pem\"\n",
+            "[service]\nname = \"example\"\npki_dir = '{}'\ncertificate = \"/data/example.pem\"\nkey = \"/data/example.key\"\ntruststore = \"/data/truststore.pem\"\n",
             directory.path().display(),
         ));
 
@@ -819,7 +819,7 @@ mod tests {
         // this one is not, because nothing will ever write it.
         let directory = tempfile::tempdir().unwrap();
         let mut config = config(&format!(
-            "[service]\nname = \"example\"\npki_dir = \"{0}\"\ncontrol_truststore = \"{0}/public-ca.pem\"\n",
+            "[service]\nname = \"example\"\npki_dir = '{0}'\ncontrol_truststore = '{0}/public-ca.pem'\n",
             directory.path().display(),
         ));
 
@@ -895,7 +895,7 @@ mod tests {
         std::fs::write(&token, "header.payload.signature").unwrap();
 
         let config = config(&format!(
-            "[service]\nname = \"example\"\naccount = \"svc.example\"\nworkload_identity = {{ file = \"{}\" }}\n{extra}\n\n[server]\ncontrol = \"{server}\"\n",
+            "[service]\nname = \"example\"\naccount = \"svc.example\"\nworkload_identity = {{ file = '{}' }}\n{extra}\n\n[server]\ncontrol = \"{server}\"\n",
             token.display(),
         ));
 
@@ -1002,7 +1002,7 @@ mod tests {
         // enrolment token would hide the one thing the operator got wrong.
         let directory = tempfile::tempdir().unwrap();
         let mut config = config(&format!(
-            "[service]\nname = \"example\"\nworkload_identity = {{ file = \"{}\" }}\nenrollment_token = \"a-token\"\n",
+            "[service]\nname = \"example\"\nworkload_identity = {{ file = '{}' }}\nenrollment_token = \"a-token\"\n",
             directory.path().join("never-mounted.jwt").display(),
         ));
 
@@ -1023,7 +1023,7 @@ mod tests {
         std::fs::write(&token, "a.b.c").unwrap();
 
         let mut config = config(&format!(
-            "[service]\nname = \"example\"\npki_dir = \"/data\"\nworkload_identity = {{ file = \"{}\" }}\n",
+            "[service]\nname = \"example\"\npki_dir = \"/data\"\nworkload_identity = {{ file = '{}' }}\n",
             token.display(),
         ));
 
