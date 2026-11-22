@@ -1,0 +1,29 @@
+# rustak-plugin-remoteid configuration.
+#
+# [service] and [server] take every key rustak-plugin-example's
+# config.example.toml documents; only the name is required. Unknown keys are
+# refused, so `rustak-plugin-remoteid --config config.example.toml --check` is a
+# real check of this file, and this crate's tests load it.
+
+[service]
+name = "remoteid"
+
+[server]
+# stream = "ssl://tak.example.com:8089"
+
+[sidecar]
+tick = "2s"
+
+[settings]
+# The capture the Remote ID receiver is writing: pcap or pcapng from a Wi-Fi
+# card in monitor mode (`tcpdump -i wlan0mon -w /data/rid.pcap`) or a Bluetooth
+# LE sniffer, or a RIDF recording. Frames appended since the last tick are read
+# on every tick; a file that shrinks is read again from the start.
+capture = "/data/rid.pcap"
+
+# Draw a drone whose broadcast the tracker judges spoofed as a suspect (a-s-...)
+# rather than as an unknown. Default: true.
+# spoofed_as_suspect = true
+
+# Seconds a marker stays fresh after the last frame heard. Default: 30.
+# stale_secs = 30

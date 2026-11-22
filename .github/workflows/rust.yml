@@ -609,6 +609,7 @@ jobs:
           - { name: rustak-plugin-example, bin: rustak-plugin-example }
           - { name: rustak-plugin-ais, bin: rustak-plugin-ais }
           - { name: rustak-plugin-adsb, bin: rustak-plugin-adsb }
+          - { name: rustak-plugin-remoteid, bin: rustak-plugin-remoteid }
           - { name: rustak-plugin-esb, bin: rustak-plugin-esb }
           - { name: rustak-plugin-firms, bin: rustak-plugin-firms }
         # `target` is a real matrix axis so the `include` entries below merge
@@ -939,6 +940,7 @@ jobs:
           - { name: rustak-plugin-example, bin: rustak-plugin-example }
           - { name: rustak-plugin-ais, bin: rustak-plugin-ais }
           - { name: rustak-plugin-adsb, bin: rustak-plugin-adsb }
+          - { name: rustak-plugin-remoteid, bin: rustak-plugin-remoteid }
           - { name: rustak-plugin-esb, bin: rustak-plugin-esb }
           - { name: rustak-plugin-firms, bin: rustak-plugin-firms }
         platform: [linux/amd64, linux/arm64]
@@ -1055,6 +1057,7 @@ jobs:
           - { name: rustak-plugin-example, bin: rustak-plugin-example }
           - { name: rustak-plugin-ais, bin: rustak-plugin-ais }
           - { name: rustak-plugin-adsb, bin: rustak-plugin-adsb }
+          - { name: rustak-plugin-remoteid, bin: rustak-plugin-remoteid }
           - { name: rustak-plugin-esb, bin: rustak-plugin-esb }
           - { name: rustak-plugin-firms, bin: rustak-plugin-firms }
 
