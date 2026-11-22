@@ -1207,5 +1207,6 @@ is what makes a replay a fair test of the policy.
 - `rustak-plugin-ais/`, `rustak-plugin-adsb/` — the two track feed sidecars.
 - `rustak-plugin-esb/` — a feed of things that sit still: power outages as markers.
 - `rustak-plugin-firms/` — another: satellite fire detections as markers or pixel footprints.
+- `rustak-plugin-remoteid/` — drones and their operators from a Remote ID receiver's capture file, with a spoof verdict.
 - `docs/ci.md` — how a plugin crate is built, published and released.
 - `.claude/plan/plan.md` → Architecture → "Plugin (sidecar) contract".

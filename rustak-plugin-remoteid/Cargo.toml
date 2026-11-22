@@ -1,0 +1,32 @@
+[package]
+name = "rustak-plugin-remoteid"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+description = "Remote ID sidecar: drones and their operators from a receiver's capture file, as CoT tracks on a rustak channel."
+
+[[bin]]
+name = "rustak-plugin-remoteid"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+rustak-client = { workspace = true }
+rustak-core = { workspace = true }
+rustak-cot = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+human-errors = { workspace = true }
+clap = { workspace = true }
+uas-cot = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
